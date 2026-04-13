@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pdftotext \"C:\\\\Users\\\\yijiangh\\\\Dropbox\\\\0_Projects\\\\2025_husky_assembly\\\\Code\\\\bar_joint_rhino_design_workflow\\\\support_materials\\\\specs.pdf\" -)",
+      "Bash(*)",
+      "Write(*)",
+      "Read(*)",
+      "WebSearch",
+      "WebFetch(domain:developer.rhino3d.com)",
+      "WebFetch(domain:discourse.mcneel.com)"
+    ],
+    "filesystem": true,
+    "webfetch": true
+  }
+}

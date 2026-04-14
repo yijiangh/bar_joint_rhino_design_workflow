@@ -1,5 +1,6 @@
 """Rhino entry point for T2 joint placement."""
 
+import importlib
 import json
 import os
 import sys
@@ -13,22 +14,73 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from core import config
-from core.kinematics import make_bar_frame, optimize_joint_placement
+from core import config as _config_module
+from core import kinematics as _kinematics_module
 
 
-_LEGACY_PLACEHOLDER_BOX_SIZE = np.array([20.0, 20.0, 20.0], dtype=float)
-_PLACEHOLDER_TOL = 1e-6
-_FEMALE_PLACEHOLDER_FOOTPRINT = np.array([46.0, 28.0], dtype=float)
-_MALE_PLACEHOLDER_FOOTPRINT = np.array([40.0, 24.0], dtype=float)
 _DEBUG_FRAME_AXIS_LENGTH = 35.0
 _DEBUG_FRAME_IDS_KEY = "t2_debug_frame_ids"
+_FEMALE_BLOCK_NAME = "FemaleLinkBlock"
+_MALE_BLOCK_NAME = "MaleLinkBlock"
+_FEMALE_INSTANCES_LAYER = "FemaleJointPlacedInstances"
+_MALE_INSTANCES_LAYER = "MaleJointPlacedInstances"
+_JOINT_OPTIMIZATION_FRAMES_LAYER = "JointOptimizationFrames"
+
+
+def _reload_runtime_modules():
+    global config, make_bar_frame, optimize_joint_placement, screw_hole_alignment_diagnostics
+
+    config = importlib.reload(_config_module)
+    kinematics = importlib.reload(_kinematics_module)
+    make_bar_frame = kinematics.make_bar_frame
+    optimize_joint_placement = kinematics.optimize_joint_placement
+    screw_hole_alignment_diagnostics = kinematics.screw_hole_alignment_diagnostics
+
+
+_reload_runtime_modules()
 
 
 def _point_to_array(point):
     if hasattr(point, "X") and hasattr(point, "Y") and hasattr(point, "Z"):
         return np.array([point.X, point.Y, point.Z], dtype=float)
     return np.asarray(point, dtype=float)
+
+
+def _as_object_id_list(object_ids):
+    if object_ids is None:
+        return []
+    if isinstance(object_ids, (str, bytes)):
+        return [object_ids]
+    try:
+        return [object_id for object_id in object_ids if object_id is not None]
+    except TypeError:
+        return [object_ids]
+
+
+def _ensure_layer(layer_name):
+    if not rs.IsLayer(layer_name):
+        rs.AddLayer(layer_name)
+    return layer_name
+
+
+def _set_objects_layer(object_ids, layer_name):
+    baked_ids = _as_object_id_list(object_ids)
+    _ensure_layer(layer_name)
+    for object_id in baked_ids:
+        if rs.IsObject(object_id):
+            rs.ObjectLayer(object_id, layer_name)
+    return baked_ids
+
+
+def _group_objects(object_ids):
+    baked_ids = _as_object_id_list(object_ids)
+    if not baked_ids:
+        return None
+    group_name = rs.AddGroup()
+    if not group_name:
+        return None
+    rs.AddObjectsToGroup(baked_ids, group_name)
+    return group_name
 
 
 def _curve_endpoints(curve_id):
@@ -75,6 +127,8 @@ def _bake_frame_axes(frame, label, axis_length=_DEBUG_FRAME_AXIS_LENGTH):
         rs.ObjectName(dot_id, f"{label}_label")
         rs.SetUserText(dot_id, "frame_label", label)
         baked_ids.append(dot_id)
+    _set_objects_layer(baked_ids, _JOINT_OPTIMIZATION_FRAMES_LAYER)
+    _group_objects(baked_ids)
     return baked_ids
 
 
@@ -90,67 +144,17 @@ def _bake_debug_ocf_frames(result, inputs):
     _remember_debug_frame_ids(baked_ids)
 
 
-def _legacy_placeholder_bbox(block_name):
-    import Rhino
-
-    block_def = None
+def _has_block_definition(name):
     for instance_def in sc.doc.InstanceDefinitions:
-        if instance_def is not None and not instance_def.IsDeleted and instance_def.Name == block_name:
-            block_def = instance_def
-            break
-    if block_def is None:
-        return None
-
-    bbox = None
-    for rhino_obj in block_def.GetObjects():
-        geometry = getattr(rhino_obj, "Geometry", None)
-        if geometry is None:
-            continue
-        geom_bbox = geometry.GetBoundingBox(True)
-        if not geom_bbox.IsValid:
-            continue
-        if bbox is None:
-            bbox = geom_bbox
-        else:
-            bbox.Union(geom_bbox)
-
-    if bbox is None:
-        return None
-
-    size = np.array([bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y, bbox.Max.Z - bbox.Min.Z], dtype=float)
-    center = np.array(
-        [
-            0.5 * (bbox.Min.X + bbox.Max.X),
-            0.5 * (bbox.Min.Y + bbox.Max.Y),
-            0.5 * (bbox.Min.Z + bbox.Max.Z),
-        ],
-        dtype=float,
-    )
-    if not np.allclose(size, _LEGACY_PLACEHOLDER_BOX_SIZE, atol=_PLACEHOLDER_TOL):
-        return None
-    if np.linalg.norm(center) > _PLACEHOLDER_TOL:
-        return None
-    return {"size": size, "center": center}
+        if instance_def is not None and not instance_def.IsDeleted and instance_def.Name == name:
+            return True
+    return False
 
 
-def _placeholder_visual_frame(frame, radial_offset, block_name, radial_sign, footprint_xy):
-    bbox = _legacy_placeholder_bbox(block_name)
-    if bbox is None:
-        return np.asarray(frame, dtype=float)
-
-    depth = float(bbox["size"][2])
-    radial_offset = float(radial_offset)
-    if depth <= _PLACEHOLDER_TOL or radial_offset <= _PLACEHOLDER_TOL:
-        return np.asarray(frame, dtype=float)
-
-    corrected = np.array(frame, dtype=float, copy=True)
-    footprint_xy = np.asarray(footprint_xy, dtype=float)
-    corrected[:3, 0] = (footprint_xy[0] / float(bbox["size"][0])) * np.asarray(frame[:3, 0], dtype=float)
-    corrected[:3, 1] = (footprint_xy[1] / float(bbox["size"][1])) * np.asarray(frame[:3, 1], dtype=float)
-    z_axis = np.asarray(frame[:3, 2], dtype=float)
-    corrected[:3, 2] = (radial_offset / depth) * z_axis
-    corrected[:3, 3] = np.asarray(frame[:3, 3], dtype=float) + 0.5 * float(radial_sign) * radial_offset * z_axis
-    return corrected
+def _require_block_definition(name):
+    if not _has_block_definition(name):
+        raise RuntimeError(f"Missing required Rhino block definition '{name}'.")
+    return name
 
 
 def get_inputs_t2():
@@ -189,13 +193,31 @@ def run_s1_t2(inputs):
     return optimize_joint_placement(le_start, le_end, ln_start, ln_end, config)
 
 
+def _interface_metrics_from_result(result):
+    if "origin_error_mm" in result and "z_axis_error_rad" in result:
+        return float(result["origin_error_mm"]), float(result["z_axis_error_rad"])
+
+    if "female_screw_hole_frame" in result and "male_screw_hole_frame" in result:
+        diagnostics = screw_hole_alignment_diagnostics(
+            result["female_screw_hole_frame"],
+            result["male_screw_hole_frame"],
+        )
+        return float(diagnostics["origin_error_mm"]), float(diagnostics["z_axis_error_rad"])
+
+    raise KeyError(
+        "Result is missing interface diagnostics and screw-hole frames; "
+        "rerun after reloading the updated core.kinematics module."
+    )
+
+
 def place_joint_blocks(result, inputs):
-    """Place placeholder or existing joint blocks at the optimized transforms."""
+    """Place Rhino block instances at the optimized female and male link frames."""
 
     import Rhino
 
     female_frame = result["female_frame"]
     male_frame = result["male_frame"]
+    origin_error_mm, z_axis_error_rad = _interface_metrics_from_result(result)
 
     def numpy_to_rhino_transform(matrix):
         xform = Rhino.Geometry.Transform(1.0)
@@ -204,63 +226,40 @@ def place_joint_blocks(result, inputs):
                 xform[row, col] = float(matrix[row, col])
         return xform
 
-    def ensure_block_def(name, color):
-        if rs.IsBlock(name):
-            return
-        box_id = rs.AddBox(
-            [
-                [-10, -10, -10],
-                [10, -10, -10],
-                [10, 10, -10],
-                [-10, 10, -10],
-                [-10, -10, 10],
-                [10, -10, 10],
-                [10, 10, 10],
-                [-10, 10, 10],
-            ]
-        )
-        rs.ObjectColor(box_id, color)
-        rs.AddBlock([box_id], [0, 0, 0], name, delete_input=True)
+    female_block_name = _require_block_definition(_FEMALE_BLOCK_NAME)
+    male_block_name = _require_block_definition(_MALE_BLOCK_NAME)
 
-    ensure_block_def("FemaleJoint", (255, 100, 100))
-    ensure_block_def("MaleJoint", (100, 255, 100))
+    female_id = rs.InsertBlock(female_block_name, [0, 0, 0])
+    if female_id is None:
+        raise RuntimeError(f"Failed to insert Rhino block '{female_block_name}'.")
+    rs.TransformObject(female_id, numpy_to_rhino_transform(female_frame))
+    _set_objects_layer(female_id, _FEMALE_INSTANCES_LAYER)
 
-    female_visual_frame = _placeholder_visual_frame(
-        female_frame,
-        config.FEMALE_RADIAL_OFFSET,
-        "FemaleJoint",
-        -1.0,
-        _FEMALE_PLACEHOLDER_FOOTPRINT,
-    )
-    male_visual_frame = _placeholder_visual_frame(
-        male_frame,
-        config.MALE_RADIAL_OFFSET,
-        "MaleJoint",
-        1.0,
-        _MALE_PLACEHOLDER_FOOTPRINT,
-    )
-
-    female_id = rs.InsertBlock("FemaleJoint", [0, 0, 0])
-    rs.TransformObject(female_id, numpy_to_rhino_transform(female_visual_frame))
-
-    male_id = rs.InsertBlock("MaleJoint", [0, 0, 0])
-    rs.TransformObject(male_id, numpy_to_rhino_transform(male_visual_frame))
+    male_id = rs.InsertBlock(male_block_name, [0, 0, 0])
+    if male_id is None:
+        raise RuntimeError(f"Failed to insert Rhino block '{male_block_name}'.")
+    rs.TransformObject(male_id, numpy_to_rhino_transform(male_frame))
+    _set_objects_layer(male_id, _MALE_INSTANCES_LAYER)
 
     joint_data_female = {
-        "type": "FemaleJoint",
-        "dof": {"fjp": result["fjp"], "fjr": result["fjr"], "jjr": result["jjr"]},
+        "type": female_block_name,
+        "dof": {"fjp": result["fjp"], "fjr": result["fjr"]},
         "bar_id": str(inputs["le_id"]),
         "connected_bar_id": str(inputs["ln_id"]),
         "transform": female_frame.tolist(),
         "residual": result["residual"],
+        "origin_error_mm": origin_error_mm,
+        "z_axis_error_rad": z_axis_error_rad,
     }
     joint_data_male = {
-        "type": "MaleJoint",
+        "type": male_block_name,
         "dof": {"mjp": result["mjp"], "mjr": result["mjr"]},
         "bar_id": str(inputs["ln_id"]),
         "connected_bar_id": str(inputs["le_id"]),
         "transform": male_frame.tolist(),
         "residual": result["residual"],
+        "origin_error_mm": origin_error_mm,
+        "z_axis_error_rad": z_axis_error_rad,
     }
 
     rs.SetUserText(female_id, "joint_data", json.dumps(joint_data_female, indent=2))
@@ -270,13 +269,19 @@ def place_joint_blocks(result, inputs):
     print(f"T2: Joints placed. Residual: {result['residual']:.6f}")
     print(
         f"  FJP={result['fjp']:.2f}, FJR={np.degrees(result['fjr']):.1f}deg, "
-        f"MJP={result['mjp']:.2f}, MJR={np.degrees(result['mjr']):.1f}deg, "
-        f"JJR={np.degrees(result['jjr']):.1f}deg"
+        f"MJP={result['mjp']:.2f}, MJR={np.degrees(result['mjr']):.1f}deg"
     )
+    print(
+        f"  Interface origin err={origin_error_mm:.4f} mm, "
+        f"z-axis err={np.degrees(z_axis_error_rad):.4f}deg"
+    )
+    print(f"  Inserted blocks: {female_block_name}, {male_block_name}")
     return female_id, male_id
 
 
 def main(rerun=False):
+    _reload_runtime_modules()
+
     if rerun and "t2_inputs" in sc.sticky:
         inputs = sc.sticky["t2_inputs"]
     else:

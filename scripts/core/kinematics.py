@@ -1,4 +1,4 @@
-"""Forward kinematics and optimization for T20-5 joint placement."""
+"""Forward kinematics and optimization for CAD-backed joint placement."""
 
 from __future__ import annotations
 
@@ -9,61 +9,44 @@ import numpy as np
 from scipy.optimize import minimize
 
 from core.geometry import closest_params_infinite_lines
+from core.transforms import (
+    align_vectors,
+    as_vector,
+    frame_from_axes,
+    invert_transform,
+    orthogonal_to,
+    rotation_about_local_z,
+    rotation_matrix,
+    transport_reference_frame,
+    translation_transform,
+    unit,
+)
 
 
 def _as_vector(value: Iterable[float]) -> np.ndarray:
-    vector = np.asarray(value, dtype=float)
-    if vector.shape != (3,):
-        raise ValueError("Expected a 3D vector.")
-    return vector
+    return as_vector(value)
 
 
 def _unit(vector: Iterable[float], *, tol: float = 1e-12) -> np.ndarray:
-    vector = _as_vector(vector)
-    norm = np.linalg.norm(vector)
-    if norm <= tol:
-        raise ValueError("Cannot normalize a near-zero vector.")
-    return vector / norm
+    return unit(vector, tol=tol)
 
 
 def perpendicular_to(z_axis: Iterable[float]) -> np.ndarray:
     """Return a stable unit vector perpendicular to the provided axis."""
 
-    z_axis = _unit(z_axis)
-    if abs(float(np.dot(z_axis, np.array([0.0, 0.0, 1.0])))) < 0.95:
-        x_axis = np.cross(np.array([0.0, 0.0, 1.0]), z_axis)
-    else:
-        x_axis = np.cross(np.array([1.0, 0.0, 0.0]), z_axis)
-    return _unit(x_axis)
+    return orthogonal_to(z_axis)
 
 
 def _rotation_matrix(axis: Iterable[float], angle: float) -> np.ndarray:
-    axis = _unit(axis)
-    x, y, z = axis
-    c = math.cos(angle)
-    s = math.sin(angle)
-    one_c = 1.0 - c
-    return np.array(
-        [
-            [c + x * x * one_c, x * y * one_c - z * s, x * z * one_c + y * s],
-            [y * x * one_c + z * s, c + y * y * one_c, y * z * one_c - x * s],
-            [z * x * one_c - y * s, z * y * one_c + x * s, c + z * z * one_c],
-        ],
-        dtype=float,
-    )
+    return rotation_matrix(axis, angle)
 
 
 def _make_frame(origin: np.ndarray, x_axis: np.ndarray, y_axis: np.ndarray, z_axis: np.ndarray) -> np.ndarray:
-    frame = np.eye(4, dtype=float)
-    frame[:3, 0] = _unit(x_axis)
-    frame[:3, 1] = _unit(y_axis)
-    frame[:3, 2] = _unit(z_axis)
-    frame[:3, 3] = origin
-    return frame
+    return frame_from_axes(origin, x_axis, y_axis, z_axis)
 
 
 def make_bar_frame(line_start: Iterable[float], line_end: Iterable[float]) -> np.ndarray:
-    """Return a 4x4 frame at the midpoint of a bar."""
+    """Return a simple midpoint bar frame for debug visualization."""
 
     line_start = _as_vector(line_start)
     line_end = _as_vector(line_end)
@@ -72,6 +55,17 @@ def make_bar_frame(line_start: Iterable[float], line_end: Iterable[float]) -> np
     y_axis = _unit(np.cross(z_axis, x_axis))
     origin = 0.5 * (line_start + line_end)
     return _make_frame(origin, x_axis, y_axis, z_axis)
+
+
+def _make_runtime_bar_frame(line_start: Iterable[float], line_end: Iterable[float], reference_frame: np.ndarray) -> np.ndarray:
+    start = _as_vector(line_start)
+    end = _as_vector(line_end)
+    direction = _unit(end - start)
+    rotation = transport_reference_frame(reference_frame, direction)
+    frame = np.eye(4, dtype=float)
+    frame[:3, :3] = rotation
+    frame[:3, 3] = start
+    return frame
 
 
 def translate_along_axis(frame: np.ndarray, axis: Iterable[float], distance: float) -> np.ndarray:
@@ -91,59 +85,66 @@ def rotate_around_axis(frame: np.ndarray, axis: Iterable[float], angle: float) -
     return rotated
 
 
-def _rotated_radial_basis(bar_unit: np.ndarray, angle: float) -> tuple[np.ndarray, np.ndarray]:
-    x_ref = perpendicular_to(bar_unit)
-    y_ref = _unit(np.cross(bar_unit, x_ref))
-    rotation = _rotation_matrix(bar_unit, angle)
-    radial = _unit(rotation @ x_ref)
-    tangent = _unit(rotation @ y_ref)
-    return radial, tangent
-
-
 def fk_female(Le_start, Le_end, fjp, fjr, jjr, config) -> np.ndarray:
-    """Forward kinematics for the female joint chain."""
+    """Forward kinematics for the female link frame.
 
-    le_start = _as_vector(Le_start)
-    le_end = _as_vector(Le_end)
-    bar_unit = _unit(le_end - le_start)
-    pos_on_bar = le_start + float(fjp) * bar_unit
+    The `jjr` argument is accepted for backwards compatibility but is not used on
+    the female side of the chain.
+    """
 
-    radial_dir, _ = _rotated_radial_basis(bar_unit, float(fjr))
-    origin = (
-        pos_on_bar
-        + float(config.FEMALE_AXIAL_OFFSET) * bar_unit
-        + float(config.FEMALE_RADIAL_OFFSET) * radial_dir
-    )
-
-    x_axis = bar_unit
-    y_axis = _unit(np.cross(radial_dir, bar_unit))
-    z_axis = radial_dir
-
-    rotation = _rotation_matrix(z_axis, float(jjr))
-    x_axis = _unit(rotation @ x_axis)
-    y_axis = _unit(rotation @ y_axis)
-    return _make_frame(origin, x_axis, y_axis, z_axis)
+    del jjr
+    return fk_female_side(Le_start, Le_end, fjp, fjr, config)["female_frame"]
 
 
 def fk_male(Ln_start, Ln_end, mjp, mjr, config) -> np.ndarray:
-    """Forward kinematics for the male joint chain."""
+    """Forward kinematics for the male link frame."""
 
-    ln_start = _as_vector(Ln_start)
-    ln_end = _as_vector(Ln_end)
-    bar_unit = _unit(ln_end - ln_start)
-    pos_on_bar = ln_start + float(mjp) * bar_unit
+    return fk_male_side(Ln_start, Ln_end, mjp, mjr, config)["male_frame"]
 
-    radial_dir, _ = _rotated_radial_basis(bar_unit, float(mjr))
-    origin = (
-        pos_on_bar
-        + float(config.MALE_AXIAL_OFFSET) * bar_unit
-        - float(config.MALE_RADIAL_OFFSET) * radial_dir
+
+def fk_female_side(Le_start, Le_end, fjp, fjr, config) -> dict[str, np.ndarray]:
+    le_bar_frame = _make_runtime_bar_frame(Le_start, Le_end, config.LE_BAR_REFERENCE_FRAME)
+    fjp_frame = le_bar_frame @ translation_transform((0.0, 0.0, float(fjp)))
+    fjr_frame = fjp_frame @ rotation_about_local_z(float(fjr))
+    female_frame = fjr_frame @ np.asarray(config.FEMALE_FIXED_ROT_FROM_BAR_TRANSFORM, dtype=float)
+    female_screw_hole_frame = female_frame @ np.asarray(config.FEMALE_MALE_GAP_OFFSET_TRANSFORM, dtype=float)
+    return {
+        "le_bar_frame": le_bar_frame,
+        "fjp_frame": fjp_frame,
+        "fjr_frame": fjr_frame,
+        "female_frame": female_frame,
+        "female_screw_hole_frame": female_screw_hole_frame,
+    }
+
+
+def fk_male_side(Ln_start, Ln_end, mjp, mjr, config) -> dict[str, np.ndarray]:
+    ln_bar_frame = _make_runtime_bar_frame(Ln_start, Ln_end, config.LN_BAR_REFERENCE_FRAME)
+    mjp_frame = ln_bar_frame @ translation_transform((0.0, 0.0, -float(mjp)))
+    mjr_frame = mjp_frame @ rotation_about_local_z(-float(mjr))
+    male_frame = mjr_frame @ invert_transform(np.asarray(config.MALE_FIXED_ROT_TO_BAR_TRANSFORM, dtype=float))
+    male_screw_hole_frame = male_frame @ invert_transform(np.asarray(config.MALE_SCREW_HOLE_OFFSET_TRANSFORM, dtype=float))
+    return {
+        "ln_bar_frame": ln_bar_frame,
+        "mjp_frame": mjp_frame,
+        "mjr_frame": mjr_frame,
+        "male_frame": male_frame,
+        "male_screw_hole_frame": male_screw_hole_frame,
+    }
+
+
+def predict_male_from_female(female_screw_hole_frame: np.ndarray, jjr: float, config) -> dict[str, np.ndarray]:
+    predicted_male_screw_hole_frame = (
+        np.asarray(female_screw_hole_frame, dtype=float)
+        @ np.asarray(config.JJR_ZERO_TRANSFORM, dtype=float)
+        @ rotation_about_local_z(float(jjr))
     )
-
-    x_axis = bar_unit
-    y_axis = _unit(np.cross(radial_dir, bar_unit))
-    z_axis = radial_dir
-    return _make_frame(origin, x_axis, y_axis, z_axis)
+    predicted_male_frame = predicted_male_screw_hole_frame @ np.asarray(config.MALE_SCREW_HOLE_OFFSET_TRANSFORM, dtype=float)
+    predicted_mjr_frame = predicted_male_frame @ np.asarray(config.MALE_FIXED_ROT_TO_BAR_TRANSFORM, dtype=float)
+    return {
+        "predicted_male_screw_hole_frame": predicted_male_screw_hole_frame,
+        "predicted_male_frame": predicted_male_frame,
+        "predicted_mjr_frame": predicted_mjr_frame,
+    }
 
 
 def frame_distance(frame_a: np.ndarray, frame_b: np.ndarray) -> float:
@@ -159,7 +160,7 @@ def frame_distance(frame_a: np.ndarray, frame_b: np.ndarray) -> float:
 
 
 def optimize_joint_placement(Le_start, Le_end, Ln_start, Ln_end, config):
-    """Optimize the five joint DOFs that best align the male and female OCFs."""
+    """Optimize the five joint DOFs that best align the male and female screw-hole frames."""
 
     le_start = _as_vector(Le_start)
     le_end = _as_vector(Le_end)
@@ -173,21 +174,25 @@ def optimize_joint_placement(Le_start, Le_end, Ln_start, Ln_end, config):
     if le_length <= 1e-12 or ln_length <= 1e-12:
         raise ValueError("Bars must have non-zero length.")
 
+    le_unit = le_direction / le_length
+    ln_unit = ln_direction / ln_length
+
     def objective(params: np.ndarray) -> float:
         fjp, fjr, mjp, mjr, jjr = params
-        female_frame = fk_female(le_start, le_end, fjp, fjr, jjr, config)
-        male_frame = fk_male(ln_start, ln_end, mjp, mjr, config)
-        return frame_distance(female_frame, male_frame)
+        female_side = fk_female_side(le_start, le_end, fjp, fjr, config)
+        male_side = fk_male_side(ln_start, ln_end, mjp, mjr, config)
+        predicted = predict_male_from_female(female_side["female_screw_hole_frame"], jjr, config)
+        return frame_distance(predicted["predicted_male_screw_hole_frame"], male_side["male_screw_hole_frame"])
 
-    t_e, t_n = closest_params_infinite_lines(le_start, le_direction, ln_start, ln_direction)
-    fjp0 = float(t_e * le_length)
-    mjp0 = float(t_n * ln_length)
+    t_e, t_n = closest_params_infinite_lines(le_start, le_unit, ln_start, ln_unit)
+    fjp0 = float(t_e)
+    mjp0 = -float(t_n)
     bounds = [config.FJP_RANGE, config.FJR_RANGE, config.MJP_RANGE, config.MJR_RANGE, config.JJR_RANGE]
 
     seeds = [
         np.array([fjp0, 0.0, mjp0, 0.0, 0.0], dtype=float),
-        np.array([fjp0, 0.0, mjp0, math.pi, 0.0], dtype=float),
-        np.array([fjp0, math.pi, mjp0, 0.0, 0.0], dtype=float),
+        np.array([fjp0, math.pi / 2.0, mjp0, 0.0, 0.0], dtype=float),
+        np.array([fjp0, 0.0, mjp0, math.pi / 2.0, 0.0], dtype=float),
         np.array([fjp0, math.pi, mjp0, math.pi, math.pi / 2.0], dtype=float),
     ]
 
@@ -214,8 +219,9 @@ def optimize_joint_placement(Le_start, Le_end, Ln_start, Ln_end, config):
 
     assert best_result is not None
     fjp, fjr, mjp, mjr, jjr = [float(value) for value in best_result.x]
-    female_frame = fk_female(le_start, le_end, fjp, fjr, jjr, config)
-    male_frame = fk_male(ln_start, ln_end, mjp, mjr, config)
+    female_side = fk_female_side(le_start, le_end, fjp, fjr, config)
+    male_side = fk_male_side(ln_start, ln_end, mjp, mjr, config)
+    predicted = predict_male_from_female(female_side["female_screw_hole_frame"], jjr, config)
     return {
         "fjp": fjp,
         "fjr": fjr,
@@ -223,6 +229,10 @@ def optimize_joint_placement(Le_start, Le_end, Ln_start, Ln_end, config):
         "mjr": mjr,
         "jjr": jjr,
         "residual": float(best_result.fun),
-        "female_frame": female_frame,
-        "male_frame": male_frame,
+        "female_frame": female_side["female_frame"],
+        "female_screw_hole_frame": female_side["female_screw_hole_frame"],
+        "male_screw_hole_frame": male_side["male_screw_hole_frame"],
+        "male_frame": male_side["male_frame"],
+        "predicted_male_frame": predicted["predicted_male_frame"],
+        "predicted_male_screw_hole_frame": predicted["predicted_male_screw_hole_frame"],
     }

@@ -1,215 +1,297 @@
 # `tests/test_kinematics.py` Explained
 
-This file documents what each test in [test_kinematics.py](/C:/Users/yijiangh/Dropbox/0_Projects/2025_husky_assembly/Code/bar_joint_rhino_design_workflow/tests/test_kinematics.py) is checking.
+This file documents what each test in [test_kinematics.py](/C:/Users/yijiangh/Dropbox/0_Projects/2025_husky_assembly/Code/bar_joint_rhino_design_workflow/tests/test_kinematics.py) is checking after the CAD-backed FK refactor.
 
-The test module covers four main areas:
+The updated test module now covers five areas:
 
 - `perpendicular_to()`: builds a stable unit vector orthogonal to a given axis.
 - `frame_distance()`: scores how far apart two 4x4 frames are in translation and orientation.
-- `fk_female()` / `fk_male()`: forward kinematics for the female and male connector frames.
-- `optimize_joint_placement()`: solves for the 5 DOFs that align the female and male connector frames for two bars.
+- CAD fixed-transform sanity: confirms the generated fixed transforms are internally consistent.
+- `fk_female()` / `fk_male()` and the side-chain helpers: validates the new bar-side and screw-hole-side frame conventions.
+- `optimize_joint_placement()`: solves for the 5 DOFs that align the male and female screw-hole frames.
+
+## What Changed Conceptually
+
+The old tests assumed the connector link origins were offset away from the bar axes by simple radial distances.
+
+That is no longer the model.
+
+The new chain uses CAD-derived fixed transforms:
+
+- `female_link` lies directly on the `Le` bar axis because `female_fixed_rot_from_bar` is rotation-only.
+- `female_screw_hole_link` is offset from `female_link` by the measured gap transform.
+- `male_link` is reached from `male_screw_hole_link` by a fixed quarter-turn around local `Z` plus the measured translation.
+- `mjr_link` is a pure rotational remap from `male_link` back to the bar convention.
+- The optimizer aligns screw-hole frames, not just simplified connector origins.
 
 ## Shared Tolerances
 
 - `TOL_POSITION = 1e-4`
   Used when comparing positions in millimeters.
 - `TOL_ORIENTATION = 1e-4`
-  Used for axis alignment checks.
-- `TOL_RESIDUAL = 1e-3`
+  Used for axis and rotation-matrix consistency checks.
+- `TOL_RESIDUAL = 1e-4`
   Used for optimization residual quality.
 
 ## `TestPerpendicularTo`
 
+These tests did not change conceptually.
+
 ### `test_result_is_unit`
 
-This checks that `perpendicular_to()` always returns a unit-length vector, even for axes aligned with coordinate directions and for arbitrary 3D directions.
+Checks that `perpendicular_to()` always returns a unit-length vector.
 
 Why it matters:
-- Many downstream frame constructions assume normalized axes.
-- If this helper returned a non-unit vector, frame math and distances would drift.
+
+- Bar-frame construction depends on normalized basis vectors.
+- If this helper drifted away from unit length, downstream transforms would accumulate scale errors.
 
 ### `test_result_is_perpendicular`
 
-This verifies the returned vector is actually orthogonal to the input axis by checking the dot product is essentially zero.
+Checks that the returned vector is truly orthogonal to the input axis.
 
 Why it matters:
-- The helper is used to construct local bar frames.
-- If the vector is not perpendicular, the resulting frame basis is invalid.
+
+- The helper is used when constructing stable bar-side frames.
+- If the vector is not perpendicular, the resulting basis is not a valid frame.
 
 ### `test_deterministic`
 
-This calls `perpendicular_to()` twice on the same input and checks the result is exactly the same.
+Calls `perpendicular_to()` twice on the same input and requires an identical answer.
 
 Why it matters:
-- A stable deterministic basis avoids solution jitter.
-- Optimization and visualization are easier to debug when the frame construction does not randomly flip.
+
+- Deterministic basis construction prevents random frame flips.
+- That makes the FK, optimizer seeds, and debugging output much easier to reason about.
 
 ## `TestFrameDistance`
 
+These tests also keep the same intent as before.
+
 ### `test_identical_frames`
 
-This passes the same identity frame twice and expects `frame_distance()` to be essentially zero.
-
-Why it matters:
-- It is the base sanity check for the metric.
+Passes the same identity frame twice and expects `frame_distance()` to be zero.
 
 ### `test_translation_only`
 
-This creates two identical frames except for a translation of `(3, 4, 0)`. The expected distance is `3^2 + 4^2 = 25`.
-
-Why it matters:
-- It confirms the translation term is squared Euclidean distance.
+Translates one frame by `(3, 4, 0)` and checks that the translation contribution is `25`.
 
 ### `test_rotation_only`
 
-This creates two frames with the same origin but with one frame rotated 90 degrees in the XY plane. The expected result is `4.0`.
+Keeps the origin fixed and rotates the basis by 90 degrees in-plane to confirm the orientation term contributes as expected.
 
-Why it matters:
-- It confirms the orientation part of the metric is contributing as intended.
-- It separates rotation behavior from translation behavior.
+Why this block matters:
+
+- `frame_distance()` is the scalar objective used inside the optimizer.
+- These tests keep that metric grounded before the harder kinematic tests run.
+
+## `TestCADTransforms`
+
+This is new. These tests verify that the generated CAD fixed transforms form a coherent chain before any FK is exercised.
+
+### `test_fixed_rotations_are_inverses`
+
+Checks that:
+
+- `FEMALE_FIXED_ROT_FROM_BAR_TRANSFORM[:3, :3]`
+- `MALE_FIXED_ROT_TO_BAR_TRANSFORM[:3, :3]`
+
+multiply to the identity.
+
+What it proves:
+
+- The bar-to-female remap and the male-to-bar remap are consistent inverses.
+- The clarified axis-remap convention was encoded correctly in config.
+
+### `test_gap_transform_is_translation_only`
+
+Checks that `FEMALE_MALE_GAP_OFFSET_TRANSFORM` has identity rotation.
+
+What it proves:
+
+- The female-to-female-screw-hole relation is a pure positional gap.
+- Rotation around the screw-hole axis belongs to `jjr_joint`, not to the fixed gap transform.
+
+### `test_male_screw_hole_offset_is_quarter_turn_about_local_z`
+
+Checks that `MALE_SCREW_HOLE_OFFSET_TRANSFORM[:3, :3]` is exactly the +90 degree rotation about local `Z`:
+
+```text
+[[ 0, -1, 0],
+ [ 1,  0, 0],
+ [ 0,  0, 1]]
+```
+
+What it proves:
+
+- The male screw-hole to male-link fixed joint is not being simplified away as translation-only.
+- The intended local quarter-turn is explicitly encoded in config and will be shared by FK and URDF generation.
 
 ## `TestFKSanity`
 
-These tests validate the geometry produced by the direct FK helpers before the optimizer is involved.
+These tests validate the direct FK behavior under the new chain conventions.
 
-### `test_fk_female_origin_on_correct_side`
-
-Setup:
-- Existing bar `Le` runs from `(-100, 0, 0)` to `(100, 0, 0)`.
-- The female FK is evaluated at `fjp = 50`, `fjr = 0`, `jjr = 0`.
-
-Checks:
-- The female frame origin lands at `x = -50`.
-- Its distance from the selected point on the bar axis equals `config.FEMALE_RADIAL_OFFSET`.
-
-What it proves:
-- `fjp` moves the contact location to the correct place along the bar.
-- The female origin is then offset radially by the configured amount.
-
-### `test_fk_male_origin_on_correct_side`
+### `test_fk_female_origin_lies_on_bar_axis`
 
 Setup:
-- New bar `Ln` runs from `(0, -100, 20)` to `(0, 100, 20)`.
-- The male FK is evaluated at `mjp = 100`, `mjr = 0`.
+
+- `Le` runs along global `+Z`.
+- Evaluate `fk_female()` at `fjp = 50`, `fjr = 0`.
 
 Checks:
-- The male frame origin is exactly `config.MALE_RADIAL_OFFSET` away from the corresponding bar-axis point.
+
+- The returned `female_link` origin is exactly `(0, 0, 50)`.
 
 What it proves:
-- The male FK applies the radial offset consistently relative to the chosen point on `Ln`.
+
+- `fjp` is interpreted as motion along the parent bar axis.
+- `female_link` itself sits on the bar axis, matching the agreed rotation-only `female_fixed_rot_from_bar`.
+
+### `test_fk_male_origin_lies_on_bar_axis`
+
+Setup:
+
+- `Ln` also runs along global `+Z`, offset in `Y` by `BAR_CONTACT_DISTANCE`.
+- Evaluate `fk_male()` with `mjp = -125`, `mjr = 0`.
+
+Checks:
+
+- The returned `male_link` origin is exactly `(0, -BAR_CONTACT_DISTANCE, 125)`.
+
+Why the test uses `-125`:
+
+- In the agreed URDF chain, `mjp_joint` is a prismatic joint from `mjp_link` to `ln_bar_link`.
+- The direct inverse FK therefore uses the opposite sign when reconstructing the upstream `male_link` from a known `ln_bar_link`.
+
+What it proves:
+
+- The male-side FK is consistent with the actual parent/child ordering of the URDF.
+- `male_link` also lies on the `Ln` bar axis in this CAD-backed model.
 
 ### `test_fk_female_x_axis_along_bar`
 
 Setup:
-- `Le` runs along the global X axis.
-- The female frame is evaluated at the midpoint.
+
+- `Le` runs along global `+X`.
 
 Checks:
-- The female frame X axis is parallel to the bar direction.
+
+- The `female_link` X axis is parallel to the bar direction.
 
 What it proves:
-- The female OCF convention is being enforced correctly.
-- The local X axis follows the parent bar axis.
 
-### `test_fjr_rotates_radial_direction`
+- The female link frame convention is correct after the fixed axis remap.
+- The old bar-axis direction really becomes the new local `X` of `female_link`.
+
+### `test_fk_male_x_axis_along_bar`
 
 Setup:
-- Same straight bar along X.
-- Compare `fjr = 0` and `fjr = pi`.
+
+- `Ln` runs along global `+Y`.
 
 Checks:
-- The radial offset direction at `fjr = pi` is almost exactly opposite the direction at `fjr = 0`.
+
+- The `male_link` X axis is parallel to the `Ln` bar direction.
 
 What it proves:
-- `fjr` rotates the female frame around the bar axis as intended.
-- The radial direction is not fixed in space; it follows the rotational DOF.
+
+- The male-side remap back from screw-hole/bar conventions is being applied correctly.
+
+### `test_fjr_rotates_female_contact_direction`
+
+Setup:
+
+- Compare `fk_female_side()` at `fjr = 0` and `fjr = pi`.
+
+Checks:
+
+- The vector from `female_link` to `female_screw_hole_link` has magnitude `BAR_CONTACT_DISTANCE`.
+- That vector flips direction between `fjr = 0` and `fjr = pi`.
+
+What it proves:
+
+- `fjr` rotates the female-side contact direction around the bar axis.
+- The rotating quantity is now the screw-hole/contact offset, not the `female_link` origin itself.
+
+### `test_male_side_bar_axis_matches_mjr_frame_z`
+
+Setup:
+
+- `Ln` is placed diagonally in the XY plane.
+- Evaluate `fk_male_side()`.
+
+Checks:
+
+- The `mjr_frame` local `Z` axis is parallel to the actual `Ln` bar direction.
+
+What it proves:
+
+- The chain reaches the correct bar-side convention before `mjr_joint`.
+- `mjr_joint` is indeed rotating around the intended bar axis.
 
 ## `TestOptimizeJointPlacement`
 
-These tests exercise the full 5-DOF solver that tries to align the female and male connector frames for two bars.
+These tests now validate the screw-hole-based solver.
+
+The key result is no longer “female and male connector origins coincide.” Instead, the key result is that the predicted male screw-hole frame reconstructed from the female side and `jjr` matches the actual male screw-hole frame reconstructed from the male side.
+
+### `test_parallel_bars_at_contact_distance`
+
+Setup:
+
+- `Le` and `Ln` are parallel along `+Z`.
+- They are separated by `BAR_CONTACT_DISTANCE`.
+
+Checks:
+
+- Optimization residual is small.
+- `predicted_male_screw_hole_frame` matches `male_screw_hole_frame`.
+
+What it proves:
+
+- The new solver handles the simplest CAD-aligned case.
+- The screw-hole alignment target is working for parallel bars.
 
 ### `test_perpendicular_bars_at_contact_distance`
 
 Setup:
-- `Le` lies along X through the origin.
-- `Ln` lies along Y and is offset in Z by `BAR_CONTACT_DISTANCE`.
-- This is the cleanest symmetric case.
+
+- `Le` runs along `+Z`.
+- `Ln` runs along `+X`.
+- The bars are placed so their shortest distance is `BAR_CONTACT_DISTANCE`.
 
 Checks:
-- Optimization residual is very small.
-- Female and male frame origins coincide.
+
+- Optimization residual is small.
+- The predicted and actual male screw-hole frames match.
 
 What it proves:
-- The optimizer can solve the simplest valid configuration.
-- Low residual really corresponds to frame alignment.
 
-### `test_angled_bars`
-
-Setup:
-- `Le` stays along X.
-- `Ln` is tilted 60 degrees in the XZ plane.
-- The bar is shifted along the common normal by the required contact distance.
-
-Checks:
-- Residual stays below `TOL_RESIDUAL`.
-
-What it proves:
-- The solver works for non-perpendicular, non-parallel 3D cases.
-
-### `test_skew_bars_3d`
-
-Setup:
-- `Le` stays along X.
-- `Ln` is skew in 3D along a `(0, 1, 1)` direction.
-- The closest pair between the bar axes is positioned at the desired contact distance.
-
-Checks:
-- Residual stays below `TOL_RESIDUAL`.
-
-What it proves:
-- The optimizer handles fully skew 3D bar configurations, not just planar ones.
+- The solver works when the two bar axes are orthogonal.
+- The fixed-transform chain plus the 5 DOFs can recover a valid connector placement in a less symmetric pose.
 
 ### `test_dof_values_within_bounds`
 
 Setup:
-- Uses the same perpendicular case as the basic solver test.
+
+- Reuses the parallel-bar contact-distance case.
 
 Checks:
-- `fjp`, `fjr`, `mjp`, `mjr`, and `jjr` all lie within their configured ranges.
+
+- `fjp`, `fjr`, `mjp`, `mjr`, and `jjr` all stay within the configured ranges.
 
 What it proves:
-- The optimizer respects the joint bounds from `config.py`.
-- A low-residual answer is not being achieved by stepping outside allowed DOFs.
 
-### `test_fjp_mjp_near_contact_point`
+- The optimizer is respecting the declared joint limits while solving the CAD-backed chain.
 
-Setup:
-- Again uses the perpendicular contact-distance case.
+## Why There Is No `viz` Discussion Anymore
 
-Checks:
-- `fjp` is close to `200`.
-- `mjp` is close to `200`.
+The old explainer mentioned the optional `viz` fixture because many tests rendered debug plots.
 
-Why those values make sense:
-- Each bar is 400 mm long in the test setup.
-- The expected contact region is near the midpoint of each bar, which is 200 mm from the start point.
+The rewritten `tests/test_kinematics.py` is now purely assertion-based and does not use `viz`.
 
-What it proves:
-- The optimizer is not just finding any mathematically valid alignment.
-- It is finding one near the intuitive contact location on the bars.
+That is intentional:
 
-## About the `viz` Fixture
-
-Many tests take a `viz` fixture. This does not change the assertions.
-
-It only adds optional plots when you run pytest with `--viz`, so you can inspect:
-
-- the bar geometry,
-- the computed frames,
-- the optimizer result,
-- and the recovered DOF values.
-
-In other words:
-
-- the assertions are the real pass/fail logic,
-- the visualization is a debugging aid layered on top.
+- the kinematic contract is now tighter and more CAD-specific,
+- the assertions are easier to read directly,
+- and the visualization burden has shifted to the URDF/static PyBullet tools that now show the real connector meshes and link frames.

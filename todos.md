@@ -1,7 +1,23 @@
 
 # Todos
 
-- [] split T1 s1 and s2 into two buttons
+-[] split T1 s1 and s2 into two buttons
+-[] add a tube (Nurbs) preview (in a separate layer) while the new line (options) is generated. Ideally with color too, that was nice. It would be easier for the designer to see.
+-[] rename this "line distance optimization" to step 1A and 1B (For the two scenarios), And later the joint placement to step 2.
+
+-[] return optimization convergence info in rhino window
+
+## Opt formulation
+
+Slide 4 regarding the formulation of the optimization function. 
+I think you can leave out the JJR as input. And the comparison of the FK only compares the origin distance and the Z axis angle of the two frames.
+
+## OCF and data alignmenyt
+https://github.com/yck011522/joint_jig_controller/blob/main/design/dummy.json
+
+By the way, I want to synchronize with you the intended data structure (I guess JSON) for storing the joints on tubes for the entire structure. 
+
+I have previously made a dummy for my jig controller. It wasn't correct but just a starting point. I guess you would store the joints ocf relative to the tube OCF. But maybe it would be good to store simply the position from the tube origin (midpoint), orientation and it's rotation. It will be easier for me to figure out how to move the joint jig without getting into frame transformation computation
 
 # initial prompt
 We have designed a new type of connectors (we sometimes call it joint interchangeably) to join scaffodling bars, details of it is noted in this paper: C:\Users\yijiangh\Dropbox\0_Projects\2025_husky_assembly\Code\bar_joint_rhino_design_workflow\support_materials\papers\robarch2026_robotic_scaffolding_v1_highres.pdf

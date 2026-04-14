@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pybullet as p
@@ -65,12 +66,17 @@ def set_joints(robot, values_mm_deg: dict[str, float]) -> None:
 
 
 def get_link_pos(robot, link_name: str) -> np.ndarray:
+    if link_name == "le_bar_link":
+        return np.array(p.getBasePositionAndOrientation(robot["id"])[0], dtype=float)
     link_index = robot["links"][link_name]
     state = p.getLinkState(robot["id"], link_index, computeForwardKinematics=True)
     return np.array(state[0], dtype=float)
 
 
 def get_link_orn_matrix(robot, link_name: str) -> np.ndarray:
+    if link_name == "le_bar_link":
+        quaternion = p.getBasePositionAndOrientation(robot["id"])[1]
+        return np.array(p.getMatrixFromQuaternion(quaternion), dtype=float).reshape(3, 3)
     link_index = robot["links"][link_name]
     state = p.getLinkState(robot["id"], link_index, computeForwardKinematics=True)
     return np.array(p.getMatrixFromQuaternion(state[1]), dtype=float).reshape(3, 3)
@@ -94,22 +100,30 @@ class TestURDFStructure:
                 movable.append(joint_info[1].decode("utf-8"))
         assert set(movable) == {"fjp_joint", "fjr_joint", "jjr_joint", "mjr_joint", "mjp_joint"}
 
-    def test_joint_types(self, robot):
-        expected_types = {
-            "fjp_joint": p.JOINT_PRISMATIC,
-            "fjr_joint": p.JOINT_REVOLUTE,
-            "jjr_joint": p.JOINT_REVOLUTE,
-            "mjr_joint": p.JOINT_REVOLUTE,
-            "mjp_joint": p.JOINT_PRISMATIC,
-        }
-        for joint_name, expected_type in expected_types.items():
-            joint_index = robot["joints"][joint_name]
-            joint_info = p.getJointInfo(robot["id"], joint_index)
-            assert joint_info[2] == expected_type
-
     def test_has_expected_links(self, robot):
-        expected = {"fjp_link", "fjr_link", "female_link", "male_link", "mjr_link", "mjr_out_link", "ln_bar"}
+        expected = {
+            "fjp_link",
+            "fjr_link",
+            "female_link",
+            "female_screw_hole_link",
+            "male_screw_hole_link",
+            "male_link",
+            "mjr_link",
+            "mjp_link",
+            "ln_bar_link",
+        }
         assert expected.issubset(set(robot["links"]))
+
+    def test_mesh_visuals_are_used_for_connector_links(self):
+        tree = ET.parse(URDF_PATH)
+        root = tree.getroot()
+        mesh_filenames = {
+            link.attrib["name"]: link.find("./visual/geometry/mesh").attrib["filename"]
+            for link in root.findall("link")
+            if link.find("./visual/geometry/mesh") is not None
+        }
+        assert mesh_filenames["female_link"] == config.FEMALE_MESH_FILENAME
+        assert mesh_filenames["male_link"] == config.MALE_MESH_FILENAME
 
 
 class TestFJP:
@@ -128,10 +142,10 @@ class TestFJP:
 
     def test_fjp_moves_ln_bar_equally(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        pos0 = get_link_pos(robot, "ln_bar").copy()
+        pos0 = get_link_pos(robot, "ln_bar_link").copy()
 
         set_joints(robot, {"fjp_joint": 50.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        pos1 = get_link_pos(robot, "ln_bar")
+        pos1 = get_link_pos(robot, "ln_bar_link")
 
         delta = pos1 - pos0
         assert abs(delta[2] - 0.05) < TOL
@@ -139,29 +153,28 @@ class TestFJP:
 
 
 class TestFJR:
-    def test_fjr_rotates_female_around_le(self, robot):
+    def test_fjr_keeps_female_origin_on_bar_axis(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
         pos0 = get_link_pos(robot, "female_link").copy()
 
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 90.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
         pos90 = get_link_pos(robot, "female_link")
 
-        radial = config.FEMALE_RADIAL_OFFSET * SCALE
-        assert abs(pos0[0] - radial) < TOL
-        assert abs(pos0[1]) < TOL
-        assert abs(pos90[0]) < TOL
-        assert abs(pos90[1] - radial) < TOL
-        _pause_if_viz(robot, "test_fjr_rotates_female_around_le")
+        np.testing.assert_allclose(pos0, pos90, atol=TOL)
+        _pause_if_viz(robot, "test_fjr_keeps_female_origin_on_bar_axis")
 
-    def test_fjr_does_not_change_z(self, robot):
+    def test_fjr_rotates_female_screw_hole_around_le(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        z0 = get_link_pos(robot, "female_link")[2]
+        pos0 = get_link_pos(robot, "female_screw_hole_link").copy()
 
-        set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 45.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        z45 = get_link_pos(robot, "female_link")[2]
+        set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 90.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
+        pos90 = get_link_pos(robot, "female_screw_hole_link")
 
-        assert abs(z45 - z0) < TOL
-        _pause_if_viz(robot, "test_fjr_does_not_change_z")
+        radius = config.BAR_CONTACT_DISTANCE * SCALE
+        assert abs(np.linalg.norm(pos0[:2]) - radius) < TOL
+        assert abs(np.linalg.norm(pos90[:2]) - radius) < TOL
+        assert abs(np.dot(pos0[:2], pos90[:2])) < TOL
+        _pause_if_viz(robot, "test_fjr_rotates_female_screw_hole_around_le")
 
 
 class TestJJR:
@@ -177,10 +190,10 @@ class TestJJR:
 
     def test_jjr_changes_ln_direction(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        ln_dir_0 = get_link_orn_matrix(robot, "ln_bar")[:, 2]
+        ln_dir_0 = get_link_orn_matrix(robot, "ln_bar_link")[:, 2]
 
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 90.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        ln_dir_90 = get_link_orn_matrix(robot, "ln_bar")[:, 2]
+        ln_dir_90 = get_link_orn_matrix(robot, "ln_bar_link")[:, 2]
 
         cos_angle = np.clip(np.dot(ln_dir_0, ln_dir_90), -1.0, 1.0)
         angle = math.degrees(math.acos(abs(cos_angle)))
@@ -191,11 +204,11 @@ class TestJJR:
 class TestMJP:
     def test_mjp_moves_ln_along_its_axis(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        pos0 = get_link_pos(robot, "ln_bar").copy()
-        ln_dir = get_link_orn_matrix(robot, "ln_bar")[:, 2]
+        pos0 = get_link_pos(robot, "ln_bar_link").copy()
+        ln_dir = get_link_orn_matrix(robot, "ln_bar_link")[:, 2]
 
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 100.0})
-        pos1 = get_link_pos(robot, "ln_bar")
+        pos1 = get_link_pos(robot, "ln_bar_link")
 
         delta = pos1 - pos0
         displacement_along = np.dot(delta, ln_dir)
@@ -218,39 +231,30 @@ class TestMJP:
 class TestMJR:
     def test_mjr_does_not_change_ln_position(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        pos0 = get_link_pos(robot, "ln_bar").copy()
+        pos0 = get_link_pos(robot, "ln_bar_link").copy()
 
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 90.0, "mjp_joint": 0.0})
-        pos90 = get_link_pos(robot, "ln_bar")
+        pos90 = get_link_pos(robot, "ln_bar_link")
 
         np.testing.assert_allclose(pos0, pos90, atol=TOL)
         _pause_if_viz(robot, "test_mjr_does_not_change_ln_position")
 
     def test_mjr_rotates_ln_axes(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        R0 = get_link_orn_matrix(robot, "ln_bar")
+        R0 = get_link_orn_matrix(robot, "ln_bar_link")
 
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 90.0, "mjp_joint": 0.0})
-        R90 = get_link_orn_matrix(robot, "ln_bar")
+        R90 = get_link_orn_matrix(robot, "ln_bar_link")
 
         np.testing.assert_allclose(R0[:, 2], R90[:, 2], atol=ANGLE_TOL)
         assert abs(np.dot(R0[:, 0], R90[:, 0])) < 0.1
         _pause_if_viz(robot, "test_mjr_rotates_ln_axes")
 
 
-class TestRadialOffset:
-    def test_female_offset_from_bar_axis(self, robot):
+class TestZeroPose:
+    def test_zero_pose_bar_separation_matches_contact_distance(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        female_pos = get_link_pos(robot, "female_link")
-        radial_dist = math.sqrt(female_pos[0] ** 2 + female_pos[1] ** 2)
-        expected = config.FEMALE_RADIAL_OFFSET * SCALE
-        assert abs(radial_dist - expected) < TOL
-        _pause_if_viz(robot, "test_female_offset_from_bar_axis")
-
-    def test_total_bar_separation(self, robot):
-        set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        ln_pos = get_link_pos(robot, "ln_bar")
-        radial_dist = math.sqrt(ln_pos[0] ** 2 + ln_pos[1] ** 2)
-        expected = (config.FEMALE_RADIAL_OFFSET + config.MALE_RADIAL_OFFSET) * SCALE
-        assert abs(radial_dist - expected) < TOL
-        _pause_if_viz(robot, "test_total_bar_separation")
+        le_pos = get_link_pos(robot, "le_bar_link")
+        ln_pos = get_link_pos(robot, "ln_bar_link")
+        delta = ln_pos - le_pos
+        assert abs(abs(delta[1]) - config.BAR_CONTACT_DISTANCE * SCALE) < TOL

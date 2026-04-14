@@ -18,6 +18,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core.geometry import distance_infinite_lines
 from generate_urdf import DEFAULT_URDF_PATH, SCALE, generate_urdf
 
 
@@ -117,13 +118,15 @@ class TestURDFStructure:
     def test_mesh_visuals_are_used_for_connector_links(self):
         tree = ET.parse(URDF_PATH)
         root = tree.getroot()
-        mesh_filenames = {
-            link.attrib["name"]: link.find("./visual/geometry/mesh").attrib["filename"]
+        mesh_attrs = {
+            link.attrib["name"]: link.find("./visual/geometry/mesh").attrib
             for link in root.findall("link")
             if link.find("./visual/geometry/mesh") is not None
         }
-        assert mesh_filenames["female_link"] == config.FEMALE_MESH_FILENAME
-        assert mesh_filenames["male_link"] == config.MALE_MESH_FILENAME
+        assert mesh_attrs["female_link"]["filename"] == "female_joint_mesh_mm.obj"
+        assert mesh_attrs["male_link"]["filename"] == "male_joint_mesh_mm.obj"
+        assert mesh_attrs["female_link"]["scale"] == "0.001 0.001 0.001"
+        assert mesh_attrs["male_link"]["scale"] == "0.001 0.001 0.001"
 
 
 class TestFJP:
@@ -165,15 +168,19 @@ class TestFJR:
 
     def test_fjr_rotates_female_screw_hole_around_le(self, robot):
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        pos0 = get_link_pos(robot, "female_screw_hole_link").copy()
+        female_pos_0 = get_link_pos(robot, "female_link").copy()
+        screw_pos_0 = get_link_pos(robot, "female_screw_hole_link").copy()
 
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 90.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
-        pos90 = get_link_pos(robot, "female_screw_hole_link")
+        female_pos_90 = get_link_pos(robot, "female_link").copy()
+        screw_pos_90 = get_link_pos(robot, "female_screw_hole_link")
 
-        radius = config.BAR_CONTACT_DISTANCE * SCALE
-        assert abs(np.linalg.norm(pos0[:2]) - radius) < TOL
-        assert abs(np.linalg.norm(pos90[:2]) - radius) < TOL
-        assert abs(np.dot(pos0[:2], pos90[:2])) < TOL
+        offset_0 = screw_pos_0 - female_pos_0
+        offset_90 = screw_pos_90 - female_pos_90
+        radius = float(np.linalg.norm(config.FEMALE_MALE_GAP_OFFSET_TRANSFORM[:3, 3])) * SCALE
+        assert abs(np.linalg.norm(offset_0) - radius) < TOL
+        assert abs(np.linalg.norm(offset_90) - radius) < TOL
+        assert abs(np.dot(offset_0, offset_90)) < TOL
         _pause_if_viz(robot, "test_fjr_rotates_female_screw_hole_around_le")
 
 
@@ -256,5 +263,7 @@ class TestZeroPose:
         set_joints(robot, {"fjp_joint": 0.0, "fjr_joint": 0.0, "jjr_joint": 0.0, "mjr_joint": 0.0, "mjp_joint": 0.0})
         le_pos = get_link_pos(robot, "le_bar_link")
         ln_pos = get_link_pos(robot, "ln_bar_link")
-        delta = ln_pos - le_pos
-        assert abs(abs(delta[1]) - config.BAR_CONTACT_DISTANCE * SCALE) < TOL
+        le_axis = get_link_orn_matrix(robot, "le_bar_link")[:, 2]
+        ln_axis = get_link_orn_matrix(robot, "ln_bar_link")[:, 2]
+        distance = abs(distance_infinite_lines(le_pos, le_axis, ln_pos, ln_axis))
+        assert abs(distance - config.BAR_CONTACT_DISTANCE * SCALE) < TOL

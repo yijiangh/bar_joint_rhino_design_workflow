@@ -149,9 +149,17 @@ Refactor `scripts/core/kinematics.py` to use the measured fixed transforms inste
 
 The optimized alignment should be based on the screw-hole frames:
 
+- Make the core FK API bar-frame driven:
+  - `fk_female_side(le_bar_link_frame, fjp, fjr, config)`
+  - `fk_male_side(ln_bar_link_frame, mjp, mjr, config)`
+- Keep small line-endpoint wrappers for older call sites that still start from bar curves instead of 4x4 bar frames.
 - Build the female side from `Le`, `fjp`, and `fjr` through `female_screw_hole_link`.
 - Build the male side from `Ln`, `mjp`, and `mjr` backward to `male_screw_hole_link`.
-- Use the measured `jjr` zero transform plus the `jjr` angle to compare the two screw-hole frames.
+- Optimize only the four bar-side DOFs `fjp`, `fjr`, `mjp`, and `mjr`.
+- The objective should align only:
+  - screw-hole origins
+  - screw-hole local `Z` axes
+- Do not optimize `jjr`; twist about the shared screw-hole axis is intentionally free.
 
 Return the solved link frames needed by Rhino and tests:
 

@@ -9,12 +9,13 @@ from core.kinematics import (
     fk_male_side,
     fk_male_side_from_lines,
     frame_distance,
+    optimize_female_to_target,
     optimize_joint_placement,
     perpendicular_to,
     screw_hole_alignment_diagnostics,
     screw_hole_origin_z_error,
 )
-from core.transforms import rotation_about_local_z, translation_transform
+from core.transforms import invert_transform, rotation_about_local_z, translation_transform
 
 
 TOL_POSITION = 1e-4
@@ -305,3 +306,25 @@ class TestOptimizeJointPlacement:
         assert 0 <= debug["best_seed_index"] < debug["seed_count"]
         assert isinstance(debug["best_seed_report"]["message"], str)
         assert len(debug["seed_reports"]) == debug["seed_count"]
+
+    def test_female_only_optimizer_matches_male_flip_branch(self):
+        le_start = np.asarray(config.LE_BAR_REFERENCE_FRAME[:3, 3], dtype=float)
+        le_end = le_start + 400.0 * np.asarray(config.LE_BAR_REFERENCE_FRAME[:3, 2], dtype=float)
+        ln_start = np.asarray(config.LN_BAR_REFERENCE_FRAME[:3, 3], dtype=float)
+        ln_end = ln_start + 400.0 * np.asarray(config.LN_BAR_REFERENCE_FRAME[:3, 2], dtype=float)
+        base_result = optimize_joint_placement(le_start, le_end, ln_start, ln_end, config)
+        male_frame_flipped = base_result["male_frame"] @ rotation_about_local_z(np.pi)
+        target_male_screw_hole_frame = male_frame_flipped @ invert_transform(
+            np.asarray(config.MALE_SCREW_HOLE_OFFSET_TRANSFORM, dtype=float)
+        )
+
+        female_result = optimize_female_to_target(
+            le_start,
+            le_end,
+            target_male_screw_hole_frame,
+            config,
+            initial_guess=(base_result["fjp"], base_result["fjr"]),
+        )
+
+        assert female_result["origin_error_mm"] < TOL_POSITION
+        assert female_result["z_axis_error_rad"] < TOL_ORIENTATION

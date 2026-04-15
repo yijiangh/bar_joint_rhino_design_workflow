@@ -1,5 +1,2 @@
-matplotlib
 numpy
-pybullet_planning==0.6.1
-pytest
 scipy

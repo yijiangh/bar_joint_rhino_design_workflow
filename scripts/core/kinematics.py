@@ -9,7 +9,18 @@ import numpy as np
 from scipy.optimize import minimize
 
 from core.geometry import closest_params_infinite_lines
-from core.transforms import as_vector, frame_from_axes, invert_transform, orthogonal_to, rotation_about_local_z, rotation_matrix, transport_reference_frame, translation_transform, unit
+from core.transforms import (
+    as_vector,
+    frame_from_axes,
+    invert_transform,
+    orthogonal_to,
+    project_point_to_line,
+    rotation_about_local_z,
+    rotation_matrix,
+    transport_reference_frame,
+    translation_transform,
+    unit,
+)
 
 
 def _as_vector(value: Iterable[float]) -> np.ndarray:
@@ -169,6 +180,125 @@ def screw_hole_alignment_diagnostics(female_screw_hole_frame: np.ndarray, male_s
     return {"origin_error_mm": origin_error_mm, "z_axis_error_rad": z_axis_error_rad}
 
 
+def _make_seed_report(seed_index: int, seed: np.ndarray, result) -> dict[str, object]:
+    jacobian = np.asarray(getattr(result, "jac", ()), dtype=float)
+    proj_grad_inf_norm = float(np.max(np.abs(jacobian))) if jacobian.size else float("nan")
+    return {
+        "seed_index": int(seed_index),
+        "initial_guess": tuple(float(value) for value in seed),
+        "solution": tuple(float(value) for value in result.x),
+        "success": bool(result.success),
+        "status": int(result.status),
+        "message": str(result.message),
+        "residual": float(result.fun),
+        "nit": int(getattr(result, "nit", -1)),
+        "nfev": int(getattr(result, "nfev", -1)),
+        "proj_grad_inf_norm": proj_grad_inf_norm,
+    }
+
+
+def _run_multistart(objective, seeds: list[np.ndarray], bounds, *, return_debug: bool = False):
+    best_result = None
+    best_seed_index = -1
+    seed_reports: list[dict[str, object]] = []
+    for seed_index, seed in enumerate(seeds):
+        result = minimize(objective, seed, method="L-BFGS-B", bounds=bounds)
+        if return_debug:
+            seed_reports.append(_make_seed_report(seed_index, seed, result))
+        if best_result is None or float(result.fun) < float(best_result.fun):
+            best_result = result
+            best_seed_index = seed_index
+    assert best_result is not None
+    return best_result, best_seed_index, seed_reports
+
+
+def optimize_female_to_target(Le_start, Le_end, target_male_screw_hole_frame, config, *, initial_guess=None, return_debug: bool = False):
+    """Optimize only `fjp` and `fjr` so the female screw-hole frame matches a fixed target interface."""
+
+    le_start = _as_vector(Le_start)
+    le_end = _as_vector(Le_end)
+    target_male_screw_hole_frame = _as_frame(target_male_screw_hole_frame)
+
+    le_direction = le_end - le_start
+    le_length = float(np.linalg.norm(le_direction))
+    if le_length <= 1e-12:
+        raise ValueError("Bars must have non-zero length.")
+
+    le_unit = le_direction / le_length
+    le_bar_frame = _make_runtime_bar_frame(le_start, le_end, config.LE_BAR_REFERENCE_FRAME)
+    orientation_weight_mm = float(getattr(config, "BAR_CONTACT_DISTANCE", 1.0))
+
+    def objective(params: np.ndarray) -> float:
+        fjp, fjr = params
+        female_side = fk_female_side(le_bar_frame, fjp, fjr, config)
+        return screw_hole_origin_z_error(
+            female_side["female_screw_hole_frame"],
+            target_male_screw_hole_frame,
+            orientation_weight_mm=orientation_weight_mm,
+        )
+
+    _, fjp0 = project_point_to_line(target_male_screw_hole_frame[:3, 3], le_start, le_unit)
+    bounds = [config.FJP_RANGE, config.FJR_RANGE]
+
+    seeds = []
+    if initial_guess is not None:
+        initial_guess = np.asarray(initial_guess, dtype=float)
+        if initial_guess.shape != (2,):
+            raise ValueError("Expected a 2D initial guess `(fjp, fjr)`.")
+        seeds.append(np.array(initial_guess, dtype=float))
+    seeds.extend(
+        [
+            np.array([fjp0, 0.0], dtype=float),
+            np.array([fjp0, math.pi / 2.0], dtype=float),
+            np.array([fjp0, -math.pi / 2.0], dtype=float),
+            np.array([fjp0, math.pi], dtype=float),
+        ]
+    )
+
+    rng = np.random.default_rng(0)
+    for _ in range(int(getattr(config, "OPTIMIZER_RANDOM_RESTARTS", 12))):
+        seeds.append(
+            np.array(
+                [
+                    fjp0 + rng.uniform(-config.OPTIMIZER_TRANSLATION_PERTURBATION, config.OPTIMIZER_TRANSLATION_PERTURBATION),
+                    rng.uniform(*config.FJR_RANGE),
+                ],
+                dtype=float,
+            )
+        )
+
+    best_result, best_seed_index, seed_reports = _run_multistart(
+        objective,
+        seeds,
+        bounds,
+        return_debug=return_debug,
+    )
+    fjp, fjr = [float(value) for value in best_result.x]
+    female_side = fk_female_side(le_bar_frame, fjp, fjr, config)
+    diagnostics = screw_hole_alignment_diagnostics(
+        female_side["female_screw_hole_frame"],
+        target_male_screw_hole_frame,
+    )
+    output = {
+        "fjp": fjp,
+        "fjr": fjr,
+        "residual": float(best_result.fun),
+        "origin_error_mm": diagnostics["origin_error_mm"],
+        "z_axis_error_rad": diagnostics["z_axis_error_rad"],
+        "female_frame": female_side["female_frame"],
+        "female_screw_hole_frame": female_side["female_screw_hole_frame"],
+        "target_male_screw_hole_frame": target_male_screw_hole_frame,
+    }
+    if return_debug:
+        output["optimizer_debug"] = {
+            "seed_count": len(seeds),
+            "best_seed_index": int(best_seed_index),
+            "best_seed_report": seed_reports[best_seed_index],
+            "seed_reports": seed_reports,
+        }
+    return output
+
+
 def optimize_joint_placement(Le_start, Le_end, Ln_start, Ln_end, config, *, return_debug: bool = False):
     """Optimize the four bar-side joint DOFs that best align the screw-hole origins and local Z axes."""
 
@@ -226,30 +356,12 @@ def optimize_joint_placement(Le_start, Le_end, Ln_start, Ln_end, config, *, retu
             )
         )
 
-    best_result = None
-    best_seed_index = -1
-    seed_reports: list[dict[str, object]] = []
-    for seed_index, seed in enumerate(seeds):
-        result = minimize(objective, seed, method="L-BFGS-B", bounds=bounds)
-        if return_debug:
-            seed_reports.append(
-                {
-                    "seed_index": int(seed_index),
-                    "initial_guess": tuple(float(value) for value in seed),
-                    "solution": tuple(float(value) for value in result.x),
-                    "success": bool(result.success),
-                    "status": int(result.status),
-                    "message": str(result.message),
-                    "residual": float(result.fun),
-                    "nit": int(getattr(result, "nit", -1)),
-                    "nfev": int(getattr(result, "nfev", -1)),
-                }
-            )
-        if best_result is None or float(result.fun) < float(best_result.fun):
-            best_result = result
-            best_seed_index = seed_index
-
-    assert best_result is not None
+    best_result, best_seed_index, seed_reports = _run_multistart(
+        objective,
+        seeds,
+        bounds,
+        return_debug=return_debug,
+    )
     fjp, fjr, mjp, mjr = [float(value) for value in best_result.x]
     female_side = fk_female_side(le_bar_frame, fjp, fjr, config)
     male_side = fk_male_side(ln_bar_frame, mjp, mjr, config)

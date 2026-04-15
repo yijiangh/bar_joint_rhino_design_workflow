@@ -1,11 +1,13 @@
 
 # Todos
 
--[] split T1 s1 and s2 into two buttons
--[] add a tube (Nurbs) preview (in a separate layer) while the new line (options) is generated. Ideally with color too, that was nice. It would be easier for the designer to see.
--[] rename this "line distance optimization" to step 1A and 1B (For the two scenarios), And later the joint placement to step 2.
+-[x] add a tube (Nurbs) preview (in a separate layer) while the new line (options) is generated. Ideally with color too, that was nice. It would be easier for the designer to see.
+-[x] there should be four solutions for the joint placement!
+-[x] return optimization convergence info in rhino window following: https://github.com/yck011522/joint_jig_controller/blob/main/design/dummy.json, see sect `OCF and data alignmenyt` below.
 
--[] return optimization convergence info in rhino window
+-[] bake the json information for jig into 
+
+-[] rename this "line distance optimization" to step 1A and 1B (For the two scenarios), And later the joint placement to step 2.
 
 ## Opt formulation
 

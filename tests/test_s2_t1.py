@@ -1,7 +1,13 @@
 import numpy as np
 
 from core.config import BAR_CONTACT_DISTANCE
-from core.geometry import closest_params_infinite_lines, distance_infinite_lines, solve_s2_t1, solve_s2_t1_all
+from core.geometry import (
+    closest_params_infinite_lines,
+    distance_infinite_lines,
+    solve_s2_t1,
+    solve_s2_t1_all,
+    solve_s2_t1_report,
+)
 
 
 TOL = 1e-4
@@ -31,12 +37,13 @@ def _viz_s2_all_solutions(viz, n1, ce1, n2, ce2, solutions, distance, title=""):
         mid = 0.5 * (solution["p1"] + solution["p2"])
         nn = solution["nn"]
         color = sol_colors[index % len(sol_colors)]
+        theta1, theta2 = solution["angles"]
         viz.plot_line(
             mid - 80.0 * nn,
             mid + 80.0 * nn,
             color=color,
             linewidth=3,
-            label=f"Sol {index + 1} signs={solution['signs']} res={solution['residual']:.1e}",
+            label=f"Sol {index + 1} ang=({theta1:.2f},{theta2:.2f}) res={solution['residual']:.1e}",
         )
         viz.plot_segment(ce1, solution["p1"], color=color, linestyle=":")
         viz.plot_segment(ce2, solution["p2"], color=color, linestyle=":")
@@ -134,7 +141,9 @@ class TestS2T1AllSolutions:
         solutions = solve_s2_t1_all(n1, ce1, n2, ce2, distance)
         for solution in solutions:
             assert "nn" in solution and "p1" in solution and "p2" in solution
-            assert "residual" in solution and "signs" in solution
+            assert "residual" in solution and "angles" in solution
+            assert len(solution["angles"]) == 2
+            assert all(np.isfinite(angle) for angle in solution["angles"])
             assert abs(np.linalg.norm(solution["nn"]) - 1.0) < 1e-8
             self._verify_s2_result(solution["nn"], solution["p1"], solution["p2"], n1, ce1, n2, ce2, distance)
         _viz_s2_all_solutions(viz, n1, ce1, n2, ce2, solutions, distance, title="test_each_solution_valid")
@@ -176,11 +185,64 @@ class TestS2T1AllSolutions:
         midpoints = [0.5 * (solution["p1"] + solution["p2"]) for solution in solutions]
         assert sum(mid[2] > 1e-3 for mid in midpoints) == 2
         assert sum(mid[2] < -1e-3 for mid in midpoints) == 2
+        angle_keys = {
+            (round(solution["angles"][0], 6), round(solution["angles"][1], 6))
+            for solution in solutions
+        }
+        assert len(angle_keys) == 4
 
-        mixed_branch_mids = [
-            mid for solution, mid in zip(solutions, midpoints)
-            if abs(solution["signs"][0]) == 1.0 and abs(solution["signs"][1]) == 1.0
-            and solution["signs"][0] != solution["signs"][1]
-        ]
-        assert any(mid[2] > 1e-3 for mid in mixed_branch_mids)
-        assert any(mid[2] < -1e-3 for mid in mixed_branch_mids)
+    def test_report_includes_sign_family_diagnostics(self):
+        distance = BAR_CONTACT_DISTANCE
+        n1 = np.array([1.0, 0.0, 0.0])
+        ce1 = np.array([5.0, 0.0, 0.0])
+        n2 = np.array([0.0, 1.0, 0.0])
+        ce2 = np.array([0.0, 8.0, 0.0])
+
+        report = solve_s2_t1_report(n1, ce1, n2, ce2, distance)
+
+        assert report["solution_count"] == 4
+        assert report["optimizer_settings"]["max_nfev"] == 10000
+        assert report["found_sign_families"] == ["(+,+)", "(-,+)", "(+,-)", "(-,-)"]
+        assert report["missing_sign_families"] == []
+        assert report["missing_family_attempts"] == []
+        for solution in report["solutions"]:
+            assert solution["sign_family"] in report["found_sign_families"]
+            diagnostics = solution["optimization_diagnostics"]
+            optimizer_result = solution["optimizer_result"]
+            assert diagnostics["contact_1_objective_component"] >= 0.0
+            assert diagnostics["contact_2_objective_component"] >= 0.0
+            assert diagnostics["contact_1_orthogonality_error_deg"] < 1e-4
+            assert diagnostics["contact_2_orthogonality_error_deg"] < 1e-4
+            assert optimizer_result["success"] is True
+            assert optimizer_result["termination_reason"] in {"ftol", "gtol", "xtol"}
+
+    def test_report_marks_missing_sign_families_for_two_solution_case(self):
+        distance = BAR_CONTACT_DISTANCE
+        n1 = np.array([-1.3073986337985843e-12, -9.200817885357537e-10, -150.5276928808155])
+        ce1 = np.array([-196.0606314462008, 116.00000000029755, -8.435536257997462])
+        n2 = np.array([199.99999999999983, 5.684341886080802e-14, -6.963318810448982e-13])
+        ce2 = np.array([-282.61053931669187, 69.3067692961276, -2.9364342132458403e-10])
+
+        report = solve_s2_t1_report(n1, ce1, n2, ce2, distance, nn_init_hint=ce2 - ce1)
+
+        assert report["solution_count"] == 2
+        assert report["found_sign_families"] == ["(+,+)", "(+,-)"]
+        assert report["missing_sign_families"] == ["(-,+)", "(-,-)"]
+        assert len(report["missing_family_attempts"]) == 2
+        attempt_targets = [attempt["target_sign_family"] for attempt in report["missing_family_attempts"]]
+        assert attempt_targets == report["missing_sign_families"]
+        for solution in report["solutions"]:
+            diagnostics = solution["optimization_diagnostics"]
+            assert solution["sign_family"] in report["found_sign_families"]
+            assert diagnostics["contact_1_orthogonality_error_deg"] < 1e-4
+            assert diagnostics["contact_2_orthogonality_error_deg"] < 1e-4
+        for attempt in report["missing_family_attempts"]:
+            diagnostics = attempt["optimization_diagnostics"]
+            assert attempt["objective"] >= 0.0
+            assert attempt["converged_sign_family"] is not None
+            assert attempt["termination_reason"] in {"ftol", "gtol", "xtol", "max_nfev", "other", "failure", "status_0"}
+            assert attempt["nfev"] <= report["optimizer_settings"]["max_nfev"]
+            assert max(
+                diagnostics["contact_1_orthogonality_error_deg"],
+                diagnostics["contact_2_orthogonality_error_deg"],
+            ) > 1.0

@@ -25,6 +25,7 @@ def generate_rui(scripts_dir: str, output_path: str) -> None:
     # Script paths (forward slashes work in Rhino on Windows)
     t1_path = os.path.join(scripts_dir, "t1_bar_axis.py").replace("\\", "/")
     t1r_path = os.path.join(scripts_dir, "t1_bar_axis_rerun.py").replace("\\", "/")
+    export_s2_case_path = os.path.join(scripts_dir, "export_t1_s2_case.py").replace("\\", "/")
     t2_path = os.path.join(scripts_dir, "t2_joint_placement.py").replace("\\", "/")
     t2r_path = os.path.join(scripts_dir, "t2_joint_placement_rerun.py").replace("\\", "/")
 
@@ -34,11 +35,14 @@ def generate_rui(scripts_dir: str, output_path: str) -> None:
     g_t1_right = _uuid()
     g_t2_left = _uuid()
     g_t2_right = _uuid()
+    g_export_s2_left = _uuid()
+    g_export_s2_right = _uuid()
     g_tbg = _uuid()
     g_tbg_item = _uuid()
     g_tb = _uuid()
     g_tbi_t1 = _uuid()
     g_tbi_t2 = _uuid()
+    g_tbi_export_s2 = _uuid()
     g_extend_menu = _uuid()
 
     xml = f'''<?xml version="1.0" encoding="utf-8"?>
@@ -76,6 +80,10 @@ def generate_rui(scripts_dir: str, output_path: str) -> None:
       <tool_bar_item guid="{g_tbi_t2}">
         <left_macro_id>{g_t2_left}</left_macro_id>
         <right_macro_id>{g_t2_right}</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="{g_tbi_export_s2}">
+        <left_macro_id>{g_export_s2_left}</left_macro_id>
+        <right_macro_id>{g_export_s2_right}</right_macro_id>
       </tool_bar_item>
     </tool_bar>
   </tool_bars>
@@ -128,6 +136,30 @@ def generate_rui(scripts_dir: str, output_path: str) -> None:
       </button_text>
       <script>! _-ScriptEditor _R "{t2r_path}"</script>
     </macro_item>
+    <macro_item guid="{g_export_s2_left}">
+      <text>
+        <locale_1033>Export T1-S2 Case</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Export the current T1-S2 selection and solver output as a JSON debug case</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>S2 Case</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "{export_s2_case_path}"</script>
+    </macro_item>
+    <macro_item guid="{g_export_s2_right}">
+      <text>
+        <locale_1033>Export T1-S2 Case</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Export the current T1-S2 selection and solver output as a JSON debug case</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>S2 Case</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "{export_s2_case_path}"</script>
+    </macro_item>
   </macros>
   <bitmaps>
     <small_bitmap item_width="16" item_height="16" />
@@ -152,9 +184,10 @@ def main():
     print("  1. Drag and drop the .rui file into the Rhino window")
     print("  2. Or: Rhino command _ToolbarOpen -> browse to the .rui file")
     print()
-    print("The toolbar has 2 buttons:")
+    print("The toolbar has 3 buttons:")
     print("  [T1 Bar]   Left-click = new inputs | Right-click = rerun last")
     print("  [T2 Joint]  Left-click = new inputs | Right-click = rerun last")
+    print("  [S2 Case]  Left-click / Right-click = export a T1-S2 JSON debug case")
 
 
 if __name__ == "__main__":

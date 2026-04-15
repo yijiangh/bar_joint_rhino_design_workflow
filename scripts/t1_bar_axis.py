@@ -1,5 +1,6 @@
 """Rhino entry point for T1 bar-axis generation."""
 
+import contextlib
 import importlib
 import os
 import sys
@@ -115,6 +116,23 @@ def _delete_objects(object_ids):
             rs.DeleteObject(object_id)
 
 
+@contextlib.contextmanager
+def _suspend_redraw():
+    previous_state = None
+    redraw_supported = hasattr(rs, "EnableRedraw")
+    try:
+        if redraw_supported:
+            previous_state = rs.EnableRedraw(False)
+        yield
+    finally:
+        redraw_is_enabled = True
+        if redraw_supported:
+            redraw_is_enabled = True if previous_state is None else bool(previous_state)
+            rs.EnableRedraw(redraw_is_enabled)
+        if redraw_is_enabled and hasattr(rs, "Redraw"):
+            rs.Redraw()
+
+
 def _bake_axis_tube(axis_curve_id, label, color=None, layer_name=_TUBE_LAYER):
     if axis_curve_id is None or not rs.IsObject(axis_curve_id):
         return []
@@ -187,7 +205,7 @@ def _candidate_pick_filter():
         return 0
 
     pick_filter = 0
-    for filter_name in ("curve", "annotation", "point"):
+    for filter_name in ("curve", "surface", "polysurface", "annotation", "point"):
         pick_filter |= getattr(filter_namespace, filter_name, 0)
     return pick_filter
 
@@ -208,6 +226,85 @@ def _add_centered_line(midpoint: np.ndarray, direction: np.ndarray):
 def _refresh_runtime_modules():
     importlib.reload(config)
     importlib.reload(geometry)
+
+
+def _format_s2_t1_diagnostics_line(theta_1, theta_2, objective_value, diagnostics):
+    return (
+        f"angles=({theta_1:.3f},{theta_2:.3f}) rad, "
+        f"total_obj={objective_value:.2e} | "
+        f"C1 obj={diagnostics.get('contact_1_objective_component', float('nan')):.2e}, "
+        f"offset={diagnostics.get('contact_1_axial_offset', float('nan')):.4f} mm, "
+        f"angle={diagnostics.get('contact_1_to_bar_angle_deg', float('nan')):.4f} deg, "
+        f"orth_err={diagnostics.get('contact_1_orthogonality_error_deg', float('nan')):.4f} deg | "
+        f"C2 obj={diagnostics.get('contact_2_objective_component', float('nan')):.2e}, "
+        f"offset={diagnostics.get('contact_2_axial_offset', float('nan')):.4f} mm, "
+        f"angle={diagnostics.get('contact_2_to_bar_angle_deg', float('nan')):.4f} deg, "
+        f"orth_err={diagnostics.get('contact_2_orthogonality_error_deg', float('nan')):.4f} deg"
+    )
+
+
+def _format_optimizer_setting(setting_value):
+    if setting_value is None:
+        return "disabled"
+    return f"{float(setting_value):.1e}"
+
+
+def _format_optimizer_result(optimizer_result, optimizer_settings):
+    if not optimizer_result:
+        return "term=unknown"
+    return (
+        f"term={optimizer_result.get('termination_reason', 'unknown')}, "
+        f"status={optimizer_result.get('status', '?')}, "
+        f"success={optimizer_result.get('success', False)}, "
+        f"nfev={optimizer_result.get('nfev', '?')}/{optimizer_settings.get('max_nfev', '?')}, "
+        f"message={optimizer_result.get('message', '')}"
+    )
+
+
+def _print_s2_t1_report(report):
+    theta_1, theta_2 = report["initial_angles"]
+    found_families = ", ".join(report["found_sign_families"]) if report["found_sign_families"] else "none"
+    optimizer_settings = report.get("optimizer_settings", {})
+    print(
+        f"S2-T1 solve report: {report['solution_count']} solution(s), "
+        f"initial angles=({theta_1:.3f},{theta_2:.3f}) rad, "
+        f"found sign families: {found_families}"
+    )
+    print(
+        f"S2-T1 optimizer settings: "
+        f"xtol={_format_optimizer_setting(optimizer_settings.get('xtol'))}, "
+        f"ftol={_format_optimizer_setting(optimizer_settings.get('ftol'))}, "
+        f"gtol={_format_optimizer_setting(optimizer_settings.get('gtol'))}, "
+        f"max_nfev={optimizer_settings.get('max_nfev', '?')}"
+    )
+    for index, solution in enumerate(report["solutions"], start=1):
+        diagnostics = solution.get("optimization_diagnostics", {})
+        theta_1, theta_2 = solution["angles"]
+        print(
+            f"  Sol {index} family={solution.get('sign_family', '?')} "
+            f"{_format_s2_t1_diagnostics_line(theta_1, theta_2, solution['residual'], diagnostics)} | "
+            f"{_format_optimizer_result(solution.get('optimizer_result'), optimizer_settings)}"
+        )
+    if report["missing_sign_families"]:
+        print(
+            f"S2-T1 solve report: Missing sign families under current constraints: "
+            f"{', '.join(report['missing_sign_families'])}"
+        )
+        for attempt in report.get("missing_family_attempts", []):
+            diagnostics = attempt.get("optimization_diagnostics") or {}
+            theta_1, theta_2 = attempt["final_angles"]
+            converged_family = attempt.get("converged_sign_family") or "degenerate"
+            print(
+                f"  Missing family {attempt.get('target_sign_family', '?')} "
+                f"best attempt converged to {converged_family} with "
+                f"{_format_s2_t1_diagnostics_line(theta_1, theta_2, attempt['objective'], diagnostics)} | "
+                f"{_format_optimizer_result(attempt, optimizer_settings)}"
+            )
+        if report["solution_count"] < 4:
+            print(
+                f"S2-T1 solve report: Only {report['solution_count']} unique real solution(s) "
+                f"were found for this selection."
+            )
 
 
 def get_inputs():
@@ -306,7 +403,7 @@ def run_s2_t1(inputs):
     n1 = le1_end - le1_start
     n2 = le2_end - le2_start
     try:
-        solutions = geometry.solve_s2_t1_all(
+        report = geometry.solve_s2_t1_report(
             n1,
             ce1,
             n2,
@@ -318,89 +415,108 @@ def run_s2_t1(inputs):
         rs.MessageBox(f"Error while solving S2-T1: {exc}")
         return None
 
+    _print_s2_t1_report(report)
+    solutions = report["solutions"]
     if not solutions:
-        rs.MessageBox("No valid S2-T1 solution found for any sign combination.")
+        rs.MessageBox("No valid S2-T1 solution found. See the Rhino command line for diagnostics.")
         return None
 
     if len(solutions) == 1:
-        solution = solutions[0]
-        midpoint = 0.5 * (solution["p1"] + solution["p2"])
-        line_id = _add_centered_line(midpoint, solution["nn"])
-        _place_axis_line(line_id, color=_S2_PREVIEW_COLORS[0], label="T1_S2_Ln")
-        _bake_reference_segment(solution["p1"], ce1, "T1_S2_shortest_segment_1", (230, 80, 80))
-        _bake_reference_segment(solution["p2"], ce2, "T1_S2_shortest_segment_2", (80, 80, 230))
-        _bake_axis_tube(inputs["le1_id"], "T1_S2_Le1_tube", color=_S2_PREVIEW_COLORS[0])
-        _bake_axis_tube(inputs["le2_id"], "T1_S2_Le2_tube", color=_S2_PREVIEW_COLORS[1])
-        _bake_axis_tube(line_id, "T1_S2_bar_tube", color=_S2_PREVIEW_COLORS[0])
+        with _suspend_redraw():
+            solution = solutions[0]
+            midpoint = 0.5 * (solution["p1"] + solution["p2"])
+            line_id = _add_centered_line(midpoint, solution["nn"])
+            _place_axis_line(line_id, color=_S2_PREVIEW_COLORS[0], label="T1_S2_Ln")
+            _bake_reference_segment(solution["p1"], ce1, "T1_S2_shortest_segment_1", (230, 80, 80))
+            _bake_reference_segment(solution["p2"], ce2, "T1_S2_shortest_segment_2", (80, 80, 230))
+            _bake_axis_tube(inputs["le1_id"], "T1_S2_Le1_tube", color=_S2_PREVIEW_COLORS[0])
+            _bake_axis_tube(inputs["le2_id"], "T1_S2_Le2_tube", color=_S2_PREVIEW_COLORS[1])
+            _bake_axis_tube(line_id, "T1_S2_bar_tube", color=_S2_PREVIEW_COLORS[0])
+        theta_1, theta_2 = solution["angles"]
         rs.SelectObject(line_id)
-        print(f"S2-T1: Single solution, bar placed. Residual: {solution['residual']:.2e}")
+        print(
+            f"S2-T1: Single solution, bar placed. "
+            f"Family={solution.get('sign_family', '?')}, "
+            f"Angles=({theta_1:.3f},{theta_2:.3f}) rad, "
+            f"Residual: {solution['residual']:.2e}"
+        )
         return line_id
 
     half_length = config.DEFAULT_NEW_BAR_LENGTH / 2.0
     preview_items = []
-    for index, solution in enumerate(solutions):
-        midpoint = 0.5 * (solution["p1"] + solution["p2"])
-        direction = solution["nn"] / np.linalg.norm(solution["nn"])
-        pt_a = midpoint - half_length * direction
-        pt_b = midpoint + half_length * direction
+    with _suspend_redraw():
+        for index, solution in enumerate(solutions):
+            midpoint = 0.5 * (solution["p1"] + solution["p2"])
+            direction = solution["nn"] / np.linalg.norm(solution["nn"])
+            pt_a = midpoint - half_length * direction
+            pt_b = midpoint + half_length * direction
 
-        line_id = rs.AddLine(pt_a, pt_b)
-        color = _S2_PREVIEW_COLORS[index % len(_S2_PREVIEW_COLORS)]
-        _place_axis_line(line_id, color=color, label=f"T1_S2_preview_{index + 1}_Ln")
-        segment_1_id = _bake_reference_segment(
-            solution["p1"],
-            ce1,
-            f"T1_S2_preview_{index + 1}_shortest_segment_1",
-            color,
-        )
-        segment_2_id = _bake_reference_segment(
-            solution["p2"],
-            ce2,
-            f"T1_S2_preview_{index + 1}_shortest_segment_2",
-            color,
-        )
+            line_id = rs.AddLine(pt_a, pt_b)
+            color = _S2_PREVIEW_COLORS[index % len(_S2_PREVIEW_COLORS)]
+            _place_axis_line(line_id, color=color, label=f"T1_S2_preview_{index + 1}_Ln")
+            tube_ids = _bake_axis_tube(
+                line_id,
+                f"T1_S2_preview_{index + 1}_bar_tube",
+                color=color,
+            )
+            segment_1_id = _bake_reference_segment(
+                solution["p1"],
+                ce1,
+                f"T1_S2_preview_{index + 1}_shortest_segment_1",
+                color,
+            )
+            segment_2_id = _bake_reference_segment(
+                solution["p2"],
+                ce2,
+                f"T1_S2_preview_{index + 1}_shortest_segment_2",
+                color,
+            )
 
-        dot_id = rs.AddTextDot(f"{index + 1}", midpoint)
-        _apply_object_display(dot_id, f"T1_S2_preview_{index + 1}_label", color=color, layer_name=_BAR_AXIS_LAYER)
-        preview_items.append(
-            {
-                "index": index,
-                "pick_ids": set(_as_object_id_list([line_id, dot_id, segment_1_id, segment_2_id])),
-                "cleanup_ids": [line_id, dot_id, segment_1_id, segment_2_id],
-            }
-        )
+            dot_id = rs.AddTextDot(f"{index + 1}", midpoint)
+            _apply_object_display(dot_id, f"T1_S2_preview_{index + 1}_label", color=color, layer_name=_BAR_AXIS_LAYER)
+            preview_items.append(
+                {
+                    "index": index,
+                    "pick_ids": set(
+                        _as_object_id_list([line_id, dot_id, segment_1_id, segment_2_id]) + _as_object_id_list(tube_ids)
+                    ),
+                    "cleanup_ids": [line_id, dot_id, segment_1_id, segment_2_id] + _as_object_id_list(tube_ids),
+                }
+            )
 
-    rs.Redraw()
     picked_id = rs.GetObject(
-        f"Click one of the {len(solutions)} candidate bars (numbered 1-{len(solutions)}):",
+        f"Click one of the {len(solutions)} candidate bars or tubes (numbered 1-{len(solutions)}):",
         _candidate_pick_filter(),
     )
 
     chosen_index = None
-    for preview_item in preview_items:
-        if picked_id in preview_item["pick_ids"]:
-            chosen_index = preview_item["index"]
-        _delete_objects(preview_item["cleanup_ids"])
+    with _suspend_redraw():
+        for preview_item in preview_items:
+            if picked_id in preview_item["pick_ids"]:
+                chosen_index = preview_item["index"]
+            _delete_objects(preview_item["cleanup_ids"])
 
     if chosen_index is None:
         print("S2-T1: No solution selected.")
         return None
 
-    solution = solutions[chosen_index]
-    midpoint = 0.5 * (solution["p1"] + solution["p2"])
-    line_id = _add_centered_line(midpoint, solution["nn"])
-    chosen_color = _S2_PREVIEW_COLORS[chosen_index % len(_S2_PREVIEW_COLORS)]
-    _place_axis_line(line_id, color=chosen_color, label="T1_S2_Ln")
-    _bake_axis_tube(inputs["le1_id"], "T1_S2_Le1_tube", color=_S2_PREVIEW_COLORS[0])
-    _bake_axis_tube(inputs["le2_id"], "T1_S2_Le2_tube", color=_S2_PREVIEW_COLORS[1])
-    _bake_axis_tube(line_id, "T1_S2_bar_tube", color=chosen_color)
-    _bake_reference_segment(solution["p1"], ce1, "T1_S2_shortest_segment_1", (230, 80, 80))
-    _bake_reference_segment(solution["p2"], ce2, "T1_S2_shortest_segment_2", (80, 80, 230))
+    with _suspend_redraw():
+        solution = solutions[chosen_index]
+        midpoint = 0.5 * (solution["p1"] + solution["p2"])
+        line_id = _add_centered_line(midpoint, solution["nn"])
+        chosen_color = _S2_PREVIEW_COLORS[chosen_index % len(_S2_PREVIEW_COLORS)]
+        _place_axis_line(line_id, color=chosen_color, label="T1_S2_Ln")
+        _bake_axis_tube(inputs["le1_id"], "T1_S2_Le1_tube", color=_S2_PREVIEW_COLORS[0])
+        _bake_axis_tube(inputs["le2_id"], "T1_S2_Le2_tube", color=_S2_PREVIEW_COLORS[1])
+        _bake_axis_tube(line_id, "T1_S2_bar_tube", color=chosen_color)
+        _bake_reference_segment(solution["p1"], ce1, "T1_S2_shortest_segment_1", (230, 80, 80))
+        _bake_reference_segment(solution["p2"], ce2, "T1_S2_shortest_segment_2", (80, 80, 230))
     rs.SelectObject(line_id)
-    sign_1, sign_2 = solution["signs"]
+    theta_1, theta_2 = solution["angles"]
     print(
         f"S2-T1: Solution {chosen_index + 1} selected. "
-        f"Signs=({sign_1:+.0f},{sign_2:+.0f}), "
+        f"Family={solution.get('sign_family', '?')}, "
+        f"Angles=({theta_1:.3f},{theta_2:.3f}) rad, "
         f"Residual: {solution['residual']:.2e}"
     )
     return line_id

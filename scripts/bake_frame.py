@@ -1,3 +1,5 @@
+#! python 3
+# venv: scaffolding_env
 """Bake a right-handed frame in Rhino from three picked points.
 
 Run in Rhino 8 with:

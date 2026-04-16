@@ -1,3 +1,7 @@
+#! python 3
+# venv: scaffolding_env
+# r: numpy
+# r: scipy
 """Rhino wrapper for rerunning the last T1 command with cached inputs."""
 
 import importlib

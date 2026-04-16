@@ -1,3 +1,7 @@
+#! python 3
+# venv: scaffolding_env
+# r: numpy
+# r: scipy
 """Export CAD-backed connector config from baked Rhino frames.
 
 Run in Rhino 8 with:

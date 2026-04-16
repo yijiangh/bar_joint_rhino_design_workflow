@@ -1,3 +1,7 @@
+#! python 3
+# venv: scaffolding_env
+# r: numpy
+# r: scipy
 """Export a T1-S2 Rhino selection as a JSON debug case.
 
 Run in Rhino 8 with:

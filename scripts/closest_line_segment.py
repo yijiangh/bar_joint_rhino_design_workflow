@@ -1,3 +1,7 @@
+#! python 3
+# venv: scaffolding_env
+# r: numpy
+# r: scipy
 """Rhino entry point for drawing the closest segment between two finite lines."""
 
 import os

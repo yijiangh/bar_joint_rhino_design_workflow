@@ -51,7 +51,6 @@ _PREVIEW_COLORS = [
 
 def _reload_runtime_modules():
     global config, invert_transform, make_bar_frame, optimize_joint_placement
-    global rotation_about_local_z, optimize_female_to_target
     global screw_hole_alignment_diagnostics, screw_hole_origin_z_error
 
     config = importlib.reload(_config_module)
@@ -59,9 +58,7 @@ def _reload_runtime_modules():
     kinematics = importlib.reload(_kinematics_module)
     invert_transform = transforms.invert_transform
     make_bar_frame = kinematics.make_bar_frame
-    optimize_female_to_target = kinematics.optimize_female_to_target
     optimize_joint_placement = kinematics.optimize_joint_placement
-    rotation_about_local_z = transforms.rotation_about_local_z
     screw_hole_alignment_diagnostics = kinematics.screw_hole_alignment_diagnostics
     screw_hole_origin_z_error = kinematics.screw_hole_origin_z_error
 
@@ -244,88 +241,43 @@ def _bake_debug_ocf_frames(result, le_id, ln_id, prefix="RSJointPlace"):
 
 
 # ---------------------------------------------------------------------------
-# Variant enumeration (carried over from t2_joint_placement.py)
+# Variant enumeration
+# ---------------------------------------------------------------------------
+# The 4 assembly variants come from reversing the bar endpoint order.
+# Swapping start/end of a bar reverses its frame Z-axis, which reorients
+# the connector along the bar.  Each combination is a full 4-DOF re-opt.
 # ---------------------------------------------------------------------------
 
-def _apply_local_z_flip(frame, angle_rad):
-    return np.asarray(frame, dtype=float) @ rotation_about_local_z(float(angle_rad))
-
-
-def _build_variant_result(base_result, *, female_flip_rad, male_flip_rad, variant_index):
-    female_frame = _apply_local_z_flip(base_result["female_frame"], female_flip_rad)
-    male_frame = _apply_local_z_flip(base_result["male_frame"], male_flip_rad)
-    female_screw_hole_frame = female_frame @ np.asarray(config.FEMALE_MALE_GAP_OFFSET_TRANSFORM, dtype=float)
-    male_screw_hole_frame = male_frame @ invert_transform(np.asarray(config.MALE_SCREW_HOLE_OFFSET_TRANSFORM, dtype=float))
-    diagnostics = screw_hole_alignment_diagnostics(female_screw_hole_frame, male_screw_hole_frame)
-    result = dict(base_result)
-    result.update({
-        "female_frame": female_frame,
-        "male_frame": male_frame,
-        "female_screw_hole_frame": female_screw_hole_frame,
-        "male_screw_hole_frame": male_screw_hole_frame,
-        "residual": screw_hole_origin_z_error(
-            female_screw_hole_frame, male_screw_hole_frame,
-            orientation_weight_mm=float(getattr(config, "BAR_CONTACT_DISTANCE", 1.0)),
-        ),
-        "origin_error_mm": diagnostics["origin_error_mm"],
-        "z_axis_error_rad": diagnostics["z_axis_error_rad"],
-        "variant_index": int(variant_index),
-        "female_flip_rad": float(female_flip_rad),
-        "male_flip_rad": float(male_flip_rad),
-    })
-    return result
-
-
-def _solve_variant_after_male_flip(base_result, le_start, le_end):
-    male_frame = _apply_local_z_flip(base_result["male_frame"], np.pi)
-    male_screw_hole_frame = male_frame @ invert_transform(np.asarray(config.MALE_SCREW_HOLE_OFFSET_TRANSFORM, dtype=float))
-    female_result = optimize_female_to_target(
-        le_start, le_end, male_screw_hole_frame, config,
-        initial_guess=(base_result["fjp"], base_result["fjr"]),
-        return_debug=True,
-    )
-    result = dict(base_result)
-    result.update({
-        "fjp": float(female_result["fjp"]),
-        "fjr": float(female_result["fjr"]),
-        "residual": float(female_result["residual"]),
-        "origin_error_mm": float(female_result["origin_error_mm"]),
-        "z_axis_error_rad": float(female_result["z_axis_error_rad"]),
-        "female_frame": female_result["female_frame"],
-        "female_screw_hole_frame": female_result["female_screw_hole_frame"],
-        "male_frame": male_frame,
-        "male_screw_hole_frame": male_screw_hole_frame,
-        "optimizer_debug": female_result.get("optimizer_debug"),
-        "variant_solver": "female_reoptimized_after_male_flip",
-        "female_flip_rad": 0.0,
-        "male_flip_rad": float(np.pi),
-    })
-    return result
-
-
-def _enumerate_solution_variants(base_result, le_start, le_end):
-    v1 = dict(base_result)
-    v1.update({
-        "variant_index": 0,
-        "variant_label": "1: female=0deg, male=0deg",
-        "variant_solver": "full_joint_optimization",
-        "female_flip_rad": 0.0,
-        "male_flip_rad": 0.0,
-    })
-
-    v2 = _build_variant_result(base_result, female_flip_rad=np.pi, male_flip_rad=0.0, variant_index=1)
-    v2["variant_label"] = "2: female=180deg, male=0deg"
-    v2["variant_solver"] = "full_joint_optimization"
-
-    v3 = _solve_variant_after_male_flip(base_result, le_start, le_end)
-    v3["variant_index"] = 2
-    v3["variant_label"] = "3: female reopt, male=180deg"
-
-    v4 = _build_variant_result(v3, female_flip_rad=np.pi, male_flip_rad=0.0, variant_index=3)
-    v4["variant_label"] = "4: female=180deg, male=180deg"
-    v4["variant_solver"] = "female_reoptimized_after_male_flip"
-    v4["male_flip_rad"] = float(np.pi)
-    return [v1, v2, v3, v4]
+def _enumerate_solution_variants(le_start, le_end, ln_start, ln_end):
+    """Run 4 full optimizations with every combination of bar-endpoint ordering."""
+    combos = [
+        ("1: le=fwd, ln=fwd", le_start, le_end, ln_start, ln_end, False, False),
+        ("2: le=rev, ln=fwd", le_end, le_start, ln_start, ln_end, True,  False),
+        ("3: le=fwd, ln=rev", le_start, le_end, ln_end, ln_start, False, True),
+        ("4: le=rev, ln=rev", le_end, le_start, ln_end, ln_start, True,  True),
+    ]
+    variants = []
+    for idx, (label, les, lee, lns, lne, le_rev, ln_rev) in enumerate(combos):
+        res = optimize_joint_placement(les, lee, lns, lne, config, return_debug=True)
+        diag = screw_hole_alignment_diagnostics(
+            res["female_screw_hole_frame"], res["male_screw_hole_frame"],
+        )
+        res.update({
+            "variant_index": idx,
+            "variant_label": label,
+            "variant_solver": "full_joint_optimization",
+            "female_flip_rad": float(np.pi) if le_rev else 0.0,
+            "male_flip_rad": float(np.pi) if ln_rev else 0.0,
+            "origin_error_mm": diag["origin_error_mm"],
+            "z_axis_error_rad": diag["z_axis_error_rad"],
+            # Store the endpoint ordering used so _place can reproduce if needed
+            "_le_start": les,
+            "_le_end": lee,
+            "_ln_start": lns,
+            "_ln_end": lne,
+        })
+        variants.append(res)
+    return variants
 
 
 # ---------------------------------------------------------------------------
@@ -504,9 +456,8 @@ def main():
     le_start, le_end = _curve_endpoints(le_id)
     ln_start, ln_end = _curve_endpoints(ln_id)
 
-    # Solve
-    base_result = optimize_joint_placement(le_start, le_end, ln_start, ln_end, config, return_debug=True)
-    variants = _enumerate_solution_variants(base_result, le_start, le_end)
+    # Solve all 4 endpoint-reversal variants
+    variants = _enumerate_solution_variants(le_start, le_end, ln_start, ln_end)
 
     # Validate block definitions before showing the interactive loop
     female_block_name = _require_block_definition(_FEMALE_BLOCK_NAME)

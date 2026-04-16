@@ -104,160 +104,52 @@ If you want the old two-button pattern, set the rerun scripts as the right-click
 
 ### Button list
 
-#### Bake Frame
-
-Macro:
+The RUI file already wires these up. If you prefer manual buttons, each macro is just:
 
 ```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/bake_frame.py"
+! _-ScriptEditor _R "rs_<name>.py"
 ```
 
-What it does:
+Rhino resolves the filename via Search Paths (set up above).
+
+#### RSBakeFrame (`rs_bake_frame.py`)
 
 - Prompts for a frame name, origin, a point on `+X`, and a point on the `+Y` side.
 - Reconstructs a right-handed orthogonal frame from those picks.
 - Bakes grouped RGB axis lines plus an optional text dot label.
-
-Typical workflow:
-
 - Use this to create the six named CAD reference frames that feed the exporter.
-- Run it once per frame and name the resulting groups so they match the exporter prompts.
 
-#### Export CAD Config
+#### RSExportConfig (`rs_export_config.py`)
 
-Macro:
+- Reads the baked Rhino frame groups and reconstructs the CAD-backed transforms.
+- Computes `BAR_CONTACT_DISTANCE` from the shortest-distance segment between `le_bar_link` and `ln_bar_link`.
+- Writes `scripts/core/config_generated.py` and `scripts/core/cad_frames_snapshot.json`.
+- Expected frame names: `le_bar_link`, `female_link`, `female_screw_hole_link`, `male_screw_hole_link`, `male_link`, `ln_bar_link`.
 
-```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/export_cad_config.py"
-```
+#### RSBarSnap (`rs_bar_snap.py`)
 
-What it does:
+- Pick an existing bar `Le` and a new bar `Ln`; the script translates `Ln` so the line-to-line contact distance matches `BAR_CONTACT_DISTANCE`.
+- Deterministic, single result.
 
-- Reads the baked Rhino frame groups and reconstructs the CAD-backed transforms used by the runtime FK and URDF code.
-- Computes the shortest-distance segment between the `le_bar_link` and `ln_bar_link` axes and uses that to derive `BAR_CONTACT_DISTANCE`.
-- Writes:
-  - `scripts/core/config_generated.py`
-  - `scripts/core/cad_frames_snapshot.json`
-- Bakes a magenta shortest-distance segment as a quick visual validation.
+#### RSBarBrace (`rs_bar_brace.py`)
 
-Expected frame names:
+- Pick two existing bars and two contact points; the script previews candidate brace bars as colored tubes.
+- Click a tube in the viewport to select that solution, or use `SlidePointOn1` / `SlidePointOn2` to re-pick contact points and re-solve.
 
-- `le_bar_link`
-- `female_link`
-- `female_screw_hole_link`
-- `male_screw_hole_link`
-- `male_link`
-- `ln_bar_link`
+#### RSJointPlace (`rs_joint_place.py`)
 
-Typical workflow:
+- Pick a bar pair (Le = female, Ln = male); the optimizer solves 4 assembly variants by trying all combinations of bar-endpoint reversal.
+- Use `Next` / `Previous` to cycle through variants one at a time in the viewport preview.
+- Press Enter or type `Accept` to bake the current preview.
 
-- `HalfJointV7_template.3dm` already includes the frame annotations expected by this exporter.
-- Re-run this whenever the CAD reference frames change.
-- Re-run it as well if the joint definition changes, or if you are adapting the workflow to a different joint type.
-- This is the bridge between Rhino-authored geometry and all of the runtime math, URDF, and viewer tools.
-
-#### T1 Bar
-
-Macro:
-
-```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/t1_bar_axis.py"
-```
-
-What it does:
-
-- Solves the placement of the new bar axis so the line-to-line contact distance matches `BAR_CONTACT_DISTANCE`.
-- This is the line-distance optimization stage of the Rhino workflow.
-- S1 mode uses one existing bar and one candidate new bar.
-- S2 mode uses two existing bars plus two picked contact points and previews however many valid new-axis solutions exist for that geometry.
-
-Typical workflow:
-
-- In S1, pick `Le` and then `Ln`; the script translates `Ln` so the shortest distance between the infinite lines is correct.
-- In S2, pick `Le1`, `Le2`, then contact points `Ce1` and `Ce2`; the script previews the candidate solutions and lets you click the one you want.
-- Check the Rhino command line after an `S2` run if you want the solve report, optimizer termination summary, or an explanation of why fewer than four real solutions were found.
-- This script is Rhino-only and does not depend on any PyBullet tooling.
-
-#### T1 Re-run
-
-Macro:
-
-```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/t1_bar_axis_rerun.py"
-```
-
-What it does:
-
-- Re-runs `T1 Bar` with the last cached input set from `scriptcontext.sticky`.
-- Useful when you want to iterate without re-picking the same bars and contact points.
-
-Typical workflow:
-
-- Use it after deleting previews or after changing config values and wanting to re-apply the same T1 input selection.
-- If Rhino has been restarted and the sticky cache is gone, just run `T1 Bar` again.
-
-#### T2 Joint
-
-Macro:
-
-```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/t2_joint_placement.py"
-```
-
-What it does:
-
-- Solves the connector placement on the current bar geometry.
-- This is the joint-placement optimization stage of the Rhino workflow.
-- Optimizes the four bar-side DOFs `FJP`, `FJR`, `MJP`, and `MJR`.
-- Builds four assembly variants for user choice:
-  - variants `1/2` share the base solve and differ by a `180` degree female twist about `female_link` local `Z`
-  - variants `3/4` first flip the male link `180` degrees about `male_link` local `Z`, keep `MJP/MJR` fixed, reoptimize the female side, then apply the optional female `180` degree twist
-- Previews the four variants as temporary numbered block pairs, lets you click one, then places only the chosen final blocks.
-- Stores placement metadata as JSON in Rhino user text, bakes grouped chosen frame annotations for inspection, and prints the optimizer convergence summary in the Rhino command line.
-
-Typical workflow:
-
-- In S1, select one existing bar `Le` and one new bar `Ln`; the script previews 4 numbered assembly variants and waits for you to click one.
-- In S2, select `Ln`, `Le1`, and `Le2`; the script runs two sequential 4-variant pickers, one per connection.
-- `HalfJointV7_template.3dm` already includes `FemaleLinkBlock` and `MaleLinkBlock`, placed at the world origin according to their OCF convention, so this works out of the box there.
-- In another Rhino file, those same block definitions must exist under the exact names `FemaleLinkBlock` and `MaleLinkBlock`. The script stops if they are missing.
-- Final placed instances go onto the Rhino layers `FemaleJointPlacedInstances` and `MaleJointPlacedInstances`, and the chosen frame annotations go onto `JointOptimizationFrames`.
-- This is still part of the Rhino/core workflow. No PyBullet dependency is involved in the button call.
-
-#### T2 Re-run
-
-Macro:
-
-```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/t2_joint_placement_rerun.py"
-```
-
-What it does:
-
-- Re-runs `T2 Joint` with the last cached input selection.
-- Keeps the same Rhino-side optimization workflow, including the numbered variant picker(s), but skips the selection prompts.
-
-Typical workflow:
-
-- Use it when you want to iterate on joint placement using the same bars after clearing previous blocks or changing the exported config.
-- Expect to choose the final assembly variant again on each rerun; only the bar selections are reused.
-
-#### Closest Segment
-
-Macro:
-
-```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/closest_line_segment.py"
-```
-
-What it does:
+#### RSMeasureGap (`rs_measure_gap.py`)
 
 - Computes the shortest segment between two finite Rhino line objects.
-- Draws that segment, or a point if they intersect, and stores the measured distance in object user text.
+- Draws that segment (or a point if they intersect) and stores the measured distance in object user text.
 
-Typical workflow:
+#### RSExportCase (`rs_export_case.py`)
 
-- Use this as a helper/debug button when checking bar spacing, validating contact geometry, or inspecting candidate CAD lines before running T1/T2.
+- Exports the current T1-S2 selection as a JSON debug case for replay outside Rhino.
 
 ## Standalone Developer Tools
 
@@ -268,7 +160,7 @@ Most of these run from a terminal, not from Rhino buttons. The `T1-S2` case expo
 Rhino command:
 
 ```text
-! _-ScriptEditor _R "/absolute/path/to/bar_joint_rhino_design_workflow/scripts/export_t1_s2_case.py"
+! _-ScriptEditor _R "rs_export_case.py"
 ```
 
 What it does:
@@ -437,14 +329,13 @@ scripts/
     kinematics.py              # FK and joint placement optimization
     t1_s2_case_export.py       # Shared JSON payload builder for T1-S2 debug cases
     transforms.py              # Shared frame/transform helpers
-  bake_frame.py                # Rhino: bake a named frame from picked points
-  closest_line_segment.py      # Rhino: shortest segment between two finite lines
-  export_cad_config.py         # Rhino: export CAD-backed fixed transforms
-  export_t1_s2_case.py         # Rhino: export a reproducible T1-S2 solver case as JSON
-  t1_bar_axis.py               # Rhino: T1 bar-axis generation
-  t1_bar_axis_rerun.py         # Rhino: rerun T1 with cached inputs
-  t2_joint_placement.py        # Rhino: T2 joint placement
-  t2_joint_placement_rerun.py  # Rhino: rerun T2 with cached inputs
+  rs_bake_frame.py             # Rhino: bake a named frame from picked points
+  rs_bar_snap.py               # Rhino: snap a new bar onto an existing bar
+  rs_bar_brace.py              # Rhino: add a brace bar between two bars
+  rs_joint_place.py            # Rhino: place connector blocks on a bar pair
+  rs_export_config.py          # Rhino: export CAD-backed fixed transforms
+  rs_export_case.py            # Rhino: export a reproducible T1-S2 solver case as JSON
+  rs_measure_gap.py            # Rhino: shortest segment between two finite lines
   generate_rhino_toolbar.py    # Standalone: experimental .rui generator
   generate_urdf.py             # Standalone: generate URDF from CAD-backed config
   pb_viz_urdf_static.py        # Standalone: static labeled PyBullet viewer
@@ -453,6 +344,7 @@ tests/
   test_geometry.py
   test_kinematics.py
   test_s2_t1.py
+  test_t1_s2_case_export.py
   test_urdf_chain.py
   viz_helpers.py               # Shared visualization helpers for --viz mode
 support_materials/

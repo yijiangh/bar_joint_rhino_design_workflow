@@ -8,9 +8,11 @@ import sys
 import xml.etree.ElementTree as ET
 
 import numpy as np
-import pybullet as p
-import pybullet_data
 import pytest
+
+pybullet = pytest.importorskip("pybullet")
+p = pybullet
+pybullet_data = pytest.importorskip("pybullet_data")
 
 
 SCRIPT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))

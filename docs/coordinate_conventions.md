@@ -68,17 +68,22 @@ Joint blocks are placed on two layers:
 - `FemaleJointPlacedInstances`
 - `MaleJointPlacedInstances`
 
-Each placed instance carries user text keys for reference and traceability:
+Each placed instance carries user text keys written by RSJointPlace:
 
-| Key | Content |
-|-----|---------|
-| `joint_id` | e.g. `J1-2` |
-| `joint_type` | e.g. `T20` |
-| `joint_subtype` | e.g. `Female` |
-| `parent_bar_id` | Bar this joint is mounted on |
-| `connected_bar_id` | The other bar in the pair |
-| `female_parent_bar` | Le bar ID (same for both blocks in a pair) |
-| `male_parent_bar` | Ln bar ID (same for both blocks in a pair) |
+| Key | Content | Authoritative? |
+|-----|---------|----------------|
+| `joint_id` | e.g. `J1-2` | ✓ |
+| `joint_type` | e.g. `T20` | ✓ |
+| `joint_subtype` | e.g. `Female` | ✓ |
+| `parent_bar_id` | Bar this joint is mounted on | ✓ |
+| `connected_bar_id` | The other bar in the pair | ✓ |
+| `female_parent_bar` | Le bar ID (same for both blocks in a pair) | ✓ |
+| `male_parent_bar` | Ln bar ID (same for both blocks in a pair) | ✓ |
+| `ori` | `"P"` or `"N"` — cached from placement, consistent with §5 | convenience |
+| `position_mm` | Cached from solver DOF (FJP/MJP). Matches §5 for female; may differ for male due to negated FK convention. **Not used by RSExportPrefab.** | convenience |
+| `rotation_deg` | Cached from solver DOF (FJR/MJR) in degrees. Uses a different zero reference than the geometric §5 convention. **Not used by RSExportPrefab.** | convenience |
+
+RSExportPrefab ignores all cached convenience values and recomputes `position_mm`, `ori`, and `rotation_deg` fresh from the block's world transform (see §5).
 
 ---
 

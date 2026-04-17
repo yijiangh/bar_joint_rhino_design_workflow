@@ -11,7 +11,6 @@ cycle through them with Next/Previous and Accept the current one.
 
 import contextlib
 import importlib
-import json
 import os
 import sys
 
@@ -322,44 +321,43 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
     female_block_name = _require_block_definition(_FEMALE_BLOCK_NAME)
     male_block_name = _require_block_definition(_MALE_BLOCK_NAME)
 
-    joint_data_female = {
-        "type": female_block_name,
-        "dof": {"fjp": result["fjp"], "fjr": result["fjr"]},
-        "bar_id": le_bar_id,
-        "bar_guid": str(le_id),
-        "connected_bar_id": ln_bar_id,
-        "connected_bar_guid": str(ln_id),
-        "transform": female_frame.tolist(),
-        "residual": result["residual"],
-        "origin_error_mm": origin_err,
-        "z_axis_error_rad": z_err,
-        "variant_index": result.get("variant_index"),
-        "female_flip_rad": result.get("female_flip_rad", 0.0),
-        "male_flip_rad": result.get("male_flip_rad", 0.0),
-        "variant_solver": result.get("variant_solver"),
-    }
-    joint_data_male = {
-        "type": male_block_name,
-        "dof": {"mjp": result["mjp"], "mjr": result["mjr"]},
-        "bar_id": ln_bar_id,
-        "bar_guid": str(ln_id),
-        "connected_bar_id": le_bar_id,
-        "connected_bar_guid": str(le_id),
-        "transform": male_frame.tolist(),
-        "residual": result["residual"],
-        "origin_error_mm": origin_err,
-        "z_axis_error_rad": z_err,
-        "variant_index": result.get("variant_index"),
-        "female_flip_rad": result.get("female_flip_rad", 0.0),
-        "male_flip_rad": result.get("male_flip_rad", 0.0),
-        "variant_solver": result.get("variant_solver"),
-    }
+    le_num = le_bar_id.lstrip("B")
+    ln_num = ln_bar_id.lstrip("B")
+    joint_id = f"J{le_num}-{ln_num}"
+
+    female_type, female_subtype = female_block_name.split("_", 1)
+    male_type, male_subtype = male_block_name.split("_", 1)
+
+    # Orientation: P if block x-axis points toward bar end, N toward start
+    le_start, le_end = curve_endpoints(le_id)
+    le_dir = np.array(le_end) - np.array(le_start)
+    le_dir /= np.linalg.norm(le_dir)
+    ln_start, ln_end = curve_endpoints(ln_id)
+    ln_dir = np.array(ln_end) - np.array(ln_start)
+    ln_dir /= np.linalg.norm(ln_dir)
+
+    female_ori = "P" if float(np.dot(female_frame[:3, 0], le_dir)) > 0 else "N"
+    male_ori = "P" if float(np.dot(male_frame[:3, 0], ln_dir)) > 0 else "N"
 
     with suspend_redraw():
         female_id = _insert_block_instance(female_block_name, female_frame, layer_name=_FEMALE_INSTANCES_LAYER)
         male_id = _insert_block_instance(male_block_name, male_frame, layer_name=_MALE_INSTANCES_LAYER)
-        rs.SetUserText(female_id, "joint_data", json.dumps(joint_data_female, indent=2))
-        rs.SetUserText(male_id, "joint_data", json.dumps(joint_data_male, indent=2))
+        for obj_id, block_type, block_subtype, parent_bar, conn_bar, pos, rot_rad, ori in [
+            (female_id, female_type, female_subtype, le_bar_id, ln_bar_id,
+             result["fjp"], result["fjr"], female_ori),
+            (male_id, male_type, male_subtype, ln_bar_id, le_bar_id,
+             result["mjp"], result["mjr"], male_ori),
+        ]:
+            rs.SetUserText(obj_id, "joint_id", joint_id)
+            rs.SetUserText(obj_id, "joint_type", block_type)
+            rs.SetUserText(obj_id, "joint_subtype", block_subtype)
+            rs.SetUserText(obj_id, "parent_bar_id", parent_bar)
+            rs.SetUserText(obj_id, "connected_bar_id", conn_bar)
+            rs.SetUserText(obj_id, "female_parent_bar", le_bar_id)
+            rs.SetUserText(obj_id, "male_parent_bar", ln_bar_id)
+            rs.SetUserText(obj_id, "position_mm", f"{float(pos):.4f}")
+            rs.SetUserText(obj_id, "rotation_deg", f"{float(np.degrees(rot_rad)):.4f}")
+            rs.SetUserText(obj_id, "ori", ori)
         _bake_debug_ocf_frames(result, le_id, ln_id)
 
     print(f"RSJointPlace: Joints placed. Residual: {result['residual']:.6f}")

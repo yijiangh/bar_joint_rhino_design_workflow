@@ -5,7 +5,7 @@
 """Export a T1-S2 Rhino selection as a JSON debug case.
 
 Run in Rhino 8 with:
-    _-ScriptEditor _R "C:\\path\\to\\export_t1_s2_case.py"
+    _-ScriptEditor _R "C:\\path\\to\\rs_export_case.py"
 """
 
 from __future__ import annotations
@@ -33,6 +33,9 @@ from core.t1_s2_case_export import (
 )
 
 
+_S2_EXPORT_INPUTS_KEY = "s2_export_case_inputs"
+
+
 def _reload_runtime_modules():
     global config, geometry
 
@@ -47,7 +50,9 @@ def _point_to_array(point):
 
 
 def _curve_endpoints(curve_id):
-    return _point_to_array(rs.CurveStartPoint(curve_id)), _point_to_array(rs.CurveEndPoint(curve_id))
+    return _point_to_array(rs.CurveStartPoint(curve_id)), _point_to_array(
+        rs.CurveEndPoint(curve_id)
+    )
 
 
 def _object_metadata(object_id):
@@ -59,7 +64,9 @@ def _object_metadata(object_id):
 
 
 def _doc_unit_scale_to_mm() -> float:
-    return float(Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters))
+    return float(
+        Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters)
+    )
 
 
 def _project_root() -> str:
@@ -73,7 +80,7 @@ def _default_export_dir() -> str:
 
 
 def _cached_s2_inputs():
-    cached_inputs = sc.sticky.get("t1_inputs")
+    cached_inputs = sc.sticky.get(_S2_EXPORT_INPUTS_KEY)
     if isinstance(cached_inputs, dict) and cached_inputs.get("mode") == "S2":
         return cached_inputs
     return None
@@ -81,16 +88,24 @@ def _cached_s2_inputs():
 
 def _select_s2_inputs():
     rs.UnselectAllObjects()
-    le1_id = rs.GetObject("Select first existing bar (Le1) for the T1-S2 debug export", rs.filter.curve)
+    le1_id = rs.GetObject(
+        "Select first existing bar (Le1) for the T1-S2 debug export", rs.filter.curve
+    )
     if le1_id is None:
         return None
-    le2_id = rs.GetObject("Select second existing bar (Le2) for the T1-S2 debug export", rs.filter.curve)
+    le2_id = rs.GetObject(
+        "Select second existing bar (Le2) for the T1-S2 debug export", rs.filter.curve
+    )
     if le2_id is None:
         return None
-    ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on Le1 (Ce1) for the T1-S2 debug export")
+    ce1 = rs.GetPointOnCurve(
+        le1_id, "Pick contact point on Le1 (Ce1) for the T1-S2 debug export"
+    )
     if ce1 is None:
         return None
-    ce2 = rs.GetPointOnCurve(le2_id, "Pick contact point on Le2 (Ce2) for the T1-S2 debug export")
+    ce2 = rs.GetPointOnCurve(
+        le2_id, "Pick contact point on Le2 (Ce2) for the T1-S2 debug export"
+    )
     if ce2 is None:
         return None
     return {
@@ -106,7 +121,7 @@ def _resolve_inputs():
     cached_inputs = _cached_s2_inputs()
     if cached_inputs is not None:
         use_cached = rs.MessageBox(
-            "Use the cached T1-S2 selection from the last T1 run?\nChoose No to repick Le1, Le2, Ce1, and Ce2.",
+            "Use the cached T1-S2 selection from the last RSExportCase run?\nChoose No to repick Le1, Le2, Ce1, and Ce2.",
             4,
             "Export T1-S2 Case",
         )
@@ -115,7 +130,7 @@ def _resolve_inputs():
 
     fresh_inputs = _select_s2_inputs()
     if fresh_inputs is not None:
-        sc.sticky["t1_inputs"] = fresh_inputs
+        sc.sticky[_S2_EXPORT_INPUTS_KEY] = fresh_inputs
     return fresh_inputs
 
 

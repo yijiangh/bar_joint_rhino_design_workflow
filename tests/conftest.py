@@ -1,3 +1,20 @@
+"""Test suite configuration.
+
+Scope of automated testing
+--------------------------
+This test suite covers only geometry and solver logic in ``scripts/core/``
+(e.g. closest-point math, kinematics, case-export round-trips). It does NOT
+attempt to test Rhino user-interface behaviour — commands that depend on
+``rhinoscriptsyntax``, ``Rhino``, or ``scriptcontext`` run inside the Rhino
+process and are verified manually via the toolbar workflow.
+
+McNeel publishes official type stubs (``Rhino-stubs`` on PyPI, from
+https://github.com/mcneel/pythonstubs) that enable IDE autocomplete for the
+``Rhino`` namespace outside Rhino. Those stubs are for type-checking only and
+do not make the Rhino runtime importable in a headless test environment, so
+they are not used here.
+"""
+
 import os
 import sys
 

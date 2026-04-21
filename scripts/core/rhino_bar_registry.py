@@ -601,3 +601,29 @@ def update_all_previews(bar_radius, color=None):
     for bar_id, guid in bars.items():
         ensure_bar_preview(guid, bar_radius, color=color, bar_id=bar_id)
     return len(bars)
+
+
+def repair_on_entry(bar_radius, caller="RSScaffolding"):
+    """Standard startup repair for bar-registry-aware entry-point scripts.
+
+    Call this at the top of ``main()``, right after reloading config.  It
+    runs :func:`update_all_previews` and :func:`repair_bar_sequences` in one
+    step, so copy-paste artifacts, deleted bars, and stale tube previews are
+    all resolved before the user is prompted.
+
+    Parameters
+    ----------
+    bar_radius : float
+        Tube preview radius, typically ``float(config.BAR_RADIUS)``.
+    caller : str
+        Script name used in the startup message, e.g. ``"RSBarSnap"``.
+    """
+    n = update_all_previews(bar_radius)
+    changed = repair_bar_sequences()
+    parts = []
+    if n:
+        parts.append(f"{n} bar preview(s) updated")
+    if changed:
+        parts.append(f"{len(changed)} sequence number(s) repaired")
+    if parts:
+        print(f"{caller} (startup): {', '.join(parts)}.")

@@ -37,7 +37,7 @@ from core.rhino_helpers import (
     point_to_array,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id, ensure_bar_preview
+from core.rhino_bar_registry import ensure_bar_id, ensure_bar_preview, repair_on_entry
 
 
 _PREVIEW_COLORS = [
@@ -115,7 +115,8 @@ def _bake_axis_tube(axis_curve_id, label, color=None, layer_name=_TUBE_LAYER):
         Rhino.Geometry.Vector3d(*axis_direction.tolist()),
     )
     cylinder = Rhino.Geometry.Cylinder(
-        Rhino.Geometry.Circle(base_plane, float(config.BAR_RADIUS)), axis_length,
+        Rhino.Geometry.Circle(base_plane, float(config.BAR_RADIUS)),
+        axis_length,
     )
     brep = cylinder.ToBrep(True, True)
     if brep is None:
@@ -134,7 +135,9 @@ def _add_centered_line(midpoint, direction):
     direction = np.asarray(direction, dtype=float)
     direction = direction / np.linalg.norm(direction)
     half_length = config.DEFAULT_NEW_BAR_LENGTH / 2.0
-    return rs.AddLine(midpoint - half_length * direction, midpoint + half_length * direction)
+    return rs.AddLine(
+        midpoint - half_length * direction, midpoint + half_length * direction
+    )
 
 
 def _candidate_pick_filter():
@@ -156,6 +159,7 @@ def _refresh_runtime_modules():
 # Solve + preview helpers
 # ---------------------------------------------------------------------------
 
+
 def _solve(le1_id, le2_id, ce1, ce2):
     """Run the S2-T1 solver. Returns (solutions, report) or ([], None) on error."""
     le1_start, le1_end = curve_endpoints(le1_id)
@@ -167,7 +171,11 @@ def _solve(le1_id, le2_id, ce1, ce2):
     target_distance = float(config.BAR_CONTACT_DISTANCE)
     try:
         report = geometry.solve_s2_t1_report(
-            n1, ce1, n2, ce2, target_distance,
+            n1,
+            ce1,
+            n2,
+            ce2,
+            target_distance,
             nn_init_hint=ce2 - ce1,
         )
     except Exception as exc:
@@ -189,19 +197,32 @@ def _create_previews(solutions, ce1, ce2):
 
         line_id = rs.AddLine(pt_a, pt_b)
         _place_axis_line(line_id, color=color, label=f"RSBarBrace_preview_{index + 1}")
-        tube_ids = _bake_axis_tube(line_id, f"RSBarBrace_preview_{index + 1}_tube", color=color)
-        seg1_id = _bake_reference_segment(sol["p1"], ce1, f"RSBarBrace_preview_{index + 1}_seg1", color)
-        seg2_id = _bake_reference_segment(sol["p2"], ce2, f"RSBarBrace_preview_{index + 1}_seg2", color)
+        tube_ids = _bake_axis_tube(
+            line_id, f"RSBarBrace_preview_{index + 1}_tube", color=color
+        )
+        seg1_id = _bake_reference_segment(
+            sol["p1"], ce1, f"RSBarBrace_preview_{index + 1}_seg1", color
+        )
+        seg2_id = _bake_reference_segment(
+            sol["p2"], ce2, f"RSBarBrace_preview_{index + 1}_seg2", color
+        )
         dot_id = rs.AddTextDot(f"{index + 1}", midpoint)
-        apply_object_display(dot_id, f"RSBarBrace_preview_{index + 1}_label", color=color, layer_name=_BAR_AXIS_LAYER)
+        apply_object_display(
+            dot_id,
+            f"RSBarBrace_preview_{index + 1}_label",
+            color=color,
+            layer_name=_BAR_AXIS_LAYER,
+        )
 
         all_ids = [line_id, dot_id, seg1_id, seg2_id] + as_object_id_list(tube_ids)
         pick_set = set(as_object_id_list(all_ids))
-        preview_items.append({
-            "index": index,
-            "pick_ids": pick_set,
-            "cleanup_ids": all_ids,
-        })
+        preview_items.append(
+            {
+                "index": index,
+                "pick_ids": pick_set,
+                "cleanup_ids": all_ids,
+            }
+        )
     return preview_items
 
 
@@ -228,6 +249,7 @@ def _print_report(report):
 # ---------------------------------------------------------------------------
 # Interactive loop using Rhino.Input.Custom.GetObject
 # ---------------------------------------------------------------------------
+
 
 def _interactive_loop(le1_id, le2_id, ce1, ce2):
     """Interactive solve-preview-select loop. Returns chosen solution dict or None."""
@@ -297,9 +319,13 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2):
                 if opt_idx == slide1_idx or opt_idx == slide2_idx:
                     # Re-pick a contact point
                     if opt_idx == slide1_idx:
-                        new_pt = rs.GetPointOnCurve(le1_id, "Pick new contact point on Le1")
+                        new_pt = rs.GetPointOnCurve(
+                            le1_id, "Pick new contact point on Le1"
+                        )
                     else:
-                        new_pt = rs.GetPointOnCurve(le2_id, "Pick new contact point on Le2")
+                        new_pt = rs.GetPointOnCurve(
+                            le2_id, "Pick new contact point on Le2"
+                        )
                     if new_pt is None:
                         continue
 
@@ -311,14 +337,20 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2):
                     # Clean up old previews and reference points, re-solve
                     _cleanup_previews(preview_items)
                     delete_objects(ref_ids)
-                    ce1_ref_id = _bake_reference_point(ce1, "RSBarBrace_Ce1", (230, 80, 80))
-                    ce2_ref_id = _bake_reference_point(ce2, "RSBarBrace_Ce2", (80, 80, 230))
+                    ce1_ref_id = _bake_reference_point(
+                        ce1, "RSBarBrace_Ce1", (230, 80, 80)
+                    )
+                    ce2_ref_id = _bake_reference_point(
+                        ce2, "RSBarBrace_Ce2", (80, 80, 230)
+                    )
                     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
                     solutions, report = _solve(le1_id, le2_id, ce1, ce2)
                     _print_report(report)
                     if not solutions:
-                        rs.MessageBox("No valid brace solutions found for the updated points.")
+                        rs.MessageBox(
+                            "No valid brace solutions found for the updated points."
+                        )
                         delete_objects(ref_ids)
                         return None
                     preview_items = _create_previews(solutions, ce1, ce2)
@@ -333,8 +365,10 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     _refresh_runtime_modules()
+    repair_on_entry(float(config.BAR_RADIUS), "RSBarBrace")
     rs.UnselectAllObjects()
 
     le1_id = rs.GetObject("Select first existing bar (Le1)", rs.filter.curve)
@@ -374,8 +408,12 @@ def main():
         ce2_arr = point_to_array(solution["p2"]) if "p2" in solution else None
         # Bake final contact segments using the solution's contact-bar closest points
         # p1/p2 are points on the new bar; the contact points on Le are at distance BAR_CONTACT_DISTANCE
-        _bake_reference_segment(solution["p1"], solution["p1"], "RSBarBrace_contact_1", (230, 80, 80))
-        _bake_reference_segment(solution["p2"], solution["p2"], "RSBarBrace_contact_2", (80, 80, 230))
+        _bake_reference_segment(
+            solution["p1"], solution["p1"], "RSBarBrace_contact_1", (230, 80, 80)
+        )
+        _bake_reference_segment(
+            solution["p2"], solution["p2"], "RSBarBrace_contact_2", (80, 80, 230)
+        )
 
     rs.SelectObject(line_id)
     theta_1, theta_2 = solution["angles"]

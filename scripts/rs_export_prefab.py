@@ -7,6 +7,7 @@ by RSJointPlace, and writes a JSON file compatible with the joint jig
 controller.
 """
 
+import importlib
 import json
 import math
 import os
@@ -20,8 +21,9 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import config
 from core.rhino_helpers import curve_endpoints
-from core.rhino_bar_registry import get_all_bars, BAR_ID_KEY
+from core.rhino_bar_registry import get_all_bars, BAR_ID_KEY, repair_on_entry
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -34,6 +36,7 @@ _MALE_INSTANCES_LAYER = "MaleJointPlacedInstances"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _bar_length(curve_id):
     start, end = curve_endpoints(curve_id)
@@ -62,20 +65,20 @@ def _block_z_axis(obj_id):
     """Return joint Z-axis (assembly direction) from a block instance transform."""
     xf = rs.BlockInstanceXform(obj_id)
     z = [xf[0, 2], xf[1, 2], xf[2, 2]]
-    n = (z[0]**2 + z[1]**2 + z[2]**2) ** 0.5
+    n = (z[0] ** 2 + z[1] ** 2 + z[2] ** 2) ** 0.5
     return [v / n for v in z]
 
 
 def _cross3(a, b):
     return [
-        a[1]*b[2] - a[2]*b[1],
-        a[2]*b[0] - a[0]*b[2],
-        a[0]*b[1] - a[1]*b[0],
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
     ]
 
 
 def _dot3(a, b):
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def _bar_x_axis(bar_dir):
@@ -90,7 +93,7 @@ def _bar_x_axis(bar_dir):
         candidate = _cross3(world_z, bar_dir)
     else:
         candidate = _cross3(world_x, bar_dir)
-    n = (candidate[0]**2 + candidate[1]**2 + candidate[2]**2) ** 0.5
+    n = (candidate[0] ** 2 + candidate[1] ** 2 + candidate[2] ** 2) ** 0.5
     return [v / n for v in candidate]
 
 
@@ -103,7 +106,7 @@ def _compute_rotation_deg(joint_z, bar_x, bar_z):
     # Project joint_z onto bar XY plane
     d = _dot3(joint_z, bar_z)
     proj = [joint_z[i] - d * bar_z[i] for i in range(3)]
-    proj_len = (proj[0]**2 + proj[1]**2 + proj[2]**2) ** 0.5
+    proj_len = (proj[0] ** 2 + proj[1] ** 2 + proj[2] ** 2) ** 0.5
     if proj_len < 1e-9:
         return 0.0  # joint Z is parallel to bar Z; rotation is undefined
     proj = [v / proj_len for v in proj]
@@ -147,7 +150,10 @@ def _bar_sort_key(bar_id):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
+    importlib.reload(config)
+    repair_on_entry(float(config.BAR_RADIUS), "RSExportPrefab")
     # 1. Collect bars
     bars = get_all_bars()
     if not bars:
@@ -197,7 +203,9 @@ def main():
                 origin, x_axis = _block_origin_and_x(obj_id)
                 joint_z = _block_z_axis(obj_id)
             except Exception as exc:
-                errors.append(f"Joint {joint_id} on {bid}: could not read transform ({exc})")
+                errors.append(
+                    f"Joint {joint_id} on {bid}: could not read transform ({exc})"
+                )
                 continue
 
             # position_mm: signed projection of (origin - bar_start) onto bar_dir
@@ -210,35 +218,43 @@ def main():
             # rotation_deg: angle from bar X-axis to joint Z-axis about bar Z
             rot = round(_compute_rotation_deg(joint_z, bar_x, bar_dir), 2)
 
-            joint_entries.append({
-                "joint_id": joint_id,
-                "type": data["type"],
-                "subtype": data["subtype"],
-                "ori": ori,
-                "position_mm": pos,
-                "rotation_deg": rot,
-            })
+            joint_entries.append(
+                {
+                    "joint_id": joint_id,
+                    "type": data["type"],
+                    "subtype": data["subtype"],
+                    "ori": ori,
+                    "position_mm": pos,
+                    "rotation_deg": rot,
+                }
+            )
 
         joint_entries.sort(key=lambda j: j["position_mm"])
-        bar_entries.append({
-            "bar_id": bid,
-            "length_mm": bar_length,
-            "joints": joint_entries,
-        })
+        bar_entries.append(
+            {
+                "bar_id": bid,
+                "length_mm": bar_length,
+                "joints": joint_entries,
+            }
+        )
 
     # Also include bars with no joints
     for bid in sorted(bars_by_id.keys(), key=_bar_sort_key):
         if bid not in joints_per_bar:
-            bar_entries.append({
-                "bar_id": bid,
-                "length_mm": _bar_length(bars_by_id[bid]),
-                "joints": [],
-            })
+            bar_entries.append(
+                {
+                    "bar_id": bid,
+                    "length_mm": _bar_length(bars_by_id[bid]),
+                    "joints": [],
+                }
+            )
     bar_entries.sort(key=lambda b: _bar_sort_key(b["bar_id"]))
 
     # Project ID from document name
     doc_path = sc.doc.Path or ""
-    doc_name = os.path.splitext(os.path.basename(doc_path))[0] if doc_path else "untitled"
+    doc_name = (
+        os.path.splitext(os.path.basename(doc_path))[0] if doc_path else "untitled"
+    )
 
     export_data = {
         "schema_version": 1,
@@ -257,7 +273,12 @@ def main():
     # 6. Save file
     doc_dir = os.path.dirname(doc_path) if doc_path else os.getcwd()
     default_path = os.path.join(doc_dir, f"{doc_name}_prefab.json")
-    save_path = rs.SaveFileName("Save prefab JSON", "JSON files (*.json)|*.json||", folder=doc_dir, filename=f"{doc_name}_prefab.json")
+    save_path = rs.SaveFileName(
+        "Save prefab JSON",
+        "JSON files (*.json)|*.json||",
+        folder=doc_dir,
+        filename=f"{doc_name}_prefab.json",
+    )
     if not save_path:
         print("RSExportPrefab: Cancelled.")
         return

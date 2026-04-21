@@ -41,33 +41,10 @@ from core.rhino_bar_registry import (
     move_bar_earlier,
     move_bar_later,
     insert_bar_after,
-    repair_bar_sequences,
+    repair_on_entry,
     show_sequence_colors,
     reset_sequence_colors,
-    update_all_previews,
 )
-
-
-# ---------------------------------------------------------------------------
-# Startup repair
-# ---------------------------------------------------------------------------
-
-
-def _repair_on_entry(bar_radius):
-    """Heal bar IDs, tube previews, and sequence numbers before entering the UI.
-
-    Equivalent to running RSUpdatePreview followed by RSCreateBar's sequence
-    repair, so copy-paste artifacts and deletions are resolved up front.
-    """
-    n = update_all_previews(bar_radius)
-    changed = repair_bar_sequences()
-    parts = []
-    if n:
-        parts.append(f"{n} bar preview(s) updated")
-    if changed:
-        parts.append(f"{len(changed)} sequence number(s) repaired")
-    if parts:
-        print(f"RSSequenceEdit (startup): {', '.join(parts)}.")
 
 
 # ---------------------------------------------------------------------------
@@ -223,10 +200,7 @@ def _run_action(name, session):
 
 def main():
     importlib.reload(config)
-    bar_radius = float(config.BAR_RADIUS)
-
-    # Heal copy-paste artifacts, stale previews, and sequence gaps on entry.
-    _repair_on_entry(bar_radius)
+    repair_on_entry(float(config.BAR_RADIUS), "RSSequenceEdit")
 
     bar_map = get_bar_seq_map()
     if not bar_map:

@@ -23,11 +23,13 @@ from core.rhino_bar_registry import (
     ensure_bar_id,
     ensure_bar_preview,
     repair_bar_sequences,
+    repair_on_entry,
 )
 
 
 def main():
     importlib.reload(config)
+    repair_on_entry(float(config.BAR_RADIUS), "RSCreateBar")
     curve_ids = rs.GetObjects("Select curves to register as bars", rs.filter.curve)
     if not curve_ids:
         return

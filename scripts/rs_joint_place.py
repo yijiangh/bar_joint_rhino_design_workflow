@@ -38,7 +38,7 @@ from core.rhino_helpers import (
     set_objects_layer,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id
+from core.rhino_bar_registry import ensure_bar_id, repair_on_entry
 
 
 _DEBUG_FRAME_AXIS_LENGTH = 35.0
@@ -59,6 +59,7 @@ _PREVIEW_COLORS = [
 # ---------------------------------------------------------------------------
 # Module reload
 # ---------------------------------------------------------------------------
+
 
 def _reload_runtime_modules():
     global config, invert_transform, make_bar_frame, optimize_joint_placement
@@ -88,7 +89,11 @@ _reload_runtime_modules()
 
 def _has_block_definition(name):
     for instance_def in sc.doc.InstanceDefinitions:
-        if instance_def is not None and not instance_def.IsDeleted and instance_def.Name == name:
+        if (
+            instance_def is not None
+            and not instance_def.IsDeleted
+            and instance_def.Name == name
+        ):
             return True
     return False
 
@@ -123,6 +128,7 @@ def _insert_block_instance(block_name, frame, *, layer_name=None, color=None):
 # Debug frame baking
 # ---------------------------------------------------------------------------
 
+
 def _clear_debug_frames():
     for oid in sc.sticky.pop(_DEBUG_FRAME_IDS_KEY, []):
         if rs.IsObject(oid):
@@ -146,7 +152,9 @@ def _bake_frame_axes(frame, label, axis_length=_DEBUG_FRAME_AXIS_LENGTH):
         axis_norm = float(np.linalg.norm(axis_vec))
         if axis_norm <= 1e-12:
             continue
-        lid = rs.AddLine(origin.tolist(), (origin + axis_length * axis_vec / axis_norm).tolist())
+        lid = rs.AddLine(
+            origin.tolist(), (origin + axis_length * axis_vec / axis_norm).tolist()
+        )
         if lid is None:
             continue
         rs.ObjectColor(lid, color)
@@ -183,34 +191,38 @@ def _bake_debug_ocf_frames(result, le_id, ln_id, prefix="RSJointPlace"):
 # the connector along the bar.  Each combination is a full 4-DOF re-opt.
 # ---------------------------------------------------------------------------
 
+
 def _enumerate_solution_variants(le_start, le_end, ln_start, ln_end):
     """Run 4 full optimizations with every combination of bar-endpoint ordering."""
     combos = [
         ("1: le=fwd, ln=fwd", le_start, le_end, ln_start, ln_end, False, False),
-        ("2: le=rev, ln=fwd", le_end, le_start, ln_start, ln_end, True,  False),
+        ("2: le=rev, ln=fwd", le_end, le_start, ln_start, ln_end, True, False),
         ("3: le=fwd, ln=rev", le_start, le_end, ln_end, ln_start, False, True),
-        ("4: le=rev, ln=rev", le_end, le_start, ln_end, ln_start, True,  True),
+        ("4: le=rev, ln=rev", le_end, le_start, ln_end, ln_start, True, True),
     ]
     variants = []
     for idx, (label, les, lee, lns, lne, le_rev, ln_rev) in enumerate(combos):
         res = optimize_joint_placement(les, lee, lns, lne, config, return_debug=True)
         diag = screw_hole_alignment_diagnostics(
-            res["female_screw_hole_frame"], res["male_screw_hole_frame"],
+            res["female_screw_hole_frame"],
+            res["male_screw_hole_frame"],
         )
-        res.update({
-            "variant_index": idx,
-            "variant_label": label,
-            "variant_solver": "full_joint_optimization",
-            "female_flip_rad": float(np.pi) if le_rev else 0.0,
-            "male_flip_rad": float(np.pi) if ln_rev else 0.0,
-            "origin_error_mm": diag["origin_error_mm"],
-            "z_axis_error_rad": diag["z_axis_error_rad"],
-            # Store the endpoint ordering used so _place can reproduce if needed
-            "_le_start": les,
-            "_le_end": lee,
-            "_ln_start": lns,
-            "_ln_end": lne,
-        })
+        res.update(
+            {
+                "variant_index": idx,
+                "variant_label": label,
+                "variant_solver": "full_joint_optimization",
+                "female_flip_rad": float(np.pi) if le_rev else 0.0,
+                "male_flip_rad": float(np.pi) if ln_rev else 0.0,
+                "origin_error_mm": diag["origin_error_mm"],
+                "z_axis_error_rad": diag["z_axis_error_rad"],
+                # Store the endpoint ordering used so _place can reproduce if needed
+                "_le_start": les,
+                "_le_end": lee,
+                "_ln_start": lns,
+                "_ln_end": lne,
+            }
+        )
         variants.append(res)
     return variants
 
@@ -219,14 +231,18 @@ def _enumerate_solution_variants(le_start, le_end, ln_start, ln_end):
 # Interface metrics
 # ---------------------------------------------------------------------------
 
+
 def _interface_metrics_from_result(result):
     if "origin_error_mm" in result and "z_axis_error_rad" in result:
         return float(result["origin_error_mm"]), float(result["z_axis_error_rad"])
     if "female_screw_hole_frame" in result and "male_screw_hole_frame" in result:
         diagnostics = screw_hole_alignment_diagnostics(
-            result["female_screw_hole_frame"], result["male_screw_hole_frame"],
+            result["female_screw_hole_frame"],
+            result["male_screw_hole_frame"],
         )
-        return float(diagnostics["origin_error_mm"]), float(diagnostics["z_axis_error_rad"])
+        return float(diagnostics["origin_error_mm"]), float(
+            diagnostics["z_axis_error_rad"]
+        )
     raise KeyError("Result is missing interface diagnostics.")
 
 
@@ -234,11 +250,16 @@ def _interface_metrics_from_result(result):
 # Interactive cycling loop
 # ---------------------------------------------------------------------------
 
+
 def _show_variant_preview(variant, female_block_name, male_block_name):
     """Show one variant at the real position. Returns list of preview object IDs."""
     color = _PREVIEW_COLORS[variant["variant_index"] % len(_PREVIEW_COLORS)]
-    female_id = _insert_block_instance(female_block_name, variant["female_frame"], color=color)
-    male_id = _insert_block_instance(male_block_name, variant["male_frame"], color=color)
+    female_id = _insert_block_instance(
+        female_block_name, variant["female_frame"], color=color
+    )
+    male_id = _insert_block_instance(
+        male_block_name, variant["male_frame"], color=color
+    )
     return as_object_id_list([female_id, male_id])
 
 
@@ -251,7 +272,9 @@ def _interactive_variant_loop(variants, female_block_name, male_block_name):
     try:
         # Show first variant
         with suspend_redraw():
-            preview_ids = _show_variant_preview(variants[current], female_block_name, male_block_name)
+            preview_ids = _show_variant_preview(
+                variants[current], female_block_name, male_block_name
+            )
         _print_variant_info(variants[current], current, total)
 
         while True:
@@ -283,7 +306,9 @@ def _interactive_variant_loop(variants, female_block_name, male_block_name):
                     with suspend_redraw():
                         delete_objects(preview_ids)
                         current = (current + 1) % total
-                        preview_ids = _show_variant_preview(variants[current], female_block_name, male_block_name)
+                        preview_ids = _show_variant_preview(
+                            variants[current], female_block_name, male_block_name
+                        )
                     _print_variant_info(variants[current], current, total)
                     continue
 
@@ -291,7 +316,9 @@ def _interactive_variant_loop(variants, female_block_name, male_block_name):
                     with suspend_redraw():
                         delete_objects(preview_ids)
                         current = (current - 1) % total
-                        preview_ids = _show_variant_preview(variants[current], female_block_name, male_block_name)
+                        preview_ids = _show_variant_preview(
+                            variants[current], female_block_name, male_block_name
+                        )
                     _print_variant_info(variants[current], current, total)
                     continue
     finally:
@@ -312,6 +339,7 @@ def _print_variant_info(variant, current, total):
 # ---------------------------------------------------------------------------
 # Place final blocks
 # ---------------------------------------------------------------------------
+
 
 def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
     female_frame = result["female_frame"]
@@ -340,13 +368,42 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
     male_ori = "P" if float(np.dot(male_frame[:3, 0], ln_dir)) > 0 else "N"
 
     with suspend_redraw():
-        female_id = _insert_block_instance(female_block_name, female_frame, layer_name=_FEMALE_INSTANCES_LAYER)
-        male_id = _insert_block_instance(male_block_name, male_frame, layer_name=_MALE_INSTANCES_LAYER)
-        for obj_id, block_type, block_subtype, parent_bar, conn_bar, pos, rot_rad, ori in [
-            (female_id, female_type, female_subtype, le_bar_id, ln_bar_id,
-             result["fjp"], result["fjr"], female_ori),
-            (male_id, male_type, male_subtype, ln_bar_id, le_bar_id,
-             result["mjp"], result["mjr"], male_ori),
+        female_id = _insert_block_instance(
+            female_block_name, female_frame, layer_name=_FEMALE_INSTANCES_LAYER
+        )
+        male_id = _insert_block_instance(
+            male_block_name, male_frame, layer_name=_MALE_INSTANCES_LAYER
+        )
+        for (
+            obj_id,
+            block_type,
+            block_subtype,
+            parent_bar,
+            conn_bar,
+            pos,
+            rot_rad,
+            ori,
+        ) in [
+            (
+                female_id,
+                female_type,
+                female_subtype,
+                le_bar_id,
+                ln_bar_id,
+                result["fjp"],
+                result["fjr"],
+                female_ori,
+            ),
+            (
+                male_id,
+                male_type,
+                male_subtype,
+                ln_bar_id,
+                le_bar_id,
+                result["mjp"],
+                result["mjr"],
+                male_ori,
+            ),
         ]:
             rs.SetUserText(obj_id, "joint_id", joint_id)
             rs.SetUserText(obj_id, "joint_type", block_type)
@@ -371,7 +428,9 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
         f"  FJP={result['fjp']:.2f}, FJR={np.degrees(result['fjr']):.1f}deg, "
         f"MJP={result['mjp']:.2f}, MJR={np.degrees(result['mjr']):.1f}deg"
     )
-    print(f"  Interface origin err={origin_err:.4f} mm, z-axis err={np.degrees(z_err):.4f}deg")
+    print(
+        f"  Interface origin err={origin_err:.4f} mm, z-axis err={np.degrees(z_err):.4f}deg"
+    )
     return female_id, male_id
 
 
@@ -379,12 +438,16 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     _reload_runtime_modules()
+    repair_on_entry(float(config.BAR_RADIUS), "RSJointPlace")
     _clear_debug_frames()
 
     rs.UnselectAllObjects()
-    le_id = rs.GetObject("Select existing bar (Le) - gets FEMALE joint", rs.filter.curve)
+    le_id = rs.GetObject(
+        "Select existing bar (Le) - gets FEMALE joint", rs.filter.curve
+    )
     if le_id is None:
         return
     ln_id = rs.GetObject("Select new bar (Ln) - gets MALE joint", rs.filter.curve)

@@ -19,7 +19,11 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
-from core.rhino_bar_registry import ensure_bar_id, ensure_bar_preview
+from core.rhino_bar_registry import (
+    ensure_bar_id,
+    ensure_bar_preview,
+    repair_bar_sequences,
+)
 
 
 def main():
@@ -31,6 +35,10 @@ def main():
         bar_id = ensure_bar_id(cid)
         ensure_bar_preview(cid, float(config.BAR_RADIUS), bar_id=bar_id)
         print(f"RSCreateBar: Registered {bar_id}")
+    changed = repair_bar_sequences()
+    if changed:
+        summary = ", ".join(f"{bid}→seq{seq}" for bid, seq in sorted(changed.items()))
+        print(f"RSCreateBar: Sequence repaired ({len(changed)} bar(s)): {summary}")
     print(f"RSCreateBar: {len(curve_ids)} bar(s) registered.")
 
 

@@ -17,6 +17,7 @@ The Rhino toolbar buttons call the following entry-point scripts (all in `script
 |---------|--------|--------|---------|
 | **RSDesign** | RSBarSnap | `rs_bar_snap.py` | Snap a new bar onto an existing bar at contact distance |
 | **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
+| **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks with Next/Previous variant cycling |
 | **RSSetup** | RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames into the document |
 | **RSSetup** | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector geometry to `config_generated.py` |

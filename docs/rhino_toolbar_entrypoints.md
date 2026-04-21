@@ -14,6 +14,7 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews |
 | RSBarSnap | `rs_bar_snap.py` | Snap a new bar to a target contact distance from an existing bar |
 | RSBarBrace | `rs_bar_brace.py` | Solve and pick brace-bar candidates between two bars |
+| RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | RSJointPlace | `rs_joint_place.py` | Place female and male connector blocks on a selected bar pair |
 
 ## RSSetup Buttons

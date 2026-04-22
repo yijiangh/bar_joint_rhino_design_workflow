@@ -4,9 +4,19 @@
 # r: scipy
 """RSJointPlace - Place connector blocks on one bar pair.
 
-Pick an existing bar (Le, gets female joint) and a new bar (Ln, gets male
-joint). The optimizer solves 4 assembly variants. An interactive loop lets you
-cycle through them with Next/Previous and Accept the current one.
+Select any two registered bars.  The bar with the lower assembly sequence
+number is automatically assigned as the female-joint bar (Le); the bar
+assembled later receives the male joint (Ln).
+
+The optimizer solves all 4 endpoint-reversal variants.  After an initial
+placement you can refine interactively:
+
+  - **Click the female block** to toggle the female joint orientation
+    (switches between variant pairs 0↔1 and 2↔3).
+  - **Click the male block** to toggle the male joint orientation
+    (switches between variant groups 0↔2 and 1↔3).
+  - Press **Enter** or click **Accept** to confirm and write the final blocks.
+  - Press **Escape** to cancel and remove the preview.
 """
 
 import contextlib
@@ -38,7 +48,7 @@ from core.rhino_helpers import (
     set_objects_layer,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id, repair_on_entry
+from core.rhino_bar_registry import ensure_bar_id, get_bar_seq_map, repair_on_entry
 
 
 _DEBUG_FRAME_AXIS_LENGTH = 35.0
@@ -54,6 +64,7 @@ _PREVIEW_COLORS = [
     (80, 200, 80),
     (200, 160, 50),
 ]
+_JOINT_ROLE_KEY = "_joint_role"  # user-text key set on interactive preview blocks
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +123,9 @@ def _numpy_to_rhino_transform(matrix):
     return xform
 
 
-def _insert_block_instance(block_name, frame, *, layer_name=None, color=None):
+def _insert_block_instance(
+    block_name, frame, *, layer_name=None, color=None, role=None
+):
     oid = rs.InsertBlock(block_name, [0, 0, 0])
     if oid is None:
         raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
@@ -121,6 +134,8 @@ def _insert_block_instance(block_name, frame, *, layer_name=None, color=None):
         set_objects_layer(oid, layer_name)
     if color is not None:
         set_object_color(oid, color)
+    if role is not None:
+        rs.SetUserText(oid, _JOINT_ROLE_KEY, role)
     return oid
 
 
@@ -192,39 +207,42 @@ def _bake_debug_ocf_frames(result, le_id, ln_id, prefix="RSJointPlace"):
 # ---------------------------------------------------------------------------
 
 
-def _enumerate_solution_variants(le_start, le_end, ln_start, ln_end):
-    """Run 4 full optimizations with every combination of bar-endpoint ordering."""
-    combos = [
-        ("1: le=fwd, ln=fwd", le_start, le_end, ln_start, ln_end, False, False),
-        ("2: le=rev, ln=fwd", le_end, le_start, ln_start, ln_end, True, False),
-        ("3: le=fwd, ln=rev", le_start, le_end, ln_end, ln_start, False, True),
-        ("4: le=rev, ln=rev", le_end, le_start, ln_end, ln_start, True, True),
-    ]
-    variants = []
-    for idx, (label, les, lee, lns, lne, le_rev, ln_rev) in enumerate(combos):
-        res = optimize_joint_placement(les, lee, lns, lne, config, return_debug=True)
-        diag = screw_hole_alignment_diagnostics(
-            res["female_screw_hole_frame"],
-            res["male_screw_hole_frame"],
-        )
-        res.update(
-            {
-                "variant_index": idx,
-                "variant_label": label,
-                "variant_solver": "full_joint_optimization",
-                "female_flip_rad": float(np.pi) if le_rev else 0.0,
-                "male_flip_rad": float(np.pi) if ln_rev else 0.0,
-                "origin_error_mm": diag["origin_error_mm"],
-                "z_axis_error_rad": diag["z_axis_error_rad"],
-                # Store the endpoint ordering used so _place can reproduce if needed
-                "_le_start": les,
-                "_le_end": lee,
-                "_ln_start": lns,
-                "_ln_end": lne,
-            }
-        )
-        variants.append(res)
-    return variants
+def _compute_variant(le_start, le_end, ln_start, ln_end, le_rev, ln_rev):
+    """Compute a single joint-placement optimization for the given reversal flags.
+
+    ``le_rev`` reverses the female-bar endpoint order; ``ln_rev`` reverses the
+    male-bar endpoint order.  Returns the same result-dict format that each
+    element of the old ``_enumerate_solution_variants`` list used.
+    """
+    les = le_end if le_rev else le_start
+    lee = le_start if le_rev else le_end
+    lns = ln_end if ln_rev else ln_start
+    lne = ln_start if ln_rev else ln_end
+    idx = (2 if ln_rev else 0) + (1 if le_rev else 0)
+    label = (
+        f"{idx + 1}: le={'rev' if le_rev else 'fwd'}, ln={'rev' if ln_rev else 'fwd'}"
+    )
+    res = optimize_joint_placement(les, lee, lns, lne, config, return_debug=True)
+    diag = screw_hole_alignment_diagnostics(
+        res["female_screw_hole_frame"],
+        res["male_screw_hole_frame"],
+    )
+    res.update(
+        {
+            "variant_index": idx,
+            "variant_label": label,
+            "variant_solver": "full_joint_optimization",
+            "female_flip_rad": float(np.pi) if le_rev else 0.0,
+            "male_flip_rad": float(np.pi) if ln_rev else 0.0,
+            "origin_error_mm": diag["origin_error_mm"],
+            "z_axis_error_rad": diag["z_axis_error_rad"],
+            "_le_start": les,
+            "_le_end": lee,
+            "_ln_start": lns,
+            "_ln_end": lne,
+        }
+    )
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -251,41 +269,122 @@ def _interface_metrics_from_result(result):
 # ---------------------------------------------------------------------------
 
 
-def _show_variant_preview(variant, female_block_name, male_block_name):
-    """Show one variant at the real position. Returns list of preview object IDs."""
-    color = _PREVIEW_COLORS[variant["variant_index"] % len(_PREVIEW_COLORS)]
-    female_id = _insert_block_instance(
-        female_block_name, variant["female_frame"], color=color
-    )
-    male_id = _insert_block_instance(
-        male_block_name, variant["male_frame"], color=color
-    )
-    return as_object_id_list([female_id, male_id])
+class _JointSession:
+    """Tracks interactive state for one joint-placement run.
 
+    The four solver variants map to a 2-bit state:
 
-def _interactive_variant_loop(variants, female_block_name, male_block_name):
-    """Cycle through variants with Next/Previous/Accept. Returns chosen variant or None."""
-    current = 0
-    total = len(variants)
-    preview_ids = []
+    - ``le_rev`` (bit 0): female joint orientation — toggled by clicking the female block.
+    - ``ln_rev`` (bit 1): male joint orientation — toggled by clicking the male block.
 
-    try:
-        # Show first variant
-        with suspend_redraw():
-            preview_ids = _show_variant_preview(
-                variants[current], female_block_name, male_block_name
+    variant_index = (2 if ln_rev else 0) + (1 if le_rev else 0)
+
+    Variants are computed on demand (lazy) and cached so that toggling back to
+    a previously-seen orientation does not re-run the solver.
+    """
+
+    def __init__(
+        self,
+        le_start,
+        le_end,
+        ln_start,
+        ln_end,
+        female_block_name,
+        male_block_name,
+        *,
+        le_rev=False,
+        ln_rev=False,
+    ):
+        self.le_start = le_start
+        self.le_end = le_end
+        self.ln_start = ln_start
+        self.ln_end = ln_end
+        self.female_block_name = female_block_name
+        self.male_block_name = male_block_name
+        self.le_rev = le_rev
+        self.ln_rev = ln_rev
+        self._cache = {}  # (le_rev, ln_rev) -> variant dict
+        self.female_id = None
+        self.male_id = None
+
+    def _get_variant(self, le_rev, ln_rev):
+        """Return the variant for the given flags, computing it on demand."""
+        key = (le_rev, ln_rev)
+        if key not in self._cache:
+            self._cache[key] = _compute_variant(
+                self.le_start, self.le_end, self.ln_start, self.ln_end, le_rev, ln_rev
             )
-        _print_variant_info(variants[current], current, total)
+        return self._cache[key]
 
+    @property
+    def current_idx(self):
+        return (2 if self.ln_rev else 0) + (1 if self.le_rev else 0)
+
+    @property
+    def current_variant(self):
+        return self._get_variant(self.le_rev, self.ln_rev)
+
+    def _is_female(self, oid):
+        return rs.GetUserText(oid, _JOINT_ROLE_KEY) == "female"
+
+    def _is_male(self, oid):
+        return rs.GetUserText(oid, _JOINT_ROLE_KEY) == "male"
+
+    def show_current(self):
+        """Delete existing preview and show the current variant."""
+        to_delete = [i for i in [self.female_id, self.male_id] if i is not None]
+        with suspend_redraw():
+            delete_objects(to_delete)
+            var = self.current_variant
+            color = _PREVIEW_COLORS[self.current_idx % len(_PREVIEW_COLORS)]
+            self.female_id = _insert_block_instance(
+                self.female_block_name, var["female_frame"], color=color, role="female"
+            )
+            self.male_id = _insert_block_instance(
+                self.male_block_name, var["male_frame"], color=color, role="male"
+            )
+        _print_variant_info(var)
+
+    def click_female(self):
+        """Toggle the female joint orientation and refresh the preview."""
+        self.le_rev = not self.le_rev
+        self.show_current()
+
+    def click_male(self):
+        """Toggle the male joint orientation and refresh the preview."""
+        self.ln_rev = not self.ln_rev
+        self.show_current()
+
+    def cleanup(self):
+        """Delete preview block instances."""
+        to_delete = [i for i in [self.female_id, self.male_id] if i is not None]
+        delete_objects(to_delete)
+        self.female_id = None
+        self.male_id = None
+
+
+def _joint_role_filter(rhino_object, geometry, component_index):
+    """Geometry filter — accept only the current interactive preview blocks."""
+    return rs.GetUserText(rhino_object.Id, _JOINT_ROLE_KEY) in ("female", "male")
+
+
+def _interactive_click_loop(session):
+    """Let the user click female/male preview blocks to toggle joint orientations.
+
+    Returns the chosen variant dict, or ``None`` if cancelled.
+    """
+    session.show_current()
+    try:
         while True:
-            go = Rhino.Input.Custom.GetOption()
-            go.SetCommandPrompt(f"Variant {current + 1} of {total}")
-            go.SetCommandPromptDefault("Accept")
+            go = Rhino.Input.Custom.GetObject()
+            go.SetCommandPrompt(
+                "Click female block to flip female, click male block to flip male"
+                "  (Enter = Accept)"
+            )
+            go.EnablePreSelect(False, False)
             go.AcceptNothing(True)
-
-            next_idx = go.AddOption("Next")
-            prev_idx = go.AddOption("Previous")
-            accept_idx = go.AddOption("Accept")
+            go.SetCustomGeometryFilter(_joint_role_filter)
+            go.AddOption("Accept")
 
             result = go.Get()
 
@@ -293,42 +392,26 @@ def _interactive_variant_loop(variants, female_block_name, male_block_name):
                 return None
 
             if result == Rhino.Input.GetResult.Nothing:
-                # Enter = accept current
-                return variants[current]
+                return session.current_variant
 
             if result == Rhino.Input.GetResult.Option:
-                opt_idx = go.Option().Index
+                if go.Option().EnglishName == "Accept":
+                    return session.current_variant
 
-                if opt_idx == accept_idx:
-                    return variants[current]
-
-                if opt_idx == next_idx:
-                    with suspend_redraw():
-                        delete_objects(preview_ids)
-                        current = (current + 1) % total
-                        preview_ids = _show_variant_preview(
-                            variants[current], female_block_name, male_block_name
-                        )
-                    _print_variant_info(variants[current], current, total)
-                    continue
-
-                if opt_idx == prev_idx:
-                    with suspend_redraw():
-                        delete_objects(preview_ids)
-                        current = (current - 1) % total
-                        preview_ids = _show_variant_preview(
-                            variants[current], female_block_name, male_block_name
-                        )
-                    _print_variant_info(variants[current], current, total)
-                    continue
+            if result == Rhino.Input.GetResult.Object:
+                clicked_id = go.Object(0).ObjectId
+                if session._is_female(clicked_id):
+                    session.click_female()
+                elif session._is_male(clicked_id):
+                    session.click_male()
     finally:
-        delete_objects(preview_ids)
+        session.cleanup()
 
 
-def _print_variant_info(variant, current, total):
+def _print_variant_info(variant):
     origin_err, z_err = _interface_metrics_from_result(variant)
     print(
-        f"RSJointPlace: Showing variant {current + 1}/{total} — "
+        f"RSJointPlace: Showing variant {variant['variant_index'] + 1}/4 — "
         f"{variant.get('variant_label', '?')} | "
         f"residual={variant['residual']:.6f}, "
         f"origin err={origin_err:.4f} mm, "
@@ -374,6 +457,14 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
         male_id = _insert_block_instance(
             male_block_name, male_frame, layer_name=_MALE_INSTANCES_LAYER
         )
+        # Set object names so RSJointEdit can retrieve blocks by joint_id.
+        rs.ObjectName(female_id, f"{joint_id}_female")
+        rs.ObjectName(male_id, f"{joint_id}_male")
+        # Derive le_rev / ln_rev from variant_index so the session state can
+        # be restored without re-computing when RSJointEdit opens this joint.
+        variant_index = result.get("variant_index", 0)
+        le_rev_val = bool(variant_index & 1)
+        ln_rev_val = bool((variant_index >> 1) & 1)
         for (
             obj_id,
             block_type,
@@ -415,6 +506,9 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
             rs.SetUserText(obj_id, "position_mm", f"{float(pos):.4f}")
             rs.SetUserText(obj_id, "rotation_deg", f"{float(np.degrees(rot_rad)):.4f}")
             rs.SetUserText(obj_id, "ori", ori)
+            rs.SetUserText(obj_id, "le_rev", str(le_rev_val))
+            rs.SetUserText(obj_id, "ln_rev", str(ln_rev_val))
+            rs.SetUserText(obj_id, "variant_index", str(variant_index))
         _bake_debug_ocf_frames(result, le_id, ln_id)
 
     print(f"RSJointPlace: Joints placed. Residual: {result['residual']:.6f}")
@@ -445,39 +539,47 @@ def main():
     _clear_debug_frames()
 
     rs.UnselectAllObjects()
-    le_id = rs.GetObject(
-        "Select existing bar (Le) - gets FEMALE joint", rs.filter.curve
-    )
-    if le_id is None:
+    bar_a_id = rs.GetObject("Select first bar of the joint pair", rs.filter.curve)
+    if bar_a_id is None:
         return
-    ln_id = rs.GetObject("Select new bar (Ln) - gets MALE joint", rs.filter.curve)
-    if ln_id is None:
+    bar_b_id = rs.GetObject("Select second bar of the joint pair", rs.filter.curve)
+    if bar_b_id is None:
         return
 
-    le_bar_id = ensure_bar_id(le_id)
-    ln_bar_id = ensure_bar_id(ln_id)
+    # Ensure both bars are registered with IDs and sequence numbers.
+    bar_a_bid = ensure_bar_id(bar_a_id)
+    bar_b_bid = ensure_bar_id(bar_b_id)
+
+    # Auto-assign Le (female) / Ln (male) by assembly sequence.
+    seq_map = get_bar_seq_map()
+    seq_a = seq_map.get(bar_a_bid, (None, 9999))[1]
+    seq_b = seq_map.get(bar_b_bid, (None, 9999))[1]
+    if seq_a <= seq_b:
+        le_id, le_bar_id = bar_a_id, bar_a_bid
+        ln_id, ln_bar_id = bar_b_id, bar_b_bid
+    else:
+        le_id, le_bar_id = bar_b_id, bar_b_bid
+        ln_id, ln_bar_id = bar_a_id, bar_a_bid
+
+    le_seq = seq_map.get(le_bar_id, (None, "?"))[1]
+    ln_seq = seq_map.get(ln_bar_id, (None, "?"))[1]
+    print(
+        f"RSJointPlace: {le_bar_id} (seq {le_seq}) \u2192 female,  "
+        f"{ln_bar_id} (seq {ln_seq}) \u2192 male"
+    )
 
     le_start, le_end = curve_endpoints(le_id)
     ln_start, ln_end = curve_endpoints(ln_id)
 
-    # Solve all 4 endpoint-reversal variants
-    variants = _enumerate_solution_variants(le_start, le_end, ln_start, ln_end)
-
-    # Validate block definitions before showing the interactive loop
+    # Validate block definitions before solving.
     female_block_name = _require_block_definition(_FEMALE_BLOCK_NAME)
     male_block_name = _require_block_definition(_MALE_BLOCK_NAME)
 
-    # Print all variants summary
-    print("RSJointPlace: 4 assembly variants computed:")
-    for v in variants:
-        origin_err, z_err = _interface_metrics_from_result(v)
-        print(
-            f"  {v['variant_label']} | residual={v['residual']:.6f}, "
-            f"origin err={origin_err:.4f} mm, z err={np.degrees(z_err):.4f}deg"
-        )
-
-    # Interactive cycling loop
-    chosen = _interactive_variant_loop(variants, female_block_name, male_block_name)
+    # Interactive click loop — variants are computed on demand as the user toggles.
+    session = _JointSession(
+        le_start, le_end, ln_start, ln_end, female_block_name, male_block_name
+    )
+    chosen = _interactive_click_loop(session)
     if chosen is None:
         print("RSJointPlace: Cancelled.")
         return

@@ -16,6 +16,7 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSBarBrace | `rs_bar_brace.py` | Solve and pick brace-bar candidates between two bars |
 | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | RSJointPlace | `rs_joint_place.py` | Place female and male connector blocks on a selected bar pair |
+| RSJointEdit | `rs_joint_edit.py` | Re-edit the orientation of a previously placed joint pair by clicking a block |
 
 ## RSSetup Buttons
 

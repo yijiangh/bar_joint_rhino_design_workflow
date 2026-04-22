@@ -32,7 +32,12 @@ from core.rhino_helpers import (
     point_to_array,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id, ensure_bar_preview, repair_on_entry
+from core.rhino_bar_registry import (
+    ensure_bar_id,
+    ensure_bar_preview,
+    pick_bar,
+    repair_on_entry,
+)
 
 
 _REFERENCE_SEGMENT_PRINT_WIDTH = 0.8
@@ -95,10 +100,10 @@ def main():
     repair_on_entry(float(config.BAR_RADIUS), "RSBarSnap")
     rs.UnselectAllObjects()
 
-    le_id = rs.GetObject("Select existing bar (Le)", rs.filter.curve)
+    le_id = pick_bar("Select existing bar (Le)")
     if le_id is None:
         return
-    ln_id = rs.GetObject("Select new bar (Ln) - will be repositioned", rs.filter.curve)
+    ln_id = pick_bar("Select new bar (Ln) - will be repositioned")
     if ln_id is None:
         return
 

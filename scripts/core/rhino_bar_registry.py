@@ -627,3 +627,63 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
         parts.append(f"{len(changed)} sequence number(s) repaired")
     if parts:
         print(f"{caller} (startup): {', '.join(parts)}.")
+
+
+# ---------------------------------------------------------------------------
+# Bar-picking helper
+# ---------------------------------------------------------------------------
+
+
+def pick_bar(prompt):
+    """Prompt the user to pick a registered bar — centre-line curve or tube.
+
+    Uses :class:`Rhino.Input.Custom.GetObject` with a custom geometry filter
+    that accepts both the thin axis curve and the surrounding tube-preview
+    cylinder.  When the user clicks a tube the function transparently resolves
+    the pick to the underlying bar curve object ID so callers always receive
+    the actual curve.
+
+    Parameters
+    ----------
+    prompt : str
+        Command-line prompt shown while the user is selecting.
+
+    Returns
+    -------
+    object id or None
+        The Rhino object ID of the **bar curve** (never the tube), or ``None``
+        if the user cancelled.
+    """
+
+    def _filter(rhino_object, geometry, component_index):
+        oid = rhino_object.Id
+        return rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE or bool(
+            rs.GetUserText(oid, TUBE_BAR_ID_KEY)
+        )
+
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt(prompt)
+    go.EnablePreSelect(True, True)
+    go.SetCustomGeometryFilter(_filter)
+    result = go.Get()
+    if result != Rhino.Input.GetResult.Object:
+        return None
+
+    picked_id = go.Object(0).ObjectId
+    # Deselect the clicked object before returning so that a subsequent
+    # pick_bar() call with pre-select enabled does not immediately return
+    # the same object without waiting for user input.
+    rs.UnselectObject(picked_id)
+
+    # If the user clicked a tube preview, resolve to the underlying bar curve.
+    axis_guid_str = rs.GetUserText(picked_id, TUBE_AXIS_GUID_KEY)
+    if axis_guid_str:
+        for oid in rs.AllObjects():
+            if (
+                rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE
+                and str(rs.coerceguid(oid)) == axis_guid_str
+            ):
+                return oid
+        return None  # tube is stale — bar curve was deleted
+
+    return picked_id

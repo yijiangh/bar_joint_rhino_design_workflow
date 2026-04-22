@@ -37,7 +37,12 @@ from core.rhino_helpers import (
     point_to_array,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id, ensure_bar_preview, repair_on_entry
+from core.rhino_bar_registry import (
+    ensure_bar_id,
+    ensure_bar_preview,
+    pick_bar,
+    repair_on_entry,
+)
 
 
 _PREVIEW_COLORS = [
@@ -371,10 +376,10 @@ def main():
     repair_on_entry(float(config.BAR_RADIUS), "RSBarBrace")
     rs.UnselectAllObjects()
 
-    le1_id = rs.GetObject("Select first existing bar (Le1)", rs.filter.curve)
+    le1_id = pick_bar("Select first existing bar (Le1)")
     if le1_id is None:
         return
-    le2_id = rs.GetObject("Select second existing bar (Le2)", rs.filter.curve)
+    le2_id = pick_bar("Select second existing bar (Le2)")
     if le2_id is None:
         return
     ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on Le1")

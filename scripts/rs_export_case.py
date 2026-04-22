@@ -31,6 +31,7 @@ from core.t1_s2_case_export import (
     default_t1_s2_case_filename,
     write_t1_s2_case,
 )
+from core.rhino_bar_registry import pick_bar
 
 
 _S2_EXPORT_INPUTS_KEY = "s2_export_case_inputs"
@@ -88,14 +89,10 @@ def _cached_s2_inputs():
 
 def _select_s2_inputs():
     rs.UnselectAllObjects()
-    le1_id = rs.GetObject(
-        "Select first existing bar (Le1) for the T1-S2 debug export", rs.filter.curve
-    )
+    le1_id = pick_bar("Select first existing bar (Le1) for the T1-S2 debug export")
     if le1_id is None:
         return None
-    le2_id = rs.GetObject(
-        "Select second existing bar (Le2) for the T1-S2 debug export", rs.filter.curve
-    )
+    le2_id = pick_bar("Select second existing bar (Le2) for the T1-S2 debug export")
     if le2_id is None:
         return None
     ce1 = rs.GetPointOnCurve(

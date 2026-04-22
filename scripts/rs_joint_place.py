@@ -48,7 +48,12 @@ from core.rhino_helpers import (
     set_objects_layer,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id, get_bar_seq_map, repair_on_entry
+from core.rhino_bar_registry import (
+    ensure_bar_id,
+    get_bar_seq_map,
+    pick_bar,
+    repair_on_entry,
+)
 
 
 _DEBUG_FRAME_AXIS_LENGTH = 35.0
@@ -539,10 +544,10 @@ def main():
     _clear_debug_frames()
 
     rs.UnselectAllObjects()
-    bar_a_id = rs.GetObject("Select first bar of the joint pair", rs.filter.curve)
+    bar_a_id = pick_bar("Select first bar of the joint pair")
     if bar_a_id is None:
         return
-    bar_b_id = rs.GetObject("Select second bar of the joint pair", rs.filter.curve)
+    bar_b_id = pick_bar("Select second bar of the joint pair")
     if bar_b_id is None:
         return
 

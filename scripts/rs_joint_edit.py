@@ -2,17 +2,16 @@
 # venv: scaffolding_env
 # r: numpy
 # r: scipy
-"""RSJointEdit - Re-edit the orientation of a previously placed joint pair.
+"""RSJointEdit - Re-edit the orientation of previously placed joint pairs.
 
-Click any placed female or male joint block instance on the canvas.  The
-script reads the stored joint metadata, removes the existing blocks, and
-re-enters the same interactive click-to-toggle session used by RSJointPlace
-so you can flip the female or male orientation without re-picking the bars.
+Click any placed female or male joint block anywhere in the document.  The
+clicked block's side (female = le_rev, male = ln_rev) is toggled instantly
+and the joint pair is re-placed — no confirmation step required.
 
-  - **Click the female block** to toggle female orientation (le_rev).
-  - **Click the male block** to toggle male orientation (ln_rev).
-  - Press **Enter** or click **Accept** to confirm and write the new blocks.
-  - Press **Escape** to cancel (the original placement is restored).
+  - **Click the female block** to toggle female joint orientation (le_rev).
+  - **Click the male block** to toggle male joint orientation (ln_rev).
+  - Click repeatedly to cycle back and forth.
+  - Press **Escape** to exit the command.
 
 Requires that the joint was placed by a recent version of RSJointPlace that
 stores ``le_rev``, ``ln_rev``, ``variant_index``, ``female_parent_bar``, and
@@ -81,93 +80,72 @@ def main():
     _rjp._reload_runtime_modules()
     repair_on_entry(float(_rjp.config.BAR_RADIUS), "RSJointEdit")
 
-    # --- Step 1: let user click any placed joint block ----------------------
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("Click any placed joint block to re-edit its orientation")
-    go.EnablePreSelect(True, True)
-    go.SetCustomGeometryFilter(_placed_joint_filter)
-    result = go.Get()
-    if result != Rhino.Input.GetResult.Object:
-        print("RSJointEdit: No joint block selected.")
-        return
-
-    clicked_id = go.Object(0).ObjectId
-    # Read the layer now, before _remove_placed_joint deletes the object.
-    clicked_layer = rs.ObjectLayer(clicked_id)
-
-    # --- Step 2: read stored metadata --------------------------------------
-    joint_id = rs.GetUserText(clicked_id, "joint_id")
-    le_bar_id = rs.GetUserText(clicked_id, "female_parent_bar")
-    ln_bar_id = rs.GetUserText(clicked_id, "male_parent_bar")
-    le_rev_str = rs.GetUserText(clicked_id, "le_rev")
-    ln_rev_str = rs.GetUserText(clicked_id, "ln_rev")
-
-    if not joint_id or not le_bar_id or not ln_bar_id:
-        print(
-            "RSJointEdit: Could not read joint metadata from the selected block.\n"
-            "  This joint may have been placed by an older version of RSJointPlace.\n"
-            "  Re-place it with RSJointPlace to enable re-editing."
-        )
-        return
-
-    # le_rev / ln_rev default to False if missing (older placements without
-    # this key stored will start from variant 0, i.e. both forward).
-    le_rev = le_rev_str == "True"
-    ln_rev = ln_rev_str == "True"
-
-    # --- Step 3: find the bar curves in the document -----------------------
-    le_id = _find_bar_curve(le_bar_id)
-    ln_id = _find_bar_curve(ln_bar_id)
-    if le_id is None or ln_id is None:
-        missing = [b for b, i in [(le_bar_id, le_id), (ln_bar_id, ln_id)] if i is None]
-        print(f"RSJointEdit: Could not find bar curve(s): {', '.join(missing)}.")
-        return
-
-    # --- Step 4: validate block definitions --------------------------------
+    # Validate block definitions once up-front.
     try:
-        female_block_name = _rjp._require_block_definition(_rjp._FEMALE_BLOCK_NAME)
-        male_block_name = _rjp._require_block_definition(_rjp._MALE_BLOCK_NAME)
+        _rjp._require_block_definition(_rjp._FEMALE_BLOCK_NAME)
+        _rjp._require_block_definition(_rjp._MALE_BLOCK_NAME)
     except RuntimeError as exc:
         print(f"RSJointEdit: {exc}")
         return
 
-    # --- Step 5: get bar geometry (variants computed on demand in the session) ----
-    le_start, le_end = curve_endpoints(le_id)
-    ln_start, ln_end = curve_endpoints(ln_id)
+    # Continuous pick loop — no accept/confirm step.  Each click on a joint
+    # block immediately flips that block's side and re-places the pair.
+    # Press Escape to exit the command.
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt(
+            "Click any placed joint block to flip its orientation  (Escape to exit)"
+        )
+        go.EnablePreSelect(False, False)
+        go.SetCustomGeometryFilter(_placed_joint_filter)
+        result = go.Get()
+        if result != Rhino.Input.GetResult.Object:
+            print("RSJointEdit: Done.")
+            return
 
-    # --- Step 6: remove placed blocks and enter interactive session --------
-    _remove_placed_joint(joint_id)
+        clicked_id = go.Object(0).ObjectId
+        clicked_layer = rs.ObjectLayer(clicked_id)
 
-    # The opening click acts as the first toggle, so pre-flip the appropriate side.
-    init_le_rev = (
-        not le_rev if clicked_layer == _rjp._FEMALE_INSTANCES_LAYER else le_rev
-    )
-    init_ln_rev = not ln_rev if clicked_layer == _rjp._MALE_INSTANCES_LAYER else ln_rev
+        # Read stored metadata before the block is deleted.
+        joint_id = rs.GetUserText(clicked_id, "joint_id")
+        le_bar_id = rs.GetUserText(clicked_id, "female_parent_bar")
+        ln_bar_id = rs.GetUserText(clicked_id, "male_parent_bar")
+        le_rev = rs.GetUserText(clicked_id, "le_rev") == "True"
+        ln_rev = rs.GetUserText(clicked_id, "ln_rev") == "True"
 
-    session = _rjp._JointSession(
-        le_start,
-        le_end,
-        ln_start,
-        ln_end,
-        female_block_name,
-        male_block_name,
-        le_rev=init_le_rev,
-        ln_rev=init_ln_rev,
-    )
+        if not joint_id or not le_bar_id or not ln_bar_id:
+            print(
+                "RSJointEdit: Could not read joint metadata from the selected block.\n"
+                "  This joint may have been placed by an older version of RSJointPlace.\n"
+                "  Re-place it with RSJointPlace to enable re-editing."
+            )
+            continue
 
-    chosen = _rjp._interactive_click_loop(session)
+        # Toggle the side that was clicked.
+        if clicked_layer == _rjp._FEMALE_INSTANCES_LAYER:
+            le_rev = not le_rev
+        elif clicked_layer == _rjp._MALE_INSTANCES_LAYER:
+            ln_rev = not ln_rev
 
-    if chosen is None:
-        # Cancelled — restore the original placement (one solver call).
-        print("RSJointEdit: Cancelled — restoring original placement.")
-        orig_variant = _rjp._compute_variant(
+        # Find the underlying bar curves.
+        le_id = _find_bar_curve(le_bar_id)
+        ln_id = _find_bar_curve(ln_bar_id)
+        if le_id is None or ln_id is None:
+            missing = [
+                b for b, i in [(le_bar_id, le_id), (ln_bar_id, ln_id)] if i is None
+            ]
+            print(f"RSJointEdit: Could not find bar curve(s): {', '.join(missing)}.")
+            continue
+
+        # Compute only the one variant we need, then swap the blocks.
+        le_start, le_end = curve_endpoints(le_id)
+        ln_start, ln_end = curve_endpoints(ln_id)
+        new_variant = _rjp._compute_variant(
             le_start, le_end, ln_start, ln_end, le_rev, ln_rev
         )
-        _rjp._place_joint_blocks(orig_variant, le_id, ln_id, le_bar_id, ln_bar_id)
-        return
-
-    _rjp._place_joint_blocks(chosen, le_id, ln_id, le_bar_id, ln_bar_id)
-    print(f"RSJointEdit: {joint_id} updated.")
+        _remove_placed_joint(joint_id)
+        _rjp._place_joint_blocks(new_variant, le_id, ln_id, le_bar_id, ln_bar_id)
+        print(f"RSJointEdit: {joint_id} flipped.")
 
 
 if __name__ == "__main__":

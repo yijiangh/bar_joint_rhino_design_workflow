@@ -42,7 +42,6 @@ from core.rhino_helpers import (
     curve_endpoints,
     delete_objects,
     ensure_layer,
-    group_objects,
     point_to_array,
     set_object_color,
     set_objects_layer,
@@ -56,13 +55,10 @@ from core.rhino_bar_registry import (
 )
 
 
-_DEBUG_FRAME_AXIS_LENGTH = 35.0
-_DEBUG_FRAME_IDS_KEY = "rs_joint_place_debug_frame_ids"
 _FEMALE_BLOCK_NAME = "T20_Female"
 _MALE_BLOCK_NAME = "T20_Male"
 _FEMALE_INSTANCES_LAYER = "FemaleJointPlacedInstances"
 _MALE_INSTANCES_LAYER = "MaleJointPlacedInstances"
-_JOINT_OPTIMIZATION_FRAMES_LAYER = "JointOptimizationFrames"
 _PREVIEW_COLORS = [
     (230, 80, 80),
     (80, 80, 230),
@@ -99,7 +95,7 @@ _reload_runtime_modules()
 # ---------------------------------------------------------------------------
 
 # Generic helpers (point_to_array, curve_endpoints, as_object_id_list,
-# ensure_layer, set_objects_layer, group_objects, delete_objects,
+# ensure_layer, set_objects_layer, delete_objects,
 # set_object_color, suspend_redraw) are imported from core.rhino_helpers.
 
 
@@ -142,65 +138,6 @@ def _insert_block_instance(
     if role is not None:
         rs.SetUserText(oid, _JOINT_ROLE_KEY, role)
     return oid
-
-
-# ---------------------------------------------------------------------------
-# Debug frame baking
-# ---------------------------------------------------------------------------
-
-
-def _clear_debug_frames():
-    for oid in sc.sticky.pop(_DEBUG_FRAME_IDS_KEY, []):
-        if rs.IsObject(oid):
-            rs.DeleteObject(oid)
-
-
-def _remember_debug_frame_ids(object_ids):
-    baked = sc.sticky.get(_DEBUG_FRAME_IDS_KEY, [])
-    baked.extend(oid for oid in object_ids if oid is not None)
-    sc.sticky[_DEBUG_FRAME_IDS_KEY] = baked
-
-
-def _bake_frame_axes(frame, label, axis_length=_DEBUG_FRAME_AXIS_LENGTH):
-    frame = np.asarray(frame, dtype=float)
-    origin = frame[:3, 3]
-    axis_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
-    axis_names = ["x", "y", "z"]
-    baked_ids = []
-    for axis_index, (axis_name, color) in enumerate(zip(axis_names, axis_colors)):
-        axis_vec = np.asarray(frame[:3, axis_index], dtype=float)
-        axis_norm = float(np.linalg.norm(axis_vec))
-        if axis_norm <= 1e-12:
-            continue
-        lid = rs.AddLine(
-            origin.tolist(), (origin + axis_length * axis_vec / axis_norm).tolist()
-        )
-        if lid is None:
-            continue
-        rs.ObjectColor(lid, color)
-        rs.ObjectName(lid, f"{label}_{axis_name.upper()}")
-        rs.SetUserText(lid, "frame_label", label)
-        rs.SetUserText(lid, "axis_name", axis_name)
-        baked_ids.append(lid)
-    dot_id = rs.AddTextDot(label, origin.tolist())
-    if dot_id is not None:
-        rs.ObjectName(dot_id, f"{label}_label")
-        rs.SetUserText(dot_id, "frame_label", label)
-        baked_ids.append(dot_id)
-    set_objects_layer(baked_ids, _JOINT_OPTIMIZATION_FRAMES_LAYER)
-    group_objects(baked_ids)
-    return baked_ids
-
-
-def _bake_debug_ocf_frames(result, le_id, ln_id, prefix="RSJointPlace"):
-    le_start, le_end = curve_endpoints(le_id)
-    ln_start, ln_end = curve_endpoints(ln_id)
-    baked_ids = []
-    baked_ids.extend(_bake_frame_axes(make_bar_frame(le_start, le_end), f"{prefix}_Le"))
-    baked_ids.extend(_bake_frame_axes(make_bar_frame(ln_start, ln_end), f"{prefix}_Ln"))
-    baked_ids.extend(_bake_frame_axes(result["female_frame"], f"{prefix}_Female"))
-    baked_ids.extend(_bake_frame_axes(result["male_frame"], f"{prefix}_Male"))
-    _remember_debug_frame_ids(baked_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +451,6 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
             rs.SetUserText(obj_id, "le_rev", str(le_rev_val))
             rs.SetUserText(obj_id, "ln_rev", str(ln_rev_val))
             rs.SetUserText(obj_id, "variant_index", str(variant_index))
-        _bake_debug_ocf_frames(result, le_id, ln_id)
 
     print(f"RSJointPlace: Joints placed. Residual: {result['residual']:.6f}")
     if result.get("variant_index") is not None:
@@ -541,7 +477,6 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
 def main():
     _reload_runtime_modules()
     repair_on_entry(float(config.BAR_RADIUS), "RSJointPlace")
-    _clear_debug_frames()
 
     rs.UnselectAllObjects()
     bar_a_id = pick_bar("Select first bar of the joint pair")

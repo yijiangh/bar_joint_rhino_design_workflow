@@ -17,7 +17,9 @@ The Rhino toolbar buttons call the following entry-point scripts (all in `script
 |---------|--------|--------|---------|
 | **RSDesign** | RSBarSnap | `rs_bar_snap.py` | Snap a new bar onto an existing bar at contact distance |
 | **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
-| **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks with Next/Previous variant cycling |
+| **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
+| **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks; auto-assigns female/male by sequence, click to flip orientation |
+| **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair by clicking female or male block to flip orientation |
 | **RSSetup** | RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames into the document |
 | **RSSetup** | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector geometry to `config_generated.py` |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure closest distance between two line segments |
@@ -139,9 +141,16 @@ Rhino resolves the filename via Search Paths (set up above).
 
 #### RSJointPlace (`rs_joint_place.py`)
 
-- Pick a bar pair (Le = female, Ln = male); the optimizer solves 4 assembly variants by trying all combinations of bar-endpoint reversal.
-- Use `Next` / `Previous` to cycle through variants one at a time in the viewport preview.
-- Press Enter or type `Accept` to bake the current preview.
+- Pick any two registered bars; the bar with the lower assembly sequence is automatically assigned female (Le), the later one male (Ln).
+- The optimizer solves 4 assembly variants; the best-residual variant is shown first.
+- **Click the female block** to toggle female orientation; **click the male block** to toggle male orientation.
+- Press Enter or type `Accept` to bake the chosen configuration.
+
+#### RSJointEdit (`rs_joint_edit.py`)
+
+- Click any previously placed female or male joint block to re-open the interactive orientation session for that joint pair.
+- The stored `le_rev` / `ln_rev` state is read from the block's user-text, so the session resumes exactly where it was left.
+- Same click-to-flip interaction as RSJointPlace; Enter or `Accept` writes the updated blocks.
 
 #### RSMeasureGap (`rs_measure_gap.py`)
 

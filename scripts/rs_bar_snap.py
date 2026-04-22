@@ -32,7 +32,12 @@ from core.rhino_helpers import (
     point_to_array,
     suspend_redraw,
 )
-from core.rhino_bar_registry import ensure_bar_id, ensure_bar_preview
+from core.rhino_bar_registry import (
+    ensure_bar_id,
+    ensure_bar_preview,
+    pick_bar,
+    repair_on_entry,
+)
 
 
 _REFERENCE_SEGMENT_PRINT_WIDTH = 0.8
@@ -89,14 +94,16 @@ def _refresh_runtime_modules():
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     _refresh_runtime_modules()
+    repair_on_entry(float(config.BAR_RADIUS), "RSBarSnap")
     rs.UnselectAllObjects()
 
-    le_id = rs.GetObject("Select existing bar (Le)", rs.filter.curve)
+    le_id = pick_bar("Select existing bar (Le)")
     if le_id is None:
         return
-    ln_id = rs.GetObject("Select new bar (Ln) - will be repositioned", rs.filter.curve)
+    ln_id = pick_bar("Select new bar (Ln) - will be repositioned")
     if ln_id is None:
         return
 
@@ -107,7 +114,10 @@ def main():
     target_distance = float(config.BAR_CONTACT_DISTANCE)
 
     t_e, t_n = geometry.closest_params_infinite_lines(
-        le_start, le_direction, ln_start, ln_direction,
+        le_start,
+        le_direction,
+        ln_start,
+        ln_direction,
     )
     p_e = le_start + t_e * le_direction
     p_n = ln_start + t_n * ln_direction
@@ -115,7 +125,9 @@ def main():
     segment = p_e - p_n
     current_distance = np.linalg.norm(segment)
     if current_distance <= 1e-9:
-        rs.MessageBox("Error: the selected bars are coincident, so no unique contact normal exists.")
+        rs.MessageBox(
+            "Error: the selected bars are coincident, so no unique contact normal exists."
+        )
         return
 
     translation = (segment / current_distance) * (current_distance - target_distance)
@@ -128,8 +140,10 @@ def main():
         return
 
     _bake_reference_segment(
-        shortest_segment_start, shortest_segment_end,
-        "RSBarSnap_shortest_segment", (180, 0, 180),
+        shortest_segment_start,
+        shortest_segment_end,
+        "RSBarSnap_shortest_segment",
+        (180, 0, 180),
     )
     _place_axis_line(line_id, label="RSBarSnap_Ln")
 

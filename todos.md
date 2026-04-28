@@ -3,6 +3,12 @@
 - [ ] Add validation examples for prefab export edge cases (missing bar IDs, missing joint metadata).
 - [ ] Review test coverage for `rs_export_case.py` replay workflows.
 
+- [] the ik workflow should allow user to pick male and female joint. this will require an additional male-joint_from_tool0 transformation.
+- [] robot half transparent overlay to help user visualize when picking the ground position with two points.
+- [] should show both 
+
+- [] showIK should also display tool, and the mesh should not be baked. Similar behavior like the IK, make it disappear after done
+
 ## IK Keyframing (YH)
 
 ### IK keyframe workflow, including the Pineapple proxy check workflow
@@ -15,6 +21,7 @@ the input/output and provide example code snippets from my GH demo.
 1. user clicks on left arm Male joint, and then right arm Male joint
     - ok for now, but ideally this should be just clicking on a bar, since each bar should only have two Male joints
 2. show pineapple preview (robot wrist + tool, note that the left arm wrist and tool are different to right arm ones, prebaked as a block definition in ocf, positioned to the derived tool0 position)
+    - The block definition is named "AssemblyLeft_Pineapple" and "AssemblyRight_Pineapple", user should have already pasted them into the Rhino file beforehand. If it doens't exist, just throw a runtime error like in @rs_joint_place
 3. ask user to pick a base position, and one more point to indicate the x axis for heading. If no solution found, randomly sample in a small circle neighborhood with a limited trail. Sampling radius and max iter can be set in config.py, don't need to be exposed in Rhino. Directly snap to a brep, which is a more Rhino native way to do things. Don't do point to brep projection. 
 4. can ask for user to include collision checks or not, default to True
 5. Preview the resulting IK config in Rhino (can use the compas_fab scene display logic to use cache)
@@ -76,7 +83,7 @@ We don't store:
 
 Todos:
 - [x] add husky_urdf as a submodule here
-- [] export the wrist + tool coarse mesh in tool0 frame as a block
+- [x] export the wrist + tool coarse mesh in tool0 frame as a block
 
 Later
 - automatically export current state into a json file, first time in a Rhino file, ask user for a path (in Rhino cmd), but keep it in default unless user wants to change it.

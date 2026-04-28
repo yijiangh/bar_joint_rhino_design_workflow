@@ -21,9 +21,15 @@ try:
 except ImportError as exc:  # pragma: no cover - generated file is committed in the repo.
     raise RuntimeError("Missing core.config_generated; run the Rhino CAD export workflow.") from exc
 
+try:
+    from core import config_generated_ik as _generated_ik
+except ImportError:  # Optional: only required for IK workflows.
+    _generated_ik = None
+
 
 _CORE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.dirname(_CORE_DIR)
+REPO_ROOT = os.path.dirname(SCRIPTS_DIR)
 
 
 def _as_matrix(value) -> np.ndarray:
@@ -92,3 +98,86 @@ OPTIMIZER_TRANSLATION_PERTURBATION = 50.0
 
 def inverse_fixed_transform(transform: np.ndarray) -> np.ndarray:
     return invert_transform(transform)
+
+
+# ---------------------------------------------------------------------------
+# IK keyframe workflow
+# ---------------------------------------------------------------------------
+
+# Robot identity and planning groups (compas_fab / PyBullet)
+ROBOT_ID = "dual-arm_husky_Cindy"
+LEFT_GROUP = "base_left_arm_manipulator"
+RIGHT_GROUP = "base_right_arm_manipulator"
+LEFT_TOOL_NAME = "AL"
+RIGHT_TOOL_NAME = "AR"
+
+# URDF/SRDF locations (relative to repo root `asset/husky_urdf/`)
+# HUSKY_URDF_FILENAME is just the filename; LocalPackageMeshLoader.load_urdf()
+# implicitly prepends the package's `urdf/` subfolder (see compas_robots
+# resources/basic.py). HUSKY_SRDF_REL_PATH keeps the `config/` subfolder
+# because SRDF uses `build_path(dirname, basename)` which does not.
+HUSKY_PKG_PATH = os.path.join(REPO_ROOT, "asset", "husky_urdf")
+HUSKY_URDF_PKG_NAME = "mt_husky_dual_ur5_e_moveit_config"
+HUSKY_URDF_FILENAME = "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf"
+HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
+
+# Pineapple (wrist + tool) proxy block names, pre-baked by user
+LEFT_PINEAPPLE_BLOCK = "AssemblyLeft_Pineapple"
+RIGHT_PINEAPPLE_BLOCK = "AssemblyRight_Pineapple"
+
+# Tool meshes exported from the pineapple Rhino block definitions, in METERS
+# (compas convention). Written by `RSExportPineappleOBJ`; consumed by
+# `core.robot_cell.get_or_load_robot_cell` when attaching tool models for
+# IK collision checking.
+LEFT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyLeft_Pineapple_m.obj")
+RIGHT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyRight_Pineapple_m.obj")
+
+# Layer holding ground Breps for base-point snapping
+WALKABLE_GROUND_LAYER = "WalkableGround"
+
+# Approach distance: tool0 translated by -avg(male z) * LM_DISTANCE before final
+LM_DISTANCE = 15.0  # mm
+
+# IK base sampling fallback
+IK_BASE_SAMPLE_RADIUS = 150.0  # mm
+IK_BASE_SAMPLE_MAX_ITER = 20
+
+# IK solver tuning (compas_fab PyBullet planner)
+IK_MAX_RESULTS = 20
+IK_MAX_DESCEND_ITERATIONS = 200
+IK_TOLERANCE_POSITION = 1e-3  # m (compas_fab uses SI; values converted at the call site if needed)
+IK_TOLERANCE_ORIENTATION = 1e-3  # rad
+
+
+ARM_SIDES = ("left", "right")
+
+
+def _sanitize_ocf_to_tool0_dict(raw):
+    """Sanitize `{joint_type: {arm_side: 4x4}}` into orthonormal float matrices.
+
+    Accepts only the nested-per-arm schema. Left and right UR arms each carry
+    a distinct physical tool, so the OCF -> tool0 transform differs per side.
+    """
+    if raw is None:
+        return {}
+    sanitized = {}
+    for joint_type, per_side in raw.items():
+        if not isinstance(per_side, dict):
+            raise ValueError(
+                f"MALE_JOINT_OCF_TO_TOOL0['{joint_type}'] must be a "
+                "{'left': <4x4>, 'right': <4x4>} dict. Re-export via RSExportJointTool0TF."
+            )
+        sanitized_sides = {}
+        for side, matrix in per_side.items():
+            if side not in ARM_SIDES:
+                raise ValueError(
+                    f"MALE_JOINT_OCF_TO_TOOL0['{joint_type}']['{side}']: side must be one of {ARM_SIDES}."
+                )
+            sanitized_sides[str(side)] = _as_matrix(matrix)
+        sanitized[str(joint_type)] = sanitized_sides
+    return sanitized
+
+
+MALE_JOINT_OCF_TO_TOOL0 = _sanitize_ocf_to_tool0_dict(
+    getattr(_generated_ik, "MALE_JOINT_OCF_TO_TOOL0", None) if _generated_ik is not None else None
+)

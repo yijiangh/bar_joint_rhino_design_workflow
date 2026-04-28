@@ -20,10 +20,16 @@ The Rhino toolbar buttons call the following entry-point scripts (all in `script
 | **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks; auto-assigns female/male by sequence, click to flip orientation |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair by clicking female or male block to flip orientation |
+| **RSDesign** | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe (pick 2 male joints, solve IK, save on shared Ln bar) |
+| **RSDesign** | RSShowIK | `rs_show_ik.py` | Replay a saved IK keyframe on a picked bar |
 | **RSSetup** | RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames into the document |
 | **RSSetup** | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector geometry to `config_generated.py` |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure closest distance between two line segments |
 | **RSSetup** | RSExportCase | `rs_export_case.py` | Export a T1-S2 optimization case to JSON for testing |
+| **RSSetup** | RSExportJointTool0TF | `rs_export_joint_tool0_tf.py` | Export male-joint OCF → tool0 transform (IK keyframe workflow) |
+| **RSSetup** | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client used by IK workflows |
+| **RSSetup** | RSPBStop | `rs_pb_stop.py` | Disconnect the shared PyBullet client |
+| **RSSetup** | RSExportPineappleOBJ | `rs_export_pineapple_obj.py` | Export pineapple block defs as OBJ (meters) for IK collision tool models |
 
 These scripts do not require PyBullet. They only need `numpy` and `scipy`.
 
@@ -39,6 +45,20 @@ These scripts do not require PyBullet. They only need `numpy` and `scipy`.
 When you run any script for the first time, Rhino's ScriptEditor will automatically create the `scaffolding_env` virtual environment and install the required packages. All scripts share the same venv so the install only happens once.
 
 If the ScriptEditor install ever fails or becomes corrupted, reset via **Tools > Advanced > Reset Python 3 (CPython) Runtime** in the ScriptEditor and re-run the script.
+
+### Submodule dependencies for the IK workflow
+
+The IK keyframe workflow (RSPBStart, RSIKKeyframe, RSShowIK) depends on a specific development branch of [compas_fab](https://github.com/compas-dev/compas_fab/tree/wip_process). That branch is vendored as a git submodule at `external/compas_fab` rather than pulled from PyPI via `# r:` — this keeps iteration on the branch deterministic and avoids the pip-cache SHA gotcha described in [tasks/yh_lesson.md](tasks/yh_lesson.md).
+
+After cloning this repo (or pulling changes that touch the submodule), run:
+
+```bash
+git submodule update --init --recursive
+```
+
+`scripts/core/robot_cell.py` prepends `external/compas_fab/src` onto `sys.path` before any `import compas_fab`, so Rhino scripts see the submodule version automatically. To switch to a different upstream commit, `cd external/compas_fab && git fetch && git checkout <sha>` — the next Rhino script run loads that SHA with no venv state to reset.
+
+The IK scripts still declare the remaining transitive dependencies (`compas`, `compas_robots`, `pybullet`, `pybullet_planning`, plus `numpy` / `scipy`) via `# r:` so Rhino's ScriptEditor installs them into `scaffolding_env` on first run. Do **not** add `# r: compas_fab` — that would bypass the submodule and silently shadow it.
 
 ### Optional developer install
 
@@ -160,6 +180,46 @@ Rhino resolves the filename via Search Paths (set up above).
 #### RSExportCase (`rs_export_case.py`)
 
 - Exports the current T1-S2 selection as a JSON debug case for replay outside Rhino.
+
+#### RSExportJointTool0TF (`rs_export_joint_tool0_tf.py`)
+
+- Prompts for a joint type string (default `T20`), then picks one baked male-joint frame group followed by one baked tool0 frame group.
+- Computes `tf = inverse(male_ocf) @ tool0_frame` so that `tool0_world = male_ocf_world @ tf`.
+- Merges the result into `MALE_JOINT_OCF_TO_TOOL0[joint_type]` in `scripts/core/config_generated_ik.py`, preserving entries for other joint types.
+- Needed once per joint type before running the IK keyframe workflow.
+
+#### RSExportPineappleOBJ (`rs_export_pineapple_obj.py`)
+
+- Walks the two block definitions named in `core.config` (`LEFT_PINEAPPLE_BLOCK`, `RIGHT_PINEAPPLE_BLOCK`), combines all renderable geometry into a single mesh per block, scales to meters, writes to `asset/AssemblyLeft_Pineapple_m.obj` and `asset/AssemblyRight_Pineapple_m.obj`.
+- If a target file already exists, prompts per file: `Reuse` keeps the existing OBJ, `Reexport` overwrites.
+- Run once per project, plus whenever the pineapple geometry changes.
+- The OBJs are loaded as `compas_robots.ToolModel` instances by `core.robot_cell.get_or_load_robot_cell` so the IK self-collision check sees the wrist + tool geometry.
+
+#### RSPBStart / RSPBStop (`rs_pb_start.py`, `rs_pb_stop.py`)
+
+- RSPBStart launches a shared PyBullet client (GUI or Direct), loads the dual-arm Husky URDF/SRDF, and caches the client + planner in `scriptcontext.sticky`.
+- Subsequent IK scripts (RSIKKeyframe, RSShowIK) reuse this same client across multiple invocations to avoid reloading geometry.
+- RSPBStop disconnects it.
+- Requires the `external/compas_fab` submodule checked out (see "Submodule dependencies for the IK workflow" above) plus the PyPI extras `compas`, `compas_robots`, `pybullet`, `pybullet_planning` (Rhino auto-installs these via `# r:`).
+
+#### RSIKKeyframe (`rs_ik_keyframe.py`)
+
+- Prerequisite: RSPBStart must have been run, and `MALE_JOINT_OCF_TO_TOOL0` must contain an entry for each picked joint's `joint_type` (populate via RSExportJointTool0TF).
+- Prerequisite: Rhino document contains block definitions `AssemblyLeft_Pineapple` and `AssemblyRight_Pineapple`, and at least one Brep on layer `WalkableGround`.
+- Workflow:
+  1. Pick the left arm male joint block, then the right arm male joint block. Both must share `male_parent_bar` (the new Ln bar being assembled).
+  2. Pineapple blocks preview the wrist + tool at the derived tool0 frames so collisions can be visually inspected.
+  3. Pick a base point snapped to a Brep in `WalkableGround`; the Brep face normal defines the base Z-axis. Pick a second point for the base +X heading.
+  4. Prompt for collision options (self, environment).
+  5. IK solves the final target; if unreachable, samples base positions in a disc of radius `IK_BASE_SAMPLE_RADIUS` around the pick (each re-snapped to the same Brep) up to `IK_BASE_SAMPLE_MAX_ITER` attempts.
+  6. Repeats for the approach target, offset by `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE`.
+  7. On `Accept`, serializes `ik_assembly` (robot id, base frame in world mm, `final` + `approach` per-group configs) as JSON user-text on the shared Ln bar axis line. Preview meshes and pineapples are always cleared at end of run.
+
+#### RSShowIK (`rs_show_ik.py`)
+
+- Prerequisite: RSPBStart must have been run.
+- Pick any bar carrying an `ik_assembly` user-text record; the script rebuilds the robot cell state and displays it via `core.ik_viz`.
+- Prompt: `final` (default) or `approach` to toggle which sub-record is shown.
 
 ## Standalone Developer Tools
 
@@ -335,8 +395,12 @@ scripts/
   core/
     config.py                  # Public config entry point
     config_generated.py        # Auto-generated CAD geometry from Rhino
+    config_generated_ik.py     # Auto-generated IK transforms (MALE_JOINT_OCF_TO_TOOL0)
     geometry.py                # Line-line distance math and S2-T1 solving
     kinematics.py              # FK and joint placement optimization
+    ik_viz.py                  # Rhino-side cache for the dual-arm robot scene preview
+    rhino_frame_io.py          # Shared helpers to reconstruct baked Rhino frame groups
+    robot_cell.py              # Dual-arm Husky cell load + PyBullet lifecycle + IK helpers
     t1_s2_case_export.py       # Shared JSON payload builder for T1-S2 debug cases
     transforms.py              # Shared frame/transform helpers
   rs_bake_frame.py             # Rhino: bake a named frame from picked points
@@ -345,6 +409,12 @@ scripts/
   rs_joint_place.py            # Rhino: place connector blocks on a bar pair
   rs_export_config.py          # Rhino: export CAD-backed fixed transforms
   rs_export_case.py            # Rhino: export a reproducible T1-S2 solver case as JSON
+  rs_export_joint_tool0_tf.py  # Rhino: export male-joint OCF -> tool0 transform for IK
+  rs_export_pineapple_obj.py   # Rhino: export pineapple block defs to OBJ (m) for IK tool models
+  rs_pb_start.py               # Rhino: start the shared PyBullet client (GUI / Direct)
+  rs_pb_stop.py                # Rhino: disconnect the shared PyBullet client
+  rs_ik_keyframe.py            # Rhino: dual-arm IK keyframe workflow (main)
+  rs_show_ik.py                # Rhino: replay a saved IK keyframe
   rs_measure_gap.py            # Rhino: shortest segment between two finite lines
   generate_urdf.py             # Standalone: generate URDF from CAD-backed config
   pb_viz_urdf_static.py        # Standalone: static labeled PyBullet viewer
@@ -360,4 +430,8 @@ support_materials/
   FrameX/                      # Reference codebase (git submodule)
   papers/                      # Research papers
   specs.pdf                    # Design specifications
+external/
+  compas_fab/                  # Pinned wip_process branch (git submodule) — loaded via sys.path in core/robot_cell.py
+asset/
+  husky_urdf/                  # Husky URDF/SRDF/meshes (git submodule)
 ```

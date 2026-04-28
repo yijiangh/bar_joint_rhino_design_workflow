@@ -125,3 +125,47 @@ rotation_deg = atan2(dot(cross(bar_X, proj), bar_Z), dot(bar_X, proj))
 
 At `rotation_deg = 0` the joint's assembly axis (Z) is aligned with the bar's X-axis.  
 Positive rotation is counter-clockwise about bar Z (right-hand rule).
+
+---
+
+## 6. IK Keyframe Data (`ik_assembly` / `ik_support`)
+
+The IK keyframe workflow (`RSIKKeyframe`) stores a JSON record as user-text on the shared **Ln bar axis line** — not on joint blocks and not on individual Le bars. `RSShowIK` reads the same record to replay a saved keyframe.
+
+### Where
+
+- `ik_assembly` is stored on the Ln bar user-text (key exactly `ik_assembly`, value = JSON string).
+- Both picked male joint blocks must share the same `male_parent_bar` user-text — that bar is the Ln bar and receives the record.
+- `ik_support` is reserved for a future single-arm workflow using the same bar, with a parallel shape.
+
+### `ik_assembly` schema
+
+```json
+{
+  "robot_id": "dual-arm_husky_Cindy",
+  "base_frame_world_mm": [[...4x4 row-major...]],
+  "final":    { "left":  {"joint_names": [...], "joint_values": [...]},
+                "right": {"joint_names": [...], "joint_values": [...]} },
+  "approach": { "left":  {"joint_names": [...], "joint_values": [...]},
+                "right": {"joint_names": [...], "joint_values": [...]} }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `robot_id` | Identifier of the robot model the keyframe was solved against. Currently `"dual-arm_husky_Cindy"`. |
+| `base_frame_world_mm` | 4x4 homogeneous transform of the mobile-base frame in world coordinates, **translations in mm**. Z = Brep face normal at the picked base point; X = heading projected onto the tangent plane. |
+| `final` | Joint configurations for both arms with the tools at the final contact poses (tool0 = male OCF ⊗ `MALE_JOINT_OCF_TO_TOOL0[joint_type]`). |
+| `approach` | Joint configurations for both arms with tools offset by `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE` from the final poses. |
+| Per-side `joint_names` / `joint_values` | Configurable joints of the planning group (`base_left_arm_manipulator` / `base_right_arm_manipulator`), order preserved from `RobotCell.get_configurable_joint_names(group)`. |
+
+### Invariants
+
+- Translations in `base_frame_world_mm` are in **millimetres**; joint values in radians.
+- The base frame applies to both `final` and `approach` — the mobile base is stationary between the two poses.
+- `ik_support` (when written) will follow the same field layout but contain a single `"arm"` entry instead of `"left"` + `"right"`.
+
+### Not stored on the bar
+
+- **Bar OCF** — always recomputed fresh from bar endpoints per §2.
+- **Joint OCFs and types** — looked up at load time by scanning baked joint block instances for matching `male_parent_bar` / `female_parent_bar`; the authoritative joint transform is the block instance's world transform.

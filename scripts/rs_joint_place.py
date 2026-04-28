@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """RSJointPlace - Place connector blocks on one bar pair.
 
 Select any two registered bars.  The bar with the lower assembly sequence

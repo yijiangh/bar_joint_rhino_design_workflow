@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """RSBarSnap - Snap a new bar onto an existing bar at contact distance.
 
 Pick an existing bar (Le) and a new bar (Ln). The script translates Ln so that

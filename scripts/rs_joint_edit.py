@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """RSJointEdit - Re-edit the orientation of previously placed joint pairs.
 
 Click any placed female or male joint block anywhere in the document.  The

@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """Export CAD-backed connector config from baked Rhino frames.
 
 Run in Rhino 8 with:
@@ -15,9 +15,7 @@ import os
 import sys
 
 import numpy as np
-import Rhino
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -25,11 +23,14 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core.geometry import closest_params_infinite_lines, distance_infinite_lines
+from core.rhino_frame_io import (
+    doc_unit_scale_to_mm as _doc_unit_scale_to_mm,
+    reconstruct_frame as _reconstruct_frame,
+    resolve_frame_group as _resolve_frame_group,
+)
 from core.transforms import (
-    frame_from_axes,
     invert_transform,
     local_transform,
-    orthonormalize_rotation,
     project_point_to_line,
     rotation_preserves_local_z,
 )
@@ -43,8 +44,6 @@ _FRAME_NAMES = (
     "male_link",
     "ln_bar_link",
 )
-_AXIS_OBJECT_NAMES = ("frame_x_axis", "frame_y_axis", "frame_z_axis")
-_LINE_TOL = 1e-6
 _SEGMENT_COLOR = (255, 64, 255)
 _LOCAL_Z_QUARTER_TURN = np.array(
     [
@@ -54,99 +53,6 @@ _LOCAL_Z_QUARTER_TURN = np.array(
     ],
     dtype=float,
 )
-
-
-def _doc_unit_scale_to_mm() -> float:
-    return float(Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters))
-
-
-def _point_to_mm(point, scale_to_mm: float) -> np.ndarray:
-    if hasattr(point, "X") and hasattr(point, "Y") and hasattr(point, "Z"):
-        return np.array([point.X, point.Y, point.Z], dtype=float) * scale_to_mm
-    return np.asarray(point, dtype=float) * scale_to_mm
-
-
-def _line_endpoints_mm(object_id, scale_to_mm: float) -> tuple[np.ndarray, np.ndarray]:
-    curve = rs.coercecurve(object_id)
-    if curve is None:
-        raise ValueError("Expected a line object in the baked frame group.")
-    start = _point_to_mm(curve.PointAtStart, scale_to_mm)
-    end = _point_to_mm(curve.PointAtEnd, scale_to_mm)
-    return start, end
-
-
-def _same_point(point_a: np.ndarray, point_b: np.ndarray, *, tol: float = _LINE_TOL) -> bool:
-    return float(np.linalg.norm(point_a - point_b)) <= tol
-
-
-def _group_members_from_selection(object_id):
-    groups = rs.ObjectGroups(object_id) or []
-    if not groups:
-        raise ValueError("Selected object is not part of a baked frame group.")
-    if len(groups) > 1:
-        raise ValueError("Selected object belongs to multiple groups; please select a single baked frame group.")
-    group_name = groups[0]
-    members = rs.ObjectsByGroup(group_name) or []
-    if not members:
-        raise ValueError("Selected frame group is empty.")
-    return group_name, members
-
-
-def _resolve_frame_group(prompt: str):
-    object_id = rs.GetObject(prompt)
-    if object_id is None:
-        return None
-    return _group_members_from_selection(object_id)
-
-
-def _frame_label_from_group(group_members) -> str:
-    for object_id in group_members:
-        if rs.IsTextDot(object_id):
-            text = rs.TextDotText(object_id)
-            if text:
-                return text
-        name = rs.ObjectName(object_id)
-        if name and name not in _AXIS_OBJECT_NAMES:
-            return name
-    return ""
-
-
-def _extract_axis_lines(group_members):
-    axis_lines = {}
-    for object_id in group_members:
-        name = rs.ObjectName(object_id)
-        if name in _AXIS_OBJECT_NAMES:
-            axis_lines[name] = object_id
-    missing = [name for name in _AXIS_OBJECT_NAMES if name not in axis_lines]
-    if missing:
-        raise ValueError(f"Frame group is missing baked axes: {', '.join(missing)}")
-    return axis_lines
-
-
-def _shared_origin_mm(axis_lines, scale_to_mm: float) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    endpoints = {name: _line_endpoints_mm(object_id, scale_to_mm) for name, object_id in axis_lines.items()}
-    candidates = []
-    for start, end in endpoints.values():
-        candidates.extend([start, end])
-    for candidate in candidates:
-        if all(_same_point(candidate, start) or _same_point(candidate, end) for start, end in endpoints.values()):
-            axis_vectors = {}
-            for name, (start, end) in endpoints.items():
-                tip = end if _same_point(candidate, start) else start
-                axis_vectors[name] = tip - candidate
-            return candidate, axis_vectors
-    raise ValueError("Failed to identify a shared origin in the baked frame group.")
-
-
-def _reconstruct_frame(group_members, scale_to_mm: float) -> tuple[np.ndarray, str]:
-    axis_lines = _extract_axis_lines(group_members)
-    origin, axis_vectors = _shared_origin_mm(axis_lines, scale_to_mm)
-    x_axis = axis_vectors["frame_x_axis"]
-    y_axis = axis_vectors["frame_y_axis"]
-    z_axis = axis_vectors["frame_z_axis"]
-    frame = frame_from_axes(origin, x_axis, y_axis, z_axis)
-    frame[:3, :3] = orthonormalize_rotation(frame[:3, :3])
-    return frame, _frame_label_from_group(group_members)
 
 
 def _validate_close_to_identity(rotation: np.ndarray, *, tol: float = 1e-6, message: str = "") -> None:

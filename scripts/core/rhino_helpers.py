@@ -50,10 +50,18 @@ def as_object_id_list(object_ids):
 # ---------------------------------------------------------------------------
 
 def ensure_layer(layer_name):
-    """Create *layer_name* if it does not exist.  Return the name."""
-    if not rs.IsLayer(layer_name):
-        rs.AddLayer(layer_name)
-    return layer_name
+    """Create *layer_name* (possibly a nested ``Parent::Child`` path) if it
+    does not exist, and make every layer along the path visible.  Returns
+    the full path."""
+    parts = layer_name.split("::")
+    cur = ""
+    for i, name in enumerate(parts):
+        cur = name if i == 0 else cur + "::" + name
+        if not rs.IsLayer(cur):
+            rs.AddLayer(cur)
+        if hasattr(rs, "LayerVisible") and not rs.LayerVisible(cur):
+            rs.LayerVisible(cur, True)
+    return cur
 
 
 # ---------------------------------------------------------------------------
@@ -141,3 +149,21 @@ def suspend_redraw():
             rs.EnableRedraw(redraw_is_enabled)
         if redraw_is_enabled and hasattr(rs, "Redraw"):
             rs.Redraw()
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
+
+
+def add_centered_line(midpoint, direction, length_mm):
+    """Add a Rhino line of *length_mm* centered at *midpoint* along
+    *direction* (unit-normalized internally).  Returns the new line's
+    object id.
+    """
+    direction = np.asarray(direction, dtype=float)
+    direction = direction / np.linalg.norm(direction)
+    half_length = float(length_mm) / 2.0
+    return rs.AddLine(
+        midpoint - half_length * direction, midpoint + half_length * direction
+    )

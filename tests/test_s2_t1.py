@@ -1,6 +1,5 @@
 import numpy as np
 
-from core.config import BAR_CONTACT_DISTANCE
 from core.geometry import (
     closest_params_infinite_lines,
     distance_infinite_lines,
@@ -9,6 +8,11 @@ from core.geometry import (
     solve_s2_t1_report,
 )
 
+
+# Representative connector contact distance (mm) used purely as a numeric
+# fixture for the S2-T1 solver tests.  The real per-pair contact distances
+# are stored in ``scripts/core/joint_pairs.json``.
+BAR_CONTACT_DISTANCE = 36.0
 
 TOL = 1e-4
 

@@ -1,7 +1,6 @@
 # Todos
 
 - [ ] Add validation examples for prefab export edge cases (missing bar IDs, missing joint metadata).
-- [ ] Review test coverage for `rs_export_case.py` replay workflows.
 
 - [] the ik workflow should allow user to pick male and female joint. this will require an additional male-joint_from_tool0 transformation.
 - [] robot half transparent overlay to help user visualize when picking the ground position with two points.

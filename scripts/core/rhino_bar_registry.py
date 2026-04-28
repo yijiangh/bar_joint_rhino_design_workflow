@@ -17,6 +17,7 @@ import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
+from core import config
 from core.rhino_helpers import (
     as_object_id_list,
     apply_object_display,
@@ -36,9 +37,12 @@ BAR_GUID_KEY = "bar_guid"
 BAR_SEQ_KEY = "bar_seq"
 BAR_TYPE_VALUE = "scaffolding_bar"
 
-TUBE_LAYER = "Tube preview"
+# Layer names are owned by ``core.config`` so the whole toolchain agrees.
+TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
+BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
 TUBE_BAR_ID_KEY = "tube_bar_id"
 TUBE_AXIS_GUID_KEY = "tube_axis_id"
+TUBE_SELF_GUID_KEY = "tube_self_guid"
 TUBE_CACHE_START = "tube_cache_start"
 TUBE_CACHE_END = "tube_cache_end"
 BAR_RADIUS_KEY = "tube_radius"
@@ -139,6 +143,9 @@ def ensure_bar_id(curve_id, bar_type=BAR_TYPE_VALUE):
     rs.SetUserText(curve_id, BAR_ID_KEY, new_id)
     rs.SetUserText(curve_id, BAR_GUID_KEY, current_guid)
     rs.ObjectName(curve_id, new_id)
+    # Move the centerline curve onto the managed centerline layer.
+    ensure_layer(BAR_CENTERLINE_LAYER)
+    rs.ObjectLayer(curve_id, BAR_CENTERLINE_LAYER)
     # ensure_bar_seq is a no-op for copy-pastes (old seq survives), and assigns
     # the next integer for brand-new curves (no user text at all).
     ensure_bar_seq(curve_id)
@@ -435,21 +442,104 @@ def _bar_curve_and_tube(curve_id):
     return ids
 
 
-def show_sequence_colors(active_bar_id, show_unbuilt=True):
-    """Apply sequence colour-coding to all registered bars in the viewport.
+# ---------------------------------------------------------------------------
+# Joint / tool lookup by parent bar
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    active_bar_id : str
-        The bar ID representing the current assembly step.
-    show_unbuilt : bool
-        When ``False``, bars with a higher sequence number than the active bar
-        are hidden so the viewport shows only the built portion of the assembly.
+
+def _joint_layer_objects():
+    """All joint block instance ids on the female + male joint layers."""
+    out = []
+    for layer in (
+        config.LAYER_JOINT_FEMALE_INSTANCES,
+        config.LAYER_JOINT_MALE_INSTANCES,
+    ):
+        if rs.IsLayer(layer):
+            out.extend(rs.ObjectsByLayer(layer) or [])
+    return out
+
+
+def _tool_layer_objects():
+    """All robotic-tool block instance ids on the tool-instances layer."""
+    layer = config.LAYER_TOOL_INSTANCES
+    if not rs.IsLayer(layer):
+        return []
+    return list(rs.ObjectsByLayer(layer) or [])
+
+
+def get_joints_for_bar(bar_id):
+    """Return joint block instance ids whose ``parent_bar_id`` is *bar_id*.
+
+    A joint pair always has one female and one male instance; their parent
+    bars differ (female -> Le bar, male -> Ln bar).  This returns whichever
+    instance(s) are *parented* to the given bar, regardless of role.
+    """
+    return [
+        oid
+        for oid in _joint_layer_objects()
+        if rs.GetUserText(oid, "parent_bar_id") == bar_id
+    ]
+
+
+def get_active_tool_oids(active_bar_id):
+    """Return tool block instance ids whose male joint is parented to *active_bar_id*.
+
+    A robotic tool is conceptually 'used to assemble' the bar that owns
+    its male joint -- so the active tool for a given step is the tool
+    whose joint's male side has ``parent_bar_id == active_bar_id``.
+    """
+    if not active_bar_id:
+        return []
+    male_layer = config.LAYER_JOINT_MALE_INSTANCES
+    if not rs.IsLayer(male_layer):
+        return []
+    active_joint_ids = {
+        rs.GetUserText(oid, "joint_id")
+        for oid in (rs.ObjectsByLayer(male_layer) or [])
+        if rs.GetUserText(oid, "parent_bar_id") == active_bar_id
+        and rs.GetUserText(oid, "joint_id")
+    }
+    if not active_joint_ids:
+        return []
+    return [
+        oid
+        for oid in _tool_layer_objects()
+        if rs.GetUserText(oid, "joint_id") in active_joint_ids
+    ]
+
+
+def _set_visible(oid, visible):
+    if visible:
+        rs.ShowObject(oid)
+    else:
+        rs.HideObject(oid)
+
+
+def show_sequence_colors(active_bar_id, show_unbuilt=True):
+    """Apply sequence colour-coding + visibility to bars, joints, and tools.
+
+    Bar visibility / colour
+        - ``seq < active_seq``  -> green (built), shown.
+        - ``seq == active_seq`` -> blue  (active step), shown.
+        - ``seq > active_seq``  -> grey  (unbuilt), shown iff *show_unbuilt*.
+
+    Joint visibility
+        Each joint instance follows the visibility of its parent bar
+        (``parent_bar_id`` UserText).  Joints on built / active bars are
+        always shown; joints on unbuilt bars follow *show_unbuilt*.
+
+    Tool visibility
+        Only the robotic tool(s) belonging to the *active* step are
+        shown -- i.e. tools whose joint's male side is parented to
+        *active_bar_id*.  All other tools are hidden.
     """
     bar_map = get_bar_seq_map()
     if active_bar_id not in bar_map:
         return
     _, active_seq = bar_map[active_bar_id]
+
+    # Build a quick "is this bar visible?" map for the joint pass.
+    bar_visible_by_id = {}
 
     rs.EnableRedraw(False)
     for bar_id, (oid, seq) in bar_map.items():
@@ -462,24 +552,57 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
         else:
             color = SEQ_COLOR_UNBUILT
             visible = show_unbuilt
-
+        bar_visible_by_id[bar_id] = visible
         for obj in _bar_curve_and_tube(oid):
             _set_obj_color(obj, color)
-            if visible:
-                rs.ShowObject(obj)
-            else:
-                rs.HideObject(obj)
+            _set_visible(obj, visible)
+
+    # Joints follow their parent bar's visibility AND color.  Setting
+    # by-object color on the block instance lets nested sub-objects that
+    # are set to "by parent" inherit it automatically.
+    bar_color_by_id = {}
+    for bar_id_key, (_oid, seq) in bar_map.items():
+        if seq < active_seq:
+            bar_color_by_id[bar_id_key] = SEQ_COLOR_BUILT
+        elif seq == active_seq:
+            bar_color_by_id[bar_id_key] = SEQ_COLOR_ACTIVE
+        else:
+            bar_color_by_id[bar_id_key] = SEQ_COLOR_UNBUILT
+
+    for joint_oid in _joint_layer_objects():
+        parent_bar_id = rs.GetUserText(joint_oid, "parent_bar_id")
+        visible = bar_visible_by_id.get(parent_bar_id, True)
+        color = bar_color_by_id.get(parent_bar_id)
+        if color is not None:
+            _set_obj_color(joint_oid, color)
+        _set_visible(joint_oid, visible)
+
+    # Tools: hide all, then show + color the active step's tool(s).
+    active_tool_oids = set(get_active_tool_oids(active_bar_id))
+    for tool_oid in _tool_layer_objects():
+        is_active = tool_oid in active_tool_oids
+        if is_active:
+            _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+        _set_visible(tool_oid, is_active)
+
     rs.EnableRedraw(True)
 
 
 def reset_sequence_colors():
-    """Restore default (by-layer) colour and make all registered bars visible."""
+    """Restore default (by-layer) colour and make all registered bars,
+    joints, and tools visible again."""
     bar_map = get_bar_seq_map()
     rs.EnableRedraw(False)
     for bar_id, (oid, _) in bar_map.items():
         for obj in _bar_curve_and_tube(oid):
             _reset_obj_color(obj)
             rs.ShowObject(obj)
+    for joint_oid in _joint_layer_objects():
+        _reset_obj_color(joint_oid)
+        rs.ShowObject(joint_oid)
+    for tool_oid in _tool_layer_objects():
+        _reset_obj_color(tool_oid)
+        rs.ShowObject(tool_oid)
     rs.EnableRedraw(True)
 
 
@@ -589,6 +712,10 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None):
         rs.SetUserText(oid, BAR_RADIUS_KEY, f"{bar_radius:.6f}")
         rs.SetUserText(oid, TUBE_CACHE_START, _format_point(start_xyz))
         rs.SetUserText(oid, TUBE_CACHE_END, _format_point(end_xyz))
+        # Store the tube's own GUID so we can later detect copy/paste
+        # duplicates: a copy will retain this user text but live under a
+        # different object GUID.
+        rs.SetUserText(oid, TUBE_SELF_GUID_KEY, str(rs.coerceguid(oid)))
     return baked_ids
 
 
@@ -603,23 +730,167 @@ def update_all_previews(bar_radius, color=None):
     return len(bars)
 
 
+# ---------------------------------------------------------------------------
+# Managed-layer enforcement
+# ---------------------------------------------------------------------------
+
+
+def _move_to_default_layer(object_ids, *, source_layer, caller):
+    """Move *object_ids* to ``config.DEFAULT_LAYER``, creating it if needed,
+    and print a warning naming the source layer and count."""
+    ids = [oid for oid in as_object_id_list(object_ids) if rs.IsObject(oid)]
+    if not ids:
+        return 0
+    ensure_layer(config.DEFAULT_LAYER)
+    for oid in ids:
+        rs.ObjectLayer(oid, config.DEFAULT_LAYER)
+    print(
+        f"{caller} (warning): moved {len(ids)} stray object(s) "
+        f"from '{source_layer}' to '{config.DEFAULT_LAYER}'."
+    )
+    return len(ids)
+
+
+def _is_managed_tube(oid, registered_curve_guids):
+    """A tube is *ours* iff it points at a registered bar curve."""
+    axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
+    return bool(axis_guid) and axis_guid in registered_curve_guids
+
+
+def _enforce_tube_layer(caller):
+    """Delete orphaned tube previews and evict strays on the tube layer.
+
+    A tube on the managed tube layer is considered an *orphan* (and is
+    deleted) if any of the following hold:
+
+    - its ``tube_axis_id`` user text does not point at a currently
+      registered bar curve (e.g. the bar was deleted, or the tube was
+      copied along with a fresh bar that got reassigned);
+    - its stored ``tube_self_guid`` does not match its actual object GUID
+      (i.e. the user manually duplicated the tube and the copy now carries
+      the same user text as the original);
+    - its Rhino ObjectName is identical to that of an earlier tube on the
+      same layer (duplicate names are treated as copies; the first
+      occurrence wins, the rest are orphans).
+
+    A *stray* is an object on the tube layer with no ``tube_axis_id`` and
+    no ``tube_self_guid`` user text (the user drew something there
+    manually); strays are moved to ``config.DEFAULT_LAYER``.
+    """
+    if not rs.IsLayer(TUBE_LAYER):
+        return
+    registered = {str(g) for g in get_all_bars().values()}
+    orphans = []
+    strays = []
+    seen_names = {}
+    for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
+        axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
+        self_guid = rs.GetUserText(oid, TUBE_SELF_GUID_KEY)
+        actual_guid = str(rs.coerceguid(oid))
+        name = rs.ObjectName(oid)
+
+        if not axis_guid and not self_guid and not name:
+            strays.append(oid)
+            continue
+
+        is_orphan = False
+        if axis_guid and axis_guid not in registered:
+            is_orphan = True
+        elif self_guid and self_guid != actual_guid:
+            # Object was duplicated by the user; the copy still claims to
+            # be the original tube via user text but has a new object GUID.
+            is_orphan = True
+        elif name and name in seen_names:
+            # A later tube with the same ObjectName as an earlier one is
+            # treated as a duplicate copy.
+            is_orphan = True
+
+        if is_orphan:
+            orphans.append(oid)
+        else:
+            if name:
+                seen_names[name] = oid
+
+    if orphans:
+        delete_objects(orphans)
+        print(
+            f"{caller} (warning): deleted {len(orphans)} orphaned tube preview(s) "
+            f"on '{TUBE_LAYER}' (no matching bar, copy-pasted, or duplicate name)."
+        )
+    _move_to_default_layer(strays, source_layer=TUBE_LAYER, caller=caller)
+
+
+def _enforce_centerline_layer(caller):
+    """Evict objects on the centerline layer that are not registered bars."""
+    layer = BAR_CENTERLINE_LAYER
+    if not rs.IsLayer(layer):
+        return
+    strays = [
+        oid
+        for oid in (rs.ObjectsByLayer(layer) or [])
+        if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE
+    ]
+    _move_to_default_layer(strays, source_layer=layer, caller=caller)
+
+
+def _enforce_joint_layer(caller, layer):
+    """Evict objects on a joint-instances layer that lack a ``joint_id``."""
+    if not rs.IsLayer(layer):
+        return
+    strays = [
+        oid
+        for oid in (rs.ObjectsByLayer(layer) or [])
+        if not rs.GetUserText(oid, "joint_id")
+    ]
+    _move_to_default_layer(strays, source_layer=layer, caller=caller)
+
+
+def _enforce_tool_layer(caller, layer):
+    """Evict objects on the tool-instances layer that lack a ``tool_id``."""
+    if not rs.IsLayer(layer):
+        return
+    strays = [
+        oid
+        for oid in (rs.ObjectsByLayer(layer) or [])
+        if not rs.GetUserText(oid, "tool_id")
+    ]
+    _move_to_default_layer(strays, source_layer=layer, caller=caller)
+
+
+def enforce_managed_layers(caller="RSScaffolding"):
+    """Make sure every managed layer exists, is visible, and contains only
+    objects we recognize.  Strays go to ``config.DEFAULT_LAYER`` (also made
+    visible).  Run this at the top of every entry-point command before the
+    user is prompted."""
+    # Ensure the default + all managed layers exist and are visible.
+    ensure_layer(config.DEFAULT_LAYER)
+    ensure_layer(config.MANAGED_LAYER_ROOT)
+    for layer in config.MANAGED_LAYERS:
+        ensure_layer(layer)
+    # Sweep each managed sublayer.
+    _enforce_tube_layer(caller)
+    _enforce_centerline_layer(caller)
+    _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
+    _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
+    _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
+
+
 def repair_on_entry(bar_radius, caller="RSScaffolding"):
     """Standard startup repair for bar-registry-aware entry-point scripts.
 
     Call this at the top of ``main()``, right after reloading config.  It
-    runs :func:`update_all_previews` and :func:`repair_bar_sequences` in one
-    step, so copy-paste artifacts, deleted bars, and stale tube previews are
-    all resolved before the user is prompted.
 
-    Parameters
-    ----------
-    bar_radius : float
-        Tube preview radius, typically ``float(config.BAR_RADIUS)``.
-    caller : str
-        Script name used in the startup message, e.g. ``"RSBarSnap"``.
+    1. Ensures all managed layers exist and are visible, evicting any
+       stray objects to ``Default`` and deleting orphaned tube previews.
+    2. Repairs duplicate / missing bar sequence numbers.  Centerlines are
+       the source of truth for bar identity, so this runs before the
+       preview pass below.
+    3. Updates tube previews for every registered bar.
+    4. Sanity-checks that the centerline and tube-preview counts match.
     """
-    n = update_all_previews(bar_radius)
+    enforce_managed_layers(caller)
     changed = repair_bar_sequences()
+    n = update_all_previews(bar_radius)
     parts = []
     if n:
         parts.append(f"{n} bar preview(s) updated")
@@ -627,6 +898,69 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
         parts.append(f"{len(changed)} sequence number(s) repaired")
     if parts:
         print(f"{caller} (startup): {', '.join(parts)}.")
+
+    # ------------------------------------------------------------------
+    # Sanity check: every registered bar centerline should have exactly
+    # one corresponding tube preview.
+    # ------------------------------------------------------------------
+    if rs.IsLayer(BAR_CENTERLINE_LAYER):
+        n_centerlines = sum(
+            1
+            for oid in (rs.ObjectsByLayer(BAR_CENTERLINE_LAYER) or [])
+            if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE
+        )
+    else:
+        n_centerlines = 0
+    n_tubes = (
+        len(rs.ObjectsByLayer(TUBE_LAYER) or [])
+        if rs.IsLayer(TUBE_LAYER)
+        else 0
+    )
+    print(
+        f"{caller} (sanity): {n_centerlines} bar centerline(s), "
+        f"{n_tubes} tube preview(s)."
+    )
+    if n_centerlines != n_tubes:
+        print(
+            f"{caller} (warning): centerline/tube count mismatch "
+            f"({n_centerlines} vs {n_tubes})."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Selection-color helpers (centerline + tube together)
+# ---------------------------------------------------------------------------
+
+
+def paint_bar(curve_id, color):
+    """Color a bar centre-line curve and its tube preview the same color.
+
+    Sets the object color source to ``ByObject`` for both, so the override
+    is visible regardless of layer color.  Silently no-ops if *curve_id*
+    is missing or no tube preview exists yet.
+    """
+    if curve_id is None or not rs.IsObject(curve_id):
+        return
+    if hasattr(rs, "ObjectColorSource"):
+        rs.ObjectColorSource(curve_id, 1)
+    rs.ObjectColor(curve_id, color)
+    tube = _find_existing_tube(curve_id)
+    if tube is not None and rs.IsObject(tube):
+        if hasattr(rs, "ObjectColorSource"):
+            rs.ObjectColorSource(tube, 1)
+        rs.ObjectColor(tube, color)
+
+
+def reset_bar_color(curve_id):
+    """Restore layer-default color on a bar centre-line curve and its tube."""
+    if curve_id is None or not rs.IsObject(curve_id):
+        return
+    if hasattr(rs, "ObjectColorSource"):
+        rs.ObjectColorSource(curve_id, 0)  # by layer
+    tube = _find_existing_tube(curve_id)
+    if tube is not None and rs.IsObject(tube):
+        if hasattr(rs, "ObjectColorSource"):
+            rs.ObjectColorSource(tube, 0)
 
 
 # ---------------------------------------------------------------------------

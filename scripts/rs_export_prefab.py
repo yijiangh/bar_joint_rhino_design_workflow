@@ -29,8 +29,8 @@ from core.rhino_bar_registry import get_all_bars, BAR_ID_KEY, repair_on_entry
 # Constants
 # ---------------------------------------------------------------------------
 
-_FEMALE_INSTANCES_LAYER = "FemaleJointPlacedInstances"
-_MALE_INSTANCES_LAYER = "MaleJointPlacedInstances"
+_FEMALE_INSTANCES_LAYER = config.LAYER_JOINT_FEMALE_INSTANCES
+_MALE_INSTANCES_LAYER = config.LAYER_JOINT_MALE_INSTANCES
 
 
 # ---------------------------------------------------------------------------

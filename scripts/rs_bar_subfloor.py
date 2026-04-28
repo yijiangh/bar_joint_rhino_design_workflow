@@ -1,17 +1,31 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
-"""RSBarBrace - Add a brace bar between two existing bars.
+# r: numpy
+# r: scipy
+"""RSBarSubfloor - Add a subfloor bar between two existing bars.
 
-Pick two existing bars and two contact points. The solver finds up to 4
-candidate brace positions. An interactive command-prompt loop lets you:
-  - click a colored candidate bar/tube in the viewport to select it
-  - click SlidePointOn1 / SlidePointOn2 to re-pick contact points and re-solve
-  - Escape to cancel
+Like RSBarBrace, but lets the user choose two DIFFERENT joint pairs:
+one for the joint with the first (Left) existing bar and one for the
+joint with the second (Right) existing bar.  The first picked bar is
+treated as the Left bar; the second as the Right bar.  This left/right
+assignment is implicit (not stored in the model).
+
+The pair selection is exposed as command-line options on the first
+bar pick (similar to RSBarBrace's ``Pair=`` option):
+
+    LeftJointPair=...  RightJointPair=...  SwapLeftRight  Length=...
+
+Defaults are kept in document user-text
+(``scaffolding.last_subfloor_left_pair`` /
+``scaffolding.last_subfloor_right_pair``).
+
+Geometry constraint: the underlying S2-T1 solver assumes a single
+bar-to-bar contact distance for both ends of the subfloor bar.  Thus
+both chosen pairs MUST have the same ``contact_distance_mm``.  If they
+differ, the command aborts with a console message before running the
+solver.
 """
 
-import contextlib
 import importlib
 import os
 import sys
@@ -29,7 +43,7 @@ if SCRIPT_DIR not in sys.path:
 from core import config
 from core import geometry
 from core.rhino_pair_selector import (
-    pick_bar_with_pair_and_length_option,
+    pick_bar_with_dual_pair_and_length_option,
     set_default_brace_length,
 )
 from core.rhino_helpers import (
@@ -60,18 +74,17 @@ _PREVIEW_COLORS = [
     (200, 160, 50),
 ]
 
-_REFERENCE_SEGMENT_PRINT_WIDTH = 0.8
 _BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
 _TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
 
+# Tolerance (mm) for considering two pairs' contact distances equal.
+_CONTACT_DISTANCE_TOL_MM = 1e-3
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (cloned from rs_bar_brace; kept local so this command can evolve
+# independently of the brace command)
 # ---------------------------------------------------------------------------
-
-# Generic helpers (point_to_array, curve_endpoints, as_object_id_list,
-# ensure_layer, apply_object_display, delete_objects, suspend_redraw) are
-# now imported from core.rhino_helpers.
 
 
 def _place_axis_line(curve_id, *, color=None, label=None):
@@ -98,7 +111,6 @@ def _bake_reference_point(point, label, color):
 
 
 def _bake_axis_tube(axis_curve_id, label, color=None, layer_name=_TUBE_LAYER):
-    """Create a tube preview — used only for temporary interactive previews."""
     if axis_curve_id is None or not rs.IsObject(axis_curve_id):
         return []
     start_xyz, end_xyz = curve_endpoints(axis_curve_id)
@@ -129,28 +141,17 @@ def _bake_axis_tube(axis_curve_id, label, color=None, layer_name=_TUBE_LAYER):
     return baked_ids
 
 
-def _candidate_pick_filter():
-    filter_namespace = getattr(rs, "filter", None)
-    if filter_namespace is None:
-        return 0
-    pick_filter = 0
-    for name in ("curve", "surface", "polysurface", "annotation", "point"):
-        pick_filter |= getattr(filter_namespace, name, 0)
-    return pick_filter
-
-
 def _refresh_runtime_modules():
     importlib.reload(config)
     importlib.reload(geometry)
 
 
 # ---------------------------------------------------------------------------
-# Solve + preview helpers
+# Solver + preview
 # ---------------------------------------------------------------------------
 
 
 def _solve(le1_id, le2_id, ce1, ce2, target_distance):
-    """Run the S2-T1 solver. Returns (solutions, report) or ([], None) on error."""
     le1_start, le1_end = curve_endpoints(le1_id)
     le2_start, le2_end = curve_endpoints(le2_id)
     ce1 = point_to_array(ce1)
@@ -168,13 +169,12 @@ def _solve(le1_id, le2_id, ce1, ce2, target_distance):
             nn_init_hint=ce2 - ce1,
         )
     except Exception as exc:
-        print(f"RSBarBrace solver error: {exc}")
+        print(f"RSBarSubfloor solver error: {exc}")
         return [], None
     return report.get("solutions", []), report
 
 
 def _create_previews(solutions, ce1, ce2, brace_length):
-    """Create preview tubes + dots for all solutions. Returns list of preview dicts."""
     preview_items = []
     half_length = float(brace_length) / 2.0
     for index, sol in enumerate(solutions):
@@ -185,15 +185,15 @@ def _create_previews(solutions, ce1, ce2, brace_length):
         color = _PREVIEW_COLORS[index % len(_PREVIEW_COLORS)]
 
         line_id = rs.AddLine(pt_a, pt_b)
-        _place_axis_line(line_id, color=color, label=f"RSBarBrace_preview_{index + 1}")
+        _place_axis_line(line_id, color=color, label=f"RSBarSubfloor_preview_{index + 1}")
         tube_ids = _bake_axis_tube(
-            line_id, f"RSBarBrace_preview_{index + 1}_tube", color=color
+            line_id, f"RSBarSubfloor_preview_{index + 1}_tube", color=color
         )
 
         dot_id = rs.AddTextDot(f"{index + 1}", midpoint)
         apply_object_display(
             dot_id,
-            f"RSBarBrace_preview_{index + 1}_label",
+            f"RSBarSubfloor_preview_{index + 1}_label",
             color=color,
             layer_name=_BAR_CENTERLINE_LAYER,
         )
@@ -220,7 +220,7 @@ def _print_report(report):
     if report is None:
         return
     solutions = report.get("solutions", [])
-    print(f"RSBarBrace: {len(solutions)} solution(s) found")
+    print(f"RSBarSubfloor: {len(solutions)} solution(s) found")
     for i, sol in enumerate(solutions, 1):
         theta_1, theta_2 = sol["angles"]
         print(
@@ -231,38 +231,28 @@ def _print_report(report):
 
 
 # ---------------------------------------------------------------------------
-# Interactive loop using Rhino.Input.Custom.GetObject
+# Interactive loop
 # ---------------------------------------------------------------------------
 
 
 def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
-    """Interactive solve-preview-select loop.
-
-    Returns ``(solution_dict, brace_length)``.  ``brace_length`` may differ
-    from the value passed in if the user edited it via the ``Length``
-    option.  On cancel, returns ``(None, brace_length)``.
-    """
     ce1 = point_to_array(ce1)
     ce2 = point_to_array(ce2)
-    ce1_ref_id = _bake_reference_point(ce1, "RSBarBrace_Ce1", (230, 80, 80))
-    ce2_ref_id = _bake_reference_point(ce2, "RSBarBrace_Ce2", (80, 80, 230))
+    ce1_ref_id = _bake_reference_point(ce1, "RSBarSubfloor_Ce1", (230, 80, 80))
+    ce2_ref_id = _bake_reference_point(ce2, "RSBarSubfloor_Ce2", (80, 80, 230))
     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
     solutions, report = _solve(le1_id, le2_id, ce1, ce2, target_distance)
     _print_report(report)
     if not solutions:
-        rs.MessageBox("No valid brace solutions found. Try different contact points.")
+        rs.MessageBox(
+            "No valid subfloor solutions found. Try different contact points."
+        )
         delete_objects(ref_ids)
         return None, brace_length
 
     preview_items = _create_previews(solutions, ce1, ce2, brace_length)
 
-    # Persist the Length OptionDouble across iterations.  Recreating it each
-    # loop would lose the value the user just typed (and Rhino's option
-    # index for an OptionDouble does not always round-trip via
-    # ``go.Option().Index``).  Instead we keep one instance whose
-    # ``CurrentValue`` is updated in-place by GetObject, and we compare it
-    # to ``brace_length`` after every ``Get()`` to detect a change.
     length_value = Rhino.Input.Custom.OptionDouble(
         float(brace_length), 1.0, 100000.0
     )
@@ -283,8 +273,8 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
             go.DisablePreSelect()
             go.AcceptNothing(False)
 
-            slide1_idx = go.AddOption("SlidePointOn1")
-            slide2_idx = go.AddOption("SlidePointOn2")
+            slide1_idx = go.AddOption("SlidePointOnLeft")
+            slide2_idx = go.AddOption("SlidePointOnRight")
             go.AddOptionDouble("Length", length_value)
 
             result = go.Get()
@@ -295,7 +285,6 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
             if result == Rhino.Input.GetResult.Object:
                 obj_ref = go.Object(0)
                 picked_id = obj_ref.ObjectId
-                # Match against preview items
                 chosen_index = None
                 for item in preview_items:
                     if picked_id in item["pick_ids"]:
@@ -304,24 +293,20 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
                 if chosen_index is not None:
                     sol = solutions[chosen_index]
                     print(
-                        f"RSBarBrace: Selected solution {chosen_index + 1}, "
+                        f"RSBarSubfloor: Selected solution {chosen_index + 1}, "
                         f"family={sol.get('sign_family', '?')}, "
                         f"residual={sol['residual']:.2e}"
                     )
                     return sol, brace_length
-                # Clicked something that isn't a preview — ignore
                 continue
 
             if result == Rhino.Input.GetResult.Option:
-                # Always check first whether the user changed the brace
-                # length.  ``length_value.CurrentValue`` is updated in-place
-                # by GetObject during ``Get()``.
                 new_length = float(length_value.CurrentValue)
                 if abs(new_length - float(brace_length)) > 1e-9:
                     brace_length = new_length
                     set_default_brace_length(brace_length)
                     print(
-                        f"RSBarBrace: brace length updated to "
+                        f"RSBarSubfloor: bar length updated to "
                         f"{brace_length:.2f} mm; regenerating previews."
                     )
                     _cleanup_previews(preview_items)
@@ -334,43 +319,44 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
                 opt_idx = opt.Index if opt is not None else -1
 
                 if opt_idx == slide1_idx or opt_idx == slide2_idx:
-                    # Re-pick a contact point
                     if opt_idx == slide1_idx:
                         new_pt = rs.GetPointOnCurve(
-                            le1_id, "Pick new contact point on Le1"
+                            le1_id, "Pick new contact point on Left bar"
                         )
                     else:
                         new_pt = rs.GetPointOnCurve(
-                            le2_id, "Pick new contact point on Le2"
+                            le2_id, "Pick new contact point on Right bar"
                         )
                     if new_pt is None:
                         continue
-
                     if opt_idx == slide1_idx:
                         ce1 = point_to_array(new_pt)
                     else:
                         ce2 = point_to_array(new_pt)
 
-                    # Clean up old previews and reference points, re-solve
                     _cleanup_previews(preview_items)
                     delete_objects(ref_ids)
                     ce1_ref_id = _bake_reference_point(
-                        ce1, "RSBarBrace_Ce1", (230, 80, 80)
+                        ce1, "RSBarSubfloor_Ce1", (230, 80, 80)
                     )
                     ce2_ref_id = _bake_reference_point(
-                        ce2, "RSBarBrace_Ce2", (80, 80, 230)
+                        ce2, "RSBarSubfloor_Ce2", (80, 80, 230)
                     )
                     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
-                    solutions, report = _solve(le1_id, le2_id, ce1, ce2, target_distance)
+                    solutions, report = _solve(
+                        le1_id, le2_id, ce1, ce2, target_distance
+                    )
                     _print_report(report)
                     if not solutions:
                         rs.MessageBox(
-                            "No valid brace solutions found for the updated points."
+                            "No valid subfloor solutions found for the updated points."
                         )
                         delete_objects(ref_ids)
                         return None, brace_length
-                    preview_items = _create_previews(solutions, ce1, ce2, brace_length)
+                    preview_items = _create_previews(
+                        solutions, ce1, ce2, brace_length
+                    )
                     continue
 
     finally:
@@ -385,40 +371,62 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
 
 def main():
     _refresh_runtime_modules()
-    repair_on_entry(float(config.BAR_RADIUS), "RSBarBrace")
+    repair_on_entry(float(config.BAR_RADIUS), "RSBarSubfloor")
     rs.UnselectAllObjects()
 
-    le1_id, pair, brace_length = pick_bar_with_pair_and_length_option(
-        "Select first existing bar (Le1)", command_name="RSBarBrace"
+    le1_id, left_pair, right_pair, brace_length = (
+        pick_bar_with_dual_pair_and_length_option(
+            "Select first existing bar (becomes LEFT bar)",
+            command_name="RSBarSubfloor",
+        )
     )
-    if le1_id is None or pair is None:
+    if le1_id is None or left_pair is None or right_pair is None:
         return
-    target_distance = float(pair.contact_distance_mm)
+
+    # Sanity check: the S2-T1 solver assumes a single bar-to-bar contact
+    # distance for both ends.  Reject mismatched pairs here so the user
+    # gets a clear message instead of a meaningless solver failure.
+    left_d = float(left_pair.contact_distance_mm)
+    right_d = float(right_pair.contact_distance_mm)
+    if abs(left_d - right_d) > _CONTACT_DISTANCE_TOL_MM:
+        msg = (
+            f"LeftJointPair '{left_pair.name}' and RightJointPair "
+            f"'{right_pair.name}' have different bar-to-bar contact "
+            f"distances ({left_d:.4f} mm vs {right_d:.4f} mm).  "
+            f"The subfloor solver requires both ends to share a single "
+            f"distance.  Either pick two pairs with matching "
+            f"contact_distance_mm, or redefine one pair so they agree."
+        )
+        print(f"RSBarSubfloor: {msg}")
+        rs.MessageBox(msg, 0, "RSBarSubfloor")
+        return
+
+    target_distance = left_d
     print(
-        f"RSBarBrace: using pair '{pair.name}' "
+        f"RSBarSubfloor: LEFT pair '{left_pair.name}', "
+        f"RIGHT pair '{right_pair.name}' "
         f"(contact distance {target_distance:.4f} mm), "
-        f"brace length {float(brace_length):.2f} mm"
+        f"bar length {float(brace_length):.2f} mm"
     )
 
     le2_id = None
     line_id = None
     try:
-        # Visual feedback: paint Le1 with the first preview color.
         ensure_bar_id(le1_id)
         ensure_bar_preview(le1_id, float(config.BAR_RADIUS))
         paint_bar(le1_id, SELECTED_BAR_COLOR)
 
-        le2_id = pick_bar("Select second existing bar (Le2)")
+        le2_id = pick_bar("Select second existing bar (becomes RIGHT bar)")
         if le2_id is None:
             return
         ensure_bar_id(le2_id)
         ensure_bar_preview(le2_id, float(config.BAR_RADIUS))
         paint_bar(le2_id, SELECTED_BAR_COLOR)
 
-        ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on Le1")
+        ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on LEFT bar")
         if ce1 is None:
             return
-        ce2 = rs.GetPointOnCurve(le2_id, "Pick contact point on Le2")
+        ce2 = rs.GetPointOnCurve(le2_id, "Pick contact point on RIGHT bar")
         if ce2 is None:
             return
 
@@ -426,31 +434,30 @@ def main():
             le1_id, le2_id, ce1, ce2, target_distance, brace_length
         )
         if solution is None:
-            print("RSBarBrace: Cancelled.")
+            print("RSBarSubfloor: Cancelled.")
             return
-        print(f"RSBarBrace: final brace length {float(brace_length):.2f} mm")
+        print(f"RSBarSubfloor: final bar length {float(brace_length):.2f} mm")
 
-        # Bake the chosen solution as a plain bar (default color).
         with suspend_redraw():
             midpoint = 0.5 * (solution["p1"] + solution["p2"])
             line_id = add_centered_line(midpoint, solution["nn"], brace_length)
-            _place_axis_line(line_id, label="RSBarBrace_Ln")
+            _place_axis_line(line_id, label="RSBarSubfloor_Ln")
             ensure_bar_id(line_id)
             ensure_bar_preview(line_id, float(config.BAR_RADIUS))
 
         theta_1, theta_2 = solution["angles"]
         print(
-            f"RSBarBrace: Solution placed. "
+            f"RSBarSubfloor: Solution placed. "
             f"Family={solution.get('sign_family', '?')}, "
             f"Angles=({theta_1:.3f},{theta_2:.3f}) rad, "
             f"Residual: {solution['residual']:.2e}"
         )
 
-        # Auto-place joints between each existing bar (female) and the new
-        # brace bar (male).  Uses a consistent default variant; the user can
-        # refine each joint later with RSJointEdit.
-        auto_place_joint_pair(le1_id, line_id, pair)
-        auto_place_joint_pair(le2_id, line_id, pair)
+        # Place LEFT pair on the (le1, new_bar) side, RIGHT pair on
+        # the (le2, new_bar) side.  Each existing bar is the female,
+        # the new subfloor bar is the male.
+        auto_place_joint_pair(le1_id, line_id, left_pair)
+        auto_place_joint_pair(le2_id, line_id, right_pair)
 
     finally:
         reset_bar_color(le1_id)

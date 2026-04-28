@@ -70,7 +70,7 @@ def _tool0_from_ocf(ocf_world_mm: np.ndarray, block_name: str, arm_side: str, ta
     if block_name not in table:
         raise RuntimeError(
             f"MALE_JOINT_OCF_TO_TOOL0 has no entry for '{block_name}'. "
-            "Re-run RSExportJointTool0TF in Rhino, or check that "
+            "Re-run RSExportGraspTool0TF (Joint mode) in Rhino, or check that "
             "scripts/core/config_generated_ik.py is up to date."
         )
     per_side = table[block_name]
@@ -154,9 +154,15 @@ def replay_capture(capture_path: str, tol_rad: float = 1e-3, verbose: bool = Tru
         template = rc.default_cell_state()
         _client, planner = rc.get_planner()
 
-        for phase, target_l, target_r, expected in (
-            ("FINAL",    tool0_left,     tool0_right,     capture["expected"]["final"]),
-            ("APPROACH", tool0_left_app, tool0_right_app, capture["expected"]["approach"]),
+        # `expected` may be partial (failure-mode captures from rs_ik_keyframe.py
+        # save with the IK-solved phases only). Look up via .get() and skip
+        # comparison when missing — replay still re-solves both phases and
+        # reports raw IK pass/fail.
+        expected_root = capture.get("expected") or {}
+        any_failed = False
+        for phase, target_l, target_r, expected_key in (
+            ("FINAL",    tool0_left,     tool0_right,     "final"),
+            ("APPROACH", tool0_left_app, tool0_right_app, "approach"),
         ):
             if verbose:
                 origin = base[:3, 3]
@@ -172,8 +178,14 @@ def replay_capture(capture_path: str, tol_rad: float = 1e-3, verbose: bool = Tru
             dt = time.time() - t0
             if state is None:
                 print(f"[X] {phase} IK failed (took {dt:.2f}s).")
-                return 1
+                any_failed = True
+                continue  # do not abort — keep going so APPROACH is also exercised
             print(f"[OK] {phase} IK solved in {dt:.2f}s.")
+
+            expected = expected_root.get(expected_key)
+            if not expected:
+                print(f"  (no `expected.{expected_key}` in capture; skipping config comparison)")
+                continue
 
             for side, group_attr in (("left", "LEFT_GROUP"), ("right", "RIGHT_GROUP")):
                 group = getattr(config, group_attr)
@@ -185,14 +197,18 @@ def replay_capture(capture_path: str, tol_rad: float = 1e-3, verbose: bool = Tru
                         f"    actual   = {actual['joint_names']}\n"
                         f"    expected = {exp['joint_names']}"
                     )
-                    return 1
+                    any_failed = True
+                    continue
                 max_err = _config_diff_max(actual["joint_values"], exp["joint_values"])
                 status = "OK" if max_err <= tol_rad else "X"
                 print(f"[{status}] {phase}/{side} joint values max-error = {max_err:.4g} rad "
                       f"(tol={tol_rad:.4g}).")
                 if max_err > tol_rad:
-                    return 1
+                    any_failed = True
 
+        if any_failed:
+            print("[X] replay_ik FAIL")
+            return 1
         print("[OK] replay_ik PASS")
         return 0
     finally:

@@ -323,19 +323,34 @@ def _frame_from_origin_normal_heading(origin_mm, normal, heading_mm) -> np.ndarr
 
 
 def _ask_collision_options():
+    """Prompt for IK collision flags + the robot mesh display mode.
+
+    Returns ``(include_self, include_env, mesh_mode)`` or ``None`` on cancel.
+    The `mesh_mode` toggle picks between ``ik_viz.MESH_MODE_VISUAL`` and
+    ``MESH_MODE_COLLISION`` for `ik_viz.show_state`. The previous choice is
+    cached in `sc.sticky` (via ik_viz.set_mesh_mode) so subsequent runs in
+    the same session start with the user's last selection pre-toggled.
+    """
+    current_mesh_mode = ik_viz.get_mesh_mode()
+    is_collision_default = current_mesh_mode == ik_viz.MESH_MODE_COLLISION
+
     go = Rhino.Input.Custom.GetOption()
     go.SetCommandPrompt("Collision options")
     opt_self = Rhino.Input.Custom.OptionToggle(True, "No", "Yes")
     opt_env = Rhino.Input.Custom.OptionToggle(True, "No", "Yes")
+    opt_mesh = Rhino.Input.Custom.OptionToggle(is_collision_default, "Visual", "Collision")
     go.AddOptionToggle("IncludeSelf", opt_self)
     go.AddOptionToggle("IncludeEnv", opt_env)
+    go.AddOptionToggle("MeshMode", opt_mesh)
     go.AcceptNothing(True)
     while True:
         result = go.Get()
         if result == Rhino.Input.GetResult.Option:
             continue
         if result == Rhino.Input.GetResult.Nothing:
-            return bool(opt_self.CurrentValue), bool(opt_env.CurrentValue)
+            mesh_mode = ik_viz.MESH_MODE_COLLISION if bool(opt_mesh.CurrentValue) else ik_viz.MESH_MODE_VISUAL
+            ik_viz.set_mesh_mode(mesh_mode)
+            return bool(opt_self.CurrentValue), bool(opt_env.CurrentValue), mesh_mode
         return None
 
 
@@ -445,7 +460,7 @@ def _tool0_from_male(oid, arm_side):
     from the nested `MALE_JOINT_OCF_TO_TOOL0[joint_type][arm_side]` dict.
     """
     # Dispatch by full block-definition name (e.g. "T20_Male"), which matches
-    # the convention used by RSExportJointTool0TF. Fall back to the composite
+    # the convention used by RSExportGraspTool0TF. Fall back to the composite
     # of `joint_type` + `joint_subtype` user-text for instances whose block
     # name has been renamed.
     key = rs.BlockInstanceName(oid)
@@ -458,13 +473,13 @@ def _tool0_from_male(oid, arm_side):
         else:
             raise RuntimeError(
                 f"No MALE_JOINT_OCF_TO_TOOL0 entry for '{key}'. "
-                "Run RSExportJointTool0TF for this joint type first."
+                "Run RSExportGraspTool0TF (Joint mode) for this joint type first."
             )
     per_side = config.MALE_JOINT_OCF_TO_TOOL0[key]
     if arm_side not in per_side:
         raise RuntimeError(
             f"MALE_JOINT_OCF_TO_TOOL0['{key}'] has no '{arm_side}' entry. "
-            f"Run RSExportJointTool0TF for the {arm_side} arm."
+            f"Run RSExportGraspTool0TF (Joint mode) for the {arm_side} arm."
         )
     tf = per_side[arm_side]
     ocf = _block_instance_xform_mm(oid)
@@ -500,6 +515,22 @@ def _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell):
 _CAPTURES_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "tests", "captures"))
 
 
+def _ask_save_failure_capture(phase_label: str) -> bool:
+    """Prompt 'IK failed at <phase>; save capture for headless debugging?'
+
+    Default is No because most users will iterate inside Rhino without
+    needing the headless replay. Returns True iff the user typed "Yes".
+    """
+    answer = rs.GetString(
+        f"{phase_label} IK failed. Save capture for headless debugging?",
+        "No",
+        ["Yes", "No"],
+    )
+    if answer is None:
+        return False
+    return str(answer).strip().lower().startswith("y")
+
+
 def _save_capture(
     *,
     target_bar_id,
@@ -510,24 +541,42 @@ def _save_capture(
     base_frame_mm,
     include_self,
     include_env,
-    payload,
+    final_state=None,
+    approach_state=None,
+    rcell=None,
+    suffix: str = "",
 ) -> str | None:
     """Write a JSON snapshot of this RSIKKeyframe run into `tests/captures/`.
 
-    Captures everything Claude / pytest needs to replay end-to-end without
-    Rhino picks: both male-joint OCFs in mm, the successful base frame,
-    collision flags, robot id, LM offset distance, and the just-computed
-    expected configurations. The Brep used for sampling is intentionally
-    not serialised (Rhino-only); replay uses the captured base frame
-    directly and skips the sampling step.
+    Designed to also work on FAILURE: pass `final_state=None` and / or
+    `approach_state=None` to record the inputs without a known-good
+    expected configuration. The replay scripts then re-solve from the
+    captured inputs and report whether IK still rejects, perfect for
+    headless debugging the same scenario Claude sees.
 
-    Returns the capture path (or None on failure — failures are non-fatal,
-    the script continues).
+    `suffix` is appended to the filename stem so failure captures don't
+    visually collide with success captures (e.g. "_ik_fail_final").
+
+    Returns the capture path, or None on write failure (non-fatal).
     """
     try:
         os.makedirs(_CAPTURES_DIR, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(_CAPTURES_DIR, f"{timestamp}_{target_bar_id}.json")
+        stem = f"{timestamp}_{target_bar_id}{suffix}"
+        path = os.path.join(_CAPTURES_DIR, f"{stem}.json")
+
+        expected: dict = {}
+        if final_state is not None and rcell is not None:
+            expected["final"] = {
+                "left": robot_cell.extract_group_config(final_state, config.LEFT_GROUP, rcell),
+                "right": robot_cell.extract_group_config(final_state, config.RIGHT_GROUP, rcell),
+            }
+        if approach_state is not None and rcell is not None:
+            expected["approach"] = {
+                "left": robot_cell.extract_group_config(approach_state, config.LEFT_GROUP, rcell),
+                "right": robot_cell.extract_group_config(approach_state, config.RIGHT_GROUP, rcell),
+            }
+
         capture = {
             "schema_version": 1,
             "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -552,10 +601,7 @@ def _save_capture(
                 "joint_subtype_user_text": rs.GetUserText(right_oid, "joint_subtype"),
             },
             "base_frame_world_mm": np.asarray(base_frame_mm, dtype=float).tolist(),
-            "expected": {
-                "final": payload["final"],
-                "approach": payload["approach"],
-            },
+            "expected": expected,
         }
         with open(path, "w", encoding="utf-8") as stream:
             json.dump(capture, stream, indent=2)
@@ -639,7 +685,7 @@ def main():
         collision_opts = _ask_collision_options()
         if collision_opts is None:
             return
-        include_self, include_env = collision_opts
+        include_self, include_env, mesh_mode = collision_opts
 
         print("RSIKKeyframe: solving final-target IK...")
         final_state, final_base = _solve_with_sampling(
@@ -648,12 +694,27 @@ def main():
             brep_id, heading_mm, include_self, include_env,
         )
         if final_state is None:
+            if _ask_save_failure_capture("Final-target"):
+                _save_capture(
+                    target_bar_id=target_bar_id,
+                    left_oid=left_oid,
+                    right_oid=right_oid,
+                    ocf_left=ocf_left,
+                    ocf_right=ocf_right,
+                    base_frame_mm=seed_base_frame,
+                    include_self=include_self,
+                    include_env=include_env,
+                    final_state=None,
+                    approach_state=None,
+                    rcell=rcell,
+                    suffix="_ik_fail_final",
+                )
             rs.MessageBox("IK failed for the final target (all samples exhausted).", 0, "RSIKKeyframe")
             return
         # Sync the PyBullet world to the new state, then update the Rhino viz
         # (mirrors GH_set_cell_state.py + GH_scene_viz.py ordering).
         robot_cell.set_cell_state(planner, final_state)
-        ik_viz.show_state(final_state)
+        ik_viz.show_state(final_state, mesh_mode=mesh_mode)
         print("RSIKKeyframe: final target reachable. Previewing...")
 
         # Approach target: translate tool0 frames along -avg(male z) * LM_DISTANCE
@@ -678,10 +739,25 @@ def main():
             brep_id, heading_mm, include_self, include_env,
         )
         if approach_state is None:
+            if _ask_save_failure_capture("Approach-target"):
+                _save_capture(
+                    target_bar_id=target_bar_id,
+                    left_oid=left_oid,
+                    right_oid=right_oid,
+                    ocf_left=ocf_left,
+                    ocf_right=ocf_right,
+                    base_frame_mm=final_base,
+                    include_self=include_self,
+                    include_env=include_env,
+                    final_state=final_state,
+                    approach_state=None,
+                    rcell=rcell,
+                    suffix="_ik_fail_approach",
+                )
             rs.MessageBox("IK failed for the approach target (all samples exhausted).", 0, "RSIKKeyframe")
             return
         robot_cell.set_cell_state(planner, approach_state)
-        ik_viz.show_state(approach_state)
+        ik_viz.show_state(approach_state, mesh_mode=mesh_mode)
         print("RSIKKeyframe: approach target reachable. Previewing...")
 
         # Use the same base frame for the stored record (approach_base ~ final_base since we reused).
@@ -701,7 +777,9 @@ def main():
                 base_frame_mm=stored_base,
                 include_self=include_self,
                 include_env=include_env,
-                payload=payload,
+                final_state=final_state,
+                approach_state=approach_state,
+                rcell=rcell,
             )
         else:
             print("RSIKKeyframe: rejected; bar user-text unchanged.")

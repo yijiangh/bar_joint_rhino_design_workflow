@@ -11,15 +11,12 @@ All distances are in millimetres; all angles are in radians.
 from __future__ import annotations
 
 import math
+import os
 
+import numpy as np
 
-from core.transforms import invert_transform, orthonormalize_rotation
+from core.transforms import orthonormalize_rotation
 
-
-try:
-    from core import config_generated as _generated
-except ImportError as exc:  # pragma: no cover - generated file is committed in the repo.
-    raise RuntimeError("Missing core.config_generated; run the Rhino CAD export workflow.") from exc
 
 try:
     from core import config_generated_ik as _generated_ik
@@ -122,7 +119,7 @@ LM_DISTANCE = 15.0  # mm
 
 # IK base sampling fallback
 IK_BASE_SAMPLE_RADIUS = 150.0  # mm
-IK_BASE_SAMPLE_MAX_ITER = 20
+IK_BASE_SAMPLE_MAX_ITER = 5
 
 # IK solver tuning (compas_fab PyBullet planner)
 IK_MAX_RESULTS = 20
@@ -147,7 +144,7 @@ def _sanitize_ocf_to_tool0_dict(raw):
         if not isinstance(per_side, dict):
             raise ValueError(
                 f"MALE_JOINT_OCF_TO_TOOL0['{joint_type}'] must be a "
-                "{'left': <4x4>, 'right': <4x4>} dict. Re-export via RSExportJointTool0TF."
+                "{'left': <4x4>, 'right': <4x4>} dict. Re-export via RSExportGraspTool0TF (Joint mode)."
             )
         sanitized_sides = {}
         for side, matrix in per_side.items():
@@ -163,6 +160,45 @@ def _sanitize_ocf_to_tool0_dict(raw):
 MALE_JOINT_OCF_TO_TOOL0 = _sanitize_ocf_to_tool0_dict(
     getattr(_generated_ik, "MALE_JOINT_OCF_TO_TOOL0", None) if _generated_ik is not None else None
 )
+
+
+def _sanitize_bar_grasp_to_tool0(raw):
+    """{gripper_kind: 4x4 mm} -> orthonormal float matrices."""
+    if raw is None:
+        return {}
+    return {str(k): _as_matrix(v) for k, v in raw.items()}
+
+
+BAR_GRASP_TO_TOOL0 = _sanitize_bar_grasp_to_tool0(
+    getattr(_generated_ik, "BAR_GRASP_TO_TOOL0", None) if _generated_ik is not None else None
+)
+
+
+# ---------------------------------------------------------------------------
+# Support (single-arm) robot
+# ---------------------------------------------------------------------------
+
+SUPPORT_ROBOT_ID = "single-arm_husky_Alice"
+SUPPORT_URDF_PKG_NAME = "mt_husky_moveit_config"
+SUPPORT_URDF_FILENAME = "husky_ur5_e_no_base_joint_Alice_Calibrated.urdf"
+SUPPORT_SRDF_REL_PATH = os.path.join("config", "husky.srdf")
+SUPPORT_GROUP = "manipulator"  # arm-only chain (ur_arm_base_link -> ur_arm_tool0)
+SUPPORT_TOOL_NAME = "SG"
+SUPPORT_TOOL_TOUCH_LINKS = ["ur_arm_wrist_3_link"]
+
+# Robotiq gripper Rhino block (origin = tool0). Block must be pre-baked in doc.
+ROBOTIQ_GRIPPER_BLOCK = "Robotiq_Gripper"
+ROBOTIQ_GRIPPER_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "Robotiq_Gripper_m.obj")
+
+# Dual-arm robot loaded as a static articulated tool (collision obstacle) on the support cell
+DUAL_ARM_OBSTACLE_TOOL_NAME = "DA"
+
+# IK persistence on supported bar
+IK_SUPPORT_KEY = "ik_support"
+
+# Dynamic preview / committed preview layer
+SUPPORT_PREVIEW_LAYER = "IKSupportPreview"
+
 
 LAYER_PATH_SEP = "::"  # Rhino's layer-path separator
 MANAGED_LAYER_ROOT = "MANAGED Scaffolding"

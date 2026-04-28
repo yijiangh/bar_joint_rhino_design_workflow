@@ -73,7 +73,7 @@ def _tool0_from_ocf(ocf, block_name, side, table):
     if block_name not in table or side not in table[block_name]:
         raise RuntimeError(
             f"MALE_JOINT_OCF_TO_TOOL0 missing entry [{block_name}][{side}]. "
-            "Re-run RSExportJointTool0TF in Rhino."
+            "Re-run RSExportGraspTool0TF (Joint mode) in Rhino."
         )
     return np.asarray(ocf, dtype=float) @ np.asarray(table[block_name][side], dtype=float)
 
@@ -129,6 +129,80 @@ def _enumerate_bodies(p, client_id):
     return out
 
 
+def _add_collision_shape_overlay(p, pp, client_id, color=(0.2, 0.6, 1.0, 0.4)):
+    """Clone every existing body with collision-only shapes, tint semi-transparent.
+
+    Uses `pybullet_planning.clone_body(body, collision=True, visual=False)`.
+    PyBullet's GUI renders bodies with `visualShapeIndex == -1` using their
+    collision shape, so the resulting overlay shows the actual collision
+    proxy on top of the original visual mesh — perfect for spotting
+    geometry mismatches between visuals and collision.
+
+    For the husky body, only links whose name contains ``ur_arm`` are kept
+    visible. The chassis / wheels / bumpers / bulkheads have huge primitive
+    box colliders that dominate the GUI without being useful for IK
+    debugging — those are made fully transparent on the clone.
+
+    Side effects:
+      - Calls `pp.set_client(client_id)` so `pp.clone_body`'s internal
+        helpers (which read the global CLIENT) operate on the right
+        physics client.
+      - Disables the clones' collision filters so they don't interfere
+        with any subsequent collision queries from the GUI.
+
+    Snapshots the body list BEFORE cloning so we don't recursively clone
+    our own clones. Clones inherit the CURRENT joint positions of the
+    originals, so call this AFTER `set_cell_state(..., ik_state)` —
+    `pp.clone_body` runs `get_joint_positions(body, links)` and replays
+    them via `resetJointState` on the new body.
+    """
+    pp.set_client(client_id)
+
+    n = p.getNumBodies(physicsClientId=client_id)
+    original_uids = [p.getBodyUniqueId(i, physicsClientId=client_id) for i in range(n)]
+
+    transparent = [0.0, 0.0, 0.0, 0.0]
+    overlay_ids = []
+    for original_uid in original_uids:
+        original_label = _body_label(p, original_uid)
+        try:
+            clone = pp.clone_body(original_uid, collision=True, visual=False, client=client_id)
+        except Exception as exc:
+            print(f"  (clone_body failed for body {original_uid} '{original_label}': {exc})")
+            continue
+
+        n_joints = p.getNumJoints(clone, physicsClientId=client_id)
+        kept = 0
+        for link_idx in range(-1, n_joints):
+            # `pp.clone_body` does not retain link names; query them from
+            # the ORIGINAL body (clone link index = original link index for
+            # our default `links=None` clone).
+            link_name = _link_label(p, original_uid, link_idx) or ""
+            if original_label == "husky" and "ur_arm" not in link_name:
+                rgba = transparent
+            else:
+                rgba = list(color)
+                kept += 1
+            try:
+                p.changeVisualShape(
+                    clone, link_idx, rgbaColor=rgba, physicsClientId=client_id,
+                )
+            except Exception:
+                pass
+            try:
+                p.setCollisionFilterGroupMask(
+                    clone, link_idx,
+                    collisionFilterGroup=0, collisionFilterMask=0,
+                    physicsClientId=client_id,
+                )
+            except Exception:
+                pass
+        overlay_ids.append(clone)
+        print(f"  overlay: cloned '{original_label}' "
+              f"(visible {kept} link(s) of {n_joints + 1})")
+    return overlay_ids
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("capture", help="Path to a JSON capture file in tests/captures/.")
@@ -137,6 +211,16 @@ def main() -> int:
     parser.add_argument("--headless", action="store_true",
                         help="Connect PyBullet in DIRECT mode (no GUI, no blocking on close); "
                         "useful for automated/CI runs.")
+    parser.add_argument("--use-saved-ik", action="store_true",
+                        help="Skip re-solving IK and instead load the joint configuration "
+                        "stored in capture['expected'][<phase>]. Useful when you've already "
+                        "accepted a config in Rhino and want to inspect collisions on exactly "
+                        "that solution. Errors if the capture has no expected entry for <phase>.")
+    parser.add_argument("--collision-shapes", action="store_true",
+                        help="Add a collision-only clone of every body in the world via "
+                        "`pybullet_planning.clone_body(..., collision=True, visual=False)`, "
+                        "tinted semi-transparent blue. Lets you see the actual collision "
+                        "proxies overlaid on top of the visual meshes.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.capture):
@@ -149,6 +233,7 @@ def main() -> int:
     from core import config
     from core import robot_cell as rc
     import pybullet as p
+    import pybullet_planning as pp
 
     if rc.is_pb_running():
         rc.stop_pb_client()
@@ -160,6 +245,9 @@ def main() -> int:
     template = rc.default_cell_state()
     _client, planner = rc.get_planner()
     client_id = planner.client.client_id
+
+    # Collision-shape overlay is built later (after contact detection) so the
+    # clones don't pollute getContactPoints with self-overlaps.
 
     # Build IK targets exactly the same way RSIKKeyframe does.
     ocf_l = np.array(capture["left"]["ocf_world_mm"], dtype=float)
@@ -181,19 +269,45 @@ def main() -> int:
         f"include_env={capture['include_env_collision']}"
     )
 
-    print("\n--- IK with check_collision=True (production path) ---")
-    state_with = rc.solve_dual_arm_ik(planner, template, base, tool0_L, tool0_R, check_collision=True)
-    if state_with is not None:
-        print(f"[OK] {args.phase} IK PASSED with collision check.")
-    else:
-        print(f"[X] {args.phase} IK REJECTED with collision check.")
+    if args.use_saved_ik:
+        # Skip both IK solves entirely; reconstruct the saved cell state from
+        # the capture JSON so we inspect collisions on the exact configuration
+        # the Rhino workflow accepted.
+        expected_root = capture.get("expected") or {}
+        expected_phase = expected_root.get(args.phase)
+        if not expected_phase:
+            print(
+                f"[X] capture has no `expected.{args.phase}` block — cannot --use-saved-ik. "
+                "Drop the flag to re-solve, or re-run RSIKKeyframe and Accept to populate it."
+            )
+            return 1
 
-    print("\n--- IK with check_collision=False (always returns a config) ---")
-    state_open = rc.solve_dual_arm_ik(planner, template, base, tool0_L, tool0_R, check_collision=False)
-    if state_open is None:
-        print("[X] IK failed even WITHOUT collision check; target is geometrically unreachable.")
-        print("    Cannot inspect collisions. Closing.")
-        return 1
+        print(f"\n--- Loading saved IK config for `{args.phase}` from capture ---")
+        state_open = rc.default_cell_state()
+        # Module-private but stable: same helper rc.solve_dual_arm_ik uses.
+        rc._apply_base_frame_mm(state_open, base)
+        for side_key in ("left", "right"):
+            side_data = expected_phase[side_key]
+            for jname, jval in zip(side_data["joint_names"], side_data["joint_values"]):
+                state_open.robot_configuration[jname] = float(jval)
+        state_with = state_open  # treat the saved config as the "production" answer
+        print(f"[OK] saved {args.phase} config loaded "
+              f"(left {len(expected_phase['left']['joint_values'])} jts, "
+              f"right {len(expected_phase['right']['joint_values'])} jts).")
+    else:
+        print("\n--- IK with check_collision=True (production path) ---")
+        state_with = rc.solve_dual_arm_ik(planner, template, base, tool0_L, tool0_R, check_collision=True)
+        if state_with is not None:
+            print(f"[OK] {args.phase} IK PASSED with collision check.")
+        else:
+            print(f"[X] {args.phase} IK REJECTED with collision check.")
+
+        print("\n--- IK with check_collision=False (always returns a config) ---")
+        state_open = rc.solve_dual_arm_ik(planner, template, base, tool0_L, tool0_R, check_collision=False)
+        if state_open is None:
+            print("[X] IK failed even WITHOUT collision check; target is geometrically unreachable.")
+            print("    Cannot inspect collisions. Closing.")
+            return 1
 
     rc.set_cell_state(planner, state_open)
 
@@ -272,8 +386,19 @@ def main() -> int:
     else:
         print("Diagnosis: IK rejected, no contacts found. Likely seed mismatch (see above).")
 
+    if args.collision_shapes:
+        overlays = _add_collision_shape_overlay(p, pp, client_id)
+        if overlays:
+            print(
+                f"\ndebug_ik_collisions: added {len(overlays)} collision-only clone(s) as a "
+                "semi-transparent blue overlay (visualShapeIndex=-1, PyBullet renders the "
+                "collision shape)."
+            )
+
     if use_gui:
         print("\nPyBullet GUI is open. Highlighted (red) links are the colliding ones.")
+        if args.collision_shapes:
+            print("Blue semi-transparent overlay = collision shapes (clone_body, collision-only).")
         print("Rotate / pan to inspect. Close the GUI window to exit.")
         try:
             while p.isConnected(physicsClientId=client_id):

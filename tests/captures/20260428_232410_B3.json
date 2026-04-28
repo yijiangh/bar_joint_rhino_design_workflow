@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-04-28T23:24:10",
+  "robot_id": "dual-arm_husky_Cindy",
+  "doc_unit_scale_to_mm": 1.0,
+  "lm_distance_mm": 15.0,
+  "include_self_collision": false,
+  "include_env_collision": false,
+  "target_bar_id": "B3",
+  "left": {
+    "block_name": "T20_Male",
+    "arm_side": "left",
+    "ocf_world_mm": [
+      [
+        -3.1086244550956348e-15,
+        -3.670384662868287e-09,
+        -1.0,
+        2.1316281772887013e-14
+      ],
+      [
+        1.0,
+        3.774758283725532e-15,
+        -3.1086244689504498e-15,
+        1191.1993453379403
+      ],
+      [
+        3.77475829513538e-15,
+        -1.0,
+        3.670384662868287e-09,
+        956.9777551027695
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "joint_type_user_text": "T20",
+    "joint_subtype_user_text": "Male"
+  },
+  "right": {
+    "block_name": "T20_Male",
+    "arm_side": "right",
+    "ocf_world_mm": [
+      [
+        -3.108624449417903e-15,
+        -5.1745159268534735e-09,
+        -1.0,
+        2.1316281649980815e-14
+      ],
+      [
+        1.0,
+        3.774758283725532e-15,
+        -3.1086244689504498e-15,
+        2058.2401350535924
+      ],
+      [
+        3.7747582998111595e-15,
+        -1.0,
+        5.1745159268534735e-09,
+        956.9777551027695
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "joint_type_user_text": "T20",
+    "joint_subtype_user_text": "Male"
+  },
+  "base_frame_world_mm": [
+    [
+      -0.9994207317967907,
+      -0.03403235012113612,
+      -0.0,
+      523.7354640095416
+    ],
+    [
+      0.03403235012113612,
+      -0.9994207317967907,
+      -0.0,
+      1650.9449868137342
+    ],
+    [
+      0.0,
+      -0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "expected": {
+    "final": {
+      "left": {
+        "joint_names": [
+          "left_ur_arm_shoulder_pan_joint",
+          "left_ur_arm_shoulder_lift_joint",
+          "left_ur_arm_elbow_joint",
+          "left_ur_arm_wrist_1_joint",
+          "left_ur_arm_wrist_2_joint",
+          "left_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -5.653584892986852,
+          -0.5250961038126802,
+          -1.6100644471793246,
+          2.094004856506683,
+          0.5980873377918319,
+          -2.323189321272994
+        ]
+      },
+      "right": {
+        "joint_names": [
+          "right_ur_arm_shoulder_pan_joint",
+          "right_ur_arm_shoulder_lift_joint",
+          "right_ur_arm_elbow_joint",
+          "right_ur_arm_wrist_1_joint",
+          "right_ur_arm_wrist_2_joint",
+          "right_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -0.6218539343557579,
+          -3.256670452808184,
+          2.2204396573724736,
+          4.128969124778021,
+          0.6542447567320366,
+          -0.743752300841081
+        ]
+      }
+    },
+    "approach": {
+      "left": {
+        "joint_names": [
+          "left_ur_arm_shoulder_pan_joint",
+          "left_ur_arm_shoulder_lift_joint",
+          "left_ur_arm_elbow_joint",
+          "left_ur_arm_wrist_1_joint",
+          "left_ur_arm_wrist_2_joint",
+          "left_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          0.5347591433395523,
+          -2.1831628528643723,
+          2.1877658411767067,
+          3.0770450990178784,
+          -0.513677289037914,
+          0.8405006141262131
+        ]
+      },
+      "right": {
+        "joint_names": [
+          "right_ur_arm_shoulder_pan_joint",
+          "right_ur_arm_shoulder_lift_joint",
+          "right_ur_arm_elbow_joint",
+          "right_ur_arm_wrist_1_joint",
+          "right_ur_arm_wrist_2_joint",
+          "right_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -0.5665640375911978,
+          -3.2293119907078047,
+          2.246112702399384,
+          4.072653594067612,
+          0.5989367117168647,
+          -0.7394787840258613
+        ]
+      }
+    }
+  }
+}

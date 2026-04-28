@@ -36,7 +36,7 @@ required:
 | **RSSetup** | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector geometry to `config_generated.py` |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure closest distance between two line segments |
 | **RSSetup** | RSExportCase | `rs_export_case.py` | Export a T1-S2 optimization case to JSON for testing |
-| **RSSetup** | RSExportJointTool0TF | `rs_export_joint_tool0_tf.py` | Export male-joint OCF → tool0 transform (IK keyframe workflow) |
+| **RSSetup** | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint OCF → tool0 and bar-grasp → tool0 transforms (IK keyframe workflow) |
 | **RSSetup** | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client used by IK workflows |
 | **RSSetup** | RSPBStop | `rs_pb_stop.py` | Disconnect the shared PyBullet client |
 | **RSSetup** | RSExportPineappleOBJ | `rs_export_pineapple_obj.py` | Export pineapple block defs as OBJ (meters) for IK collision tool models |
@@ -217,12 +217,13 @@ Rhino resolves the filename via Search Paths (set up above).
 
 - Exports the current T1-S2 selection as a JSON debug case for replay outside Rhino.
 
-#### RSExportJointTool0TF (`rs_export_joint_tool0_tf.py`)
+#### RSExportGraspTool0TF (`rs_export_grasp_tool0_tf.py`)
 
-- Prompts for a joint type string (default `T20`), then picks one baked male-joint frame group followed by one baked tool0 frame group.
-- Computes `tf = inverse(male_ocf) @ tool0_frame` so that `tool0_world = male_ocf_world @ tf`.
-- Merges the result into `MALE_JOINT_OCF_TO_TOOL0[joint_type]` in `scripts/core/config_generated_ik.py`, preserving entries for other joint types.
-- Needed once per joint type before running the IK keyframe workflow.
+- Top-level mode prompt: `Joint` or `Gripper`.
+- **Joint** mode: prompts for a joint type string (default `T20_Male`) and arm side (`left`/`right`), then picks one baked male-joint frame group followed by one baked tool0 frame group. Computes `tf = inverse(male_ocf) @ tool0_frame` and merges into `MALE_JOINT_OCF_TO_TOOL0[joint_type][arm_side]`.
+- **Gripper** mode: prompts for a gripper kind (default `Robotiq`), then picks one baked bar-grasp frame group (origin on bar centerline, Z along bar) followed by one baked tool0 frame group. Computes `tf = inverse(bar_grasp) @ tool0_frame` and merges into `BAR_GRASP_TO_TOOL0[gripper_kind]`.
+- Both dicts live in `scripts/core/config_generated_ik.py`. Re-running either mode preserves the other dict and other entries within the same dict.
+- Needed once per joint type/arm before running the dual-arm IK keyframe workflow, and once per gripper kind before running the support-arm IK keyframe workflow.
 
 #### RSExportPineappleOBJ (`rs_export_pineapple_obj.py`)
 
@@ -240,7 +241,7 @@ Rhino resolves the filename via Search Paths (set up above).
 
 #### RSIKKeyframe (`rs_ik_keyframe.py`)
 
-- Prerequisite: RSPBStart must have been run, and `MALE_JOINT_OCF_TO_TOOL0` must contain an entry for each picked joint's `joint_type` (populate via RSExportJointTool0TF).
+- Prerequisite: RSPBStart must have been run, and `MALE_JOINT_OCF_TO_TOOL0` must contain an entry for each picked joint's `joint_type` (populate via RSExportGraspTool0TF in Joint mode).
 - Prerequisite: Rhino document contains block definitions `AssemblyLeft_Pineapple` and `AssemblyRight_Pineapple`, and at least one Brep on layer `WalkableGround`.
 - Workflow:
   1. Pick the left arm male joint block, then the right arm male joint block. Both must share `male_parent_bar` (the new Ln bar being assembled).
@@ -426,7 +427,7 @@ scripts/
   rs_joint_place.py            # Rhino: place connector blocks on a bar pair
   rs_export_config.py          # Rhino: export CAD-backed fixed transforms
   rs_export_case.py            # Rhino: export a reproducible T1-S2 solver case as JSON
-  rs_export_joint_tool0_tf.py  # Rhino: export male-joint OCF -> tool0 transform for IK
+  rs_export_grasp_tool0_tf.py  # Rhino: export male-joint OCF -> tool0 and bar-grasp -> tool0 transforms for IK
   rs_export_pineapple_obj.py   # Rhino: export pineapple block defs to OBJ (m) for IK tool models
   rs_pb_start.py               # Rhino: start the shared PyBullet client (GUI / Direct)
   rs_pb_stop.py                # Rhino: disconnect the shared PyBullet client

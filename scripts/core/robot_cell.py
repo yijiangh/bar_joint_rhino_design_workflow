@@ -39,6 +39,7 @@ except ImportError:
 _STICKY_ROBOT_CELL = "bar_joint:robot_cell"
 _STICKY_PB_CLIENT = "bar_joint:pb_client"
 _STICKY_PB_PLANNER = "bar_joint:pb_planner"
+_STICKY_CURRENT_CELL_KIND = "bar_joint:current_cell_kind"  # "dual_arm" | "support"
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ def import_compas_stack():
     from compas.geometry import Frame, Transformation  # noqa: F401
     from compas.scene import Scene  # noqa: F401
     from compas.datastructures import Mesh  # noqa: F401
-    from compas_robots import RobotModel, ToolModel  # noqa: F401
+    from compas_robots import Configuration, RobotModel, ToolModel  # noqa: F401
     from compas_robots.resources import LocalPackageMeshLoader  # noqa: F401
     from compas_fab.robots import RobotCell, RobotSemantics  # noqa: F401
     from compas_fab.backends import PyBulletClient, PyBulletPlanner  # noqa: F401
@@ -138,6 +139,7 @@ def import_compas_stack():
         "Transformation": Transformation,
         "Scene": Scene,
         "Mesh": Mesh,
+        "Configuration": Configuration,
         "RobotModel": RobotModel,
         "ToolModel": ToolModel,
         "LocalPackageMeshLoader": LocalPackageMeshLoader,
@@ -189,13 +191,18 @@ def _pose_from_frame(frame):
 
 _TOOL_TARGETS = (
     # (tool_name, group_name, touch_links, mesh_path_attr)
-    # touch_links covers the arm links the pineapple OBJ INHERENTLY overlaps
-    # when attached at tool0 (wrist_2 + wrist_3, the wrist mesh embedded in
-    # the proxy). wrist_1 and forearm are deliberately NOT in the list — if
-    # the tool reaches that far back, that's a real bad pose worth flagging.
+    # touch_links cover the arm links the pineapple OBJ INHERENTLY overlaps
+    # when attached at tool0. The proxy mesh extends ~157 mm backward from
+    # tool0 along -Z (wrist visualization plus tool), which on a UR5e
+    # reaches across wrist_3 + wrist_2 + into wrist_1's volume. All three
+    # must be allowed; otherwise IK rejects valid poses on the wrist_1
+    # overlap that's a property of the proxy, not a real collision.
+    # forearm_link is left OUT — the proxy does not reach forearm in
+    # practice; if it ever does, that IS worth flagging as a real bad pose.
     (
         "LEFT_TOOL_NAME", "LEFT_GROUP",
         [
+            "left_ur_arm_wrist_1_link",
             "left_ur_arm_wrist_2_link",
             "left_ur_arm_wrist_3_link",
         ],
@@ -204,6 +211,7 @@ _TOOL_TARGETS = (
     (
         "RIGHT_TOOL_NAME", "RIGHT_GROUP",
         [
+            "right_ur_arm_wrist_1_link",
             "right_ur_arm_wrist_2_link",
             "right_ur_arm_wrist_3_link",
         ],
@@ -367,6 +375,7 @@ def start_pb_client(use_gui: bool = False, verbose: bool = True):
 
     _STICKY[_STICKY_PB_CLIENT] = client
     _STICKY[_STICKY_PB_PLANNER] = planner
+    _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
     return client, planner
 
 
@@ -434,8 +443,17 @@ def is_pb_running() -> bool:
 
 
 def set_cell_state(planner, robot_cell_state):
-    """Push a robot cell state into PyBullet (matches GH_set_cell_state.py)."""
+    """Push a robot cell state into PyBullet (matches GH_set_cell_state.py).
+
+    If a different cell kind is currently loaded into the planner (e.g. the
+    support cell from a prior `RSIKSupportKeyframe` run), swap back to the
+    dual-arm cell first so the IK / collision check operates against the
+    right RobotCell.
+    """
     deps = _import_compas_stack()
+    if _STICKY.get(_STICKY_CURRENT_CELL_KIND) != "dual_arm":
+        planner.set_robot_cell(get_or_load_robot_cell())
+        _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
     planner.set_robot_cell_state(robot_cell_state)
     base_frame = robot_cell_state.robot_base_frame
     deps["pp"].set_pose(planner.client.robot_puid, _pose_from_frame(base_frame))

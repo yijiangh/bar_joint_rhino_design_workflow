@@ -1,10 +1,14 @@
 # Todos
 
+## VL
+
 - [ ] Add validation examples for prefab export edge cases (missing bar IDs, missing joint metadata).
+
+## YH 
 
 - [] the ik workflow should allow user to pick male and female joint. this will require an additional male-joint_from_tool0 transformation.
 - [] robot half transparent overlay to help user visualize when picking the ground position with two points.
-- [] should show both 
+- [] should also color the env collisions in consideration (built bar etc) green in the ik found, waiting for accept phase so users know what to check for. Now I am not sure if the built bar collision is included at all, since at least in debug_ik script this is not shown in pb gui.
 
 - [] showIK should also display tool, and the mesh should not be baked. Similar behavior like the IK, make it disappear after done
 

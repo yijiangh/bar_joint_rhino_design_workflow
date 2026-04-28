@@ -34,6 +34,23 @@ from core.robot_cell import default_cell_state, get_or_load_robot_cell, import_c
 
 _STICKY_SCENE_OBJECT = "bar_joint:ik_viz_scene_object"
 _STICKY_DRAWN_IDS = "bar_joint:ik_viz_drawn_ids"
+_STICKY_MESH_MODE = "bar_joint:ik_viz_mesh_mode"
+
+MESH_MODE_VISUAL = "visual"
+MESH_MODE_COLLISION = "collision"
+_VALID_MESH_MODES = (MESH_MODE_VISUAL, MESH_MODE_COLLISION)
+
+
+def set_mesh_mode(mode: str) -> None:
+    """Pin the mesh-display mode used by `show_state` for the rest of the session."""
+    if mode not in _VALID_MESH_MODES:
+        raise ValueError(f"mesh mode must be one of {_VALID_MESH_MODES}, got {mode!r}")
+    sc.sticky[_STICKY_MESH_MODE] = mode
+
+
+def get_mesh_mode() -> str:
+    """Return the current mesh-display mode (defaults to 'visual')."""
+    return sc.sticky.get(_STICKY_MESH_MODE, MESH_MODE_VISUAL)
 
 
 def _meters_to_doc_scale() -> float:
@@ -128,10 +145,28 @@ def _world_from_base_rhino_xform(base_frame) -> Rhino.Geometry.Transform:
     return xform
 
 
-def show_state(state) -> None:
-    """Draw the robot at `state`, replacing any previously drawn meshes."""
-    robot_cell = get_or_load_robot_cell()
-    robot_model = robot_cell.robot_model
+def show_state(state, mesh_mode: str | None = None, *, robot_model=None) -> None:
+    """Draw the robot at `state`, replacing any previously drawn meshes.
+
+    `mesh_mode` selects which `BaseRobotModelObject` draw method runs:
+
+    - ``"visual"``  (default) → ``scene_object.draw_visual()`` — the URDF visual meshes.
+    - ``"collision"``         → ``scene_object.draw_collision()`` — the URDF collision proxies.
+
+    If `mesh_mode` is None, falls back to the session-wide value set via
+    `set_mesh_mode(...)` (default ``"visual"``).
+
+    `robot_model` overrides the dual-arm cell default so the support cell can
+    reuse this draw pipeline. The cached scene object is keyed by identity of
+    the model, so swapping models recreates the SceneObject correctly.
+    """
+    if mesh_mode is None:
+        mesh_mode = get_mesh_mode()
+    if mesh_mode not in _VALID_MESH_MODES:
+        raise ValueError(f"mesh_mode must be one of {_VALID_MESH_MODES}, got {mesh_mode!r}")
+
+    if robot_model is None:
+        robot_model = get_or_load_robot_cell().robot_model
 
     _delete_tracked_ids()
 
@@ -147,7 +182,10 @@ def show_state(state) -> None:
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        drawn = scene_object.draw_visual()
+        if mesh_mode == MESH_MODE_COLLISION:
+            drawn = scene_object.draw_collision()
+        else:
+            drawn = scene_object.draw_visual()
         guids = _flatten_drawn(drawn)
 
         # Apply the robot-base-in-world offset to all freshly baked meshes.

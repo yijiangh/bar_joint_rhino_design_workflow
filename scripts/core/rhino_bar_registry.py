@@ -42,6 +42,7 @@ TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
 BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
 TUBE_BAR_ID_KEY = "tube_bar_id"
 TUBE_AXIS_GUID_KEY = "tube_axis_id"
+TUBE_SELF_GUID_KEY = "tube_self_guid"
 TUBE_CACHE_START = "tube_cache_start"
 TUBE_CACHE_END = "tube_cache_end"
 BAR_RADIUS_KEY = "tube_radius"
@@ -595,6 +596,10 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None):
         rs.SetUserText(oid, BAR_RADIUS_KEY, f"{bar_radius:.6f}")
         rs.SetUserText(oid, TUBE_CACHE_START, _format_point(start_xyz))
         rs.SetUserText(oid, TUBE_CACHE_END, _format_point(end_xyz))
+        # Store the tube's own GUID so we can later detect copy/paste
+        # duplicates: a copy will retain this user text but live under a
+        # different object GUID.
+        rs.SetUserText(oid, TUBE_SELF_GUID_KEY, str(rs.coerceguid(oid)))
     return baked_ids
 
 
@@ -639,28 +644,62 @@ def _is_managed_tube(oid, registered_curve_guids):
 def _enforce_tube_layer(caller):
     """Delete orphaned tube previews and evict strays on the tube layer.
 
-    - Orphan = tube whose ``tube_axis_id`` does not point at a current,
-      registered bar curve (e.g. user copy-pasted bar+tube; the new bar
-      gets a fresh id and a fresh tube, leaving the duplicate dangling).
-    - Stray = object on the tube layer with no ``tube_axis_id`` user text
-      (the user drew something there manually); we move it to Default.
+    A tube on the managed tube layer is considered an *orphan* (and is
+    deleted) if any of the following hold:
+
+    - its ``tube_axis_id`` user text does not point at a currently
+      registered bar curve (e.g. the bar was deleted, or the tube was
+      copied along with a fresh bar that got reassigned);
+    - its stored ``tube_self_guid`` does not match its actual object GUID
+      (i.e. the user manually duplicated the tube and the copy now carries
+      the same user text as the original);
+    - its Rhino ObjectName is identical to that of an earlier tube on the
+      same layer (duplicate names are treated as copies; the first
+      occurrence wins, the rest are orphans).
+
+    A *stray* is an object on the tube layer with no ``tube_axis_id`` and
+    no ``tube_self_guid`` user text (the user drew something there
+    manually); strays are moved to ``config.DEFAULT_LAYER``.
     """
     if not rs.IsLayer(TUBE_LAYER):
         return
     registered = {str(g) for g in get_all_bars().values()}
     orphans = []
     strays = []
+    seen_names = {}
     for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
         axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
-        if not axis_guid:
+        self_guid = rs.GetUserText(oid, TUBE_SELF_GUID_KEY)
+        actual_guid = str(rs.coerceguid(oid))
+        name = rs.ObjectName(oid)
+
+        if not axis_guid and not self_guid and not name:
             strays.append(oid)
-        elif axis_guid not in registered:
+            continue
+
+        is_orphan = False
+        if axis_guid and axis_guid not in registered:
+            is_orphan = True
+        elif self_guid and self_guid != actual_guid:
+            # Object was duplicated by the user; the copy still claims to
+            # be the original tube via user text but has a new object GUID.
+            is_orphan = True
+        elif name and name in seen_names:
+            # A later tube with the same ObjectName as an earlier one is
+            # treated as a duplicate copy.
+            is_orphan = True
+
+        if is_orphan:
             orphans.append(oid)
+        else:
+            if name:
+                seen_names[name] = oid
+
     if orphans:
         delete_objects(orphans)
         print(
             f"{caller} (warning): deleted {len(orphans)} orphaned tube preview(s) "
-            f"on '{TUBE_LAYER}' (no matching bar)."
+            f"on '{TUBE_LAYER}' (no matching bar, copy-pasted, or duplicate name)."
         )
     _move_to_default_layer(strays, source_layer=TUBE_LAYER, caller=caller)
 
@@ -714,12 +753,15 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
 
     1. Ensures all managed layers exist and are visible, evicting any
        stray objects to ``Default`` and deleting orphaned tube previews.
-    2. Updates tube previews for every registered bar.
-    3. Repairs duplicate / missing bar sequence numbers.
+    2. Repairs duplicate / missing bar sequence numbers.  Centerlines are
+       the source of truth for bar identity, so this runs before the
+       preview pass below.
+    3. Updates tube previews for every registered bar.
+    4. Sanity-checks that the centerline and tube-preview counts match.
     """
     enforce_managed_layers(caller)
-    n = update_all_previews(bar_radius)
     changed = repair_bar_sequences()
+    n = update_all_previews(bar_radius)
     parts = []
     if n:
         parts.append(f"{n} bar preview(s) updated")
@@ -727,6 +769,33 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
         parts.append(f"{len(changed)} sequence number(s) repaired")
     if parts:
         print(f"{caller} (startup): {', '.join(parts)}.")
+
+    # ------------------------------------------------------------------
+    # Sanity check: every registered bar centerline should have exactly
+    # one corresponding tube preview.
+    # ------------------------------------------------------------------
+    if rs.IsLayer(BAR_CENTERLINE_LAYER):
+        n_centerlines = sum(
+            1
+            for oid in (rs.ObjectsByLayer(BAR_CENTERLINE_LAYER) or [])
+            if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE
+        )
+    else:
+        n_centerlines = 0
+    n_tubes = (
+        len(rs.ObjectsByLayer(TUBE_LAYER) or [])
+        if rs.IsLayer(TUBE_LAYER)
+        else 0
+    )
+    print(
+        f"{caller} (sanity): {n_centerlines} bar centerline(s), "
+        f"{n_tubes} tube preview(s)."
+    )
+    if n_centerlines != n_tubes:
+        print(
+            f"{caller} (warning): centerline/tube count mismatch "
+            f"({n_centerlines} vs {n_tubes})."
+        )
 
 
 # ---------------------------------------------------------------------------

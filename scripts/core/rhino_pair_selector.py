@@ -33,6 +33,8 @@ from core.rhino_bar_registry import (
 
 
 _DOC_USERTEXT_KEY = "scaffolding.last_joint_pair"
+_DOC_USERTEXT_BRACE_LENGTH_KEY = "scaffolding.last_brace_length"
+_DEFAULT_BRACE_LENGTH = 500.0
 
 
 def get_default_pair_name() -> str | None:
@@ -48,6 +50,26 @@ def get_default_pair_name() -> str | None:
 def set_default_pair_name(name: str) -> None:
     try:
         sc.doc.Strings.SetString(_DOC_USERTEXT_KEY, str(name))
+    except Exception:
+        pass
+
+
+def get_default_brace_length() -> float:
+    """Return the document-stored last-used brace length (mm)."""
+    try:
+        value = sc.doc.Strings.GetValue(_DOC_USERTEXT_BRACE_LENGTH_KEY)
+        if value:
+            return float(value)
+    except Exception:
+        pass
+    return _DEFAULT_BRACE_LENGTH
+
+
+def set_default_brace_length(length_mm: float) -> None:
+    try:
+        sc.doc.Strings.SetString(
+            _DOC_USERTEXT_BRACE_LENGTH_KEY, f"{float(length_mm):.6f}"
+        )
     except Exception:
         pass
 
@@ -222,3 +244,75 @@ def _pick_bar_only(prompt: str):
     picked_id = go.Object(0).ObjectId
     rs.UnselectObject(picked_id)
     return _resolve_picked_to_bar_curve(picked_id)
+
+
+def pick_bar_with_pair_and_length_option(
+    bar_prompt: str,
+    command_name: str = "JointPair",
+    *,
+    length_option_name: str = "Length",
+    length_min: float = 1.0,
+    length_max: float = 100000.0,
+) -> tuple[object, JointPairDef, float] | tuple[None, None, None]:
+    """Like :func:`pick_bar_with_pair_option` but also exposes a numeric
+    ``Length`` option (in mm) for the new bar to be created.  The chosen
+    length is persisted via :func:`set_default_brace_length`.
+
+    Returns ``(bar_object_id, JointPairDef, length_mm)`` or
+    ``(None, None, None)`` on cancel / empty registry.
+    """
+    names = list_joint_pair_names()
+    if not names:
+        rs.MessageBox(
+            "No joint pairs are registered yet.  Run RSDefineJointPair first.",
+            0,
+            command_name,
+        )
+        return None, None, None
+
+    default_name = get_default_pair_name()
+    if default_name not in names:
+        default_name = names[0]
+    selected_index = names.index(default_name)
+
+    length_value = Rhino.Input.Custom.OptionDouble(
+        get_default_brace_length(), length_min, length_max
+    )
+
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt(bar_prompt)
+        go.EnablePreSelect(True, True)
+        go.SetCustomGeometryFilter(_bar_filter)
+        list_opt_index = (
+            -1
+            if len(names) == 1
+            else go.AddOptionList("Pair", names, selected_index)
+        )
+        length_opt_index = go.AddOptionDouble(length_option_name, length_value)
+
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Cancel:
+            return None, None, None
+
+        if result == Rhino.Input.GetResult.Option:
+            opt = go.Option()
+            if opt is not None and opt.Index == list_opt_index:
+                selected_index = int(opt.CurrentListOptionIndex)
+            # length_value is updated in-place by GetObject for the
+            # OptionDouble; nothing else to do here.
+            continue
+
+        if result == Rhino.Input.GetResult.Object:
+            picked_id = go.Object(0).ObjectId
+            rs.UnselectObject(picked_id)
+            bar_id = _resolve_picked_to_bar_curve(picked_id)
+            if bar_id is None:
+                continue
+            chosen_name = names[selected_index]
+            set_default_pair_name(chosen_name)
+            chosen_length = float(length_value.CurrentValue)
+            set_default_brace_length(chosen_length)
+            return bar_id, get_joint_pair(chosen_name), chosen_length
+
+        return None, None, None

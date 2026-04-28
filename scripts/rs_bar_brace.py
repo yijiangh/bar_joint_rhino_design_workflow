@@ -28,7 +28,10 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core import geometry
-from core.rhino_pair_selector import pick_bar_with_pair_option
+from core.rhino_pair_selector import (
+    pick_bar_with_pair_and_length_option,
+    set_default_brace_length,
+)
 from core.rhino_helpers import (
     apply_object_display,
     as_object_id_list,
@@ -123,10 +126,10 @@ def _bake_axis_tube(axis_curve_id, label, color=None, layer_name=_TUBE_LAYER):
     return baked_ids
 
 
-def _add_centered_line(midpoint, direction):
+def _add_centered_line(midpoint, direction, length_mm):
     direction = np.asarray(direction, dtype=float)
     direction = direction / np.linalg.norm(direction)
-    half_length = config.DEFAULT_NEW_BAR_LENGTH / 2.0
+    half_length = float(length_mm) / 2.0
     return rs.AddLine(
         midpoint - half_length * direction, midpoint + half_length * direction
     )
@@ -230,10 +233,10 @@ def _solve(le1_id, le2_id, ce1, ce2, target_distance):
     return report.get("solutions", []), report
 
 
-def _create_previews(solutions, ce1, ce2):
+def _create_previews(solutions, ce1, ce2, brace_length):
     """Create preview tubes + dots for all solutions. Returns list of preview dicts."""
     preview_items = []
-    half_length = config.DEFAULT_NEW_BAR_LENGTH / 2.0
+    half_length = float(brace_length) / 2.0
     for index, sol in enumerate(solutions):
         midpoint = 0.5 * (sol["p1"] + sol["p2"])
         direction = sol["nn"] / np.linalg.norm(sol["nn"])
@@ -292,8 +295,13 @@ def _print_report(report):
 # ---------------------------------------------------------------------------
 
 
-def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance):
-    """Interactive solve-preview-select loop. Returns chosen solution dict or None."""
+def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
+    """Interactive solve-preview-select loop.
+
+    Returns ``(solution_dict, brace_length)``.  ``brace_length`` may differ
+    from the value passed in if the user edited it via the ``Length``
+    option.  On cancel, returns ``(None, brace_length)``.
+    """
     ce1 = point_to_array(ce1)
     ce2 = point_to_array(ce2)
     ce1_ref_id = _bake_reference_point(ce1, "RSBarBrace_Ce1", (230, 80, 80))
@@ -305,9 +313,19 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance):
     if not solutions:
         rs.MessageBox("No valid brace solutions found. Try different contact points.")
         delete_objects(ref_ids)
-        return None
+        return None, brace_length
 
-    preview_items = _create_previews(solutions, ce1, ce2)
+    preview_items = _create_previews(solutions, ce1, ce2, brace_length)
+
+    # Persist the Length OptionDouble across iterations.  Recreating it each
+    # loop would lose the value the user just typed (and Rhino's option
+    # index for an OptionDouble does not always round-trip via
+    # ``go.Option().Index``).  Instead we keep one instance whose
+    # ``CurrentValue`` is updated in-place by GetObject, and we compare it
+    # to ``brace_length`` after every ``Get()`` to detect a change.
+    length_value = Rhino.Input.Custom.OptionDouble(
+        float(brace_length), 1.0, 100000.0
+    )
 
     try:
         while True:
@@ -327,11 +345,12 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance):
 
             slide1_idx = go.AddOption("SlidePointOn1")
             slide2_idx = go.AddOption("SlidePointOn2")
+            go.AddOptionDouble("Length", length_value)
 
             result = go.Get()
 
             if result == Rhino.Input.GetResult.Cancel:
-                return None
+                return None, brace_length
 
             if result == Rhino.Input.GetResult.Object:
                 obj_ref = go.Object(0)
@@ -349,13 +368,30 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance):
                         f"family={sol.get('sign_family', '?')}, "
                         f"residual={sol['residual']:.2e}"
                     )
-                    return sol
+                    return sol, brace_length
                 # Clicked something that isn't a preview — ignore
                 continue
 
             if result == Rhino.Input.GetResult.Option:
+                # Always check first whether the user changed the brace
+                # length.  ``length_value.CurrentValue`` is updated in-place
+                # by GetObject during ``Get()``.
+                new_length = float(length_value.CurrentValue)
+                if abs(new_length - float(brace_length)) > 1e-9:
+                    brace_length = new_length
+                    set_default_brace_length(brace_length)
+                    print(
+                        f"RSBarBrace: brace length updated to "
+                        f"{brace_length:.2f} mm; regenerating previews."
+                    )
+                    _cleanup_previews(preview_items)
+                    preview_items = _create_previews(
+                        solutions, ce1, ce2, brace_length
+                    )
+                    continue
+
                 opt = go.Option()
-                opt_idx = opt.Index
+                opt_idx = opt.Index if opt is not None else -1
 
                 if opt_idx == slide1_idx or opt_idx == slide2_idx:
                     # Re-pick a contact point
@@ -393,8 +429,8 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance):
                             "No valid brace solutions found for the updated points."
                         )
                         delete_objects(ref_ids)
-                        return None
-                    preview_items = _create_previews(solutions, ce1, ce2)
+                        return None, brace_length
+                    preview_items = _create_previews(solutions, ce1, ce2, brace_length)
                     continue
 
     finally:
@@ -412,7 +448,7 @@ def main():
     repair_on_entry(float(config.BAR_RADIUS), "RSBarBrace")
     rs.UnselectAllObjects()
 
-    le1_id, pair = pick_bar_with_pair_option(
+    le1_id, pair, brace_length = pick_bar_with_pair_and_length_option(
         "Select first existing bar (Le1)", command_name="RSBarBrace"
     )
     if le1_id is None or pair is None:
@@ -420,7 +456,8 @@ def main():
     target_distance = float(pair.contact_distance_mm)
     print(
         f"RSBarBrace: using pair '{pair.name}' "
-        f"(contact distance {target_distance:.4f} mm)"
+        f"(contact distance {target_distance:.4f} mm), "
+        f"brace length {float(brace_length):.2f} mm"
     )
 
     le2_id = None
@@ -445,15 +482,18 @@ def main():
         if ce2 is None:
             return
 
-        solution = _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance)
+        solution, brace_length = _interactive_loop(
+            le1_id, le2_id, ce1, ce2, target_distance, brace_length
+        )
         if solution is None:
             print("RSBarBrace: Cancelled.")
             return
+        print(f"RSBarBrace: final brace length {float(brace_length):.2f} mm")
 
         # Bake the chosen solution as a plain bar (default color).
         with suspend_redraw():
             midpoint = 0.5 * (solution["p1"] + solution["p2"])
-            line_id = _add_centered_line(midpoint, solution["nn"])
+            line_id = _add_centered_line(midpoint, solution["nn"], brace_length)
             _place_axis_line(line_id, label="RSBarBrace_Ln")
             ensure_bar_id(line_id)
             ensure_bar_preview(line_id, float(config.BAR_RADIUS))

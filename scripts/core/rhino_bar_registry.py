@@ -442,21 +442,104 @@ def _bar_curve_and_tube(curve_id):
     return ids
 
 
-def show_sequence_colors(active_bar_id, show_unbuilt=True):
-    """Apply sequence colour-coding to all registered bars in the viewport.
+# ---------------------------------------------------------------------------
+# Joint / tool lookup by parent bar
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    active_bar_id : str
-        The bar ID representing the current assembly step.
-    show_unbuilt : bool
-        When ``False``, bars with a higher sequence number than the active bar
-        are hidden so the viewport shows only the built portion of the assembly.
+
+def _joint_layer_objects():
+    """All joint block instance ids on the female + male joint layers."""
+    out = []
+    for layer in (
+        config.LAYER_JOINT_FEMALE_INSTANCES,
+        config.LAYER_JOINT_MALE_INSTANCES,
+    ):
+        if rs.IsLayer(layer):
+            out.extend(rs.ObjectsByLayer(layer) or [])
+    return out
+
+
+def _tool_layer_objects():
+    """All robotic-tool block instance ids on the tool-instances layer."""
+    layer = config.LAYER_TOOL_INSTANCES
+    if not rs.IsLayer(layer):
+        return []
+    return list(rs.ObjectsByLayer(layer) or [])
+
+
+def get_joints_for_bar(bar_id):
+    """Return joint block instance ids whose ``parent_bar_id`` is *bar_id*.
+
+    A joint pair always has one female and one male instance; their parent
+    bars differ (female -> Le bar, male -> Ln bar).  This returns whichever
+    instance(s) are *parented* to the given bar, regardless of role.
+    """
+    return [
+        oid
+        for oid in _joint_layer_objects()
+        if rs.GetUserText(oid, "parent_bar_id") == bar_id
+    ]
+
+
+def get_active_tool_oids(active_bar_id):
+    """Return tool block instance ids whose male joint is parented to *active_bar_id*.
+
+    A robotic tool is conceptually 'used to assemble' the bar that owns
+    its male joint -- so the active tool for a given step is the tool
+    whose joint's male side has ``parent_bar_id == active_bar_id``.
+    """
+    if not active_bar_id:
+        return []
+    male_layer = config.LAYER_JOINT_MALE_INSTANCES
+    if not rs.IsLayer(male_layer):
+        return []
+    active_joint_ids = {
+        rs.GetUserText(oid, "joint_id")
+        for oid in (rs.ObjectsByLayer(male_layer) or [])
+        if rs.GetUserText(oid, "parent_bar_id") == active_bar_id
+        and rs.GetUserText(oid, "joint_id")
+    }
+    if not active_joint_ids:
+        return []
+    return [
+        oid
+        for oid in _tool_layer_objects()
+        if rs.GetUserText(oid, "joint_id") in active_joint_ids
+    ]
+
+
+def _set_visible(oid, visible):
+    if visible:
+        rs.ShowObject(oid)
+    else:
+        rs.HideObject(oid)
+
+
+def show_sequence_colors(active_bar_id, show_unbuilt=True):
+    """Apply sequence colour-coding + visibility to bars, joints, and tools.
+
+    Bar visibility / colour
+        - ``seq < active_seq``  -> green (built), shown.
+        - ``seq == active_seq`` -> blue  (active step), shown.
+        - ``seq > active_seq``  -> grey  (unbuilt), shown iff *show_unbuilt*.
+
+    Joint visibility
+        Each joint instance follows the visibility of its parent bar
+        (``parent_bar_id`` UserText).  Joints on built / active bars are
+        always shown; joints on unbuilt bars follow *show_unbuilt*.
+
+    Tool visibility
+        Only the robotic tool(s) belonging to the *active* step are
+        shown -- i.e. tools whose joint's male side is parented to
+        *active_bar_id*.  All other tools are hidden.
     """
     bar_map = get_bar_seq_map()
     if active_bar_id not in bar_map:
         return
     _, active_seq = bar_map[active_bar_id]
+
+    # Build a quick "is this bar visible?" map for the joint pass.
+    bar_visible_by_id = {}
 
     rs.EnableRedraw(False)
     for bar_id, (oid, seq) in bar_map.items():
@@ -469,24 +552,57 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
         else:
             color = SEQ_COLOR_UNBUILT
             visible = show_unbuilt
-
+        bar_visible_by_id[bar_id] = visible
         for obj in _bar_curve_and_tube(oid):
             _set_obj_color(obj, color)
-            if visible:
-                rs.ShowObject(obj)
-            else:
-                rs.HideObject(obj)
+            _set_visible(obj, visible)
+
+    # Joints follow their parent bar's visibility AND color.  Setting
+    # by-object color on the block instance lets nested sub-objects that
+    # are set to "by parent" inherit it automatically.
+    bar_color_by_id = {}
+    for bar_id_key, (_oid, seq) in bar_map.items():
+        if seq < active_seq:
+            bar_color_by_id[bar_id_key] = SEQ_COLOR_BUILT
+        elif seq == active_seq:
+            bar_color_by_id[bar_id_key] = SEQ_COLOR_ACTIVE
+        else:
+            bar_color_by_id[bar_id_key] = SEQ_COLOR_UNBUILT
+
+    for joint_oid in _joint_layer_objects():
+        parent_bar_id = rs.GetUserText(joint_oid, "parent_bar_id")
+        visible = bar_visible_by_id.get(parent_bar_id, True)
+        color = bar_color_by_id.get(parent_bar_id)
+        if color is not None:
+            _set_obj_color(joint_oid, color)
+        _set_visible(joint_oid, visible)
+
+    # Tools: hide all, then show + color the active step's tool(s).
+    active_tool_oids = set(get_active_tool_oids(active_bar_id))
+    for tool_oid in _tool_layer_objects():
+        is_active = tool_oid in active_tool_oids
+        if is_active:
+            _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+        _set_visible(tool_oid, is_active)
+
     rs.EnableRedraw(True)
 
 
 def reset_sequence_colors():
-    """Restore default (by-layer) colour and make all registered bars visible."""
+    """Restore default (by-layer) colour and make all registered bars,
+    joints, and tools visible again."""
     bar_map = get_bar_seq_map()
     rs.EnableRedraw(False)
     for bar_id, (oid, _) in bar_map.items():
         for obj in _bar_curve_and_tube(oid):
             _reset_obj_color(obj)
             rs.ShowObject(obj)
+    for joint_oid in _joint_layer_objects():
+        _reset_obj_color(joint_oid)
+        rs.ShowObject(joint_oid)
+    for tool_oid in _tool_layer_objects():
+        _reset_obj_color(tool_oid)
+        rs.ShowObject(tool_oid)
     rs.EnableRedraw(True)
 
 

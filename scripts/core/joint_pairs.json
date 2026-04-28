@@ -83,7 +83,7 @@
           1.0,
           1.0
         ],
-        "preferred_robotic_tool_name": "",
+        "preferred_robotic_tool_name": "AT3L",
         "M_block_from_bar": [
           [
             -3.774758283725532e-15,
@@ -359,7 +359,7 @@
           1.0,
           1.0
         ],
-        "preferred_robotic_tool_name": "AT3R",
+        "preferred_robotic_tool_name": "AT3L",
         "M_block_from_bar": [
           [
             -3.552713678800501e-15,

@@ -5,20 +5,24 @@
 Displays all registered bars colour-coded by assembly step and lets the user:
 
   - **Click a bar** to make it the active (current) step.
+  - **Type a step number** (e.g. ``3``) to jump to that assembly step.
+  - **Type a bar id** (e.g. ``B5`` / ``b5``) to jump to that specific bar.
   - **Next / Previous** to walk through the sequence one step at a time.
   - **MoveEarlier / MoveLater** to swap the active bar one step back or forward
     in the assembly order without leaving the tool.
   - **PickBarAfterThis** to pick any other bar and insert it immediately after
     the current bar in the sequence.
-  - **ShowUnbuilt / HideUnbuilt** to toggle the visibility of bars that come
-    later than the current step, giving an instant "assembly stage" preview.
+  - **ShowUnbuilt / HideUnbuilt** to toggle the visibility of bars (and their
+    child joints) that come later than the current step, giving an instant
+    "assembly stage" preview.  The active step's robotic tool is always shown;
+    all other tools are hidden while the command is active.
   - **Finish** (or Escape) to restore normal display and exit.
 
 Colour legend
 -------------
-- Green — already assembled (earlier in sequence)
-- Blue  — current step (active bar)
-- Grey  — not yet assembled (later in sequence, when shown)
+- Green - already assembled (earlier in sequence)
+- Blue  - current step (active bar)
+- Grey  - not yet assembled (later in sequence, when shown)
 """
 
 import importlib
@@ -35,8 +39,6 @@ if SCRIPT_DIR not in sys.path:
 from core import config
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
-    BAR_TYPE_KEY,
-    BAR_TYPE_VALUE,
     get_bar_seq_map,
     move_bar_earlier,
     move_bar_later,
@@ -46,14 +48,14 @@ from core.rhino_bar_registry import (
     reset_sequence_colors,
 )
 
-
-# ---------------------------------------------------------------------------
-# Geometry filter — only accept registered scaffolding bars
-# ---------------------------------------------------------------------------
-
-
-def _bar_filter(rhino_object, geometry, component_index):
-    return rs.GetUserText(rhino_object.Id, BAR_TYPE_KEY) == BAR_TYPE_VALUE
+# Reuse the tube-aware bar filter and tube->centerline resolver from the
+# pair selector so clicking the bar's tube preview works the same way it
+# does in RSJointPlace / RSBarSnap / etc.  (When we later round up all bar
+# selection methods into one shared helper, this import goes away.)
+from core.rhino_pair_selector import (
+    _bar_filter as _bar_or_tube_filter,
+    _resolve_picked_to_bar_curve,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +130,23 @@ class _SequenceSession:
                 self.set_active(bar_id)
                 return
 
+    def select_by_step(self, step):
+        """Make the bar at sequence number *step* (1-based) active."""
+        for bar_id, _oid, seq in self._sorted_bars():
+            if seq == step:
+                self.set_active(bar_id)
+                return True
+        print(f"RSSequenceEdit: No bar at step {step}.")
+        return False
+
+    def select_by_bar_id(self, bar_id):
+        """Make the bar with id *bar_id* (e.g. ``"B5"``) active."""
+        if bar_id in get_bar_seq_map():
+            self.set_active(bar_id)
+            return True
+        print(f"RSSequenceEdit: Bar {bar_id} is not registered.")
+        return False
+
     def do_move_earlier(self):
         if self.active_bar_id is None:
             return
@@ -152,12 +171,15 @@ class _SequenceSession:
             f"Pick a bar to insert AFTER {self.active_bar_id} in the sequence"
         )
         go2.EnablePreSelect(False, False)
-        go2.SetCustomGeometryFilter(_bar_filter)
+        go2.SetCustomGeometryFilter(_bar_or_tube_filter)
         result2 = go2.Get()
         if result2 != Rhino.Input.GetResult.Object:
             return
         picked_id = go2.Object(0).ObjectId
-        picked_bar_id = rs.GetUserText(picked_id, BAR_ID_KEY)
+        bar_curve_id = _resolve_picked_to_bar_curve(picked_id)
+        if bar_curve_id is None:
+            return
+        picked_bar_id = rs.GetUserText(bar_curve_id, BAR_ID_KEY)
         if not picked_bar_id:
             return
         if picked_bar_id == self.active_bar_id:
@@ -177,6 +199,57 @@ class _SequenceSession:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+
+def _parse_typed_selector(text, total_steps):
+    """Classify a typed input as a bar id, an assembly step number, or invalid.
+
+    A leading ``b`` / ``B`` followed by digits -> bar id (e.g. ``b5`` -> ``"B5"``).
+    A bare positive integer in ``[1, total_steps]`` -> assembly step number.
+    Anything else returns ``("error", message)``.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ("error", "Empty input.")
+    if text[0] in ("b", "B"):
+        suffix = text[1:]
+        if not suffix.isdigit():
+            return ("error", f"Invalid bar id: {text!r}")
+        return ("bar", "B" + suffix)
+    if text.lstrip("+").isdigit():
+        n = int(text)
+        if 1 <= n <= total_steps:
+            return ("step", n)
+        return ("error", f"Step {n} out of range (1..{total_steps}).")
+    return ("error", f"Unrecognised input: {text!r}")
+
+
+def _build_get_option(session, last_action):
+    """Construct the multi-input ``GetObject`` used by the main loop.
+
+    Accepts: bar object click | command-line option | bare Enter (repeat) |
+    typed string (bar id like ``B5`` / ``b5`` or assembly step number).
+    """
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt(
+        f"Select bar, type step # or bar id (e.g. B5)  (Enter = {last_action})"
+    )
+    go.EnablePreSelect(False, False)
+    go.AcceptNothing(True)   # bare Enter -> repeat last action
+    go.AcceptString(True)    # accept typed numbers / bar ids
+    go.SetCustomGeometryFilter(_bar_or_tube_filter)
+
+    go.AddOption("Next")
+    go.AddOption("Previous")
+    go.AddOption("MoveEarlier")
+    go.AddOption("MoveLater")
+    go.AddOption("PickBarAfterThis")
+    if session.show_unbuilt:
+        go.AddOption("HideUnbuilt")
+    else:
+        go.AddOption("ShowUnbuilt")
+    go.AddOption("Finish")
+    return go
 
 
 def _run_action(name, session):
@@ -208,29 +281,13 @@ def main():
         return
 
     session = _SequenceSession()
-    # Default Enter action — walks forward through the sequence.
+    # Default Enter action - walks forward through the sequence.
     last_action = "Next"
 
     while True:
-        # Create a fresh GetObject each iteration to avoid pre-selection
-        # re-triggering from the previous pick (which would cause an infinite loop).
-        go = Rhino.Input.Custom.GetObject()
-        go.SetCommandPrompt(f"Select a bar  (Enter = {last_action})")
-        go.EnablePreSelect(False, False)
-        go.AcceptNothing(True)  # allow bare Enter to repeat last action
-        go.SetCustomGeometryFilter(_bar_filter)
-
-        go.AddOption("Next")
-        go.AddOption("Previous")
-        go.AddOption("MoveEarlier")
-        go.AddOption("MoveLater")
-        go.AddOption("PickBarAfterThis")
-        if session.show_unbuilt:
-            go.AddOption("HideUnbuilt")
-        else:
-            go.AddOption("ShowUnbuilt")
-        go.AddOption("Finish")
-
+        # Create a fresh GetObject each iteration so a previous pick doesn't
+        # re-trigger via pre-selection (which would cause an infinite loop).
+        go = _build_get_option(session, last_action)
         result = go.Get()
 
         if result == Rhino.Input.GetResult.Cancel:
@@ -238,14 +295,29 @@ def main():
 
         if result == Rhino.Input.GetResult.Object:
             picked_id = go.Object(0).ObjectId
-            bar_id = rs.GetUserText(picked_id, BAR_ID_KEY)
-            if bar_id:
-                session.set_active(bar_id)
+            bar_curve_id = _resolve_picked_to_bar_curve(picked_id)
+            if bar_curve_id is not None:
+                bar_id = rs.GetUserText(bar_curve_id, BAR_ID_KEY)
+                if bar_id:
+                    session.set_active(bar_id)
             # Picking a bar doesn't change the repeat action.
             continue
 
+        if result == Rhino.Input.GetResult.String:
+            kind, value = _parse_typed_selector(
+                go.StringResult(), len(get_bar_seq_map())
+            )
+            if kind == "bar":
+                session.select_by_bar_id(value)
+            elif kind == "step":
+                session.select_by_step(value)
+            else:
+                print(f"RSSequenceEdit: {value}")
+            # Typed input doesn't change the repeat action either.
+            continue
+
         if result == Rhino.Input.GetResult.Nothing:
-            # Bare Enter — repeat last action.
+            # Bare Enter - repeat last action.
             action_name = last_action
         elif result == Rhino.Input.GetResult.Option:
             action_name = go.Option().EnglishName

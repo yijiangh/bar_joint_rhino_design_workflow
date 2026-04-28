@@ -27,3 +27,36 @@ JJR_RANGE = (-math.pi, math.pi)
 DEFAULT_NEW_BAR_LENGTH = 500.0
 OPTIMIZER_RANDOM_RESTARTS = 12
 OPTIMIZER_TRANSLATION_PERTURBATION = 50.0
+
+
+# ---------------------------------------------------------------------------
+# Managed Rhino layers
+# ---------------------------------------------------------------------------
+# All Rhino layers our scripts manage live as sublayers of one root layer.
+# The all-caps ``MANAGED`` prefix signals to the user that these layers are
+# owned by the toolchain and should not be edited manually.  (Rhino rejects
+# layer names that start with a bracket like ``[`` or ``{``.)  On every
+# command entry we (1) ensure the root + all sublayers exist and are
+# visible, and (2) evict any stray objects on those sublayers back to
+# ``DEFAULT_LAYER``.
+
+LAYER_PATH_SEP = "::"  # Rhino's layer-path separator
+MANAGED_LAYER_ROOT = "MANAGED Scaffolding"
+
+LAYER_BAR_CENTERLINES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Bar Centerlines"
+LAYER_BAR_TUBE_PREVIEWS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Bar Tube Previews"
+LAYER_JOINT_FEMALE_INSTANCES = (
+    MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Female Instances"
+)
+LAYER_JOINT_MALE_INSTANCES = (
+    MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Male Instances"
+)
+
+MANAGED_LAYERS = (
+    LAYER_BAR_CENTERLINES,
+    LAYER_BAR_TUBE_PREVIEWS,
+    LAYER_JOINT_FEMALE_INSTANCES,
+    LAYER_JOINT_MALE_INSTANCES,
+)
+
+DEFAULT_LAYER = "Default"

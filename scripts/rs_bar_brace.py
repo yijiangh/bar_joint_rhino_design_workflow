@@ -55,9 +55,8 @@ _PREVIEW_COLORS = [
 ]
 
 _REFERENCE_SEGMENT_PRINT_WIDTH = 0.8
-_BAR_AXIS_LAYER = "Bar Axis Lines"
-_CONTACT_SEGMENT_LAYER = "Contact Segments"
-_TUBE_LAYER = "Tube preview"
+_BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
+_TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +71,8 @@ _TUBE_LAYER = "Tube preview"
 def _place_axis_line(curve_id, *, color=None, label=None):
     if curve_id is None or not rs.IsObject(curve_id):
         return None
-    ensure_layer(_BAR_AXIS_LAYER)
-    rs.ObjectLayer(curve_id, _BAR_AXIS_LAYER)
+    ensure_layer(_BAR_CENTERLINE_LAYER)
+    rs.ObjectLayer(curve_id, _BAR_CENTERLINE_LAYER)
     if color is not None:
         if hasattr(rs, "ObjectColorSource"):
             rs.ObjectColorSource(curve_id, 1)
@@ -88,22 +87,8 @@ def _bake_reference_point(point, label, color):
     pid = rs.AddPoint(point_xyz.tolist())
     if pid is None:
         return None
-    apply_object_display(pid, label, color=color, layer_name=_CONTACT_SEGMENT_LAYER)
+    apply_object_display(pid, label, color=color, layer_name=_BAR_CENTERLINE_LAYER)
     return pid
-
-
-def _bake_reference_segment(start_point, end_point, label, color):
-    start_xyz = point_to_array(start_point)
-    end_xyz = point_to_array(end_point)
-    line_id = rs.AddLine(start_xyz.tolist(), end_xyz.tolist())
-    if line_id is None:
-        return None
-    apply_object_display(line_id, label, color=color, layer_name=_CONTACT_SEGMENT_LAYER)
-    if hasattr(rs, "ObjectPrintWidthSource"):
-        rs.ObjectPrintWidthSource(line_id, 1)
-    if hasattr(rs, "ObjectPrintWidth"):
-        rs.ObjectPrintWidth(line_id, _REFERENCE_SEGMENT_PRINT_WIDTH)
-    return line_id
 
 
 def _bake_axis_tube(axis_curve_id, label, color=None, layer_name=_TUBE_LAYER):
@@ -261,21 +246,16 @@ def _create_previews(solutions, ce1, ce2):
         tube_ids = _bake_axis_tube(
             line_id, f"RSBarBrace_preview_{index + 1}_tube", color=color
         )
-        seg1_id = _bake_reference_segment(
-            sol["p1"], ce1, f"RSBarBrace_preview_{index + 1}_seg1", color
-        )
-        seg2_id = _bake_reference_segment(
-            sol["p2"], ce2, f"RSBarBrace_preview_{index + 1}_seg2", color
-        )
+
         dot_id = rs.AddTextDot(f"{index + 1}", midpoint)
         apply_object_display(
             dot_id,
             f"RSBarBrace_preview_{index + 1}_label",
             color=color,
-            layer_name=_BAR_AXIS_LAYER,
+            layer_name=_BAR_CENTERLINE_LAYER,
         )
 
-        all_ids = [line_id, dot_id, seg1_id, seg2_id] + as_object_id_list(tube_ids)
+        all_ids = [line_id, dot_id] + as_object_id_list(tube_ids)
         pick_set = set(as_object_id_list(all_ids))
         preview_items.append(
             {

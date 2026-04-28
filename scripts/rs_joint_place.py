@@ -58,8 +58,8 @@ from core.rhino_bar_registry import (
 from core.rhino_pair_selector import pick_bar_with_pair_option
 
 
-_FEMALE_INSTANCES_LAYER = "FemaleJointPlacedInstances"
-_MALE_INSTANCES_LAYER = "MaleJointPlacedInstances"
+_FEMALE_INSTANCES_LAYER = _config_module.LAYER_JOINT_FEMALE_INSTANCES
+_MALE_INSTANCES_LAYER = _config_module.LAYER_JOINT_MALE_INSTANCES
 _PREVIEW_COLORS = [
     (230, 80, 80),
     (80, 80, 230),

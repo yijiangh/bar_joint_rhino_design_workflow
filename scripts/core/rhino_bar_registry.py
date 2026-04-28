@@ -17,6 +17,7 @@ import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
+from core import config
 from core.rhino_helpers import (
     as_object_id_list,
     apply_object_display,
@@ -36,7 +37,9 @@ BAR_GUID_KEY = "bar_guid"
 BAR_SEQ_KEY = "bar_seq"
 BAR_TYPE_VALUE = "scaffolding_bar"
 
-TUBE_LAYER = "Tube preview"
+# Layer names are owned by ``core.config`` so the whole toolchain agrees.
+TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
+BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
 TUBE_BAR_ID_KEY = "tube_bar_id"
 TUBE_AXIS_GUID_KEY = "tube_axis_id"
 TUBE_CACHE_START = "tube_cache_start"
@@ -139,6 +142,9 @@ def ensure_bar_id(curve_id, bar_type=BAR_TYPE_VALUE):
     rs.SetUserText(curve_id, BAR_ID_KEY, new_id)
     rs.SetUserText(curve_id, BAR_GUID_KEY, current_guid)
     rs.ObjectName(curve_id, new_id)
+    # Move the centerline curve onto the managed centerline layer.
+    ensure_layer(BAR_CENTERLINE_LAYER)
+    rs.ObjectLayer(curve_id, BAR_CENTERLINE_LAYER)
     # ensure_bar_seq is a no-op for copy-pastes (old seq survives), and assigns
     # the next integer for brand-new curves (no user text at all).
     ensure_bar_seq(curve_id)
@@ -603,21 +609,115 @@ def update_all_previews(bar_radius, color=None):
     return len(bars)
 
 
+# ---------------------------------------------------------------------------
+# Managed-layer enforcement
+# ---------------------------------------------------------------------------
+
+
+def _move_to_default_layer(object_ids, *, source_layer, caller):
+    """Move *object_ids* to ``config.DEFAULT_LAYER``, creating it if needed,
+    and print a warning naming the source layer and count."""
+    ids = [oid for oid in as_object_id_list(object_ids) if rs.IsObject(oid)]
+    if not ids:
+        return 0
+    ensure_layer(config.DEFAULT_LAYER)
+    for oid in ids:
+        rs.ObjectLayer(oid, config.DEFAULT_LAYER)
+    print(
+        f"{caller} (warning): moved {len(ids)} stray object(s) "
+        f"from '{source_layer}' to '{config.DEFAULT_LAYER}'."
+    )
+    return len(ids)
+
+
+def _is_managed_tube(oid, registered_curve_guids):
+    """A tube is *ours* iff it points at a registered bar curve."""
+    axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
+    return bool(axis_guid) and axis_guid in registered_curve_guids
+
+
+def _enforce_tube_layer(caller):
+    """Delete orphaned tube previews and evict strays on the tube layer.
+
+    - Orphan = tube whose ``tube_axis_id`` does not point at a current,
+      registered bar curve (e.g. user copy-pasted bar+tube; the new bar
+      gets a fresh id and a fresh tube, leaving the duplicate dangling).
+    - Stray = object on the tube layer with no ``tube_axis_id`` user text
+      (the user drew something there manually); we move it to Default.
+    """
+    if not rs.IsLayer(TUBE_LAYER):
+        return
+    registered = {str(g) for g in get_all_bars().values()}
+    orphans = []
+    strays = []
+    for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
+        axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
+        if not axis_guid:
+            strays.append(oid)
+        elif axis_guid not in registered:
+            orphans.append(oid)
+    if orphans:
+        delete_objects(orphans)
+        print(
+            f"{caller} (warning): deleted {len(orphans)} orphaned tube preview(s) "
+            f"on '{TUBE_LAYER}' (no matching bar)."
+        )
+    _move_to_default_layer(strays, source_layer=TUBE_LAYER, caller=caller)
+
+
+def _enforce_centerline_layer(caller):
+    """Evict objects on the centerline layer that are not registered bars."""
+    layer = BAR_CENTERLINE_LAYER
+    if not rs.IsLayer(layer):
+        return
+    strays = [
+        oid
+        for oid in (rs.ObjectsByLayer(layer) or [])
+        if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE
+    ]
+    _move_to_default_layer(strays, source_layer=layer, caller=caller)
+
+
+def _enforce_joint_layer(caller, layer):
+    """Evict objects on a joint-instances layer that lack a ``joint_id``."""
+    if not rs.IsLayer(layer):
+        return
+    strays = [
+        oid
+        for oid in (rs.ObjectsByLayer(layer) or [])
+        if not rs.GetUserText(oid, "joint_id")
+    ]
+    _move_to_default_layer(strays, source_layer=layer, caller=caller)
+
+
+def enforce_managed_layers(caller="RSScaffolding"):
+    """Make sure every managed layer exists, is visible, and contains only
+    objects we recognize.  Strays go to ``config.DEFAULT_LAYER`` (also made
+    visible).  Run this at the top of every entry-point command before the
+    user is prompted."""
+    # Ensure the default + all managed layers exist and are visible.
+    ensure_layer(config.DEFAULT_LAYER)
+    ensure_layer(config.MANAGED_LAYER_ROOT)
+    for layer in config.MANAGED_LAYERS:
+        ensure_layer(layer)
+    # Sweep each managed sublayer.
+    _enforce_tube_layer(caller)
+    _enforce_centerline_layer(caller)
+    _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
+    _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
+
+
 def repair_on_entry(bar_radius, caller="RSScaffolding"):
     """Standard startup repair for bar-registry-aware entry-point scripts.
 
     Call this at the top of ``main()``, right after reloading config.  It
-    runs :func:`update_all_previews` and :func:`repair_bar_sequences` in one
-    step, so copy-paste artifacts, deleted bars, and stale tube previews are
-    all resolved before the user is prompted.
 
-    Parameters
-    ----------
-    bar_radius : float
-        Tube preview radius, typically ``float(config.BAR_RADIUS)``.
-    caller : str
-        Script name used in the startup message, e.g. ``"RSBarSnap"``.
+    1. Ensures all managed layers exist and are visible, evicting any
+       stray objects to ``Default`` and deleting orphaned tube previews.
+    2. Updates tube previews for every registered bar.
+    3. Repairs duplicate / missing bar sequence numbers.
     """
+    enforce_managed_layers(caller)
     n = update_all_previews(bar_radius)
     changed = repair_bar_sequences()
     parts = []

@@ -10,14 +10,12 @@ the script translates Ln so that the shortest distance between Le and Ln
 equals the chosen pair's ``contact_distance_mm``.
 """
 
-import contextlib
 import importlib
 import os
 import sys
 
 import numpy as np
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -26,14 +24,7 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core import geometry
-from core.rhino_helpers import (
-    apply_object_display,
-    as_object_id_list,
-    curve_endpoints,
-    ensure_layer,
-    point_to_array,
-    suspend_redraw,
-)
+from core.rhino_helpers import curve_endpoints
 from core.rhino_bar_registry import (
     ensure_bar_id,
     ensure_bar_preview,
@@ -43,51 +34,42 @@ from core.rhino_bar_registry import (
 from core.rhino_pair_selector import pick_bar_with_pair_option
 
 
-_REFERENCE_SEGMENT_PRINT_WIDTH = 0.8
-_BAR_AXIS_LAYER = "Bar Axis Lines"
-_CONTACT_SEGMENT_LAYER = "Contact Segments"
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-# Generic helpers (point_to_array, curve_endpoints, as_object_id_list,
-# ensure_layer, apply_object_display, suspend_redraw) are now imported
-# from core.rhino_helpers.
-
-
-def _place_axis_line(curve_id, *, color=None, label=None):
-    if curve_id is None or not rs.IsObject(curve_id):
-        return None
-    ensure_layer(_BAR_AXIS_LAYER)
-    rs.ObjectLayer(curve_id, _BAR_AXIS_LAYER)
-    if color is not None:
-        if hasattr(rs, "ObjectColorSource"):
-            rs.ObjectColorSource(curve_id, 1)
-        rs.ObjectColor(curve_id, color)
-    if label:
-        rs.SetUserText(curve_id, "axis_label", label)
-    return curve_id
-
-
-def _bake_reference_segment(start_point, end_point, label, color):
-    start_xyz = point_to_array(start_point)
-    end_xyz = point_to_array(end_point)
-    line_id = rs.AddLine(start_xyz.tolist(), end_xyz.tolist())
-    if line_id is None:
-        return None
-    apply_object_display(line_id, label, color=color, layer_name=_CONTACT_SEGMENT_LAYER)
-    if hasattr(rs, "ObjectPrintWidthSource"):
-        rs.ObjectPrintWidthSource(line_id, 1)
-    if hasattr(rs, "ObjectPrintWidth"):
-        rs.ObjectPrintWidth(line_id, _REFERENCE_SEGMENT_PRINT_WIDTH)
-    return line_id
 
 
 def _refresh_runtime_modules():
     importlib.reload(config)
     importlib.reload(geometry)
+
+
+def _auto_place_joints(le_curve_id, ln_curve_id, pair):
+    """Place a default-orientation joint pair between an existing bar (female)
+    and the newly snapped bar (male).  Reuses ``rs_joint_place`` internals
+    and always picks ``variant_index=0`` (le_rev=False, ln_rev=False); the
+    user can refine later with RSJointEdit.
+    """
+    import rs_joint_place as _rjp
+
+    le_bar_id = ensure_bar_id(le_curve_id)
+    ln_bar_id = ensure_bar_id(ln_curve_id)
+    le_start, le_end = curve_endpoints(le_curve_id)
+    ln_start, ln_end = curve_endpoints(ln_curve_id)
+
+    _rjp._require_block_definition(
+        pair.female.block_name, asset_path=pair.female.asset_path()
+    )
+    _rjp._require_block_definition(
+        pair.male.block_name, asset_path=pair.male.asset_path()
+    )
+
+    result = _rjp._compute_variant(
+        le_start, le_end, ln_start, ln_end, False, False, pair=pair
+    )
+    _rjp._place_joint_blocks(
+        result, le_curve_id, ln_curve_id, le_bar_id, ln_bar_id, pair=pair
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,20 +120,11 @@ def main():
         return
 
     translation = (segment / current_distance) * (current_distance - target_distance)
-    shortest_segment_start = p_n + translation
-    shortest_segment_end = p_e
 
     line_id = rs.MoveObject(ln_id, translation.tolist())
     if line_id is None:
         rs.MessageBox("Error: failed to move the selected new bar.")
         return
-
-    _bake_reference_segment(
-        shortest_segment_start,
-        shortest_segment_end,
-        "RSBarSnap_shortest_segment",
-        (180, 0, 180),
-    )
 
     # Register bars and create/update tube previews
     ensure_bar_id(le_id)
@@ -162,6 +135,10 @@ def main():
         f"RSBarSnap: Bar placed at distance {target_distance:.2f} mm from Le "
         f"(pair '{pair.name}')"
     )
+
+    # Auto-place a joint between Le (female) and the new bar (male).  Uses a
+    # consistent default variant; refine later with RSJointEdit if needed.
+    _auto_place_joints(le_id, line_id, pair)
 
 
 if __name__ == "__main__":

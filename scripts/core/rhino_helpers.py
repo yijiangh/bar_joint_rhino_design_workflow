@@ -50,10 +50,18 @@ def as_object_id_list(object_ids):
 # ---------------------------------------------------------------------------
 
 def ensure_layer(layer_name):
-    """Create *layer_name* if it does not exist.  Return the name."""
-    if not rs.IsLayer(layer_name):
-        rs.AddLayer(layer_name)
-    return layer_name
+    """Create *layer_name* (possibly a nested ``Parent::Child`` path) if it
+    does not exist, and make every layer along the path visible.  Returns
+    the full path."""
+    parts = layer_name.split("::")
+    cur = ""
+    for i, name in enumerate(parts):
+        cur = name if i == 0 else cur + "::" + name
+        if not rs.IsLayer(cur):
+            rs.AddLayer(cur)
+        if hasattr(rs, "LayerVisible") and not rs.LayerVisible(cur):
+            rs.LayerVisible(cur, True)
+    return cur
 
 
 # ---------------------------------------------------------------------------

@@ -23,10 +23,7 @@ import numpy as np
 
 from core import config
 from core import robotic_tool as _robotic_tool
-from core.rhino_block_import import (
-    has_block_definition,
-    require_block_definition,
-)
+from core.rhino_block_import import require_block_definition
 
 
 # Doc-userText key for the session-wide default tool.
@@ -69,10 +66,6 @@ def _numpy_to_rhino_transform(matrix: np.ndarray):
         for col in range(4):
             xform[row, col] = float(matrix[row, col])
     return xform
-
-
-def _has_block_definition(name: str) -> bool:
-    return has_block_definition(name)
 
 
 def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:

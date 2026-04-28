@@ -1,17 +1,19 @@
 """Shared auto-placement of a joint pair between two existing bars.
 
-Both ``rs_bar_snap`` and ``rs_bar_brace`` need the same default-orientation
-joint placement after they've finalized a new bar's geometry: the existing
-bar acts as the female (Le), the new bar as the male (Ln), and we always
-pick the canonical variant ``(le_rev=False, ln_rev=False)``.  The user can
-refine each joint later with ``RSJointEdit``.
-
-This module lazy-imports ``rs_joint_place`` so the registry doesn't pull it
-in at import time (and to keep this file Rhino-only at call time, not
-import time).
+``rs_bar_snap``, ``rs_bar_brace``, and ``rs_bar_subfloor`` all need the
+same default-orientation joint placement after they've finalized a new
+bar's geometry: the existing bar acts as the female (Le), the new bar
+as the male (Ln), and we always pick the canonical variant
+``(le_rev=False, ln_rev=False)``.  The user can refine each joint later
+with ``RSJointEdit``.
 """
 
+from core.joint_placement import (
+    compute_variant_with_recovery,
+    place_joint_blocks,
+)
 from core.rhino_bar_registry import ensure_bar_id
+from core.rhino_block_import import require_block_definition
 from core.rhino_helpers import curve_endpoints
 
 
@@ -25,28 +27,27 @@ def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
     pair : core.joint_pair.JointPairDef
         The active joint-pair definition.
     """
-    import rs_joint_place as _rjp  # noqa: PLC0415  (lazy: needs Rhino runtime)
-
     le_bar_id = ensure_bar_id(le_curve_id)
     ln_bar_id = ensure_bar_id(ln_curve_id)
     le_start, le_end = curve_endpoints(le_curve_id)
     ln_start, ln_end = curve_endpoints(ln_curve_id)
 
-    _rjp._require_block_definition(
+    require_block_definition(
         pair.female.block_name, asset_path=pair.female.asset_path()
     )
-    _rjp._require_block_definition(
+    require_block_definition(
         pair.male.block_name, asset_path=pair.male.asset_path()
     )
 
     # Auto-place: start at the canonical (le_rev=False, ln_rev=False)
     # variant.  If its interface error is too large (special joints with
     # only two valid variants), automatically flip the female side once.
-    result, _recovered, _le_rev, _ln_rev = _rjp.compute_variant_with_recovery(
+    result, _recovered, _le_rev, _ln_rev = compute_variant_with_recovery(
         le_start, le_end, ln_start, ln_end, False, False,
         pair=pair, recover_side="female",
+        log_prefix="auto_place_joint_pair",
     )
-    _, male_id, joint_id = _rjp._place_joint_blocks(
+    _, male_id, joint_id = place_joint_blocks(
         result, le_curve_id, ln_curve_id, le_bar_id, ln_bar_id, pair=pair
     )
 

@@ -29,15 +29,21 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-# Import rs_joint_place as a module to reuse the solver, _JointSession, and
-# _interactive_click_loop without duplicating code.  The module-level
-# _reload_runtime_modules() call runs on first import, which is intentional.
-import rs_joint_place as _rjp
+# Shared placement primitives live in core.joint_placement; this command
+# only owns the click loop + per-block-flip orchestration.
+import rs_joint_place as _rjp  # for _reload_runtime_modules() side-effects
 
-from core.joint_pair import get_joint_pair
-from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
-from core.rhino_helpers import curve_endpoints
 from core import config
+from core.joint_pair import get_joint_pair
+from core.joint_placement import (
+    FEMALE_INSTANCES_LAYER,
+    MALE_INSTANCES_LAYER,
+    compute_variant_with_recovery,
+    place_joint_blocks,
+)
+from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
+from core.rhino_block_import import require_block_definition
+from core.rhino_helpers import curve_endpoints
 from core.rhino_tool_place import (
     cycle_tool_at_tool_instance,
     get_tool_name_for_joint,
@@ -54,8 +60,8 @@ def _placed_joint_filter(rhino_object, geometry, component_index):
     """Geometry filter -- accept any placed joint block OR robotic tool instance."""
     layer = rs.ObjectLayer(rhino_object.Id)
     return layer in (
-        _rjp._FEMALE_INSTANCES_LAYER,
-        _rjp._MALE_INSTANCES_LAYER,
+        FEMALE_INSTANCES_LAYER,
+        MALE_INSTANCES_LAYER,
         config.LAYER_TOOL_INSTANCES,
     )
 
@@ -90,7 +96,7 @@ def _remove_placed_joint(joint_id):
 
 def main():
     _rjp._reload_runtime_modules()
-    repair_on_entry(float(_rjp.config.BAR_RADIUS), "RSJointEdit")
+    repair_on_entry(float(config.BAR_RADIUS), "RSJointEdit")
 
     # Continuous pick loop — no accept/confirm step.  Each click on a joint
     # block immediately flips that block's side and re-places the pair.
@@ -141,10 +147,10 @@ def main():
 
         # Validate block definitions for this pair.
         try:
-            _rjp._require_block_definition(
+            require_block_definition(
                 pair.female.block_name, asset_path=pair.female.asset_path()
             )
-            _rjp._require_block_definition(
+            require_block_definition(
                 pair.male.block_name, asset_path=pair.male.asset_path()
             )
         except RuntimeError as exc:
@@ -155,10 +161,10 @@ def main():
         # so the auto-recovery (when the chosen orientation lands on a bad
         # local minimum) can flip the OTHER side.
         clicked_side = None
-        if clicked_layer == _rjp._FEMALE_INSTANCES_LAYER:
+        if clicked_layer == FEMALE_INSTANCES_LAYER:
             le_rev = not le_rev
             clicked_side = "female"
-        elif clicked_layer == _rjp._MALE_INSTANCES_LAYER:
+        elif clicked_layer == MALE_INSTANCES_LAYER:
             ln_rev = not ln_rev
             clicked_side = "male"
 
@@ -178,15 +184,16 @@ def main():
         recover_side = "male" if clicked_side == "female" else "female"
         le_start, le_end = curve_endpoints(le_id)
         ln_start, ln_end = curve_endpoints(ln_id)
-        new_variant, _recovered, le_rev, ln_rev = _rjp.compute_variant_with_recovery(
+        new_variant, _recovered, le_rev, ln_rev = compute_variant_with_recovery(
             le_start, le_end, ln_start, ln_end, le_rev, ln_rev,
             pair=pair, recover_side=recover_side,
+            log_prefix="RSJointEdit",
         )
         _remove_placed_joint(joint_id)
         # Preserve the previously-chosen tool for this joint, so flipping
         # the male/female block doesn't reset the tool back to the doc default.
         prev_tool_name = get_tool_name_for_joint(joint_id)
-        _, male_id, new_joint_id = _rjp._place_joint_blocks(
+        _, male_id, new_joint_id = place_joint_blocks(
             new_variant, le_id, ln_id, le_bar_id, ln_bar_id, pair=pair
         )
         place_tool_by_name_at_male_joint(male_id, new_joint_id, pair, prev_tool_name)

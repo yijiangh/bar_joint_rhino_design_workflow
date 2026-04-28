@@ -62,6 +62,7 @@ class JointHalfDef:
     asset_filename: str = ""           # e.g. "typical_female.3dm" under asset/
     mesh_filename: str = ""            # URDF mesh, optional
     mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    preferred_robotic_tool_name: str = ""  # used at first-place time only
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
@@ -76,6 +77,7 @@ class JointHalfDef:
             "asset_filename": self.asset_filename,
             "mesh_filename": self.mesh_filename,
             "mesh_scale": list(self.mesh_scale),
+            "preferred_robotic_tool_name": self.preferred_robotic_tool_name,
             "M_block_from_bar": self.M_block_from_bar.tolist(),
             "M_screw_from_block": self.M_screw_from_block.tolist(),
         }
@@ -89,6 +91,7 @@ class JointHalfDef:
             asset_filename=str(data.get("asset_filename", "")),
             mesh_filename=str(data.get("mesh_filename", "")),
             mesh_scale=tuple(float(v) for v in data.get("mesh_scale", (1.0, 1.0, 1.0))),
+            preferred_robotic_tool_name=str(data.get("preferred_robotic_tool_name", "")),
         )
 
 

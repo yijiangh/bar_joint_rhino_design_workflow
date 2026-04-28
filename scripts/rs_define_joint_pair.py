@@ -16,8 +16,8 @@ is easier to grab; everything is shown again at the end):
 
 The script computes the constant transforms needed by the simplified
 `JointPairDef` representation, exports each block definition to
-`asset/<block_name>.3dm` (skipped if the file already exists, allowing the
-same block to be reused across multiple pairs), and updates
+`asset/<block_name>.3dm` (overwrite if the file already exists, becareful
+when the same block to be reused across multiple pairs), and updates
 `scripts/core/joint_pairs.json`.
 
 Block sharing across pairs is supported: if a previously-registered pair
@@ -44,6 +44,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import joint_pair as _joint_pair_module
+from core.rhino_block_export import export_block_definition_to_3dm
 from core.rhino_helpers import point_to_array, suspend_redraw
 
 
@@ -168,135 +169,8 @@ def _point_xyz(point_id) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Asset export
+# Asset export (shared with rs_define_robotic_tool via core.rhino_block_export)
 # ---------------------------------------------------------------------------
-
-
-def _add_geometry_to_file3dm(file3dm, geometry, attributes) -> bool:
-    """Dispatch a single geometry object onto a `File3dm.Objects` table.
-
-    `File3dmObjectTable` exposes typed `Add*` methods rather than a generic
-    `AddObject`, so we route by RhinoCommon type.
-    """
-
-    g = geometry
-    table = file3dm.Objects
-    a = attributes
-    G = Rhino.Geometry
-    try:
-        if isinstance(g, G.Brep):
-            return table.AddBrep(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.Mesh):
-            return table.AddMesh(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.Extrusion):
-            brep = g.ToBrep()
-            if brep is not None:
-                return table.AddBrep(brep, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.SubD):
-            if hasattr(table, "AddSubD"):
-                return table.AddSubD(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.Curve):
-            return table.AddCurve(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.Surface):
-            return table.AddSurface(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.Point):
-            return table.AddPoint(g.Location, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.PointCloud):
-            return table.AddPointCloud(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.TextDot):
-            return table.AddTextDot(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.Hatch):
-            return table.AddHatch(g, a) != Rhino.RhinoMath.UnsetIntIndex
-        if isinstance(g, G.AnnotationBase):
-            if hasattr(table, "AddAnnotation"):
-                return table.AddAnnotation(g, a) != Rhino.RhinoMath.UnsetIntIndex
-    except Exception as exc:
-        print(f"    [debug] Add* threw for {type(g).__name__}: {exc!r}")
-        return False
-    print(f"    [debug] no File3dm.Objects.Add* handler for type {type(g).__name__}")
-    return False
-
-
-def _export_block_definition_to_3dm(block_name: str, output_path: str) -> bool:
-    """Write a single-block-definition .3dm file.
-
-    Tries the RhinoCommon `File3dm` API first (writes the InstanceDefinition
-    geometry directly, no command pipeline involved). Falls back to a
-    `_-BlockManager _Export` command. Prints verbose debug info so failures
-    can be diagnosed from the console output.
-    """
-
-    output_path = os.path.normpath(output_path)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    if os.path.exists(output_path):
-        try:
-            os.remove(output_path)
-            print(f"    [debug] removed existing file: {output_path}")
-        except OSError as exc:
-            print(f"    [debug] failed to remove existing file: {exc}")
-
-    # ---- Attempt 1: RhinoCommon File3dm direct write -------------------
-    try:
-        instance_def = sc.doc.InstanceDefinitions.Find(block_name, True)
-        if instance_def is None:
-            print(f"    [debug] InstanceDefinitions.Find returned None for '{block_name}'")
-        else:
-            objects = instance_def.GetObjects() or []
-            print(
-                f"    [debug] block '{block_name}' has {len(objects)} component objects"
-            )
-            file3dm = Rhino.FileIO.File3dm()
-            file3dm.Settings.ModelUnitSystem = sc.doc.ModelUnitSystem
-            added = 0
-            for component in objects:
-                geometry = component.Geometry
-                attrs = component.Attributes.Duplicate() if component.Attributes else None
-                if geometry is None:
-                    continue
-                if _add_geometry_to_file3dm(file3dm, geometry, attrs):
-                    added += 1
-            print(f"    [debug] added {added}/{len(objects)} geometries to File3dm")
-            if added > 0:
-                ok = file3dm.Write(output_path, 7)
-                print(f"    [debug] File3dm.Write -> {ok}, exists={os.path.exists(output_path)}")
-                if ok and os.path.exists(output_path):
-                    return True
-    except Exception as exc:
-        print(f"    [debug] File3dm path raised: {exc!r}")
-
-    # ---- Attempt 2: _-BlockManager _Export command ---------------------
-    # Rhino's command parser wants native backslash paths.
-    cmd_path = output_path.replace("/", "\\")
-    cmd = '_-BlockManager _Export "{name}" "{path}" _Enter _Enter'.format(
-        name=block_name, path=cmd_path
-    )
-    print(f"    [debug] running: {cmd}")
-    ok_cmd = rs.Command(cmd, echo=True)
-    print(
-        f"    [debug] _-BlockManager rs.Command -> {ok_cmd}, exists={os.path.exists(output_path)}"
-    )
-    if ok_cmd and os.path.exists(output_path):
-        return True
-
-    # ---- Attempt 3: insert + select + _-Export -------------------------
-    temp_id = rs.InsertBlock(block_name, [0.0, 0.0, 0.0])
-    print(f"    [debug] InsertBlock -> {temp_id}")
-    if temp_id is None:
-        return False
-    try:
-        rs.UnselectAllObjects()
-        rs.SelectObject(temp_id)
-        cmd2 = '_-Export "{path}" _Enter _Enter'.format(path=cmd_path)
-        print(f"    [debug] running: {cmd2}")
-        ok2 = rs.Command(cmd2, echo=True)
-        print(
-            f"    [debug] _-Export rs.Command -> {ok2}, exists={os.path.exists(output_path)}"
-        )
-        return bool(ok2) and os.path.exists(output_path)
-    finally:
-        if rs.IsObject(temp_id):
-            rs.DeleteObject(temp_id)
-        rs.UnselectAllObjects()
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +233,10 @@ def _resolve_shared_half(
                     asset_filename=other_half.asset_filename or half.asset_filename,
                     mesh_filename=other_half.mesh_filename or half.mesh_filename,
                     mesh_scale=other_half.mesh_scale,
+                    preferred_robotic_tool_name=(
+                        other_half.preferred_robotic_tool_name
+                        or half.preferred_robotic_tool_name
+                    ),
                 )
                 print(
                     f"  reusing block '{half.block_name}' from pair '{other_name}' "
@@ -626,7 +504,8 @@ def main() -> None:
     male_is_shared = male_resolved.asset_filename != asset_filename_male
     female_is_shared = female_resolved.asset_filename != asset_filename_female
 
-    # Export block definitions to asset/ (skip when reusing an existing asset).
+    # Export block definitions to asset/ (overwrite any existing file; skip
+    # only when this pair reuses a block already exported by another pair).
     asset_dir = DEFAULT_ASSET_DIR
     male_path = os.path.join(asset_dir, male_resolved.asset_filename)
     female_path = os.path.join(asset_dir, female_resolved.asset_filename)
@@ -635,32 +514,24 @@ def main() -> None:
         if male_is_shared:
             print(f"  reusing male asset    -> {male_path}")
             ok_male = True
-            male_skipped_existing = False
-        elif os.path.isfile(male_path):
-            print(f"  asset already exists, skipping male export -> {male_path}")
-            ok_male = True
-            male_skipped_existing = True
         else:
-            ok_male = _export_block_definition_to_3dm(male_block_name, male_path)
-            male_skipped_existing = False
+            if os.path.isfile(male_path):
+                print(f"  asset already exists, overwriting male export -> {male_path}")
+            ok_male = export_block_definition_to_3dm(male_block_name, male_path)
         if female_is_shared:
             print(f"  reusing female asset  -> {female_path}")
             ok_female = True
-            female_skipped_existing = False
-        elif os.path.isfile(female_path):
-            print(f"  asset already exists, skipping female export -> {female_path}")
-            ok_female = True
-            female_skipped_existing = True
         else:
-            ok_female = _export_block_definition_to_3dm(female_block_name, female_path)
-            female_skipped_existing = False
+            if os.path.isfile(female_path):
+                print(f"  asset already exists, overwriting female export -> {female_path}")
+            ok_female = export_block_definition_to_3dm(female_block_name, female_path)
 
-    if not male_is_shared and not male_skipped_existing:
+    if not male_is_shared:
         if not ok_male:
             print(f"  WARNING: failed to export male block to {male_path}")
         else:
             print(f"  exported male block   -> {male_path}")
-    if not female_is_shared and not female_skipped_existing:
+    if not female_is_shared:
         if not ok_female:
             print(f"  WARNING: failed to export female block to {female_path}")
         else:

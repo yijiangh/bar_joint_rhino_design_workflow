@@ -42,6 +42,9 @@ def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
     result = _rjp._compute_variant(
         le_start, le_end, ln_start, ln_end, False, False, pair=pair
     )
-    _rjp._place_joint_blocks(
+    _, male_id, joint_id = _rjp._place_joint_blocks(
         result, le_curve_id, ln_curve_id, le_bar_id, ln_bar_id, pair=pair
     )
+
+    from core.rhino_tool_place import auto_place_tool_at_male_joint
+    auto_place_tool_at_male_joint(male_id, joint_id, pair)

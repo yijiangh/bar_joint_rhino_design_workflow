@@ -37,6 +37,13 @@ import rs_joint_place as _rjp
 from core.joint_pair import get_joint_pair
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 from core.rhino_helpers import curve_endpoints
+from core import config
+from core.rhino_tool_place import (
+    auto_place_tool_at_male_joint,
+    cycle_tool_at_tool_instance,
+    get_tool_name_for_joint,
+    place_tool_by_name_at_male_joint,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +52,13 @@ from core.rhino_helpers import curve_endpoints
 
 
 def _placed_joint_filter(rhino_object, geometry, component_index):
-    """Geometry filter — accept any placed female or male joint block instance."""
+    """Geometry filter -- accept any placed joint block OR robotic tool instance."""
     layer = rs.ObjectLayer(rhino_object.Id)
-    return layer in (_rjp._FEMALE_INSTANCES_LAYER, _rjp._MALE_INSTANCES_LAYER)
+    return layer in (
+        _rjp._FEMALE_INSTANCES_LAYER,
+        _rjp._MALE_INSTANCES_LAYER,
+        config.LAYER_TOOL_INSTANCES,
+    )
 
 
 def _find_bar_curve(bar_id):
@@ -88,7 +99,7 @@ def main():
     while True:
         go = Rhino.Input.Custom.GetObject()
         go.SetCommandPrompt(
-            "Click any placed joint block to flip its orientation  (Escape to exit)"
+            "Click a joint block to flip it, or a tool to cycle it  (Escape to exit)"
         )
         go.EnablePreSelect(False, False)
         go.SetCustomGeometryFilter(_placed_joint_filter)
@@ -99,6 +110,11 @@ def main():
 
         clicked_id = go.Object(0).ObjectId
         clicked_layer = rs.ObjectLayer(clicked_id)
+
+        # Tool instance: cycle to next tool in registry, no joint changes.
+        if clicked_layer == config.LAYER_TOOL_INSTANCES:
+            cycle_tool_at_tool_instance(clicked_id)
+            continue
 
         # Read stored metadata before the block is deleted.
         joint_id = rs.GetUserText(clicked_id, "joint_id")
@@ -159,9 +175,13 @@ def main():
             le_start, le_end, ln_start, ln_end, le_rev, ln_rev, pair=pair
         )
         _remove_placed_joint(joint_id)
-        _rjp._place_joint_blocks(
+        # Preserve the previously-chosen tool for this joint, so flipping
+        # the male/female block doesn't reset the tool back to the doc default.
+        prev_tool_name = get_tool_name_for_joint(joint_id)
+        _, male_id, new_joint_id = _rjp._place_joint_blocks(
             new_variant, le_id, ln_id, le_bar_id, ln_bar_id, pair=pair
         )
+        place_tool_by_name_at_male_joint(male_id, new_joint_id, pair, prev_tool_name)
         print(f"RSJointEdit: {joint_id} flipped (pair '{pair.name}').")
 
 

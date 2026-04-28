@@ -729,6 +729,18 @@ def _enforce_joint_layer(caller, layer):
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
 
 
+def _enforce_tool_layer(caller, layer):
+    """Evict objects on the tool-instances layer that lack a ``tool_id``."""
+    if not rs.IsLayer(layer):
+        return
+    strays = [
+        oid
+        for oid in (rs.ObjectsByLayer(layer) or [])
+        if not rs.GetUserText(oid, "tool_id")
+    ]
+    _move_to_default_layer(strays, source_layer=layer, caller=caller)
+
+
 def enforce_managed_layers(caller="RSScaffolding"):
     """Make sure every managed layer exists, is visible, and contains only
     objects we recognize.  Strays go to ``config.DEFAULT_LAYER`` (also made
@@ -744,6 +756,7 @@ def enforce_managed_layers(caller="RSScaffolding"):
     _enforce_centerline_layer(caller)
     _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
     _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
+    _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
 
 
 def repair_on_entry(bar_radius, caller="RSScaffolding"):

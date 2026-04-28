@@ -20,6 +20,7 @@
           1.0,
           1.0
         ],
+        "preferred_robotic_tool_name": "",
         "M_block_from_bar": [
           [
             -2.886579864025407e-15,
@@ -82,6 +83,7 @@
           1.0,
           1.0
         ],
+        "preferred_robotic_tool_name": "",
         "M_block_from_bar": [
           [
             -3.774758283725532e-15,
@@ -156,6 +158,7 @@
           1.0,
           1.0
         ],
+        "preferred_robotic_tool_name": "",
         "M_block_from_bar": [
           [
             9.547918011776346e-15,
@@ -218,6 +221,7 @@
           1.0,
           1.0
         ],
+        "preferred_robotic_tool_name": "AT3L",
         "M_block_from_bar": [
           [
             -3.552713678800501e-15,
@@ -292,6 +296,7 @@
           1.0,
           1.0
         ],
+        "preferred_robotic_tool_name": "",
         "M_block_from_bar": [
           [
             9.547918011776346e-15,
@@ -354,6 +359,7 @@
           1.0,
           1.0
         ],
+        "preferred_robotic_tool_name": "AT3R",
         "M_block_from_bar": [
           [
             -3.552713678800501e-15,

@@ -55,6 +55,11 @@ from core.rhino_bar_registry import (
     pick_bar,
     repair_on_entry,
 )
+from core.rhino_block_import import (
+    has_block_definition as _has_block_definition,
+    import_block_definition_from_3dm as _import_block_definition_from_3dm,
+    require_block_definition as _require_block_definition,
+)
 from core.rhino_pair_selector import pick_bar_with_pair_option
 
 
@@ -96,98 +101,8 @@ _reload_runtime_modules()
 # Generic helpers (point_to_array, curve_endpoints, as_object_id_list,
 # ensure_layer, set_objects_layer, delete_objects,
 # set_object_color, suspend_redraw) are imported from core.rhino_helpers.
-
-
-def _has_block_definition(name):
-    for instance_def in sc.doc.InstanceDefinitions:
-        if (
-            instance_def is not None
-            and not instance_def.IsDeleted
-            and instance_def.Name == name
-        ):
-            return True
-    return False
-
-
-def _import_block_definition_from_3dm(block_name, asset_path):
-    """Import a single block definition named *block_name* from *asset_path*
-    into the current Rhino document.  Returns True on success, False otherwise.
-
-    Strategy: read the .3dm file via :class:`Rhino.FileIO.File3dm`, collect
-    every geometry/attribute pair found in it (the asset was exported as
-    one block's worth of geometry by ``rs_define_joint_pair``), and add
-    them as a new InstanceDefinition under *block_name*.  Falls back to
-    Rhino's ``_-Insert`` command if the File3dm path fails.
-    """
-    asset_path = os.path.normpath(asset_path)
-    if not os.path.isfile(asset_path):
-        print(
-            f"  [import_block] asset file not found: {asset_path}"
-        )
-        return False
-
-    # ---- Attempt 1: RhinoCommon File3dm direct read --------------------
-    try:
-        file3dm = Rhino.FileIO.File3dm.Read(asset_path)
-        if file3dm is None:
-            print(f"  [import_block] File3dm.Read returned None for {asset_path}")
-        else:
-            geometries = []
-            attributes = []
-            for obj in file3dm.Objects:
-                if obj is None or obj.Geometry is None:
-                    continue
-                geometries.append(obj.Geometry.Duplicate())
-                attributes.append(obj.Attributes.Duplicate() if obj.Attributes else None)
-            if geometries:
-                idef_index = sc.doc.InstanceDefinitions.Add(
-                    block_name,
-                    f"Imported from {os.path.basename(asset_path)}",
-                    Rhino.Geometry.Point3d.Origin,
-                    geometries,
-                    attributes,
-                )
-                if idef_index >= 0:
-                    print(
-                        f"  [import_block] imported '{block_name}' "
-                        f"({len(geometries)} object(s)) from {asset_path}"
-                    )
-                    sc.doc.Views.Redraw()
-                    return True
-                print(f"  [import_block] InstanceDefinitions.Add returned {idef_index}")
-            else:
-                print(f"  [import_block] no geometry found in {asset_path}")
-    except Exception as exc:
-        print(f"  [import_block] File3dm path raised: {exc!r}")
-
-    # ---- Attempt 2: _-Insert command ----------------------------------
-    cmd_path = asset_path.replace("/", "\\")
-    cmd = (
-        '_-Insert _File _Yes "{path}" _Block _Enter '
-        '0,0,0 _Enter 1 _Enter 0 _Enter'
-    ).format(path=cmd_path)
-    print(f"  [import_block] running: {cmd}")
-    ok_cmd = rs.Command(cmd, echo=False)
-    if ok_cmd and _has_block_definition(block_name):
-        # The _-Insert command also placed an instance at the origin --
-        # remove it; the caller will insert at the proper location.
-        rs.UnselectAllObjects()
-        return True
-    return False
-
-
-def _require_block_definition(name, *, asset_path=None):
-    """Ensure block *name* is loaded.  If missing and *asset_path* is given,
-    attempt to import it from that .3dm file."""
-    if _has_block_definition(name):
-        return name
-    if asset_path:
-        if _import_block_definition_from_3dm(name, asset_path):
-            return name
-    raise RuntimeError(
-        f"Missing required Rhino block definition '{name}'."
-        + (f"  (Tried to import from {asset_path}.)" if asset_path else "")
-    )
+# Block-import helpers (_has_block_definition, _import_block_definition_from_3dm,
+# _require_block_definition) are imported from core.rhino_block_import.
 
 
 def _numpy_to_rhino_transform(matrix):
@@ -552,7 +467,7 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id, *, pair):
     print(
         f"  Interface origin err={origin_err:.4f} mm, z-axis err={np.degrees(z_err):.4f}deg"
     )
-    return female_id, male_id
+    return female_id, male_id, joint_id
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +544,11 @@ def main():
         print("RSJointPlace: Cancelled.")
         return
 
-    _place_joint_blocks(chosen, le_id, ln_id, le_bar_id, ln_bar_id, pair=pair)
+    _, male_id, joint_id = _place_joint_blocks(
+        chosen, le_id, ln_id, le_bar_id, ln_bar_id, pair=pair
+    )
+    from core.rhino_tool_place import auto_place_tool_at_male_joint
+    auto_place_tool_at_male_joint(male_id, joint_id, pair)
 
 
 if __name__ == "__main__":

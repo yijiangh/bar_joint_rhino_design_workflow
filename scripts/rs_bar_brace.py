@@ -39,13 +39,14 @@ from core.rhino_helpers import (
     suspend_redraw,
 )
 from core.rhino_bar_registry import (
+    _find_existing_tube,
     ensure_bar_id,
     ensure_bar_preview,
     pick_bar,
     repair_on_entry,
 )
 
-
+SELECTED_BAR_COLOR = (30, 100, 220)  # blue — selected
 _PREVIEW_COLORS = [
     (230, 80, 80),
     (80, 80, 230),
@@ -143,6 +144,60 @@ def _add_centered_line(midpoint, direction):
     half_length = config.DEFAULT_NEW_BAR_LENGTH / 2.0
     return rs.AddLine(
         midpoint - half_length * direction, midpoint + half_length * direction
+    )
+
+
+def _paint_bar(curve_id, color):
+    """Color the bar centre-line curve and its tube preview."""
+    if curve_id is None or not rs.IsObject(curve_id):
+        return
+    if hasattr(rs, "ObjectColorSource"):
+        rs.ObjectColorSource(curve_id, 1)
+    rs.ObjectColor(curve_id, color)
+    tube = _find_existing_tube(curve_id)
+    if tube is not None and rs.IsObject(tube):
+        if hasattr(rs, "ObjectColorSource"):
+            rs.ObjectColorSource(tube, 1)
+        rs.ObjectColor(tube, color)
+
+
+def _reset_bar_color(curve_id):
+    """Restore layer-default color on a bar centre-line curve and its tube."""
+    if curve_id is None or not rs.IsObject(curve_id):
+        return
+    if hasattr(rs, "ObjectColorSource"):
+        rs.ObjectColorSource(curve_id, 0)  # by layer
+    tube = _find_existing_tube(curve_id)
+    if tube is not None and rs.IsObject(tube):
+        if hasattr(rs, "ObjectColorSource"):
+            rs.ObjectColorSource(tube, 0)
+
+
+def _auto_place_joints(le_curve_id, ln_curve_id, pair):
+    """Place a default-orientation joint pair between an existing bar (female)
+    and the new brace bar (male).  Reuses ``rs_joint_place`` internals and
+    always picks ``variant_index=0`` (le_rev=False, ln_rev=False); the user
+    can refine later with RSJointEdit.
+    """
+    import rs_joint_place as _rjp
+
+    le_bar_id = ensure_bar_id(le_curve_id)
+    ln_bar_id = ensure_bar_id(ln_curve_id)
+    le_start, le_end = curve_endpoints(le_curve_id)
+    ln_start, ln_end = curve_endpoints(ln_curve_id)
+
+    _rjp._require_block_definition(
+        pair.female.block_name, asset_path=pair.female.asset_path()
+    )
+    _rjp._require_block_definition(
+        pair.male.block_name, asset_path=pair.male.asset_path()
+    )
+
+    result = _rjp._compute_variant(
+        le_start, le_end, ln_start, ln_end, False, False, pair=pair
+    )
+    _rjp._place_joint_blocks(
+        result, le_curve_id, ln_curve_id, le_bar_id, ln_bar_id, pair=pair
     )
 
 
@@ -388,55 +443,60 @@ def main():
         f"(contact distance {target_distance:.4f} mm)"
     )
 
-    le2_id = pick_bar("Select second existing bar (Le2)")
-    if le2_id is None:
-        return
-    ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on Le1")
-    if ce1 is None:
-        return
-    ce2 = rs.GetPointOnCurve(le2_id, "Pick contact point on Le2")
-    if ce2 is None:
-        return
-
-    solution = _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance)
-    if solution is None:
-        print("RSBarBrace: Cancelled.")
-        return
-
-    # Bake the chosen solution
-    with suspend_redraw():
-        midpoint = 0.5 * (solution["p1"] + solution["p2"])
-        line_id = _add_centered_line(midpoint, solution["nn"])
-        chosen_color = _PREVIEW_COLORS[solution.get("_index", 0) % len(_PREVIEW_COLORS)]
-        _place_axis_line(line_id, color=chosen_color, label="RSBarBrace_Ln")
-
-        # Register bars and create/update tube previews
+    le2_id = None
+    line_id = None
+    try:
+        # Visual feedback: paint Le1 with the first preview color.
         ensure_bar_id(le1_id)
+        ensure_bar_preview(le1_id, float(config.BAR_RADIUS))
+        _paint_bar(le1_id, SELECTED_BAR_COLOR)
+
+        le2_id = pick_bar("Select second existing bar (Le2)")
+        if le2_id is None:
+            return
         ensure_bar_id(le2_id)
-        ensure_bar_id(line_id)
-        ensure_bar_preview(le1_id, float(config.BAR_RADIUS), color=_PREVIEW_COLORS[0])
-        ensure_bar_preview(le2_id, float(config.BAR_RADIUS), color=_PREVIEW_COLORS[1])
-        ensure_bar_preview(line_id, float(config.BAR_RADIUS), color=chosen_color)
+        ensure_bar_preview(le2_id, float(config.BAR_RADIUS))
+        _paint_bar(le2_id, SELECTED_BAR_COLOR)
 
-        ce1_arr = point_to_array(solution["p1"]) if "p1" in solution else None
-        ce2_arr = point_to_array(solution["p2"]) if "p2" in solution else None
-        # Bake final contact segments using the solution's contact-bar closest points
-        # p1/p2 are points on the new bar; the contact points on Le are at distance BAR_CONTACT_DISTANCE
-        _bake_reference_segment(
-            solution["p1"], solution["p1"], "RSBarBrace_contact_1", (230, 80, 80)
-        )
-        _bake_reference_segment(
-            solution["p2"], solution["p2"], "RSBarBrace_contact_2", (80, 80, 230)
+        ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on Le1")
+        if ce1 is None:
+            return
+        ce2 = rs.GetPointOnCurve(le2_id, "Pick contact point on Le2")
+        if ce2 is None:
+            return
+
+        solution = _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance)
+        if solution is None:
+            print("RSBarBrace: Cancelled.")
+            return
+
+        # Bake the chosen solution as a plain bar (default color).
+        with suspend_redraw():
+            midpoint = 0.5 * (solution["p1"] + solution["p2"])
+            line_id = _add_centered_line(midpoint, solution["nn"])
+            _place_axis_line(line_id, label="RSBarBrace_Ln")
+            ensure_bar_id(line_id)
+            ensure_bar_preview(line_id, float(config.BAR_RADIUS))
+
+        theta_1, theta_2 = solution["angles"]
+        print(
+            f"RSBarBrace: Solution placed. "
+            f"Family={solution.get('sign_family', '?')}, "
+            f"Angles=({theta_1:.3f},{theta_2:.3f}) rad, "
+            f"Residual: {solution['residual']:.2e}"
         )
 
-    rs.SelectObject(line_id)
-    theta_1, theta_2 = solution["angles"]
-    print(
-        f"RSBarBrace: Solution placed. "
-        f"Family={solution.get('sign_family', '?')}, "
-        f"Angles=({theta_1:.3f},{theta_2:.3f}) rad, "
-        f"Residual: {solution['residual']:.2e}"
-    )
+        # Auto-place joints between each existing bar (female) and the new
+        # brace bar (male).  Uses a consistent default variant; the user can
+        # refine each joint later with RSJointEdit.
+        _auto_place_joints(le1_id, line_id, pair)
+        _auto_place_joints(le2_id, line_id, pair)
+
+    finally:
+        _reset_bar_color(le1_id)
+        _reset_bar_color(le2_id)
+        _reset_bar_color(line_id)
+        sc.doc.Views.Redraw()
 
 
 if __name__ == "__main__":

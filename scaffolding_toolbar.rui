@@ -31,23 +31,17 @@
       <text>
         <locale_1033>RSSetup</locale_1033>
       </text>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000004" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000004</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000005" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000005</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000006" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000006</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000007" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000007</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000009" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000009</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000a" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000a</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000b" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000b</left_macro_id>
       </tool_bar_item>
     </tool_bar>
   </tool_bars>
@@ -126,30 +120,6 @@
       <script>! _-ScriptEditor _R "rs_create_bar.py"</script>
     </macro_item>
     <!-- RSSetup macros -->
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000004">
-      <text>
-        <locale_1033>RSBakeFrame</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Create a named reference frame from 3 points</locale_1033>
-      </tooltip>
-      <button_text>
-        <locale_1033>RSBakeFrame</locale_1033>
-      </button_text>
-      <script>! _-ScriptEditor _R "rs_bake_frame.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000005">
-      <text>
-        <locale_1033>RSExportConfig</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Export connector config from baked CAD frames</locale_1033>
-      </tooltip>
-      <button_text>
-        <locale_1033>RSExportConfig</locale_1033>
-      </button_text>
-      <script>! _-ScriptEditor _R "rs_export_config.py"</script>
-    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000006">
       <text>
         <locale_1033>RSMeasureGap</locale_1033>
@@ -161,18 +131,6 @@
         <locale_1033>RSMeasureGap</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_measure_gap.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000007">
-      <text>
-        <locale_1033>RSExportCase</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Export T1-S2 debug case as JSON</locale_1033>
-      </tooltip>
-      <button_text>
-        <locale_1033>RSExportCase</locale_1033>
-      </button_text>
-      <script>! _-ScriptEditor _R "rs_export_case.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000009">
       <text>
@@ -197,6 +155,18 @@
         <locale_1033>RSExportPrefab</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_export_prefab.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000b">
+      <text>
+        <locale_1033>RSDefineJointPair</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Define a new joint pair from baked Rhino geometry</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSDefineJointPair</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_define_joint_pair.py"</script>
     </macro_item>
   </macros>
   <bitmaps>

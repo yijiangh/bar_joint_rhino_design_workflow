@@ -2,10 +2,12 @@
 # venv: scaffolding_env
 # r: numpy
 # r: scipy
-"""RSBarSnap - Snap a new bar onto an existing bar at contact distance.
+"""RSBarSnap - Snap a new bar onto an existing bar at a joint pair's contact distance.
 
-Pick an existing bar (Le) and a new bar (Ln). The script translates Ln so that
-the shortest distance between Le and Ln equals BAR_CONTACT_DISTANCE.
+The user is first prompted to confirm the active joint pair (Enter accepts
+the last-used pair).  Then they pick an existing bar (Le) and a new bar (Ln);
+the script translates Ln so that the shortest distance between Le and Ln
+equals the chosen pair's ``contact_distance_mm``.
 """
 
 import contextlib
@@ -38,14 +40,12 @@ from core.rhino_bar_registry import (
     pick_bar,
     repair_on_entry,
 )
+from core.rhino_pair_selector import pick_bar_with_pair_option
 
 
 _REFERENCE_SEGMENT_PRINT_WIDTH = 0.8
 _BAR_AXIS_LAYER = "Bar Axis Lines"
 _CONTACT_SEGMENT_LAYER = "Contact Segments"
-_TUBE_LAYER = "Tube preview"
-_S1_EXISTING_BAR_COLOR = (120, 120, 120)
-_DEFAULT_TUBE_COLOR = (205, 150, 60)
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +100,16 @@ def main():
     repair_on_entry(float(config.BAR_RADIUS), "RSBarSnap")
     rs.UnselectAllObjects()
 
-    le_id = pick_bar("Select existing bar (Le)")
-    if le_id is None:
+    le_id, pair = pick_bar_with_pair_option(
+        "Select existing bar (Le)", command_name="RSBarSnap"
+    )
+    if le_id is None or pair is None:
         return
+    print(
+        f"RSBarSnap: using pair '{pair.name}' "
+        f"(contact distance {pair.contact_distance_mm:.4f} mm)"
+    )
+
     ln_id = pick_bar("Select new bar (Ln) - will be repositioned")
     if ln_id is None:
         return
@@ -111,7 +118,7 @@ def main():
     ln_start, ln_end = curve_endpoints(ln_id)
     le_direction = le_end - le_start
     ln_direction = ln_end - ln_start
-    target_distance = float(config.BAR_CONTACT_DISTANCE)
+    target_distance = float(pair.contact_distance_mm)
 
     t_e, t_n = geometry.closest_params_infinite_lines(
         le_start,
@@ -145,15 +152,16 @@ def main():
         "RSBarSnap_shortest_segment",
         (180, 0, 180),
     )
-    _place_axis_line(line_id, label="RSBarSnap_Ln")
 
     # Register bars and create/update tube previews
     ensure_bar_id(le_id)
     ensure_bar_id(line_id)
-    ensure_bar_preview(le_id, float(config.BAR_RADIUS), color=_S1_EXISTING_BAR_COLOR)
-    ensure_bar_preview(line_id, float(config.BAR_RADIUS), color=_DEFAULT_TUBE_COLOR)
-    rs.SelectObject(line_id)
-    print(f"RSBarSnap: Bar placed at distance {target_distance:.2f} from Le")
+    ensure_bar_preview(le_id, float(config.BAR_RADIUS))
+    ensure_bar_preview(line_id, float(config.BAR_RADIUS))
+    print(
+        f"RSBarSnap: Bar placed at distance {target_distance:.2f} mm from Le "
+        f"(pair '{pair.name}')"
+    )
 
 
 if __name__ == "__main__":

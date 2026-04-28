@@ -22,10 +22,8 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 
 | Button | Script | Purpose |
 |---|---|---|
-| RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames from picked points |
-| RSExportConfig | `rs_export_config.py` | Export CAD-backed config values to generated core config files |
+| RSDefineJointPair | `rs_define_joint_pair.py` | Define a new joint pair (female + male blocks + transforms + asset) |
 | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite bar lines |
-| RSExportCase | `rs_export_case.py` | Export a reproducible S2 case JSON from Rhino picks |
 | RSUpdatePreview | `rs_update_preview.py` | Rebuild stale or missing bar tube previews |
 | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication data JSON |
 

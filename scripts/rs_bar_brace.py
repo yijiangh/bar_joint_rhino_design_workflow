@@ -28,6 +28,7 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core import geometry
+from core.rhino_pair_selector import pick_bar_with_pair_option
 from core.rhino_helpers import (
     apply_object_display,
     as_object_id_list,
@@ -165,7 +166,7 @@ def _refresh_runtime_modules():
 # ---------------------------------------------------------------------------
 
 
-def _solve(le1_id, le2_id, ce1, ce2):
+def _solve(le1_id, le2_id, ce1, ce2, target_distance):
     """Run the S2-T1 solver. Returns (solutions, report) or ([], None) on error."""
     le1_start, le1_end = curve_endpoints(le1_id)
     le2_start, le2_end = curve_endpoints(le2_id)
@@ -173,7 +174,7 @@ def _solve(le1_id, le2_id, ce1, ce2):
     ce2 = point_to_array(ce2)
     n1 = le1_end - le1_start
     n2 = le2_end - le2_start
-    target_distance = float(config.BAR_CONTACT_DISTANCE)
+    target_distance = float(target_distance)
     try:
         report = geometry.solve_s2_t1_report(
             n1,
@@ -256,7 +257,7 @@ def _print_report(report):
 # ---------------------------------------------------------------------------
 
 
-def _interactive_loop(le1_id, le2_id, ce1, ce2):
+def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance):
     """Interactive solve-preview-select loop. Returns chosen solution dict or None."""
     ce1 = point_to_array(ce1)
     ce2 = point_to_array(ce2)
@@ -264,7 +265,7 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2):
     ce2_ref_id = _bake_reference_point(ce2, "RSBarBrace_Ce2", (80, 80, 230))
     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
-    solutions, report = _solve(le1_id, le2_id, ce1, ce2)
+    solutions, report = _solve(le1_id, le2_id, ce1, ce2, target_distance)
     _print_report(report)
     if not solutions:
         rs.MessageBox("No valid brace solutions found. Try different contact points.")
@@ -350,7 +351,7 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2):
                     )
                     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
-                    solutions, report = _solve(le1_id, le2_id, ce1, ce2)
+                    solutions, report = _solve(le1_id, le2_id, ce1, ce2, target_distance)
                     _print_report(report)
                     if not solutions:
                         rs.MessageBox(
@@ -376,9 +377,17 @@ def main():
     repair_on_entry(float(config.BAR_RADIUS), "RSBarBrace")
     rs.UnselectAllObjects()
 
-    le1_id = pick_bar("Select first existing bar (Le1)")
-    if le1_id is None:
+    le1_id, pair = pick_bar_with_pair_option(
+        "Select first existing bar (Le1)", command_name="RSBarBrace"
+    )
+    if le1_id is None or pair is None:
         return
+    target_distance = float(pair.contact_distance_mm)
+    print(
+        f"RSBarBrace: using pair '{pair.name}' "
+        f"(contact distance {target_distance:.4f} mm)"
+    )
+
     le2_id = pick_bar("Select second existing bar (Le2)")
     if le2_id is None:
         return
@@ -389,7 +398,7 @@ def main():
     if ce2 is None:
         return
 
-    solution = _interactive_loop(le1_id, le2_id, ce1, ce2)
+    solution = _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance)
     if solution is None:
         print("RSBarBrace: Cancelled.")
         return

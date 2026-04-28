@@ -4,9 +4,11 @@
 # r: scipy
 """RSJointPlace - Place connector blocks on one bar pair.
 
-Select any two registered bars.  The bar with the lower assembly sequence
-number is automatically assigned as the female-joint bar (Le); the bar
-assembled later receives the male joint (Ln).
+The user is first prompted to confirm the active joint pair (Enter accepts
+the last-used pair, or pick a different one from the registered list).
+Then select any two registered bars.  The bar with the lower assembly
+sequence number is automatically assigned as the female-joint bar (Le);
+the bar assembled later receives the male joint (Ln).
 
 The optimizer solves all 4 endpoint-reversal variants.  After an initial
 placement you can refine interactively:
@@ -35,8 +37,8 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config as _config_module
-from core import kinematics as _kinematics_module
-from core import transforms as _transforms_module
+from core import joint_pair as _joint_pair_module
+from core import joint_pair_solver as _joint_pair_solver_module
 from core.rhino_helpers import (
     as_object_id_list,
     curve_endpoints,
@@ -53,10 +55,9 @@ from core.rhino_bar_registry import (
     pick_bar,
     repair_on_entry,
 )
+from core.rhino_pair_selector import pick_bar_with_pair_option
 
 
-_FEMALE_BLOCK_NAME = "T20_Female"
-_MALE_BLOCK_NAME = "T20_Male"
 _FEMALE_INSTANCES_LAYER = "FemaleJointPlacedInstances"
 _MALE_INSTANCES_LAYER = "MaleJointPlacedInstances"
 _PREVIEW_COLORS = [
@@ -74,17 +75,15 @@ _JOINT_ROLE_KEY = "_joint_role"  # user-text key set on interactive preview bloc
 
 
 def _reload_runtime_modules():
-    global config, invert_transform, make_bar_frame, optimize_joint_placement
-    global screw_hole_alignment_diagnostics, screw_hole_origin_z_error
+    global config, joint_pair_module, joint_pair_solver_module
+    global optimize_pair_placement, screw_alignment_diagnostics, get_joint_pair
 
     config = importlib.reload(_config_module)
-    transforms = importlib.reload(_transforms_module)
-    kinematics = importlib.reload(_kinematics_module)
-    invert_transform = transforms.invert_transform
-    make_bar_frame = kinematics.make_bar_frame
-    optimize_joint_placement = kinematics.optimize_joint_placement
-    screw_hole_alignment_diagnostics = kinematics.screw_hole_alignment_diagnostics
-    screw_hole_origin_z_error = kinematics.screw_hole_origin_z_error
+    joint_pair_module = importlib.reload(_joint_pair_module)
+    joint_pair_solver_module = importlib.reload(_joint_pair_solver_module)
+    optimize_pair_placement = joint_pair_solver_module.optimize_pair_placement
+    screw_alignment_diagnostics = joint_pair_solver_module.screw_alignment_diagnostics
+    get_joint_pair = joint_pair_module.get_joint_pair
 
 
 _reload_runtime_modules()
@@ -110,10 +109,85 @@ def _has_block_definition(name):
     return False
 
 
-def _require_block_definition(name):
-    if not _has_block_definition(name):
-        raise RuntimeError(f"Missing required Rhino block definition '{name}'.")
-    return name
+def _import_block_definition_from_3dm(block_name, asset_path):
+    """Import a single block definition named *block_name* from *asset_path*
+    into the current Rhino document.  Returns True on success, False otherwise.
+
+    Strategy: read the .3dm file via :class:`Rhino.FileIO.File3dm`, collect
+    every geometry/attribute pair found in it (the asset was exported as
+    one block's worth of geometry by ``rs_define_joint_pair``), and add
+    them as a new InstanceDefinition under *block_name*.  Falls back to
+    Rhino's ``_-Insert`` command if the File3dm path fails.
+    """
+    asset_path = os.path.normpath(asset_path)
+    if not os.path.isfile(asset_path):
+        print(
+            f"  [import_block] asset file not found: {asset_path}"
+        )
+        return False
+
+    # ---- Attempt 1: RhinoCommon File3dm direct read --------------------
+    try:
+        file3dm = Rhino.FileIO.File3dm.Read(asset_path)
+        if file3dm is None:
+            print(f"  [import_block] File3dm.Read returned None for {asset_path}")
+        else:
+            geometries = []
+            attributes = []
+            for obj in file3dm.Objects:
+                if obj is None or obj.Geometry is None:
+                    continue
+                geometries.append(obj.Geometry.Duplicate())
+                attributes.append(obj.Attributes.Duplicate() if obj.Attributes else None)
+            if geometries:
+                idef_index = sc.doc.InstanceDefinitions.Add(
+                    block_name,
+                    f"Imported from {os.path.basename(asset_path)}",
+                    Rhino.Geometry.Point3d.Origin,
+                    geometries,
+                    attributes,
+                )
+                if idef_index >= 0:
+                    print(
+                        f"  [import_block] imported '{block_name}' "
+                        f"({len(geometries)} object(s)) from {asset_path}"
+                    )
+                    sc.doc.Views.Redraw()
+                    return True
+                print(f"  [import_block] InstanceDefinitions.Add returned {idef_index}")
+            else:
+                print(f"  [import_block] no geometry found in {asset_path}")
+    except Exception as exc:
+        print(f"  [import_block] File3dm path raised: {exc!r}")
+
+    # ---- Attempt 2: _-Insert command ----------------------------------
+    cmd_path = asset_path.replace("/", "\\")
+    cmd = (
+        '_-Insert _File _Yes "{path}" _Block _Enter '
+        '0,0,0 _Enter 1 _Enter 0 _Enter'
+    ).format(path=cmd_path)
+    print(f"  [import_block] running: {cmd}")
+    ok_cmd = rs.Command(cmd, echo=False)
+    if ok_cmd and _has_block_definition(block_name):
+        # The _-Insert command also placed an instance at the origin --
+        # remove it; the caller will insert at the proper location.
+        rs.UnselectAllObjects()
+        return True
+    return False
+
+
+def _require_block_definition(name, *, asset_path=None):
+    """Ensure block *name* is loaded.  If missing and *asset_path* is given,
+    attempt to import it from that .3dm file."""
+    if _has_block_definition(name):
+        return name
+    if asset_path:
+        if _import_block_definition_from_3dm(name, asset_path):
+            return name
+    raise RuntimeError(
+        f"Missing required Rhino block definition '{name}'."
+        + (f"  (Tried to import from {asset_path}.)" if asset_path else "")
+    )
 
 
 def _numpy_to_rhino_transform(matrix):
@@ -149,12 +223,11 @@ def _insert_block_instance(
 # ---------------------------------------------------------------------------
 
 
-def _compute_variant(le_start, le_end, ln_start, ln_end, le_rev, ln_rev):
+def _compute_variant(le_start, le_end, ln_start, ln_end, le_rev, ln_rev, *, pair):
     """Compute a single joint-placement optimization for the given reversal flags.
 
     ``le_rev`` reverses the female-bar endpoint order; ``ln_rev`` reverses the
-    male-bar endpoint order.  Returns the same result-dict format that each
-    element of the old ``_enumerate_solution_variants`` list used.
+    male-bar endpoint order.  ``pair`` is the chosen :class:`JointPairDef`.
     """
     les = le_end if le_rev else le_start
     lee = le_start if le_rev else le_end
@@ -164,16 +237,16 @@ def _compute_variant(le_start, le_end, ln_start, ln_end, le_rev, ln_rev):
     label = (
         f"{idx + 1}: le={'rev' if le_rev else 'fwd'}, ln={'rev' if ln_rev else 'fwd'}"
     )
-    res = optimize_joint_placement(les, lee, lns, lne, config, return_debug=True)
-    diag = screw_hole_alignment_diagnostics(
-        res["female_screw_hole_frame"],
-        res["male_screw_hole_frame"],
+    res = optimize_pair_placement(les, lee, lns, lne, pair, return_debug=True)
+    diag = screw_alignment_diagnostics(
+        res["female_screw_frame"],
+        res["male_screw_frame"],
     )
     res.update(
         {
             "variant_index": idx,
             "variant_label": label,
-            "variant_solver": "full_joint_optimization",
+            "variant_solver": "full_pair_optimization",
             "female_flip_rad": float(np.pi) if le_rev else 0.0,
             "male_flip_rad": float(np.pi) if ln_rev else 0.0,
             "origin_error_mm": diag["origin_error_mm"],
@@ -195,10 +268,10 @@ def _compute_variant(le_start, le_end, ln_start, ln_end, le_rev, ln_rev):
 def _interface_metrics_from_result(result):
     if "origin_error_mm" in result and "z_axis_error_rad" in result:
         return float(result["origin_error_mm"]), float(result["z_axis_error_rad"])
-    if "female_screw_hole_frame" in result and "male_screw_hole_frame" in result:
-        diagnostics = screw_hole_alignment_diagnostics(
-            result["female_screw_hole_frame"],
-            result["male_screw_hole_frame"],
+    if "female_screw_frame" in result and "male_screw_frame" in result:
+        diagnostics = screw_alignment_diagnostics(
+            result["female_screw_frame"],
+            result["male_screw_frame"],
         )
         return float(diagnostics["origin_error_mm"]), float(
             diagnostics["z_axis_error_rad"]
@@ -234,6 +307,7 @@ class _JointSession:
         female_block_name,
         male_block_name,
         *,
+        pair,
         le_rev=False,
         ln_rev=False,
     ):
@@ -243,6 +317,7 @@ class _JointSession:
         self.ln_end = ln_end
         self.female_block_name = female_block_name
         self.male_block_name = male_block_name
+        self.pair = pair
         self.le_rev = le_rev
         self.ln_rev = ln_rev
         self._cache = {}  # (le_rev, ln_rev) -> variant dict
@@ -254,7 +329,13 @@ class _JointSession:
         key = (le_rev, ln_rev)
         if key not in self._cache:
             self._cache[key] = _compute_variant(
-                self.le_start, self.le_end, self.ln_start, self.ln_end, le_rev, ln_rev
+                self.le_start,
+                self.le_end,
+                self.ln_start,
+                self.ln_end,
+                le_rev,
+                ln_rev,
+                pair=self.pair,
             )
         return self._cache[key]
 
@@ -366,20 +447,24 @@ def _print_variant_info(variant):
 # ---------------------------------------------------------------------------
 
 
-def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
+def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id, *, pair):
     female_frame = result["female_frame"]
     male_frame = result["male_frame"]
     origin_err, z_err = _interface_metrics_from_result(result)
 
-    female_block_name = _require_block_definition(_FEMALE_BLOCK_NAME)
-    male_block_name = _require_block_definition(_MALE_BLOCK_NAME)
+    female_block_name = _require_block_definition(
+        pair.female.block_name, asset_path=pair.female.asset_path()
+    )
+    male_block_name = _require_block_definition(
+        pair.male.block_name, asset_path=pair.male.asset_path()
+    )
 
     le_num = le_bar_id.lstrip("B")
     ln_num = ln_bar_id.lstrip("B")
     joint_id = f"J{le_num}-{ln_num}"
 
-    female_type, female_subtype = female_block_name.split("_", 1)
-    male_type, male_subtype = male_block_name.split("_", 1)
+    female_type, _, female_subtype = female_block_name.partition("_")
+    male_type, _, male_subtype = male_block_name.partition("_")
 
     # Orientation: P if block x-axis points toward bar end, N toward start
     le_start, le_end = curve_endpoints(le_id)
@@ -441,6 +526,7 @@ def _place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id):
             rs.SetUserText(obj_id, "joint_id", joint_id)
             rs.SetUserText(obj_id, "joint_type", block_type)
             rs.SetUserText(obj_id, "joint_subtype", block_subtype)
+            rs.SetUserText(obj_id, "joint_pair_name", pair.name)
             rs.SetUserText(obj_id, "parent_bar_id", parent_bar)
             rs.SetUserText(obj_id, "connected_bar_id", conn_bar)
             rs.SetUserText(obj_id, "female_parent_bar", le_bar_id)
@@ -479,9 +565,18 @@ def main():
     repair_on_entry(float(config.BAR_RADIUS), "RSJointPlace")
 
     rs.UnselectAllObjects()
-    bar_a_id = pick_bar("Select first bar of the joint pair")
-    if bar_a_id is None:
+
+    bar_a_id, pair = pick_bar_with_pair_option(
+        "Select first bar of the joint pair", command_name="RSJointPlace"
+    )
+    if bar_a_id is None or pair is None:
         return
+    print(
+        f"RSJointPlace: using pair '{pair.name}' "
+        f"(female='{pair.female.block_name}', male='{pair.male.block_name}', "
+        f"contact={pair.contact_distance_mm:.4f} mm)"
+    )
+
     bar_b_id = pick_bar("Select second bar of the joint pair")
     if bar_b_id is None:
         return
@@ -512,19 +607,29 @@ def main():
     ln_start, ln_end = curve_endpoints(ln_id)
 
     # Validate block definitions before solving.
-    female_block_name = _require_block_definition(_FEMALE_BLOCK_NAME)
-    male_block_name = _require_block_definition(_MALE_BLOCK_NAME)
+    female_block_name = _require_block_definition(
+        pair.female.block_name, asset_path=pair.female.asset_path()
+    )
+    male_block_name = _require_block_definition(
+        pair.male.block_name, asset_path=pair.male.asset_path()
+    )
 
     # Interactive click loop — variants are computed on demand as the user toggles.
     session = _JointSession(
-        le_start, le_end, ln_start, ln_end, female_block_name, male_block_name
+        le_start,
+        le_end,
+        ln_start,
+        ln_end,
+        female_block_name,
+        male_block_name,
+        pair=pair,
     )
     chosen = _interactive_click_loop(session)
     if chosen is None:
         print("RSJointPlace: Cancelled.")
         return
 
-    _place_joint_blocks(chosen, le_id, ln_id, le_bar_id, ln_bar_id)
+    _place_joint_blocks(chosen, le_id, ln_id, le_bar_id, ln_bar_id, pair=pair)
 
 
 if __name__ == "__main__":

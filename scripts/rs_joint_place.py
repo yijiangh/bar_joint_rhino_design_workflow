@@ -40,7 +40,6 @@ from core import config as _config_module
 from core import joint_pair as _joint_pair_module
 from core import joint_pair_solver as _joint_pair_solver_module
 from core.rhino_helpers import (
-    as_object_id_list,
     curve_endpoints,
     delete_objects,
     ensure_layer,
@@ -72,6 +71,14 @@ _PREVIEW_COLORS = [
     (200, 160, 50),
 ]
 _JOINT_ROLE_KEY = "_joint_role"  # user-text key set on interactive preview blocks
+
+# A solved variant is considered acceptable when the female/male screw
+# frames coincide within these tolerances.  Special joint geometries
+# sometimes have only two valid variants (out of the nominal four); the
+# other two land on local minima with large interface errors.  The
+# auto-recovery logic below detects this and flips one side once.
+_VARIANT_OK_ORIGIN_TOL_MM = 0.05
+_VARIANT_OK_Z_AXIS_TOL_RAD = 0.01  # ~0.57 deg
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +201,68 @@ def _interface_metrics_from_result(result):
     raise KeyError("Result is missing interface diagnostics.")
 
 
+def is_variant_acceptable(variant):
+    """True iff the variant's interface error is within tolerance."""
+    origin_err, z_err = _interface_metrics_from_result(variant)
+    return (
+        origin_err <= _VARIANT_OK_ORIGIN_TOL_MM
+        and abs(z_err) <= _VARIANT_OK_Z_AXIS_TOL_RAD
+    )
+
+
+def compute_variant_with_recovery(
+    le_start,
+    le_end,
+    ln_start,
+    ln_end,
+    le_rev,
+    ln_rev,
+    *,
+    pair,
+    recover_side="female",
+):
+    """Compute the requested variant.  If its interface error exceeds
+    tolerance (a sign that this orientation lands on a degenerate local
+    minimum), flip ``recover_side`` once and use that variant instead.
+
+    Returns ``(variant, recovered_bool, new_le_rev, new_ln_rev)``.  The
+    flag is True when recovery was applied; the new flags reflect the
+    actually-used orientation.  Recovery never propagates more than once.
+    """
+    variant = _compute_variant(
+        le_start, le_end, ln_start, ln_end, le_rev, ln_rev, pair=pair
+    )
+    if is_variant_acceptable(variant):
+        return variant, False, le_rev, ln_rev
+
+    origin_err, z_err = _interface_metrics_from_result(variant)
+    print(
+        f"RSJointPlace: variant {variant['variant_index'] + 1} interface error "
+        f"too large (origin={origin_err:.4f} mm, z={np.degrees(z_err):.4f}deg); "
+        f"auto-flipping {recover_side} side."
+    )
+    if recover_side == "female":
+        new_le, new_ln = (not le_rev), ln_rev
+    else:
+        new_le, new_ln = le_rev, (not ln_rev)
+    recovered = _compute_variant(
+        le_start, le_end, ln_start, ln_end, new_le, new_ln, pair=pair
+    )
+    rec_o, rec_z = _interface_metrics_from_result(recovered)
+    if is_variant_acceptable(recovered):
+        print(
+            f"  recovery succeeded -> variant {recovered['variant_index'] + 1} "
+            f"(origin={rec_o:.4f} mm, z={np.degrees(rec_z):.4f}deg)."
+        )
+    else:
+        print(
+            f"  WARNING: recovery did not improve interface error "
+            f"(origin={rec_o:.4f} mm, z={np.degrees(rec_z):.4f}deg); "
+            f"placing the recovered variant as-is."
+        )
+    return recovered, True, new_le, new_ln
+
+
 # ---------------------------------------------------------------------------
 # Interactive cycling loop
 # ---------------------------------------------------------------------------
@@ -284,13 +353,38 @@ class _JointSession:
         _print_variant_info(var)
 
     def click_female(self):
-        """Toggle the female joint orientation and refresh the preview."""
+        """Toggle the female joint orientation and refresh the preview.
+
+        If the new orientation lands on a bad local minimum, flip the
+        male side once to recover (mirrors the auto-recovery used by
+        ``RSJointEdit``).
+        """
         self.le_rev = not self.le_rev
+        if not is_variant_acceptable(self.current_variant):
+            origin_err, z_err = _interface_metrics_from_result(self.current_variant)
+            print(
+                f"RSJointPlace: female-flip variant interface error too large "
+                f"(origin={origin_err:.4f} mm, z={np.degrees(z_err):.4f}deg); "
+                f"auto-flipping male side."
+            )
+            self.ln_rev = not self.ln_rev
         self.show_current()
 
     def click_male(self):
-        """Toggle the male joint orientation and refresh the preview."""
+        """Toggle the male joint orientation and refresh the preview.
+
+        If the new orientation lands on a bad local minimum, flip the
+        female side once to recover.
+        """
         self.ln_rev = not self.ln_rev
+        if not is_variant_acceptable(self.current_variant):
+            origin_err, z_err = _interface_metrics_from_result(self.current_variant)
+            print(
+                f"RSJointPlace: male-flip variant interface error too large "
+                f"(origin={origin_err:.4f} mm, z={np.degrees(z_err):.4f}deg); "
+                f"auto-flipping female side."
+            )
+            self.le_rev = not self.le_rev
         self.show_current()
 
     def cleanup(self):
@@ -539,6 +633,17 @@ def main():
         male_block_name,
         pair=pair,
     )
+    # Apply auto-recovery on the very first variant too, so special joints
+    # (with only two valid variants out of the nominal four) don't open
+    # with a visibly broken interface.
+    if not is_variant_acceptable(session.current_variant):
+        origin_err, z_err = _interface_metrics_from_result(session.current_variant)
+        print(
+            f"RSJointPlace: initial variant interface error too large "
+            f"(origin={origin_err:.4f} mm, z={np.degrees(z_err):.4f}deg); "
+            f"auto-flipping female side."
+        )
+        session.le_rev = not session.le_rev
     chosen = _interactive_click_loop(session)
     if chosen is None:
         print("RSJointPlace: Cancelled.")

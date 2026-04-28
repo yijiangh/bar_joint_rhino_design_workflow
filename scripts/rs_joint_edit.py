@@ -39,7 +39,6 @@ from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 from core.rhino_helpers import curve_endpoints
 from core import config
 from core.rhino_tool_place import (
-    auto_place_tool_at_male_joint,
     cycle_tool_at_tool_instance,
     get_tool_name_for_joint,
     place_tool_by_name_at_male_joint,
@@ -152,11 +151,16 @@ def main():
             print(f"RSJointEdit: {exc}")
             continue
 
-        # Toggle the side that was clicked.
+        # Toggle the side that was clicked, and remember which side it was
+        # so the auto-recovery (when the chosen orientation lands on a bad
+        # local minimum) can flip the OTHER side.
+        clicked_side = None
         if clicked_layer == _rjp._FEMALE_INSTANCES_LAYER:
             le_rev = not le_rev
+            clicked_side = "female"
         elif clicked_layer == _rjp._MALE_INSTANCES_LAYER:
             ln_rev = not ln_rev
+            clicked_side = "male"
 
         # Find the underlying bar curves.
         le_id = _find_bar_curve(le_bar_id)
@@ -169,10 +173,14 @@ def main():
             continue
 
         # Compute only the one variant we need, then swap the blocks.
+        # If recovery is needed (bad local minimum on this orientation),
+        # flip the OPPOSITE side from whichever the user just clicked.
+        recover_side = "male" if clicked_side == "female" else "female"
         le_start, le_end = curve_endpoints(le_id)
         ln_start, ln_end = curve_endpoints(ln_id)
-        new_variant = _rjp._compute_variant(
-            le_start, le_end, ln_start, ln_end, le_rev, ln_rev, pair=pair
+        new_variant, _recovered, le_rev, ln_rev = _rjp.compute_variant_with_recovery(
+            le_start, le_end, ln_start, ln_end, le_rev, ln_rev,
+            pair=pair, recover_side=recover_side,
         )
         _remove_placed_joint(joint_id)
         # Preserve the previously-chosen tool for this joint, so flipping

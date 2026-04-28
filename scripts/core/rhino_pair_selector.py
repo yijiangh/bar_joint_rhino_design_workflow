@@ -34,7 +34,40 @@ from core.rhino_bar_registry import (
 
 _DOC_USERTEXT_KEY = "scaffolding.last_joint_pair"
 _DOC_USERTEXT_BRACE_LENGTH_KEY = "scaffolding.last_brace_length"
+_DOC_USERTEXT_SUBFLOOR_LEFT_KEY = "scaffolding.last_subfloor_left_pair"
+_DOC_USERTEXT_SUBFLOOR_RIGHT_KEY = "scaffolding.last_subfloor_right_pair"
 _DEFAULT_BRACE_LENGTH = 500.0
+
+
+def _get_doc_string(key: str) -> str | None:
+    try:
+        value = sc.doc.Strings.GetValue(key)
+    except Exception:
+        value = None
+    return value or None
+
+
+def _set_doc_string(key: str, value: str) -> None:
+    try:
+        sc.doc.Strings.SetString(key, str(value))
+    except Exception:
+        pass
+
+
+def get_default_subfloor_left_pair_name() -> str | None:
+    return _get_doc_string(_DOC_USERTEXT_SUBFLOOR_LEFT_KEY)
+
+
+def set_default_subfloor_left_pair_name(name: str) -> None:
+    _set_doc_string(_DOC_USERTEXT_SUBFLOOR_LEFT_KEY, name)
+
+
+def get_default_subfloor_right_pair_name() -> str | None:
+    return _get_doc_string(_DOC_USERTEXT_SUBFLOOR_RIGHT_KEY)
+
+
+def set_default_subfloor_right_pair_name(name: str) -> None:
+    _set_doc_string(_DOC_USERTEXT_SUBFLOOR_RIGHT_KEY, name)
 
 
 def get_default_pair_name() -> str | None:
@@ -316,3 +349,111 @@ def pick_bar_with_pair_and_length_option(
             return bar_id, get_joint_pair(chosen_name), chosen_length
 
         return None, None, None
+
+
+def pick_bar_with_dual_pair_and_length_option(
+    bar_prompt: str,
+    command_name: str = "JointPair",
+    *,
+    length_option_name: str = "Length",
+    length_min: float = 1.0,
+    length_max: float = 100000.0,
+):
+    """Pick a bar while exposing two independent joint-pair options
+    (``LeftJointPair`` and ``RightJointPair``) plus a ``SwapLeftRight``
+    toggle and a numeric ``Length`` option.
+
+    Defaults are restored from doc user-text
+    (``scaffolding.last_subfloor_left_pair`` /
+    ``scaffolding.last_subfloor_right_pair``); on first use both fall
+    back to the global last-used pair (or the first registered pair).
+
+    Returns ``(bar_object_id, left_pair, right_pair, length_mm)`` or
+    ``(None, None, None, None)`` on cancel / empty registry.
+    """
+    names = list_joint_pair_names()
+    if not names:
+        rs.MessageBox(
+            "No joint pairs are registered yet.  Run RSDefineJointPair first.",
+            0,
+            command_name,
+        )
+        return None, None, None, None
+
+    fallback = get_default_pair_name() or names[0]
+    if fallback not in names:
+        fallback = names[0]
+
+    left_default = get_default_subfloor_left_pair_name() or fallback
+    if left_default not in names:
+        left_default = fallback
+    right_default = get_default_subfloor_right_pair_name() or fallback
+    if right_default not in names:
+        right_default = fallback
+
+    left_index = names.index(left_default)
+    right_index = names.index(right_default)
+
+    length_value = Rhino.Input.Custom.OptionDouble(
+        get_default_brace_length(), length_min, length_max
+    )
+
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt(bar_prompt)
+        go.EnablePreSelect(True, True)
+        go.SetCustomGeometryFilter(_bar_filter)
+
+        if len(names) == 1:
+            left_opt_index = -1
+            right_opt_index = -1
+            swap_opt_index = -1
+        else:
+            left_opt_index = go.AddOptionList("LeftJointPair", names, left_index)
+            right_opt_index = go.AddOptionList(
+                "RightJointPair", names, right_index
+            )
+            swap_opt_index = go.AddOption("SwapLeftRight")
+        go.AddOptionDouble(length_option_name, length_value)
+
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Cancel:
+            return None, None, None, None
+
+        if result == Rhino.Input.GetResult.Option:
+            opt = go.Option()
+            if opt is not None:
+                if opt.Index == left_opt_index:
+                    left_index = int(opt.CurrentListOptionIndex)
+                elif opt.Index == right_opt_index:
+                    right_index = int(opt.CurrentListOptionIndex)
+                elif opt.Index == swap_opt_index:
+                    left_index, right_index = right_index, left_index
+                    print(
+                        f"  swapped: LeftJointPair='{names[left_index]}', "
+                        f"RightJointPair='{names[right_index]}'"
+                    )
+            # length_value updated in place
+            continue
+
+        if result == Rhino.Input.GetResult.Object:
+            picked_id = go.Object(0).ObjectId
+            rs.UnselectObject(picked_id)
+            bar_id = _resolve_picked_to_bar_curve(picked_id)
+            if bar_id is None:
+                continue
+            left_name = names[left_index]
+            right_name = names[right_index]
+            set_default_subfloor_left_pair_name(left_name)
+            set_default_subfloor_right_pair_name(right_name)
+            chosen_length = float(length_value.CurrentValue)
+            set_default_brace_length(chosen_length)
+            return (
+                bar_id,
+                get_joint_pair(left_name),
+                get_joint_pair(right_name),
+                chosen_length,
+            )
+
+        return None, None, None, None
+

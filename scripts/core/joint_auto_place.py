@@ -39,8 +39,12 @@ def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
         pair.male.block_name, asset_path=pair.male.asset_path()
     )
 
-    result = _rjp._compute_variant(
-        le_start, le_end, ln_start, ln_end, False, False, pair=pair
+    # Auto-place: start at the canonical (le_rev=False, ln_rev=False)
+    # variant.  If its interface error is too large (special joints with
+    # only two valid variants), automatically flip the female side once.
+    result, _recovered, _le_rev, _ln_rev = _rjp.compute_variant_with_recovery(
+        le_start, le_end, ln_start, ln_end, False, False,
+        pair=pair, recover_side="female",
     )
     _, male_id, joint_id = _rjp._place_joint_blocks(
         result, le_curve_id, ln_curve_id, le_bar_id, ln_bar_id, pair=pair

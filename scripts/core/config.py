@@ -16,6 +16,10 @@ import math
 # Bar parameters (shared across every joint pair)
 BAR_RADIUS = 10.0
 
+# UI: color used to highlight bars the user has just picked, across all
+# interactive scripts that show selection feedback (snap, brace, …).
+SELECTED_BAR_COLOR = (30, 100, 220)  # blue
+
 # Joint DOF bounds (used by Rhino UI prompts, optimizer bounds, etc.)
 FJP_RANGE = (-500.0, 500.0)
 MJP_RANGE = (-500.0, 500.0)

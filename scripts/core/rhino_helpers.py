@@ -149,3 +149,21 @@ def suspend_redraw():
             rs.EnableRedraw(redraw_is_enabled)
         if redraw_is_enabled and hasattr(rs, "Redraw"):
             rs.Redraw()
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
+
+
+def add_centered_line(midpoint, direction, length_mm):
+    """Add a Rhino line of *length_mm* centered at *midpoint* along
+    *direction* (unit-normalized internally).  Returns the new line's
+    object id.
+    """
+    direction = np.asarray(direction, dtype=float)
+    direction = direction / np.linalg.norm(direction)
+    half_length = float(length_mm) / 2.0
+    return rs.AddLine(
+        midpoint - half_length * direction, midpoint + half_length * direction
+    )

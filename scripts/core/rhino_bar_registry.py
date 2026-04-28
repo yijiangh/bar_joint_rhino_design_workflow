@@ -799,6 +799,42 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
 
 
 # ---------------------------------------------------------------------------
+# Selection-color helpers (centerline + tube together)
+# ---------------------------------------------------------------------------
+
+
+def paint_bar(curve_id, color):
+    """Color a bar centre-line curve and its tube preview the same color.
+
+    Sets the object color source to ``ByObject`` for both, so the override
+    is visible regardless of layer color.  Silently no-ops if *curve_id*
+    is missing or no tube preview exists yet.
+    """
+    if curve_id is None or not rs.IsObject(curve_id):
+        return
+    if hasattr(rs, "ObjectColorSource"):
+        rs.ObjectColorSource(curve_id, 1)
+    rs.ObjectColor(curve_id, color)
+    tube = _find_existing_tube(curve_id)
+    if tube is not None and rs.IsObject(tube):
+        if hasattr(rs, "ObjectColorSource"):
+            rs.ObjectColorSource(tube, 1)
+        rs.ObjectColor(tube, color)
+
+
+def reset_bar_color(curve_id):
+    """Restore layer-default color on a bar centre-line curve and its tube."""
+    if curve_id is None or not rs.IsObject(curve_id):
+        return
+    if hasattr(rs, "ObjectColorSource"):
+        rs.ObjectColorSource(curve_id, 0)  # by layer
+    tube = _find_existing_tube(curve_id)
+    if tube is not None and rs.IsObject(tube):
+        if hasattr(rs, "ObjectColorSource"):
+            rs.ObjectColorSource(tube, 0)
+
+
+# ---------------------------------------------------------------------------
 # Bar-picking helper
 # ---------------------------------------------------------------------------
 

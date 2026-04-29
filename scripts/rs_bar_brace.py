@@ -11,6 +11,8 @@ candidate brace positions. An interactive command-prompt loop lets you:
   - Escape to cancel
 """
 
+from __future__ import annotations
+
 import contextlib
 import importlib
 import os

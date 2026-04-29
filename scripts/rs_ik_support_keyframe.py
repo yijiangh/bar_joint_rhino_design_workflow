@@ -9,8 +9,8 @@
 # r: pybullet_planning==0.6.1
 """RSIKSupportKeyframe - Single-arm support-robot IK keyframe workflow.
 
-Pick the bar to be SUPPORTED and the JUST-ASSEMBLED bar (whose
-`ik_assembly` user-text was written by RSIKKeyframe). The script then:
+Pick the bar to be HELD (which is the just-assembled bar carrying the
+`ik_assembly` user-text written by RSIKKeyframe). The script then:
 
 1. Loads the support cell (single-arm Husky-Alice) with the dual-arm
    robot frozen as a `ToolModel` collision obstacle, configured from the
@@ -47,12 +47,16 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import capture_io as _capture_io_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
+from core import env_collision as _env_collision_module
+from core import highlight_env as _highlight_env_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
-from core.rhino_bar_registry import repair_on_entry
+from core.rhino_bar_pick import pick_bar
+from core.rhino_bar_registry import get_bar_seq_map, repair_on_entry
 from core.rhino_frame_io import doc_unit_scale_to_mm
 from core.rhino_helpers import set_objects_layer, suspend_redraw
 
@@ -72,12 +76,15 @@ SUPPORT_PREVIEW_BLOCK_ROLE = "support_grasp_preview"
 
 
 def _reload_runtime_modules():
-    global config, dynamic_preview, ik_viz, robot_cell, robot_cell_support
+    global capture_io, config, dynamic_preview, env_collision, highlight_env, ik_viz, robot_cell, robot_cell_support
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
+    env_collision = importlib.reload(_env_collision_module)
+    highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
+    capture_io = importlib.reload(_capture_io_module)
 
 
 _reload_runtime_modules()
@@ -154,27 +161,9 @@ def _cleanup_ids(oids):
 # ---------------------------------------------------------------------------
 
 
-def _layer_full_path(layer_index):
-    return sc.doc.Layers[layer_index].FullPath
-
-
 def _pick_bar_centerline(prompt):
-    """Pick a curve on `config.LAYER_BAR_CENTERLINES`. Returns ObjectId or None."""
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt(prompt)
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
-    go.EnablePreSelect(False, False)
-
-    def _flt(rho_obj, _g, _ci):
-        try:
-            return _layer_full_path(rho_obj.Attributes.LayerIndex) == config.LAYER_BAR_CENTERLINES
-        except Exception:
-            return False
-
-    go.SetCustomGeometryFilter(_flt)
-    if go.Get() != Rhino.Input.GetResult.Object:
-        return None
-    return go.Object(0).ObjectId
+    """Pick a registered bar (centerline OR tube preview) -> bar curve oid."""
+    return pick_bar(prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -417,13 +406,25 @@ def _pick_grasp_frame_on_bar(bar_curve, gripper_kind="Robotiq"):
             return None, None
 
         # Phase B: heading point (defines gripper rotation about bar axis).
+        # Constrain cursor to the plane perpendicular to the bar tangent
+        # through grasp_center, so it slides freely on a 2D plane like
+        # Rhino's _Rotate command. Disable osnaps so nearby geometry
+        # (the bar curve, tube preview, dual-arm bake) doesn't pull the
+        # cursor.
+        bar_tangent_doc = bar_curve.TangentAt(t)
+        bar_tangent_doc.Unitize()
+        heading_plane = Rhino.Geometry.Plane(grasp_center_doc, bar_tangent_doc)
+
         def _xform_phase_b(cursor_doc):
             grasp_xform, _, _, _ = _bar_frame_doc_at_param(bar_curve, t, heading_doc=cursor_doc)
             return _compose_grasp_to_tool0_doc_xform(grasp_xform, gripper_kind)
 
         picker_b = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_b)
-        picker_b.SetCommandPrompt("Pick heading point (defines gripper rotation about bar axis)")
+        picker_b.SetCommandPrompt("Pick heading direction (rotation about bar axis)")
         picker_b.SetBasePoint(grasp_center_doc, True)
+        picker_b.DrawLineFromPoint(grasp_center_doc, True)
+        picker_b.Constrain(heading_plane, False)
+        picker_b.PermitObjectSnap(False)
         if picker_b.Get() != Rhino.Input.GetResult.Point:
             return None, None
         heading_doc = picker_b.Point()
@@ -443,6 +444,54 @@ def _insert_robotiq_at_tool0(tool0_world_mm):
     rs.SetUserText(oid, PINEAPPLE_ROLE_KEY, SUPPORT_PREVIEW_BLOCK_ROLE)
     set_objects_layer(oid, config.SUPPORT_PREVIEW_LAYER)
     return oid
+
+
+# ---------------------------------------------------------------------------
+# Dual-arm bake at captured ik_assembly pose (collision context preview)
+# ---------------------------------------------------------------------------
+
+
+def _bake_dual_arm_at_captured_pose(assembled, mesh_mode):
+    """Bake the dual-arm robot meshes at the captured ik_assembly pose into
+    Rhino doc objects, then detach the resulting GUIDs from ik_viz's
+    tracking sticky so subsequent ik_viz.show_state calls (e.g. for the
+    support robot's final pose) don't wipe them. The caller is responsible
+    for deleting the returned GUIDs at cleanup.
+
+    The dual-arm robot is loaded as the dual-arm RobotCell's actuated
+    `robot_model` here purely for visualization — collision is still
+    handled by the ToolModel obstacle on the support cell.
+    """
+    deps = robot_cell.import_compas_stack()
+    Frame = deps["Frame"]
+    Configuration = deps["Configuration"]
+
+    da_cell = robot_cell.get_or_load_robot_cell()
+    da_state = da_cell.default_cell_state()
+    da_state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(
+        Frame, np.asarray(assembled["base_frame_world_mm"], dtype=float)
+    )
+
+    zero_cfg = da_cell.robot_model.zero_configuration()
+    cfg_names = list(zero_cfg.joint_names)
+    cfg_types = list(zero_cfg.joint_types)
+    cfg_values = list(zero_cfg.joint_values)
+    captured = dict(zip(
+        list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
+        list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
+    ))
+    for i, name in enumerate(cfg_names):
+        if name in captured:
+            cfg_values[i] = float(captured[name])
+    da_state.robot_configuration = Configuration(
+        joint_values=cfg_values, joint_types=cfg_types, joint_names=cfg_names,
+    )
+
+    ik_viz.show_state(da_state, mesh_mode=mesh_mode, robot_model=da_cell.robot_model)
+    guids = list(sc.sticky.get(ik_viz._STICKY_DRAWN_IDS, []) or [])
+    sc.sticky[ik_viz._STICKY_DRAWN_IDS] = []
+    sc.sticky.pop(ik_viz._STICKY_SCENE_OBJECT, None)
+    return guids
 
 
 # ---------------------------------------------------------------------------
@@ -535,12 +584,12 @@ def _pick_base_frame_on_walkable(brep_id):
 # ---------------------------------------------------------------------------
 
 
-def _ask_collision_options():
+def _ask_collision_options(env_count: int = 0):
     current_mesh_mode = ik_viz.get_mesh_mode()
     is_collision_default = current_mesh_mode == ik_viz.MESH_MODE_COLLISION
 
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Collision options")
+    go.SetCommandPrompt(f"Collision options (env={env_count} bodies)")
     opt_self = Rhino.Input.Custom.OptionToggle(True, "No", "Yes")
     opt_env = Rhino.Input.Custom.OptionToggle(True, "No", "Yes")
     opt_mesh = Rhino.Input.Custom.OptionToggle(is_collision_default, "Visual", "Collision")
@@ -569,6 +618,19 @@ def _ask_accept(prompt="Accept this support IK keyframe and save it on the bar")
 def _ask_save_failure_capture(phase_label: str) -> bool:
     answer = rs.GetString(
         f"{phase_label} IK failed. Save capture for headless debugging?",
+        "No",
+        ["Yes", "No"],
+    )
+    if answer is None:
+        return False
+    return str(answer).strip().lower().startswith("y")
+
+
+def _ask_save_debug_capture() -> bool:
+    """Default-No prompt — the capture is a debug artefact, production state
+    lives on the bar's `ik_support` user-text."""
+    answer = rs.GetString(
+        "Save debug capture for headless replay?",
         "No",
         ["Yes", "No"],
     )
@@ -621,6 +683,7 @@ def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
             base_frame,
             tool0_world_mm,
             check_collision=check_collision,
+            verbose_pairs=check_collision,
         )
         if state is not None:
             print(
@@ -649,7 +712,7 @@ def _save_capture(
     assembled_bar_id,
     grasp_world_mm,
     tool0_world_mm,
-    base_frame_mm,
+    initial_state,
     assembled_payload,
     include_self,
     include_env,
@@ -657,31 +720,36 @@ def _save_capture(
     rcell=None,
     suffix: str = "",
 ):
+    """Write a v2 support capture JSON.
+
+    Mirrors ``rs_ik_keyframe._save_capture``; the support-cell flavour has
+    a single ``support`` IK target (one-arm) and a ``source.assembled``
+    block carrying the dual-arm pose this support pose is anchored to.
+    """
     try:
         os.makedirs(_CAPTURES_DIR, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         stem = f"{timestamp}_support_{held_bar_id}{suffix}"
         path = os.path.join(_CAPTURES_DIR, f"{stem}.json")
 
-        expected = {}
-        if final_state is not None and rcell is not None:
-            expected["final"] = robot_cell_support.extract_group_config(
-                final_state, config.SUPPORT_GROUP, rcell
-            )
+        cell_ref = capture_io.save_robot_cell_if_changed(rcell, _CAPTURES_DIR)
 
-        capture = {
-            "schema_version": 1,
-            "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "robot_id": config.SUPPORT_ROBOT_ID,
-            "doc_unit_scale_to_mm": float(doc_unit_scale_to_mm()),
-            "include_self_collision": bool(include_self),
-            "include_env_collision": bool(include_env),
+        ik_targets = {
+            "support": {
+                "tool0_world_mm": np.asarray(tool0_world_mm, dtype=float).tolist(),
+            },
+        }
+        ik_options = {
+            "check_collision": bool(include_self or include_env),
+            "include_self": bool(include_self),
+            "include_env": bool(include_env),
+        }
+        source = {
             "held_bar_id": held_bar_id,
             "assembled_bar_id": assembled_bar_id,
             "gripper_kind": "Robotiq",
             "grasp_frame_world_mm": np.asarray(grasp_world_mm, dtype=float).tolist(),
-            "tool0_frame_world_mm": np.asarray(tool0_world_mm, dtype=float).tolist(),
-            "base_frame_world_mm": np.asarray(base_frame_mm, dtype=float).tolist(),
+            "doc_unit_scale_to_mm": float(doc_unit_scale_to_mm()),
             "assembled": {
                 "base_frame_world_mm": np.asarray(
                     assembled_payload["base_frame_world_mm"], dtype=float
@@ -691,10 +759,17 @@ def _save_capture(
                 "joint_names_left": list(assembled_payload["joint_names_left"]),
                 "joint_names_right": list(assembled_payload["joint_names_right"]),
             },
-            "expected": expected,
         }
-        with open(path, "w", encoding="utf-8") as stream:
-            json.dump(capture, stream, indent=2)
+        capture_io.save_capture_v2(
+            path,
+            captured_at=datetime.datetime.now().isoformat(timespec="seconds"),
+            robot_cell_ref=cell_ref,
+            initial_state=initial_state,
+            ik_targets=ik_targets,
+            ik_options=ik_options,
+            expected={"support": final_state},
+            source=source,
+        )
         rel = os.path.relpath(path, os.path.dirname(SCRIPT_DIR))
         print(f"RSIKSupportKeyframe: capture saved -> {rel}")
         return path
@@ -720,12 +795,14 @@ def main():
     _client, planner = robot_cell.get_planner()
 
     rs.UnselectAllObjects()
-    held_oid = _pick_bar_centerline("Pick bar to be SUPPORTED (centerline)")
+    # The bar being supported IS the just-assembled bar (the one whose
+    # `ik_assembly` user-text we read for the dual-arm pose). One pick.
+    held_oid = _pick_bar_centerline(
+        "Pick the bar to be HELD (just-assembled, must carry 'ik_assembly')"
+    )
     if held_oid is None:
         return
-    assembled_oid = _pick_bar_centerline("Pick the JUST-ASSEMBLED bar (centerline with 'ik_assembly')")
-    if assembled_oid is None:
-        return
+    assembled_oid = held_oid
 
     try:
         assembled = _load_assembled_ik(assembled_oid)
@@ -744,17 +821,40 @@ def main():
         joint_names_right=assembled["joint_names_right"],
     )
 
+    held_bar_id_pre = rs.GetUserText(held_oid, "bar_id") or str(held_oid)
+    env_geom = env_collision.collect_built_geometry(held_bar_id_pre, get_bar_seq_map())
+    deps = robot_cell.import_compas_stack()
+    if env_collision.register_env_in_robot_cell(rcell, env_geom, deps=deps):
+        # Force _ensure_support_cell_loaded to re-push the cell on the next
+        # solve_support_ik call (env rigid bodies were added/removed).
+        robot_cell._STICKY[robot_cell._STICKY_CURRENT_CELL_KIND] = None
+    template_state = env_collision.build_env_state(template_state, env_geom)
+    print(f"RSIKSupportKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
+
     bar_curve = rs.coercecurve(held_oid)
     if bar_curve is None:
         rs.MessageBox("Could not coerce held bar to a Curve.", 0, "RSIKSupportKeyframe")
         return
 
-    grasp_mm, tool0_mm = _pick_grasp_frame_on_bar(bar_curve, gripper_kind="Robotiq")
-    if grasp_mm is None:
-        return
-
     preview_oids = []
+    da_oids = []
+    env_token = None
+    keep_highlight = False
     try:
+        try:
+            da_oids = _bake_dual_arm_at_captured_pose(assembled, ik_viz.get_mesh_mode())
+            sc.doc.Views.Redraw()
+        except Exception as exc:
+            print(
+                f"RSIKSupportKeyframe: failed to bake dual-arm collision preview "
+                f"({exc}); proceeding without."
+            )
+            da_oids = []
+
+        grasp_mm, tool0_mm = _pick_grasp_frame_on_bar(bar_curve, gripper_kind="Robotiq")
+        if grasp_mm is None:
+            return
+
         try:
             preview_oids.append(_insert_robotiq_at_tool0(tool0_mm))
         except RuntimeError as exc:
@@ -775,12 +875,14 @@ def main():
         if seed_base_frame is None:
             return
 
-        collision_opts = _ask_collision_options()
+        env_token = highlight_env.highlight_env_for_ik(held_bar_id_pre)
+
+        collision_opts = _ask_collision_options(env_count=len(env_geom))
         if collision_opts is None:
             return
         include_self, include_env, mesh_mode = collision_opts
 
-        held_bar_id = rs.GetUserText(held_oid, "bar_id") or str(held_oid)
+        held_bar_id = held_bar_id_pre
         assembled_bar_id = rs.GetUserText(assembled_oid, "bar_id") or str(assembled_oid)
 
         print("RSIKSupportKeyframe: solving support IK...")
@@ -790,12 +892,14 @@ def main():
         )
         if final_state is None:
             if _ask_save_failure_capture("Support"):
+                seed_state = template_state.copy()
+                robot_cell_support._apply_base_frame_mm(seed_state, seed_base_frame)
                 _save_capture(
                     held_bar_id=held_bar_id,
                     assembled_bar_id=assembled_bar_id,
                     grasp_world_mm=grasp_mm,
                     tool0_world_mm=tool0_mm,
-                    base_frame_mm=seed_base_frame,
+                    initial_state=seed_state,
                     assembled_payload=assembled,
                     include_self=include_self,
                     include_env=include_env,
@@ -826,23 +930,32 @@ def main():
             }
             rs.SetUserText(held_oid, config.IK_SUPPORT_KEY, json.dumps(payload))
             print(f"RSIKSupportKeyframe: saved '{config.IK_SUPPORT_KEY}' on bar {held_bar_id}.")
-            _save_capture(
-                held_bar_id=held_bar_id,
-                assembled_bar_id=assembled_bar_id,
-                grasp_world_mm=grasp_mm,
-                tool0_world_mm=tool0_mm,
-                base_frame_mm=final_base,
-                assembled_payload=assembled,
-                include_self=include_self,
-                include_env=include_env,
-                final_state=final_state,
-                rcell=rcell,
-            )
+            # Capture is a debug artefact (production state lives on the bar
+            # user-text above). Opt-in, default No, symmetric with failure path.
+            if _ask_save_debug_capture():
+                seed_state = template_state.copy()
+                robot_cell_support._apply_base_frame_mm(seed_state, final_base)
+                _save_capture(
+                    held_bar_id=held_bar_id,
+                    assembled_bar_id=assembled_bar_id,
+                    grasp_world_mm=grasp_mm,
+                    tool0_world_mm=tool0_mm,
+                    initial_state=seed_state,
+                    assembled_payload=assembled,
+                    include_self=include_self,
+                    include_env=include_env,
+                    final_state=final_state,
+                    rcell=rcell,
+                )
+            keep_highlight = True
         else:
             print("RSIKSupportKeyframe: rejected; bar user-text unchanged.")
 
     finally:
         _cleanup_ids(preview_oids)
+        _cleanup_ids(da_oids)
+        if env_token is not None and not keep_highlight:
+            highlight_env.revert_env_highlight(env_token)
         ik_viz.clear_scene()
 
 

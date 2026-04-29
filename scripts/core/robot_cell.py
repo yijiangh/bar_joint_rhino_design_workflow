@@ -40,6 +40,7 @@ _STICKY_ROBOT_CELL = "bar_joint:robot_cell"
 _STICKY_PB_CLIENT = "bar_joint:pb_client"
 _STICKY_PB_PLANNER = "bar_joint:pb_planner"
 _STICKY_CURRENT_CELL_KIND = "bar_joint:current_cell_kind"  # "dual_arm" | "support"
+_STICKY_ENV_GEOM = "bar_joint:env_geom"
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,7 @@ def import_compas_stack():
     from compas_robots import Configuration, RobotModel, ToolModel  # noqa: F401
     from compas_robots.resources import LocalPackageMeshLoader  # noqa: F401
     from compas_fab.robots import RobotCell, RobotSemantics  # noqa: F401
+    from compas_fab.robots import RigidBody, RigidBodyState  # noqa: F401
     from compas_fab.backends import PyBulletClient, PyBulletPlanner  # noqa: F401
     from compas_fab.robots import FrameTarget, TargetMode  # noqa: F401
     import pybullet_planning as pp  # noqa: F401
@@ -145,6 +147,8 @@ def import_compas_stack():
         "LocalPackageMeshLoader": LocalPackageMeshLoader,
         "RobotCell": RobotCell,
         "RobotSemantics": RobotSemantics,
+        "RigidBody": RigidBody,
+        "RigidBodyState": RigidBodyState,
         "PyBulletClient": PyBulletClient,
         "PyBulletPlanner": PyBulletPlanner,
         "FrameTarget": FrameTarget,
@@ -260,7 +264,7 @@ def _attach_tool_models(robot_cell, deps):
 
 
 def _configure_tool_states(state):
-    """Wire `tool_states[AL/AR]` to their planning groups + touch links.
+    """Wire `tool_states[AssemblyLeftTool/AssemblyRightTool]` to their planning groups + touch links.
 
     Mirrors `GH_create_robot_cell.py`. Run on every fresh state because
     `RobotCell.default_cell_state()` produces a state with default
@@ -328,7 +332,7 @@ def default_cell_state():
     """Return a fresh default `RobotCellState` with tool attachments wired in.
 
     Callers should use this rather than `robot_cell.default_cell_state()`
-    directly so the per-state `tool_states[AL/AR].attached_to_group` and
+    directly so the per-state `tool_states[AssemblyLeftTool/AssemblyRightTool].attached_to_group` and
     `touch_links` get configured in lockstep with the tool models.
     """
     robot_cell = get_or_load_robot_cell()
@@ -395,6 +399,12 @@ def stop_pb_client():
     finally:
         _STICKY.pop(_STICKY_PB_CLIENT, None)
         _STICKY.pop(_STICKY_PB_PLANNER, None)
+        _STICKY.pop(_STICKY_ENV_GEOM, None)
+        # Bar/joint mesh caches built by core.env_collision are tied to the
+        # PB client lifecycle — clear them so the next RSPBStart rebuilds
+        # against possibly-edited bar curves.
+        _STICKY.pop("bar_joint:env_bar_tube_mesh_cache", None)
+        _STICKY.pop("bar_joint:env_joint_def_mesh_cache", None)
 
 
 def get_planner():
@@ -464,6 +474,34 @@ def _apply_base_frame_mm(state, base_frame_world_mm: np.ndarray):
     state.robot_base_frame = _mm_matrix_to_m_frame(deps["Frame"], base_frame_world_mm)
 
 
+def _ensure_dual_arm_cell_loaded(planner):
+    """Swap the planner's robot cell to the dual-arm cell if a different
+    kind (e.g. the support cell from a prior RSIKSupportKeyframe run) is
+    currently active. Symmetric counterpart to
+    `core.robot_cell_support._ensure_support_cell_loaded`.
+    """
+    if _STICKY.get(_STICKY_CURRENT_CELL_KIND) != "dual_arm":
+        planner.set_robot_cell(get_or_load_robot_cell())
+        _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
+
+
+def ensure_env_registered(robot_cell, env_geom, planner):
+    """Mirror ``env_geom`` into ``robot_cell.rigid_body_models`` and re-push
+    the cell to the planner if anything changed.
+
+    ``env_geom`` comes from ``core.env_collision.collect_built_geometry``.
+    Idempotent: if the same geometry was registered last call, this is a
+    no-op (does not call ``planner.set_robot_cell``).
+    """
+    from core import env_collision
+
+    deps = _import_compas_stack()
+    changed = env_collision.register_env_in_robot_cell(robot_cell, env_geom, deps=deps)
+    if changed:
+        planner.set_robot_cell(robot_cell)
+    _STICKY[_STICKY_ENV_GEOM] = env_geom
+
+
 def solve_dual_arm_ik(
     planner,
     template_state,
@@ -476,6 +514,7 @@ def solve_dual_arm_ik(
     max_descend_iterations: int = None,
     tolerance_position: float = None,
     tolerance_orientation: float = None,
+    verbose_pairs: bool = False,
 ):
     """Solve IK for the left and right groups in order.
 
@@ -486,6 +525,7 @@ def solve_dual_arm_ik(
     any-group failure. The caller can call `set_cell_state(planner, state)`
     to view the result.
     """
+    _ensure_dual_arm_cell_loaded(planner)
     deps = _import_compas_stack()
     Frame = deps["Frame"]
     FrameTarget = deps["FrameTarget"]
@@ -542,6 +582,10 @@ def solve_dual_arm_ik(
             print(f"IK returned no solution for group '{group}'.")
             return None
         state.robot_configuration.merge(cfg)
+
+    if verbose_pairs:
+        from core import env_collision
+        print(env_collision.summarize_check_collision(planner, state))
 
     return state
 

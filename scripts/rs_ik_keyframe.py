@@ -46,7 +46,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import capture_io as _capture_io_module
 from core import config as _config_module
+from core import dynamic_preview as _dynamic_preview_module
+from core import env_collision as _env_collision_module
+from core import highlight_env as _highlight_env_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core.rhino_bar_registry import get_bar_seq_map, repair_on_entry
@@ -69,10 +73,14 @@ PINEAPPLE_LAYER = "IKPineapplePreview"
 
 
 def _reload_runtime_modules():
-    global config, ik_viz, robot_cell
+    global capture_io, config, dynamic_preview, env_collision, highlight_env, ik_viz, robot_cell
     config = importlib.reload(_config_module)
+    dynamic_preview = importlib.reload(_dynamic_preview_module)
+    env_collision = importlib.reload(_env_collision_module)
+    highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
+    capture_io = importlib.reload(_capture_io_module)
 
 
 _reload_runtime_modules()
@@ -274,31 +282,99 @@ def _closest_point_on_brep(brep, point_doc):
     return pt, normal
 
 
-def _pick_base_point_on_brep(brep_id):
-    brep = _as_brep(brep_id)
-    go = Rhino.Input.Custom.GetPoint()
-    go.SetCommandPrompt("Pick base origin on the WalkableGround brep")
-    # Use the 4-arg signature explicitly: the 2-arg overload resolves to
-    # Constrain(Plane, bool), which rejects a Brep (observed as a TypeError
-    # "Rhino.Geometry.Brep value cannot be converted to Rhino.Geometry.Plane").
-    # wireDensity=-1 keeps Rhino default, faceIndex=-1 constrains to all faces.
-    go.Constrain(brep, -1, -1, False)
-    if go.Get() != Rhino.Input.GetResult.Point:
-        return None, None
-    picked = go.Point()
-    _, normal = _closest_point_on_brep(brep, picked)
-    if normal is None:
-        return None, None
-    return _point_to_mm(picked), np.array([normal.X, normal.Y, normal.Z], dtype=float)
-
-
-def _pick_heading_point(base_origin_mm):
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    base_doc = Rhino.Geometry.Point3d(*(base_origin_mm * scale_from_mm))
-    heading = rs.GetPoint("Pick heading point (defines base +X)", base_point=base_doc)
-    if heading is None:
+def _world_from_base_doc_xform(origin_doc, normal_doc, heading_doc_vec):
+    """Doc-unit Rhino.Geometry.Transform with origin=origin_doc, Z=normal,
+    X = heading_doc_vec projected onto the plane perp to Z.
+    """
+    z = Rhino.Geometry.Vector3d(normal_doc)
+    z.Unitize()
+    v = Rhino.Geometry.Vector3d(heading_doc_vec)
+    x_raw = v - (v * z) * z
+    if x_raw.Length < 1e-9:
         return None
-    return _point_to_mm(heading)
+    x_raw.Unitize()
+    y = Rhino.Geometry.Vector3d.CrossProduct(z, x_raw)
+    xform = Rhino.Geometry.Transform(1.0)
+    xform[0, 0], xform[0, 1], xform[0, 2], xform[0, 3] = x_raw.X, y.X, z.X, origin_doc.X
+    xform[1, 0], xform[1, 1], xform[1, 2], xform[1, 3] = x_raw.Y, y.Y, z.Y, origin_doc.Y
+    xform[2, 0], xform[2, 1], xform[2, 2], xform[2, 3] = x_raw.Z, y.Z, z.Z, origin_doc.Z
+    xform[3, 0], xform[3, 1], xform[3, 2], xform[3, 3] = 0.0, 0.0, 0.0, 1.0
+    return xform
+
+
+def _bake_robot_meshes_at_zero():
+    """Bake the dual-arm robot URDF visual meshes once at zero config + identity
+    base, capture as Rhino.Geometry.Mesh values (in base-link local coords,
+    doc units), then delete the baked guids.
+    """
+    cell = robot_cell.get_or_load_robot_cell()
+    state = robot_cell.default_cell_state()
+    deps = robot_cell.import_compas_stack()
+    state.robot_base_frame = deps["Frame"].worldXY()
+
+    ik_viz.show_state(state, robot_model=cell.robot_model)
+    guids = list(sc.sticky.get(ik_viz._STICKY_DRAWN_IDS, []) or [])
+    meshes = []
+    for g in guids:
+        m = rs.coercemesh(g)
+        if m is not None:
+            meshes.append(m.DuplicateMesh())
+    ik_viz.clear_scene()
+    return meshes
+
+
+def _pick_base_frame_on_walkable(brep_id):
+    """Pick base origin + heading on the walkable brep, with the dual-arm
+    robot's mesh tracking the cursor. Returns
+    (base_origin_mm, base_normal, heading_mm, seed_base_frame_mm) or all None.
+    """
+    brep = _as_brep(brep_id)
+    robot_meshes = _bake_robot_meshes_at_zero()
+
+    with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4) as conduit:
+        # Phase A: base origin on brep.
+        def _xform_phase_a(cursor_doc):
+            close_pt, normal = _closest_point_on_brep(brep, cursor_doc)
+            if close_pt is None:
+                return None
+            world_x = Rhino.Geometry.Vector3d(1.0, 0.0, 0.0)
+            return _world_from_base_doc_xform(close_pt, normal, world_x)
+
+        picker_a = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_a)
+        picker_a.SetCommandPrompt("Pick base origin on WalkableGround brep")
+        picker_a.Constrain(brep, -1, -1, False)
+        if picker_a.Get() != Rhino.Input.GetResult.Point:
+            return None, None, None, None
+        picked_doc = picker_a.Point()
+        close_pt, normal = _closest_point_on_brep(brep, picked_doc)
+        if close_pt is None:
+            return None, None, None, None
+
+        # Phase B: heading point.
+        def _xform_phase_b(cursor_doc):
+            heading_vec = Rhino.Geometry.Vector3d(
+                cursor_doc.X - close_pt.X,
+                cursor_doc.Y - close_pt.Y,
+                cursor_doc.Z - close_pt.Z,
+            )
+            return _world_from_base_doc_xform(close_pt, normal, heading_vec)
+
+        picker_b = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_b)
+        picker_b.SetCommandPrompt("Pick heading point (defines base +X)")
+        picker_b.SetBasePoint(close_pt, True)
+        if picker_b.Get() != Rhino.Input.GetResult.Point:
+            return None, None, None, None
+        heading_doc = picker_b.Point()
+
+    base_origin_mm = _point_to_mm(close_pt)
+    normal_v = np.array([normal.X, normal.Y, normal.Z], dtype=float)
+    heading_mm = _point_to_mm(heading_doc)
+    try:
+        seed_base = _frame_from_origin_normal_heading(base_origin_mm, normal_v, heading_mm)
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        return None, None, None, None
+    return base_origin_mm, normal_v, heading_mm, seed_base
 
 
 def _frame_from_origin_normal_heading(origin_mm, normal, heading_mm) -> np.ndarray:
@@ -322,7 +398,7 @@ def _frame_from_origin_normal_heading(origin_mm, normal, heading_mm) -> np.ndarr
 # ---------------------------------------------------------------------------
 
 
-def _ask_collision_options():
+def _ask_collision_options(env_count: int = 0):
     """Prompt for IK collision flags + the robot mesh display mode.
 
     Returns ``(include_self, include_env, mesh_mode)`` or ``None`` on cancel.
@@ -335,7 +411,7 @@ def _ask_collision_options():
     is_collision_default = current_mesh_mode == ik_viz.MESH_MODE_COLLISION
 
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Collision options")
+    go.SetCommandPrompt(f"Collision options (env={env_count} bodies)")
     opt_self = Rhino.Input.Custom.OptionToggle(True, "No", "Yes")
     opt_env = Rhino.Input.Custom.OptionToggle(True, "No", "Yes")
     opt_mesh = Rhino.Input.Custom.OptionToggle(is_collision_default, "Visual", "Collision")
@@ -418,6 +494,7 @@ def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
             tool0_left_mm,
             tool0_right_mm,
             check_collision=check_collision,
+            verbose_pairs=check_collision,
         )
         if state is not None:
             print(
@@ -531,6 +608,23 @@ def _ask_save_failure_capture(phase_label: str) -> bool:
     return str(answer).strip().lower().startswith("y")
 
 
+def _ask_save_debug_capture() -> bool:
+    """Prompt 'Save debug capture for headless replay?' on accept.
+
+    Production state already lives on the bar user-text; the capture is a
+    debug artefact (RobotCell geometry + IK targets + options) needed only
+    when a bug is being investigated headless. Default No.
+    """
+    answer = rs.GetString(
+        "Save debug capture for headless replay?",
+        "No",
+        ["Yes", "No"],
+    )
+    if answer is None:
+        return False
+    return str(answer).strip().lower().startswith("y")
+
+
 def _save_capture(
     *,
     target_bar_id,
@@ -538,7 +632,11 @@ def _save_capture(
     right_oid,
     ocf_left,
     ocf_right,
-    base_frame_mm,
+    tool0_left_final,
+    tool0_right_final,
+    tool0_left_approach,
+    tool0_right_approach,
+    initial_state,
     include_self,
     include_env,
     final_state=None,
@@ -546,18 +644,13 @@ def _save_capture(
     rcell=None,
     suffix: str = "",
 ) -> str | None:
-    """Write a JSON snapshot of this RSIKKeyframe run into `tests/captures/`.
+    """Write a v2 capture JSON into ``tests/captures/``.
 
-    Designed to also work on FAILURE: pass `final_state=None` and / or
-    `approach_state=None` to record the inputs without a known-good
-    expected configuration. The replay scripts then re-solve from the
-    captured inputs and report whether IK still rejects, perfect for
-    headless debugging the same scenario Claude sees.
-
-    `suffix` is appended to the filename stem so failure captures don't
-    visually collide with success captures (e.g. "_ik_fail_final").
-
-    Returns the capture path, or None on write failure (non-fatal).
+    The serialized ``RobotCell`` (which already has env rigid bodies
+    registered by this point) goes to ``robot_cells/<sha8>.json`` and is
+    referenced from the capture. ``initial_state`` carries the seed base
+    frame + env rigid_body_states. ``expected`` holds the accepted final /
+    approach states (or None on failure captures).
     """
     try:
         os.makedirs(_CAPTURES_DIR, exist_ok=True)
@@ -565,46 +658,44 @@ def _save_capture(
         stem = f"{timestamp}_{target_bar_id}{suffix}"
         path = os.path.join(_CAPTURES_DIR, f"{stem}.json")
 
-        expected: dict = {}
-        if final_state is not None and rcell is not None:
-            expected["final"] = {
-                "left": robot_cell.extract_group_config(final_state, config.LEFT_GROUP, rcell),
-                "right": robot_cell.extract_group_config(final_state, config.RIGHT_GROUP, rcell),
-            }
-        if approach_state is not None and rcell is not None:
-            expected["approach"] = {
-                "left": robot_cell.extract_group_config(approach_state, config.LEFT_GROUP, rcell),
-                "right": robot_cell.extract_group_config(approach_state, config.RIGHT_GROUP, rcell),
-            }
+        cell_ref = capture_io.save_robot_cell_if_changed(rcell, _CAPTURES_DIR)
 
-        capture = {
-            "schema_version": 1,
-            "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "robot_id": config.ROBOT_ID,
-            "doc_unit_scale_to_mm": float(doc_unit_scale_to_mm()),
-            "lm_distance_mm": float(config.LM_DISTANCE),
-            "include_self_collision": bool(include_self),
-            "include_env_collision": bool(include_env),
-            "target_bar_id": target_bar_id,
-            "left": {
-                "block_name": rs.BlockInstanceName(left_oid),
-                "arm_side": "left",
-                "ocf_world_mm": np.asarray(ocf_left, dtype=float).tolist(),
-                "joint_type_user_text": rs.GetUserText(left_oid, "joint_type"),
-                "joint_subtype_user_text": rs.GetUserText(left_oid, "joint_subtype"),
+        ik_targets = {
+            "final": {
+                "left_tool0_world_mm": np.asarray(tool0_left_final, dtype=float).tolist(),
+                "right_tool0_world_mm": np.asarray(tool0_right_final, dtype=float).tolist(),
             },
-            "right": {
-                "block_name": rs.BlockInstanceName(right_oid),
-                "arm_side": "right",
-                "ocf_world_mm": np.asarray(ocf_right, dtype=float).tolist(),
-                "joint_type_user_text": rs.GetUserText(right_oid, "joint_type"),
-                "joint_subtype_user_text": rs.GetUserText(right_oid, "joint_subtype"),
+            "approach": {
+                "left_tool0_world_mm": np.asarray(tool0_left_approach, dtype=float).tolist(),
+                "right_tool0_world_mm": np.asarray(tool0_right_approach, dtype=float).tolist(),
             },
-            "base_frame_world_mm": np.asarray(base_frame_mm, dtype=float).tolist(),
-            "expected": expected,
         }
-        with open(path, "w", encoding="utf-8") as stream:
-            json.dump(capture, stream, indent=2)
+        ik_options = {
+            "check_collision": bool(include_self or include_env),
+            "include_self": bool(include_self),
+            "include_env": bool(include_env),
+        }
+        source = {
+            "target_bar_id": target_bar_id,
+            "left_block_name": rs.BlockInstanceName(left_oid),
+            "right_block_name": rs.BlockInstanceName(right_oid),
+            "left_arm_side": "left",
+            "right_arm_side": "right",
+            "left_ocf_world_mm": np.asarray(ocf_left, dtype=float).tolist(),
+            "right_ocf_world_mm": np.asarray(ocf_right, dtype=float).tolist(),
+            "lm_distance_mm": float(config.LM_DISTANCE),
+            "doc_unit_scale_to_mm": float(doc_unit_scale_to_mm()),
+        }
+        capture_io.save_capture_v2(
+            path,
+            captured_at=datetime.datetime.now().isoformat(timespec="seconds"),
+            robot_cell_ref=cell_ref,
+            initial_state=initial_state,
+            ik_targets=ik_targets,
+            ik_options=ik_options,
+            expected={"final": final_state, "approach": approach_state},
+            source=source,
+        )
         rel = os.path.relpath(path, os.path.dirname(SCRIPT_DIR))
         print(f"RSIKKeyframe: capture saved -> {rel}")
         return path
@@ -629,7 +720,7 @@ def main():
         return
     _client, planner = robot_cell.get_planner()
     rcell = robot_cell.get_or_load_robot_cell()
-    # Use the module-level wrapper so tool_states[AL/AR] get attached_to_group
+    # Use the module-level wrapper so tool_states[AssemblyLeftTool/AssemblyRightTool] get attached_to_group
     # + touch_links wired up. `rcell.default_cell_state()` alone returns a
     # state with tools un-attached, defeating the IK collision check on tools.
     template_state = robot_cell.default_cell_state()
@@ -651,7 +742,14 @@ def main():
         return
     print(f"RSIKKeyframe: target Ln bar = {target_bar_id}")
 
+    env_geom = env_collision.collect_built_geometry(target_bar_id, get_bar_seq_map())
+    robot_cell.ensure_env_registered(rcell, env_geom, planner)
+    template_state = env_collision.build_env_state(template_state, env_geom)
+    print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
+
     pineapple_ids = []
+    env_token = None
+    keep_highlight = False
     try:
         try:
             pineapple_ids = _insert_pineapples(tool0_left_final, tool0_right_final)
@@ -670,22 +768,27 @@ def main():
         brep_id = _pick_walkable_brep()
         if brep_id is None:
             return
-        base_origin_mm, base_normal = _pick_base_point_on_brep(brep_id)
-        if base_origin_mm is None:
-            return
-        heading_mm = _pick_heading_point(base_origin_mm)
-        if heading_mm is None:
-            return
-        try:
-            seed_base_frame = _frame_from_origin_normal_heading(base_origin_mm, base_normal, heading_mm)
-        except RuntimeError as exc:
-            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        base_origin_mm, base_normal, heading_mm, seed_base_frame = _pick_base_frame_on_walkable(brep_id)
+        if seed_base_frame is None:
             return
 
-        collision_opts = _ask_collision_options()
+        env_token = highlight_env.highlight_env_for_ik(target_bar_id)
+
+        collision_opts = _ask_collision_options(env_count=len(env_geom))
         if collision_opts is None:
             return
         include_self, include_env, mesh_mode = collision_opts
+
+        # Approach target: translate tool0 frames along -avg(male z) * LM_DISTANCE
+        z_avg_pre = (ocf_left[:3, 2] + ocf_right[:3, 2]) / 2.0
+        try:
+            approach_dir_pre = -_unit(z_avg_pre)
+        except ValueError:
+            rs.MessageBox("Male joint z-axes sum to zero; cannot derive approach direction.", 0, "RSIKKeyframe")
+            return
+        offset_pre = approach_dir_pre * float(config.LM_DISTANCE)
+        tool0_left_approach = _translate_frame(tool0_left_final, offset_pre)
+        tool0_right_approach = _translate_frame(tool0_right_final, offset_pre)
 
         print("RSIKKeyframe: solving final-target IK...")
         final_state, final_base = _solve_with_sampling(
@@ -695,13 +798,19 @@ def main():
         )
         if final_state is None:
             if _ask_save_failure_capture("Final-target"):
+                seed_state = template_state.copy()
+                robot_cell._apply_base_frame_mm(seed_state, seed_base_frame)
                 _save_capture(
                     target_bar_id=target_bar_id,
                     left_oid=left_oid,
                     right_oid=right_oid,
                     ocf_left=ocf_left,
                     ocf_right=ocf_right,
-                    base_frame_mm=seed_base_frame,
+                    tool0_left_final=tool0_left_final,
+                    tool0_right_final=tool0_right_final,
+                    tool0_left_approach=tool0_left_approach,
+                    tool0_right_approach=tool0_right_approach,
+                    initial_state=seed_state,
                     include_self=include_self,
                     include_env=include_env,
                     final_state=None,
@@ -717,17 +826,6 @@ def main():
         ik_viz.show_state(final_state, mesh_mode=mesh_mode)
         print("RSIKKeyframe: final target reachable. Previewing...")
 
-        # Approach target: translate tool0 frames along -avg(male z) * LM_DISTANCE
-        z_avg = (ocf_left[:3, 2] + ocf_right[:3, 2]) / 2.0
-        try:
-            approach_dir = -_unit(z_avg)
-        except ValueError:
-            rs.MessageBox("Male joint z-axes sum to zero; cannot derive approach direction.", 0, "RSIKKeyframe")
-            return
-        offset = approach_dir * float(config.LM_DISTANCE)
-        tool0_left_approach = _translate_frame(tool0_left_final, offset)
-        tool0_right_approach = _translate_frame(tool0_right_final, offset)
-
         # Refresh pineapple preview to approach pose
         _cleanup_ids(pineapple_ids)
         pineapple_ids = _insert_pineapples(tool0_left_approach, tool0_right_approach)
@@ -740,13 +838,19 @@ def main():
         )
         if approach_state is None:
             if _ask_save_failure_capture("Approach-target"):
+                seed_state = template_state.copy()
+                robot_cell._apply_base_frame_mm(seed_state, final_base)
                 _save_capture(
                     target_bar_id=target_bar_id,
                     left_oid=left_oid,
                     right_oid=right_oid,
                     ocf_left=ocf_left,
                     ocf_right=ocf_right,
-                    base_frame_mm=final_base,
+                    tool0_left_final=tool0_left_final,
+                    tool0_right_final=tool0_right_final,
+                    tool0_left_approach=tool0_left_approach,
+                    tool0_right_approach=tool0_right_approach,
+                    initial_state=seed_state,
                     include_self=include_self,
                     include_env=include_env,
                     final_state=final_state,
@@ -768,25 +872,38 @@ def main():
             payload = _build_assembly_payload(stored_base, final_state, approach_state, rcell)
             rs.SetUserText(target_bar_oid, IK_ASSEMBLY_KEY, json.dumps(payload))
             print(f"RSIKKeyframe: saved '{IK_ASSEMBLY_KEY}' on bar {target_bar_id}.")
-            _save_capture(
-                target_bar_id=target_bar_id,
-                left_oid=left_oid,
-                right_oid=right_oid,
-                ocf_left=ocf_left,
-                ocf_right=ocf_right,
-                base_frame_mm=stored_base,
-                include_self=include_self,
-                include_env=include_env,
-                final_state=final_state,
-                approach_state=approach_state,
-                rcell=rcell,
-            )
+            # Capture file is a debug artefact (not production state — production
+            # data lives in the bar user-text above). Opt-in, symmetric with the
+            # failure path. Default No.
+            if _ask_save_debug_capture():
+                seed_state = template_state.copy()
+                robot_cell._apply_base_frame_mm(seed_state, stored_base)
+                _save_capture(
+                    target_bar_id=target_bar_id,
+                    left_oid=left_oid,
+                    right_oid=right_oid,
+                    ocf_left=ocf_left,
+                    ocf_right=ocf_right,
+                    tool0_left_final=tool0_left_final,
+                    tool0_right_final=tool0_right_final,
+                    tool0_left_approach=tool0_left_approach,
+                    tool0_right_approach=tool0_right_approach,
+                    initial_state=seed_state,
+                    include_self=include_self,
+                    include_env=include_env,
+                    final_state=final_state,
+                    approach_state=approach_state,
+                    rcell=rcell,
+                )
+            keep_highlight = True
         else:
             print("RSIKKeyframe: rejected; bar user-text unchanged.")
 
     finally:
         _cleanup_ids(pineapple_ids)
         ik_viz.clear_scene()
+        if env_token is not None and not keep_highlight:
+            highlight_env.revert_env_highlight(env_token)
 
 
 if __name__ == "__main__":

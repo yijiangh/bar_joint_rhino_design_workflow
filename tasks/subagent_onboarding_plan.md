@@ -101,7 +101,7 @@ The single fork most likely to pay off, based on our recent dev:
 | New role | Why split | Phase-1 fallback |
 |---|---|---|
 | **rhino-implementer** | Knows Rhino API quirks (`Constrain(Plane, bool)` vs `Constrain(Brep, ...)`, extrusion-to-brep, `BlockInstance.InstanceXform`), `# venv` site-env semantics, capture-mode hooks. | implementer |
-| **headless-implementer** | Pure-Python: `core/*.py`, `tests/replay_ik*.py`, pytest setup. Free to call `python -m pytest tests/` to self-validate before reporting back. | implementer |
+| **headless-implementer** | Pure-Python: `core/*.py`, `tests/debug_ik_*.py`, pytest setup. Free to call `python -m pytest tests/` to self-validate before reporting back. | implementer |
 
 Add this only if the generic implementer starts confusing the two contexts (e.g. proposing `rs.GetUserText` in a pytest file).
 
@@ -109,7 +109,7 @@ Add this only if the generic implementer starts confusing the two contexts (e.g.
 
 A **debugger** subagent specialised on:
 - Reading `tests/captures/*.json`
-- Running `tests/replay_ik.py <file>`
+- Running `tests/debug_ik_collisions.py <file> --headless`
 - Mapping `[X]` failures to known categories from `tasks/yh_lesson.md` (mm/m unit, OCF→tool0 dispatch, base-frame composition, approach offset sign, IK solver itself)
 - Returning a one-line diagnosis instead of a wall of solver output
 

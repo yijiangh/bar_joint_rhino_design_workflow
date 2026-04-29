@@ -81,7 +81,7 @@ def main() -> int:
             joint_names_left=left_final["joint_names"],
             joint_names_right=right_final["joint_names"],
         )
-        print("smoke: DA tool configured at captured pose.")
+        print("smoke: DualArm tool configured at captured pose.")
 
         _client, planner = rc.get_planner()
         rcs.set_cell_state(planner, template)

@@ -87,8 +87,8 @@ OPTIMIZER_TRANSLATION_PERTURBATION = 50.0
 ROBOT_ID = "dual-arm_husky_Cindy"
 LEFT_GROUP = "base_left_arm_manipulator"
 RIGHT_GROUP = "base_right_arm_manipulator"
-LEFT_TOOL_NAME = "AL"
-RIGHT_TOOL_NAME = "AR"
+LEFT_TOOL_NAME = "AssemblyLeftTool"
+RIGHT_TOOL_NAME = "AssemblyRightTool"
 
 # URDF/SRDF locations (relative to repo root `asset/husky_urdf/`)
 # HUSKY_URDF_FILENAME is just the filename; LocalPackageMeshLoader.load_urdf()
@@ -183,7 +183,7 @@ SUPPORT_URDF_PKG_NAME = "mt_husky_moveit_config"
 SUPPORT_URDF_FILENAME = "husky_ur5_e_no_base_joint_Alice_Calibrated.urdf"
 SUPPORT_SRDF_REL_PATH = os.path.join("config", "husky.srdf")
 SUPPORT_GROUP = "manipulator"  # arm-only chain (ur_arm_base_link -> ur_arm_tool0)
-SUPPORT_TOOL_NAME = "SG"
+SUPPORT_TOOL_NAME = "SupportGripper"
 SUPPORT_TOOL_TOUCH_LINKS = ["ur_arm_wrist_3_link"]
 
 # Robotiq gripper Rhino block (origin = tool0). Block must be pre-baked in doc.
@@ -191,7 +191,7 @@ ROBOTIQ_GRIPPER_BLOCK = "Robotiq_Gripper"
 ROBOTIQ_GRIPPER_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "Robotiq_Gripper_m.obj")
 
 # Dual-arm robot loaded as a static articulated tool (collision obstacle) on the support cell
-DUAL_ARM_OBSTACLE_TOOL_NAME = "DA"
+DUAL_ARM_OBSTACLE_TOOL_NAME = "DualArm"
 
 # IK persistence on supported bar
 IK_SUPPORT_KEY = "ik_support"

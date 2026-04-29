@@ -18,7 +18,7 @@ half-finished session (e.g. only left was re-exported last time) doesn't
 force a redo of both.
 
 Used by the IK keyframe collision check (Phase A of the collision plan):
-the OBJs become `ToolModel`s attached to AL / AR in `robot_cell`.
+the OBJs become `ToolModel`s attached as `AssemblyLeftTool` / `AssemblyRightTool` in `robot_cell`.
 """
 
 from __future__ import annotations

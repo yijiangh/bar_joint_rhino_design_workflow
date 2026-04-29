@@ -49,10 +49,11 @@ def as_object_id_list(object_ids):
 # Layer helpers
 # ---------------------------------------------------------------------------
 
-def ensure_layer(layer_name):
+def ensure_layer(layer_name, color=None):
     """Create *layer_name* (possibly a nested ``Parent::Child`` path) if it
-    does not exist, and make every layer along the path visible.  Returns
-    the full path."""
+    does not exist, and make every layer along the path visible.  If
+    *color* is given (an RGB tuple or System.Drawing.Color) it is always
+    applied to the leaf layer.  Returns the full path."""
     parts = layer_name.split("::")
     cur = ""
     for i, name in enumerate(parts):
@@ -61,7 +62,9 @@ def ensure_layer(layer_name):
             rs.AddLayer(cur)
         if hasattr(rs, "LayerVisible") and not rs.LayerVisible(cur):
             rs.LayerVisible(cur, True)
-    return cur
+    if color is not None:
+        rs.LayerColor(layer_name, color)
+    return layer_name
 
 
 # ---------------------------------------------------------------------------

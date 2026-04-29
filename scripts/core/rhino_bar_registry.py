@@ -849,10 +849,14 @@ def enforce_managed_layers(caller="RSScaffolding"):
     visible).  Run this at the top of every entry-point command before the
     user is prompted."""
     # Ensure the default + all managed layers exist and are visible.
+    _JOINT_LAYER_COLORS = {
+        config.LAYER_JOINT_MALE_INSTANCES: (105, 105, 105),
+        config.LAYER_JOINT_FEMALE_INSTANCES: (230, 230, 230),
+    }
     ensure_layer(config.DEFAULT_LAYER)
     ensure_layer(config.MANAGED_LAYER_ROOT)
     for layer in config.MANAGED_LAYERS:
-        ensure_layer(layer)
+        ensure_layer(layer, color=_JOINT_LAYER_COLORS.get(layer))
     # Sweep each managed sublayer.
     _enforce_tube_layer(caller)
     _enforce_centerline_layer(caller)

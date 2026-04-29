@@ -57,3 +57,17 @@ When more than one `RobotCell` is in play, pass `robot_model` to `ik_viz.show_st
 **Why:** Default behavior (`get_or_load_robot_cell().robot_model`) is hardcoded to the dual-arm cell. The support workflow needs to draw the single-arm husky too. The cached `_STICKY_SCENE_OBJECT` already keys by `cached.item is robot_model` so swapping models invalidates correctly — the missing piece was the parameter itself.
 
 **How to apply:** Always pass `robot_model=cell.robot_model` from new scripts that load a non-default cell. Existing dual-arm callers are unchanged because `robot_model=None` falls back to `get_or_load_robot_cell()`.
+
+---
+
+## Rhino toolbar merges: never reuse existing macro GUIDs for new buttons
+
+When adding toolbar buttons in `scaffolding_toolbar.rui`, treat existing `macro_item guid` values as immutable. New buttons must use brand-new GUID suffixes in both `<tool_bar_item ...>` and `<macro_item ...>`.
+
+**Why:** Reusing an existing macro GUID silently replaces the old command binding. We hit this when incoming IK buttons reused `...000000000012` and setup IDs `...00000000000b/00c`, which made legacy buttons disappear (`RSBarSubfloor`, `RSDefineJointPair`, `RSDefineRoboticTool`).
+
+**How to apply:**
+1. Before editing, diff against the pre-merge RUI and keep all legacy `<macro_item guid=...>` blocks unchanged.
+2. Add new buttons with unused GUIDs only (e.g. next free numeric suffix).
+3. Ensure each new `<tool_bar_item>` references the matching new `<macro_item>` ID.
+4. Run a duplicate check for `macro_item guid` entries before commit.

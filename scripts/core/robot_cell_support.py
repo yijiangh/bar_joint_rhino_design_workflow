@@ -2,7 +2,7 @@
 attaches the dual-arm Husky as a ToolModel obstacle.
 
 Mirrors :mod:`core.robot_cell` but only one arm is actuated — the dual-arm
-robot is frozen at a captured pose via ``tool_states['DA'].configuration``.
+robot is frozen at a captured pose via ``tool_states['DualArm'].configuration``.
 PyBullet client + planner sticky keys are SHARED with `core.robot_cell` so
 only one PB client lives per Rhino session; cell switching swaps which
 :class:`RobotCell` is currently loaded into the planner.
@@ -100,7 +100,7 @@ def _attach_support_tool_models(cell):
         else:
             print(
                 f"core.robot_cell_support: Robotiq mesh '{mesh_path}' missing; "
-                f"SG tool not attached. Export it first."
+                f"SupportGripper tool not attached. Export it first."
             )
 
     da_name = config.DUAL_ARM_OBSTACLE_TOOL_NAME
@@ -153,7 +153,7 @@ def _configure_support_tool_states(state):
         ts = state.tool_states[sg_name]
         ts.attached_to_group = config.SUPPORT_GROUP
         ts.touch_links = list(config.SUPPORT_TOOL_TOUCH_LINKS)
-    # DA tool deliberately stays unattached (static obstacle).
+    # DualArm tool deliberately stays unattached (static obstacle).
 
 
 def default_support_cell_state():
@@ -176,13 +176,13 @@ def configure_dual_arm_obstacle(
     joint_names_left=None,
     joint_names_right=None,
 ):
-    """Pin the DA tool's world pose + internal joint configuration.
+    """Pin the DualArm tool's world pose + internal joint configuration.
 
-    The DA tool is the dual-arm robot reused as a ``ToolModel`` (one
+    The DualArm tool is the dual-arm robot reused as a ``ToolModel`` (one
     actuated robot per :class:`RobotCell`). We freeze it at the captured
-    pose by setting ``tool_states[DA].frame`` (world placement of the
-    husky base in mm) and ``tool_states[DA].configuration`` (left + right
-    arm joint values).
+    pose by setting ``tool_states[DualArm].frame`` (world placement of the
+    husky base in mm) and ``tool_states[DualArm].configuration`` (left +
+    right arm joint values).
 
     Joint names are optional: if not provided, the order is taken from
     the ToolModel's own configurable joints (which preserves URDF
@@ -213,7 +213,7 @@ def configure_dual_arm_obstacle(
         flat = list(joint_values_left) + list(joint_values_right)
         if len(flat) > len(cfg_values):
             raise RuntimeError(
-                f"DA tool has {len(cfg_values)} configurable joints but received "
+                f"DualArm tool has {len(cfg_values)} configurable joints but received "
                 f"{len(flat)} values (left+right)."
             )
         for i, v in enumerate(flat):
@@ -257,6 +257,21 @@ def _apply_base_frame_mm(state, base_frame_world_mm: np.ndarray):
     state.robot_base_frame = _mm_matrix_to_m_frame(deps["Frame"], base_frame_world_mm)
 
 
+def _ensure_support_cell_loaded(planner):
+    """Swap the planner's robot cell to the support cell if a different
+    kind (e.g. dual-arm from a prior RSIKKeyframe run, or the default
+    loaded by RSPBStart) is currently active.
+
+    Without this, ``planner.inverse_kinematics(state=support_state)`` raises
+    "The tools in the cell state do not match the tools in the robot cell"
+    because the planner's tool_models (AssemblyLeftTool/AssemblyRightTool)
+    don't match the state's tool_states (SupportGripper/DualArm).
+    """
+    if _STICKY.get(_STICKY_CURRENT_CELL_KIND) != "support":
+        planner.set_robot_cell(get_or_load_support_cell())
+        _STICKY[_STICKY_CURRENT_CELL_KIND] = "support"
+
+
 def solve_support_ik(
     planner,
     template_state,
@@ -268,8 +283,10 @@ def solve_support_ik(
     max_descend_iterations: int = None,
     tolerance_position: float = None,
     tolerance_orientation: float = None,
+    verbose_pairs: bool = False,
 ):
     """Solve IK for the single support-arm group. Returns mutated state or None."""
+    _ensure_support_cell_loaded(planner)
     deps = import_compas_stack()
     Frame = deps["Frame"]
     FrameTarget = deps["FrameTarget"]
@@ -315,6 +332,11 @@ def solve_support_ik(
         print(f"IK returned no solution for group '{config.SUPPORT_GROUP}'.")
         return None
     state.robot_configuration.merge(cfg)
+
+    if verbose_pairs:
+        from core import env_collision
+        print(env_collision.summarize_check_collision(planner, state))
+
     return state
 
 

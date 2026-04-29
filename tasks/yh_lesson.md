@@ -107,3 +107,46 @@ We hit this with `compas_fab` after we tried to selectively purge `compas_fab.*`
 - To pick up changes in an in-repo library (compas_fab submodule, etc.), use ScriptEditor -> Tools -> Reload Python 3 (CPython) Engine. That clears the entire interpreter — every library is re-imported in lockstep, no class-identity drift.
 - The `ResetPy` alias should only purge modules under `scripts/` (our own pure-Python code). It must NOT purge `compas_fab`, `compas_robots`, `compas`, etc. — see `scripts/rs_reset_py.py` for the implementation.
 - In `core/robot_cell.py::_ensure_submodule_compas_fab_loaded`: only verify the path; never purge. If verification fails, raise with guidance to use Engine Reset.
+
+---
+
+## compas_fab `check_collision` walks 5 disjoint pair categories (CC.1–CC.5)
+
+`PyBulletPlanner.check_collision(state, options={"verbose": True, "full_report": True})` enumerates collision pairs in five buckets. Every pair runs `_check_collision` (PyBullet contact test) unless a skip rule fires first. Verbose prints one line per pair: `PASS` / `SKIPPED (<reason>)` / `COLLISION`. Source: `external/compas_fab/src/compas_fab/backends/pybullet/backend_features/pybullet_check_collision.py`.
+
+| Step | Pair kind | Coverage | Skip rules |
+|---|---|---|---|
+| **CC.1** | robot link ↔ robot link | self-collision (left wrist hitting right shoulder, etc.) | SRDF `disable_collisions` → `client.unordered_disabled_collisions` |
+| **CC.2** | robot link ↔ tool | tool model clipping into a robot link (pineapple into forearm) | `tool_state.is_hidden`; `link_name in tool_state.touch_links` |
+| **CC.3** | robot link ↔ rigid body | env objects (built bars, walls, jigs) hitting the robot — only fires once env is registered as `RobotCell.rigid_body_models` | `rigid_body_state.is_hidden`; `link_name in rigid_body_state.touch_links` |
+| **CC.4** | rigid body ↔ rigid body | grasped workpiece hitting another rigid body. Static-vs-static is skipped; needs at least one side `attached_to_tool` / `attached_to_link` | hidden; same body; `touch_bodies` allowance |
+| **CC.5** | tool ↔ rigid body | tool meshes hitting env rigid bodies (pineapple swiping a built bar) | hidden; `rb.attached_to_tool == tool_name`; tool in `rb.touch_bodies` |
+
+Mental model:
+
+- **CC.1** robot-vs-self
+- **CC.2** robot-vs-tools
+- **CC.3 + CC.5** robot/tool-vs-world (env)
+- **CC.4** grasped workpiece-vs-world
+
+For an env-collision feature (built bars as static obstacles), the load-bearing pair categories are **CC.3** (arm hits a built bar) and **CC.5** (tool hits a built bar). CC.4 only matters if the bar-being-placed is itself modelled as a rigid body attached to the tool.
+
+**How to apply:**
+
+- To debug "did IK actually consider X?", call `planner.check_collision(state, options={"verbose": True, "full_report": True})`. `full_report=True` keeps it from short-circuiting at the first failure so you see every pair. `debug_ik_collisions.py` already does this.
+- "include_env" means nothing if `RobotCell.rigid_body_models` is empty — CC.3/CC.4/CC.5 simply have nothing to iterate. Surface that to the user (e.g. "0 env bodies registered") rather than letting the toggle look effective.
+- Skip-rule precedence is: hidden → SRDF/semantic → touch_links/touch_bodies → contact test. If a pair fires unexpectedly, look up that order, don't grep blindly.
+- `touch_links` (on tool / rb states) is the right knob for "this overlap is a property of the proxy mesh, not a real collision" (e.g. our wrist_1/2/3 entries on the pineapple). Don't reach for SRDF unless it's truly geometric robot self-collision.
+
+---
+
+## Debug capture ≠ production state — keep them on different save paths
+
+The IK JSON capture (`tests/captures/<timestamp>_<bar>.json`) is a strict superset (RobotCell geometry + IK targets + IK options + source breadcrumbs) needed only by `debug_ik_collisions.py`. Auto-saving it on Accept is over-eager: it duplicates the bar user-text plus extras, but those extras only matter when something's wrong.
+
+**Why:** Production state for chained motion planning lives on the bar's `ik_assembly` / `ik_support` user-text inside the 3dm — that's the canonical per-bar answer, addressable by bar OID, lives with the design. The JSON file in `tests/captures/` is a debug artefact, only useful when replaying a scenario headless to investigate a bug. Two different audiences (motion planner vs Claude debugging session), two different lifetimes (forever-with-design vs throwaway).
+
+**How to apply:**
+- Production data write on Accept → unconditional. The user is making a design decision; persist it.
+- Debug capture write on Accept → opt-in, default No. Symmetric with the failure-path prompt. The user only wants the file when they're about to ask Claude to debug something.
+- If a future feature really needs "all designs' production state in one file" (e.g. exporting a design folder for motion planning), that's a separate `RSExportDesign...` button that reads the bar user-texts directly — NOT a side-effect of the IK Accept path. Don't conflate the two.

@@ -60,22 +60,7 @@ bootstrap_rhino_site_envs()
 
 
 _RED = [1.0, 0.2, 0.2, 0.85]
-
-
-def _unit(v):
-    n = float(np.linalg.norm(v))
-    if n < 1e-9:
-        raise ValueError("zero vector")
-    return v / n
-
-
-def _tool0_from_ocf(ocf, block_name, side, table):
-    if block_name not in table or side not in table[block_name]:
-        raise RuntimeError(
-            f"MALE_JOINT_OCF_TO_TOOL0 missing entry [{block_name}][{side}]. "
-            "Re-run RSExportGraspTool0TF (Joint mode) in Rhino."
-        )
-    return np.asarray(ocf, dtype=float) @ np.asarray(table[block_name][side], dtype=float)
+_ENV_GREEN = [0.235, 0.7, 0.235, 0.85]
 
 
 def _decode_or_none(b):
@@ -227,10 +212,9 @@ def main() -> int:
         print(f"[X] capture not found: {args.capture}")
         return 1
 
-    with open(args.capture, "r", encoding="utf-8") as stream:
-        capture = json.load(stream)
+    from core import capture_io, env_collision  # noqa: F401  (env_collision import primes deps)
+    capture = capture_io.load_capture(args.capture)
 
-    from core import config
     from core import robot_cell as rc
     import pybullet as p
     import pybullet_planning as pp
@@ -241,69 +225,65 @@ def main() -> int:
     use_gui = not args.headless
     print(f"debug_ik_collisions: launching PyBullet ({'GUI' if use_gui else 'DIRECT'}) ...")
     rc.start_pb_client(use_gui=use_gui, verbose=True)
-    rcell = rc.get_or_load_robot_cell()
-    template = rc.default_cell_state()
     _client, planner = rc.get_planner()
     client_id = planner.client.client_id
 
-    # Collision-shape overlay is built later (after contact detection) so the
-    # clones don't pollute getContactPoints with self-overlaps.
+    captures_dir = os.path.dirname(os.path.abspath(args.capture))
+    rcell = capture_io.load_robot_cell_ref(captures_dir, capture["robot_cell_ref"])
+    planner.set_robot_cell(rcell)
+    rc._STICKY[rc._STICKY_ROBOT_CELL] = rcell
+    rc._STICKY[rc._STICKY_CURRENT_CELL_KIND] = "dual_arm"
 
-    # Build IK targets exactly the same way RSIKKeyframe does.
-    ocf_l = np.array(capture["left"]["ocf_world_mm"], dtype=float)
-    ocf_r = np.array(capture["right"]["ocf_world_mm"], dtype=float)
-    base = np.array(capture["base_frame_world_mm"], dtype=float)
-    lm = float(capture["lm_distance_mm"])
-    table = config.MALE_JOINT_OCF_TO_TOOL0
-    tool0_L = _tool0_from_ocf(ocf_l, capture["left"]["block_name"], capture["left"]["arm_side"], table)
-    tool0_R = _tool0_from_ocf(ocf_r, capture["right"]["block_name"], capture["right"]["arm_side"], table)
-    if args.phase == "approach":
-        z_avg = (ocf_l[:3, 2] + ocf_r[:3, 2]) / 2.0
-        offset = -_unit(z_avg) * lm
-        tool0_L[:3, 3] += offset
-        tool0_R[:3, 3] += offset
+    template = capture_io.deserialize_state(capture["initial_state"])
+    base_frame = template.robot_base_frame
+    base_origin = base_frame.point
     print(
         f"debug_ik_collisions: phase={args.phase}, "
-        f"base_xy=({base[0, 3]:.1f}, {base[1, 3]:.1f}) mm, "
-        f"include_self={capture['include_self_collision']}, "
-        f"include_env={capture['include_env_collision']}"
+        f"base_xy=({base_origin[0] * 1000:.1f}, {base_origin[1] * 1000:.1f}) mm, "
+        f"include_self={capture['ik_options']['include_self']}, "
+        f"include_env={capture['ik_options']['include_env']}"
     )
 
+    n_env = sum(
+        1 for name in rcell.rigid_body_models.keys()
+        if name.startswith(env_collision.ENV_RB_BAR_PREFIX) or name.startswith(env_collision.ENV_RB_JOINT_PREFIX)
+    )
+    n_bar = sum(1 for name in rcell.rigid_body_models.keys() if name.startswith(env_collision.ENV_RB_BAR_PREFIX))
+    n_joint = sum(1 for name in rcell.rigid_body_models.keys() if name.startswith(env_collision.ENV_RB_JOINT_PREFIX))
+    print(f"debug_ik_collisions: env: {n_bar} built bars + {n_joint} joints registered as rigid bodies")
+
+    targets = capture["ik_targets"][args.phase]
+    tool0_L = np.asarray(targets["left_tool0_world_mm"], dtype=float)
+    tool0_R = np.asarray(targets["right_tool0_world_mm"], dtype=float)
+    base_frame_mm = np.eye(4, dtype=float)
+    base_frame_mm[:3, 0] = base_frame.xaxis
+    base_frame_mm[:3, 1] = base_frame.yaxis
+    base_frame_mm[:3, 2] = base_frame.zaxis
+    base_frame_mm[:3, 3] = np.asarray(base_frame.point) * 1000.0
+
     if args.use_saved_ik:
-        # Skip both IK solves entirely; reconstruct the saved cell state from
-        # the capture JSON so we inspect collisions on the exact configuration
-        # the Rhino workflow accepted.
         expected_root = capture.get("expected") or {}
         expected_phase = expected_root.get(args.phase)
         if not expected_phase:
             print(
-                f"[X] capture has no `expected.{args.phase}` block — cannot --use-saved-ik. "
+                f"[X] capture has no `expected.{args.phase}` state -- cannot --use-saved-ik. "
                 "Drop the flag to re-solve, or re-run RSIKKeyframe and Accept to populate it."
             )
             return 1
-
-        print(f"\n--- Loading saved IK config for `{args.phase}` from capture ---")
-        state_open = rc.default_cell_state()
-        # Module-private but stable: same helper rc.solve_dual_arm_ik uses.
-        rc._apply_base_frame_mm(state_open, base)
-        for side_key in ("left", "right"):
-            side_data = expected_phase[side_key]
-            for jname, jval in zip(side_data["joint_names"], side_data["joint_values"]):
-                state_open.robot_configuration[jname] = float(jval)
-        state_with = state_open  # treat the saved config as the "production" answer
-        print(f"[OK] saved {args.phase} config loaded "
-              f"(left {len(expected_phase['left']['joint_values'])} jts, "
-              f"right {len(expected_phase['right']['joint_values'])} jts).")
+        print(f"\n--- Loading saved IK state for `{args.phase}` from capture ---")
+        state_open = capture_io.deserialize_state(expected_phase)
+        state_with = state_open
+        print(f"[OK] saved {args.phase} state loaded.")
     else:
         print("\n--- IK with check_collision=True (production path) ---")
-        state_with = rc.solve_dual_arm_ik(planner, template, base, tool0_L, tool0_R, check_collision=True)
+        state_with = rc.solve_dual_arm_ik(planner, template, base_frame_mm, tool0_L, tool0_R, check_collision=True)
         if state_with is not None:
             print(f"[OK] {args.phase} IK PASSED with collision check.")
         else:
             print(f"[X] {args.phase} IK REJECTED with collision check.")
 
         print("\n--- IK with check_collision=False (always returns a config) ---")
-        state_open = rc.solve_dual_arm_ik(planner, template, base, tool0_L, tool0_R, check_collision=False)
+        state_open = rc.solve_dual_arm_ik(planner, template, base_frame_mm, tool0_L, tool0_R, check_collision=False)
         if state_open is None:
             print("[X] IK failed even WITHOUT collision check; target is geometrically unreachable.")
             print("    Cannot inspect collisions. Closing.")
@@ -328,6 +308,10 @@ def main() -> int:
     print(f"\n=== Bodies in PyBullet world: {len(bodies)} ===")
     for uid, label in bodies:
         print(f"  - body[{uid}] {label}")
+
+    for uid, label in bodies:
+        if label.startswith(env_collision.ENV_RB_BAR_PREFIX) or label.startswith(env_collision.ENV_RB_JOINT_PREFIX):
+            _safe_change_color(p, uid, -1, _ENV_GREEN, client_id)
 
     # Introspect compas_fab's allowed-collision wiring.
     pb_client = planner.client

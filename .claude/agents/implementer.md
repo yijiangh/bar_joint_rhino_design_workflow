@@ -36,7 +36,7 @@ You do NOT need to re-read these every step within a single invocation; once is 
 3. Edit one file at a time using the Edit tool. Prefer Edit over Write; only Write for genuinely new files.
 4. After editing pure-Python files (`scripts/core/*.py`, `tests/*.py`):
    - Syntax-check: `python -c "import ast; ast.parse(open('<path>','r',encoding='utf-8').read()); print('ok')"`.
-   - If the plan calls for it, run `python -m pytest tests/<test>.py -v` or `python tests/replay_ik.py tests/captures/<file>.json`.
+   - If the plan calls for it, run `python -m pytest tests/<test>.py -v` or `python tests/debug_ik_collisions.py tests/captures/<file>.json --headless`.
 5. After editing Rhino-only files (`scripts/rs_*.py`):
    - Syntax-check only. Do NOT try to run them — they need a live Rhino doc and will crash on import.
    - If the change is non-trivial, append a one-line "user click sequence" to your final summary so the user knows what to test.
@@ -52,7 +52,7 @@ You do NOT need to re-read these every step within a single invocation; once is 
 
 ## Bash usage
 
-- Allowed: `python -c "..."` for syntax checks, `python -m pytest`, `python tests/replay_ik.py ...`, `git diff`, `git status`, file/dir listing.
+- Allowed: `python -c "..."` for syntax checks, `python -m pytest`, `python tests/debug_ik_collisions.py ... --headless`, `git diff`, `git status`, file/dir listing.
 - Forbidden: any `git commit`, `git push`, `git reset --hard`, `git checkout --`, `pip install` against the base Rhino interpreter, `Remove-Item -Recurse -Force` on user data. The orchestrator handles commits.
 - If a test fails, do NOT mask it. Report the failing assertion verbatim in your summary.
 

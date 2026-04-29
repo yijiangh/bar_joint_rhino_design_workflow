@@ -51,11 +51,10 @@ from core.rhino_helpers import (
 from core.rhino_bar_registry import (
     ensure_bar_id,
     get_bar_seq_map,
-    pick_bar,
     repair_on_entry,
 )
 from core.rhino_block_import import require_block_definition
-from core.rhino_pair_selector import pick_bar_with_pair_option
+from core.rhino_bar_pick import pick_bar, pick_bar_with_pair_option
 
 
 # ---------------------------------------------------------------------------

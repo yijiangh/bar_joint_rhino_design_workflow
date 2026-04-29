@@ -48,13 +48,12 @@ from core.rhino_bar_registry import (
     reset_sequence_colors,
 )
 
-# Reuse the tube-aware bar filter and tube->centerline resolver from the
-# pair selector so clicking the bar's tube preview works the same way it
-# does in RSJointPlace / RSBarSnap / etc.  (When we later round up all bar
-# selection methods into one shared helper, this import goes away.)
-from core.rhino_pair_selector import (
-    _bar_filter as _bar_or_tube_filter,
-    _resolve_picked_to_bar_curve,
+# Reuse the tube-aware bar filter and tube->centerline resolver so clicking
+# the bar's tube preview works the same way it does in
+# RSJointPlace / RSBarSnap / etc.
+from core.rhino_bar_pick import (
+    bar_or_tube_filter as _bar_or_tube_filter,
+    resolve_picked_to_bar_curve as _resolve_picked_to_bar_curve,
 )
 
 

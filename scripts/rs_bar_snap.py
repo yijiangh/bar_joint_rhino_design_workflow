@@ -30,11 +30,10 @@ from core.rhino_bar_registry import (
     ensure_bar_id,
     ensure_bar_preview,
     paint_bar,
-    pick_bar,
     repair_on_entry,
     reset_bar_color,
 )
-from core.rhino_pair_selector import pick_bar_with_pair_option
+from core.rhino_bar_pick import pick_bar, pick_bar_with_pair_option
 from core.joint_auto_place import auto_place_joint_pair
 
 

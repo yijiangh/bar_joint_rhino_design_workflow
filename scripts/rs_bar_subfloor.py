@@ -42,9 +42,19 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core import geometry
-from core.rhino_pair_selector import (
-    pick_bar_with_dual_pair_and_length_option,
+from core.joint_pair import get_joint_pair
+from core.rhino_bar_pick import (
+    bar_or_tube_filter,
+    get_default_brace_length,
+    get_default_subfloor_left_pair_name,
+    get_default_subfloor_right_pair_name,
+    pick_bar,
+    require_pair_names,
+    resolve_picked_to_bar_curve,
     set_default_brace_length,
+    set_default_subfloor_left_pair_name,
+    set_default_subfloor_right_pair_name,
+    get_default_pair_name,
 )
 from core.rhino_helpers import (
     add_centered_line,
@@ -60,7 +70,6 @@ from core.rhino_bar_registry import (
     ensure_bar_id,
     ensure_bar_preview,
     paint_bar,
-    pick_bar,
     repair_on_entry,
     reset_bar_color,
 )
@@ -369,13 +378,104 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
 # ---------------------------------------------------------------------------
 
 
+def _pick_le1_with_dual_pair_and_length(
+    bar_prompt: str,
+    command_name: str = "RSBarSubfloor",
+    *,
+    length_option_name: str = "Length",
+    length_min: float = 1.0,
+    length_max: float = 100000.0,
+):
+    """Pick the first existing bar (Le1) while exposing two independent
+    ``LeftJointPair`` / ``RightJointPair`` list options, a ``SwapLeftRight``
+    toggle, and a numeric ``Length`` option.  RSBarSubfloor-specific.
+
+    Returns ``(bar_curve_id, left_pair, right_pair, length_mm)`` or
+    ``(None, None, None, None)`` on cancel / empty registry.
+    """
+    names = require_pair_names(command_name)
+    if names is None:
+        return None, None, None, None
+
+    fallback = get_default_pair_name() or names[0]
+    if fallback not in names:
+        fallback = names[0]
+    left_default = get_default_subfloor_left_pair_name() or fallback
+    if left_default not in names:
+        left_default = fallback
+    right_default = get_default_subfloor_right_pair_name() or fallback
+    if right_default not in names:
+        right_default = fallback
+
+    left_index = names.index(left_default)
+    right_index = names.index(right_default)
+
+    length_value = Rhino.Input.Custom.OptionDouble(
+        get_default_brace_length(), length_min, length_max
+    )
+
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt(bar_prompt)
+        go.EnablePreSelect(True, True)
+        go.SetCustomGeometryFilter(bar_or_tube_filter)
+
+        if len(names) == 1:
+            left_opt_index = right_opt_index = swap_opt_index = -1
+        else:
+            left_opt_index = go.AddOptionList("LeftJointPair", names, left_index)
+            right_opt_index = go.AddOptionList("RightJointPair", names, right_index)
+            swap_opt_index = go.AddOption("SwapLeftRight")
+        go.AddOptionDouble(length_option_name, length_value)
+
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Cancel:
+            return None, None, None, None
+
+        if result == Rhino.Input.GetResult.Option:
+            opt = go.Option()
+            if opt is not None:
+                if opt.Index == left_opt_index:
+                    left_index = int(opt.CurrentListOptionIndex)
+                elif opt.Index == right_opt_index:
+                    right_index = int(opt.CurrentListOptionIndex)
+                elif opt.Index == swap_opt_index:
+                    left_index, right_index = right_index, left_index
+                    print(
+                        f"  swapped: LeftJointPair='{names[left_index]}', "
+                        f"RightJointPair='{names[right_index]}'"
+                    )
+            continue
+
+        if result == Rhino.Input.GetResult.Object:
+            picked_id = go.Object(0).ObjectId
+            rs.UnselectObject(picked_id)
+            bar_id = resolve_picked_to_bar_curve(picked_id)
+            if bar_id is None:
+                continue
+            left_name = names[left_index]
+            right_name = names[right_index]
+            set_default_subfloor_left_pair_name(left_name)
+            set_default_subfloor_right_pair_name(right_name)
+            chosen_length = float(length_value.CurrentValue)
+            set_default_brace_length(chosen_length)
+            return (
+                bar_id,
+                get_joint_pair(left_name),
+                get_joint_pair(right_name),
+                chosen_length,
+            )
+
+        return None, None, None, None
+
+
 def main():
     _refresh_runtime_modules()
     repair_on_entry(float(config.BAR_RADIUS), "RSBarSubfloor")
     rs.UnselectAllObjects()
 
     le1_id, left_pair, right_pair, brace_length = (
-        pick_bar_with_dual_pair_and_length_option(
+        _pick_le1_with_dual_pair_and_length(
             "Select first existing bar (becomes LEFT bar)",
             command_name="RSBarSubfloor",
         )

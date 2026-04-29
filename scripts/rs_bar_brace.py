@@ -28,9 +28,16 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core import geometry
-from core.rhino_pair_selector import (
-    pick_bar_with_pair_and_length_option,
+from core.joint_pair import JointPairDef, get_joint_pair
+from core.rhino_bar_pick import (
+    bar_or_tube_filter,
+    get_default_brace_length,
+    pick_bar,
+    require_pair_names,
+    resolve_default_pair_index,
+    resolve_picked_to_bar_curve,
     set_default_brace_length,
+    set_default_pair_name,
 )
 from core.rhino_helpers import (
     add_centered_line,
@@ -46,7 +53,6 @@ from core.rhino_bar_registry import (
     ensure_bar_id,
     ensure_bar_preview,
     paint_bar,
-    pick_bar,
     repair_on_entry,
     reset_bar_color,
 )
@@ -383,12 +389,73 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
 # ---------------------------------------------------------------------------
 
 
+def _pick_le1_with_pair_and_length(
+    bar_prompt: str,
+    command_name: str = "RSBarBrace",
+    *,
+    length_option_name: str = "Length",
+    length_min: float = 1.0,
+    length_max: float = 100000.0,
+) -> tuple[object, JointPairDef, float] | tuple[None, None, None]:
+    """Pick the first existing bar (Le1) while exposing inline ``Pair`` and
+    ``Length`` options.  RSBarBrace-specific: the chosen length becomes the
+    centered brace line's length and is persisted as the new doc default.
+
+    Returns ``(bar_curve_id, JointPairDef, length_mm)`` or
+    ``(None, None, None)`` on cancel / empty registry.
+    """
+    names = require_pair_names(command_name)
+    if names is None:
+        return None, None, None
+
+    selected_index = resolve_default_pair_index(names, None)
+    length_value = Rhino.Input.Custom.OptionDouble(
+        get_default_brace_length(), length_min, length_max
+    )
+
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt(bar_prompt)
+        go.EnablePreSelect(True, True)
+        go.SetCustomGeometryFilter(bar_or_tube_filter)
+        list_opt_index = (
+            -1 if len(names) == 1
+            else go.AddOptionList("Pair", names, selected_index)
+        )
+        go.AddOptionDouble(length_option_name, length_value)
+
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Cancel:
+            return None, None, None
+
+        if result == Rhino.Input.GetResult.Option:
+            opt = go.Option()
+            if opt is not None and opt.Index == list_opt_index:
+                selected_index = int(opt.CurrentListOptionIndex)
+            # length_value is updated in place by the OptionDouble.
+            continue
+
+        if result == Rhino.Input.GetResult.Object:
+            picked_id = go.Object(0).ObjectId
+            rs.UnselectObject(picked_id)
+            bar_id = resolve_picked_to_bar_curve(picked_id)
+            if bar_id is None:
+                continue
+            chosen = names[selected_index]
+            set_default_pair_name(chosen)
+            chosen_length = float(length_value.CurrentValue)
+            set_default_brace_length(chosen_length)
+            return bar_id, get_joint_pair(chosen), chosen_length
+
+        return None, None, None
+
+
 def main():
     _refresh_runtime_modules()
     repair_on_entry(float(config.BAR_RADIUS), "RSBarBrace")
     rs.UnselectAllObjects()
 
-    le1_id, pair, brace_length = pick_bar_with_pair_and_length_option(
+    le1_id, pair, brace_length = _pick_le1_with_pair_and_length(
         "Select first existing bar (Le1)", command_name="RSBarBrace"
     )
     if le1_id is None or pair is None:

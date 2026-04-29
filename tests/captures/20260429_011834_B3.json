@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-04-29T01:18:34",
+  "robot_id": "dual-arm_husky_Cindy",
+  "doc_unit_scale_to_mm": 1.0,
+  "lm_distance_mm": 15.0,
+  "include_self_collision": true,
+  "include_env_collision": true,
+  "target_bar_id": "B3",
+  "left": {
+    "block_name": "T20_Male",
+    "arm_side": "left",
+    "ocf_world_mm": [
+      [
+        -3.1086244550956348e-15,
+        -3.670384662868287e-09,
+        -1.0,
+        2.1316281772887013e-14
+      ],
+      [
+        1.0,
+        3.774758283725532e-15,
+        -3.1086244689504498e-15,
+        1191.1993453379403
+      ],
+      [
+        3.77475829513538e-15,
+        -1.0,
+        3.670384662868287e-09,
+        956.9777551027695
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "joint_type_user_text": "T20",
+    "joint_subtype_user_text": "Male"
+  },
+  "right": {
+    "block_name": "T20_Male",
+    "arm_side": "right",
+    "ocf_world_mm": [
+      [
+        -3.108624449417903e-15,
+        -5.1745159268534735e-09,
+        -1.0,
+        2.1316281649980815e-14
+      ],
+      [
+        1.0,
+        3.774758283725532e-15,
+        -3.1086244689504498e-15,
+        2058.2401350535924
+      ],
+      [
+        3.7747582998111595e-15,
+        -1.0,
+        5.1745159268534735e-09,
+        956.9777551027695
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "joint_type_user_text": "T20",
+    "joint_subtype_user_text": "Male"
+  },
+  "base_frame_world_mm": [
+    [
+      -0.9999843927897121,
+      -0.0055869649176155224,
+      -0.0,
+      535.9468883922843
+    ],
+    [
+      0.0055869649176155224,
+      -0.9999843927897121,
+      -0.0,
+      1669.871349376699
+    ],
+    [
+      0.0,
+      -0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "expected": {
+    "final": {
+      "left": {
+        "joint_names": [
+          "left_ur_arm_shoulder_pan_joint",
+          "left_ur_arm_shoulder_lift_joint",
+          "left_ur_arm_elbow_joint",
+          "left_ur_arm_wrist_1_joint",
+          "left_ur_arm_wrist_2_joint",
+          "left_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          0.7702070682728809,
+          -1.9699514801063132,
+          1.547783329297847,
+          0.40938928606183533,
+          0.7652167209874793,
+          -2.3424251512920495
+        ]
+      },
+      "right": {
+        "joint_names": [
+          "right_ur_arm_shoulder_pan_joint",
+          "right_ur_arm_shoulder_lift_joint",
+          "right_ur_arm_elbow_joint",
+          "right_ur_arm_wrist_1_joint",
+          "right_ur_arm_wrist_2_joint",
+          "right_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -0.600461964890421,
+          -1.2036019163186953,
+          -1.7231304474336138,
+          2.899111112085865,
+          -0.6083234684116119,
+          2.3886610056123927
+        ]
+      }
+    },
+    "approach": {
+      "left": {
+        "joint_names": [
+          "left_ur_arm_shoulder_pan_joint",
+          "left_ur_arm_shoulder_lift_joint",
+          "left_ur_arm_elbow_joint",
+          "left_ur_arm_wrist_1_joint",
+          "left_ur_arm_wrist_2_joint",
+          "left_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          5.151619114381982,
+          -1.1343447334022316,
+          -1.5713715777182256,
+          -3.5753530341282374,
+          -1.1413126895302306,
+          3.9309510705589528
+        ]
+      },
+      "right": {
+        "joint_names": [
+          "right_ur_arm_shoulder_pan_joint",
+          "right_ur_arm_shoulder_lift_joint",
+          "right_ur_arm_elbow_joint",
+          "right_ur_arm_wrist_1_joint",
+          "right_ur_arm_wrist_2_joint",
+          "right_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -0.5455021514580783,
+          3.027614788934546,
+          2.2519308757601952,
+          -2.1555794671254023,
+          0.5572063186304168,
+          -0.7678460479875494
+        ]
+      }
+    }
+  }
+}

@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """RSCreateBar - Register selected curves as scaffolding bars.
 
 Select one or more curves. Each gets a unique bar ID (B1, B2, …) and a tube

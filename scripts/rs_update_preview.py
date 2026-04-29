@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """RSUpdatePreview - Refresh tube previews for all registered bars.
 
 Scans the document for every bar tagged with a bar_id, checks whether its

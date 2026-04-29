@@ -1,3 +1,10 @@
 [submodule "support_materials/FrameX"]
 	path = support_materials/FrameX
 	url = git@github.com:KIKI007/FrameX.git
+[submodule "asset/husky_urdf"]
+	path = asset/husky_urdf
+	url = git@github.com:yijiangh/husky_urdf.git
+[submodule "external/compas_fab"]
+	path = external/compas_fab
+	url = https://github.com/compas-dev/compas_fab.git
+	branch = wip_process

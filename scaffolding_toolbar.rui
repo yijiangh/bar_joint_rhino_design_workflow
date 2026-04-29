@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <RhinoUI major_ver="5" minor_ver="0" guid="48d96183-30fe-4951-b00d-aa946e20fa36">
   <tool_bar_groups />
   <tool_bars>
@@ -28,6 +28,15 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000011" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000011</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000012" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000012</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000013" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000013</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000014" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000014</left_macro_id>
+      </tool_bar_item>
     </tool_bar>
     <!-- RSSetup: calibration and utilities -->
     <tool_bar guid="c5d6e7f8-3333-4bbb-b333-000000000001">
@@ -48,6 +57,15 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000c" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000c</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000d" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000d</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000e" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000e</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000f" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000f</left_macro_id>
       </tool_bar_item>
     </tool_bar>
   </tool_bars>
@@ -113,6 +131,42 @@
       </button_text>
       <script>! _-ScriptEditor _R "rs_joint_edit.py"</script>
     </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000012">
+      <text>
+        <locale_1033>RSIKKeyframe</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Dual-arm IK keyframe: pick two male joints, solve IK, save on shared Ln bar</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSIKKeyframe</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_ik_keyframe.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000013">
+      <text>
+        <locale_1033>RSShowIK</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Replay a saved ik_assembly keyframe in Rhino</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSShowIK</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_show_ik.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000014">
+      <text>
+        <locale_1033>RSIKSupportKeyframe</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Single-arm support-robot IK keyframe: pick held bar + just-assembled bar, pick grasp + base, save ik_support</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSIKSupportKeyframe</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_ik_support_keyframe.py"</script>
+    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000010">
       <text>
         <locale_1033>RSSequenceEdit</locale_1033>
@@ -176,27 +230,63 @@
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000b">
       <text>
-        <locale_1033>RSDefineJointPair</locale_1033>
+        <locale_1033>RSExportGraspTool0TF</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Define a new joint pair from baked Rhino geometry</locale_1033>
+        <locale_1033>Export male-joint OCF and bar-grasp to tool0 transforms</locale_1033>
       </tooltip>
       <button_text>
-        <locale_1033>RSDefineJointPair</locale_1033>
+        <locale_1033>RSExportGraspTool0TF</locale_1033>
       </button_text>
-      <script>! _-ScriptEditor _R "rs_define_joint_pair.py"</script>
+      <script>! _-ScriptEditor _R "rs_export_grasp_tool0_tf.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000c">
       <text>
-        <locale_1033>RSDefineRoboticTool</locale_1033>
+        <locale_1033>RSPBStart</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Define a new robotic tool from a baked block instance and TCP frame points</locale_1033>
+        <locale_1033>Start the shared PyBullet client for IK/FK workflows</locale_1033>
       </tooltip>
       <button_text>
-        <locale_1033>RSDefineRoboticTool</locale_1033>
+        <locale_1033>RSPBStart</locale_1033>
       </button_text>
-      <script>! _-ScriptEditor _R "rs_define_robotic_tool.py"</script>
+      <script>! _-ScriptEditor _R "rs_pb_start.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000d">
+      <text>
+        <locale_1033>RSPBStop</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Disconnect the shared PyBullet client</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSPBStop</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_pb_stop.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000e">
+      <text>
+        <locale_1033>RSExportPineappleOBJ</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Export pineapple block definitions to OBJ (meters) for IK collision check</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSExportPineappleOBJ</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_export_pineapple_obj.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000f">
+      <text>
+        <locale_1033>RSBakeFrame</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Bake a right-handed frame from three picked points (origin, +X, +Y)</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSBakeFrame</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_bake_frame.py"</script>
     </macro_item>
   </macros>
   <bitmaps>

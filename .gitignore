@@ -5,3 +5,13 @@ __pycache__/
 *.rhl
 
 *.3dmbak
+
+CLAUDE.md
+
+.claude/agents/implementer.md
+
+.claude/agents/planner.md
+
+.claude/agents/reviewer.md
+
+tasks/subagent_onboarding_plan.md

@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
+# r: numpy==1.24.4
+# r: scipy==1.13.1
 """RSBarBrace - Add a brace bar between two existing bars.
 
 Pick two existing bars and two contact points. The solver finds up to 4

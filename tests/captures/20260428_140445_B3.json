@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-04-28T14:04:45",
+  "robot_id": "dual-arm_husky_Cindy",
+  "doc_unit_scale_to_mm": 1.0,
+  "lm_distance_mm": 15.0,
+  "include_self_collision": true,
+  "include_env_collision": true,
+  "target_bar_id": "B3",
+  "left": {
+    "block_name": "T20_Male",
+    "arm_side": "left",
+    "ocf_world_mm": [
+      [
+        -1.8363984075310412e-17,
+        -5.622125375623185e-09,
+        -1.0,
+        4.129397638140932e-15
+      ],
+      [
+        1.0,
+        1.252753106318771e-13,
+        1.1756390354386206e-16,
+        1191.19933545436
+      ],
+      [
+        1.251870760346531e-13,
+        -1.0,
+        5.622125321468706e-09,
+        956.9777551027696
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "joint_type_user_text": "T20",
+    "joint_subtype_user_text": "Male"
+  },
+  "right": {
+    "block_name": "T20_Male",
+    "arm_side": "right",
+    "ocf_world_mm": [
+      [
+        -1.8364687892756402e-17,
+        5.3828347819758715e-17,
+        -1.0000000000000002,
+        4.012005969230288e-15
+      ],
+      [
+        -1.0,
+        -1.2530202602668168e-13,
+        -4.900776445971929e-18,
+        2058.2401253072576
+      ],
+      [
+        -1.251870760342056e-13,
+        1.0000000000000002,
+        9.789514763668059e-17,
+        956.9777551027696
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "joint_type_user_text": "T20",
+    "joint_subtype_user_text": "Male"
+  },
+  "base_frame_world_mm": [
+    [
+      -0.9997853573513894,
+      0.020718089336482757,
+      -0.0,
+      539.0995682162193
+    ],
+    [
+      -0.020718089336482757,
+      -0.9997853573513894,
+      -0.0,
+      1727.5039918102975
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "expected": {
+    "final": {
+      "left": {
+        "joint_names": [
+          "left_ur_arm_shoulder_pan_joint",
+          "left_ur_arm_shoulder_lift_joint",
+          "left_ur_arm_elbow_joint",
+          "left_ur_arm_wrist_1_joint",
+          "left_ur_arm_wrist_2_joint",
+          "left_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -5.325542670251736,
+          4.269313386148149,
+          2.0064253582833276,
+          3.162578376553666,
+          -0.9743238353246213,
+          0.7830279680982575
+        ]
+      },
+      "right": {
+        "joint_names": [
+          "right_ur_arm_shoulder_pan_joint",
+          "right_ur_arm_shoulder_lift_joint",
+          "right_ur_arm_elbow_joint",
+          "right_ur_arm_wrist_1_joint",
+          "right_ur_arm_wrist_2_joint",
+          "right_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          1.9784999415671245,
+          0.0639428376562687,
+          -1.9293232539942458,
+          1.851294999592643,
+          1.9827017003627212,
+          -0.7916024413456607
+        ]
+      }
+    },
+    "approach": {
+      "left": {
+        "joint_names": [
+          "left_ur_arm_shoulder_pan_joint",
+          "left_ur_arm_shoulder_lift_joint",
+          "left_ur_arm_elbow_joint",
+          "left_ur_arm_wrist_1_joint",
+          "left_ur_arm_wrist_2_joint",
+          "left_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          5.2619721189606015,
+          -1.0805977155622914,
+          -2.034443141662353,
+          -0.048162904164611116,
+          1.0100658187855571,
+          0.8023840257443446
+        ]
+      },
+      "right": {
+        "joint_names": [
+          "right_ur_arm_shoulder_pan_joint",
+          "right_ur_arm_shoulder_lift_joint",
+          "right_ur_arm_elbow_joint",
+          "right_ur_arm_wrist_1_joint",
+          "right_ur_arm_wrist_2_joint",
+          "right_ur_arm_wrist_3_joint"
+        ],
+        "joint_values": [
+          -4.283032021505723,
+          -1.5189175993122295,
+          2.2923718463155427,
+          -3.920200490884875,
+          -2.014338490134092,
+          2.3625800402510975
+        ]
+      }
+    }
+  }
+}

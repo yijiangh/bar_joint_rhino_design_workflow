@@ -1,8 +1,8 @@
 #! python 3
 # venv: scaffolding_env
-# r: numpy
-# r: scipy
-"""RSBarSnap - Snap a new bar onto an existing bar at a joint pair's contact distance.
+# r: numpy==1.24.4
+# r: scipy==1.13.1
+"""RSBarSnap - Snap a new bar onto an existing bar at contact distance.
 
 The user is first prompted to confirm the active joint pair (Enter accepts
 the last-used pair).  Then they pick an existing bar (Le) and a new bar (Ln);

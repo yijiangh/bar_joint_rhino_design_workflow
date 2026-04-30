@@ -183,3 +183,31 @@ When the user reports `RSIKKeyframe`/`RSIKSupportKeyframe` failing on a target t
 **How to apply:** Before changing any IK code, prove the scene is solvable headless. If it is, instruct the user to `RSPBStop` + `RSPBStart` and re-run; the failure usually clears. Bumping `IK_BASE_SAMPLE_MAX_ITER` is not a real fix — when headless solves on attempt 0 every time, more samples won't change a Rhino-only failure. Only investigate further (Rhino-side `print(planner.client.tools_puids, ...)` instrumentation) if the failure persists across a fresh `RSPBStart`.
 
 Caveat: `mt_husky_moveit_config/config/husky.srdf` is shared by `husky_ur5_e_no_base_joint_Belle_Calibrated.urdf` (currently unused). When Belle is wired up, give her a dedicated SRDF copy named `single-arm_husky_Belle` rather than reusing Alice's.
+
+---
+
+## Two `compas_fab.PyBulletClient` instances coexist cleanly — no swap needed
+
+When you need to host more than one robot cell in PyBullet (e.g. a dual-arm assembly cell + a single-arm support cell), you can run TWO `PyBulletClient` instances side by side in the same Python process. compas_fab's per-client scoping is correct (every `pybullet.*` call passes `physicsClientId=self.client_id`), so state isolation is automatic. Constraints: only ONE `connection_type="gui"` per process (PyBullet limit), and the `pybullet_planning` (pp) helpers — `pp.set_pose`, `pp.get_pose`, `pp.disconnect`, `pp.is_connected`, `pp.link_from_name`, `pp.get_link_pose` — bind to a module-global `CLIENT` and must be avoided (or bracketed with `pp.set_client(client.client_id)`).
+
+**Why:** Verified empirically by `tests/debug_dual_client_isolation.py` on 2026-04-30: with two DIRECT clients, isolation is perfect (mutating one never leaks to the other) and 5000 iterations of alternating mutations + reads completed in 0.05ms mean / 0.06ms p95 with zero failures. Re-verified on 2026-05-01 with the `--three-way` mode (Cindy + Alice + Belle, all DIRECT): 18/18 isolation assertions pass, 2000-iter soak with 0 failures, mean 0.06ms / p95 0.09ms. The current "single planner + cell-swap" design's slow `planner.set_robot_cell(other_cell)` URDF reload was the only motivation for swapping — the multi-client model removes that cost entirely and scales linearly with the number of robots.
+
+**How to apply:** The actual refactor (replace `_STICKY_CURRENT_CELL_KIND` + `_ensure_<kind>_cell_loaded` with two persistent planners) needs to fix the pp footguns first. Concrete sites + preferred fix recorded in `tests/debug_dual_client_isolation.py`'s `# === REFACTOR NOTES ===` footer block. compas_fab's `set_robot_cell_state` already pushes the base correctly via `client._set_base_frame` (client.py:702-704), so the redundant `pp.set_pose` calls in `core/robot_cell.py:469` and `core/robot_cell_support.py:247` can be deleted outright (not just rescoped).
+
+Run the debug script under Rhino's bundled python — `C:/Users/yijiangh/.rhinocode/py39-rh8/python.exe` — NOT pyenv py3.10 (PyO3 / cryptography in the Rhino site-env requires cpython 3.9).
+
+---
+
+## `pp.set_client` is BROKEN for most pybullet_planning helpers — patch every submodule's CLIENT or use raw pybullet
+
+`pp.set_client(client_id)` only mutates `pybullet_planning.utils.shared_const.CLIENT`. But ~28 pp submodules (e.g. `pybullet_planning.interfaces.env_manager.pose_transformation`, `...interfaces.robots.joint`) do `from pybullet_planning.utils import CLIENT, ...` at import time, which creates a SEPARATE per-submodule binding. `pp.set_client` does not update those, so `pp.set_pose` / `pp.set_joint_position(s)` / `pp.get_link_pose` keep reading their stale local 0 and silently target the WRONG client.
+
+**Why we care:** Verified empirically by `tests/debug_dual_client_isolation.py` — calling `pp.set_client(client_b.client_id)` then `pp.set_pose(client_b.robot_puid, target)` actually moved client A's body 0, not client B's. This is the silent-bug class that would break a multi-client refactor.
+
+**How to apply:** In a multi-client process, you have two options:
+
+1. **Raw pybullet** (preferred for production code): every call uses `pybullet.X(..., physicsClientId=client.client_id)`. Per-call scoping, no globals. This is what `tests/debug_dual_client_isolation.py::_push_state_safely` does.
+
+2. **Patch every pp submodule's CLIENT** (only when pp ergonomics matter enough): walk `pybullet_planning` once at startup, find every submodule with a `CLIENT` int attribute, and on each client switch overwrite all of them. The test ships a working `pp_active_client` context manager that does exactly this (~28 modules patched, restored on exit). It works but depends on every relevant submodule already being imported at walk time — lazy imports inside individual helpers can slip past it.
+
+The shipping `pp.set_client(...)` API is unsafe and should not be used as the primary scoping primitive in any new multi-client code.

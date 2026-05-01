@@ -321,6 +321,34 @@ def _pick_walkable_brep():
     return oid
 
 
+def _resolve_sampling_brep_for_base(seed_base_frame_mm, brep_id):
+    if brep_id is not None:
+        return brep_id
+
+    candidates = _breps_in_layer(config.WALKABLE_GROUND_LAYER)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    seed_origin_mm = seed_base_frame_mm[:3, 3]
+    best_oid = None
+    best_dist = None
+    for candidate_oid in candidates:
+        try:
+            brep = _as_brep(candidate_oid)
+        except RuntimeError:
+            continue
+        snapped_origin_mm, _normal = _snap_to_brep(brep, seed_origin_mm)
+        if snapped_origin_mm is None:
+            continue
+        dist = float(np.linalg.norm(snapped_origin_mm - seed_origin_mm))
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_oid = candidate_oid
+    return best_oid
+
+
 def _closest_point_on_brep(brep, point_doc):
     """Return (point_doc, normal_world) of the closest surface point to `point_doc`."""
     best = None
@@ -487,11 +515,31 @@ def _ask_collision_options(env_count: int = 0):
         return None
 
 
-def _ask_accept(prompt="Accept this IK keyframe and save it on the bar"):
-    answer = rs.GetString(prompt, "Accept", ["Accept", "Reject"])
-    if answer is None:
-        return False
-    return str(answer).strip().lower().startswith("a")
+def _ask_accept(prompt="Accept this IK keyframe and save it on the bar", allow_accept=True):
+    go = Rhino.Input.Custom.GetOption()
+    go.SetCommandPrompt(prompt)
+    accept_idx = go.AddOption("Accept") if allow_accept else None
+    retry_same_idx = go.AddOption("RetrySameBase")
+    retry_new_idx = go.AddOption("RetryNewBase")
+    give_up_idx = go.AddOption("GiveUp")
+    go.SetCommandPromptDefault("RetrySameBase")
+    go.AcceptNothing(True)
+    while True:
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Nothing:
+            return "retry_same_base"
+        if result == Rhino.Input.GetResult.Option:
+            chosen = go.OptionIndex()
+            if allow_accept and chosen == accept_idx:
+                return "accept"
+            if chosen == retry_same_idx:
+                return "retry_same_base"
+            if chosen == retry_new_idx:
+                return "retry_new_base"
+            if chosen == give_up_idx:
+                return "give_up"
+            continue
+        return "give_up"
 
 
 def _ask_reuse_saved_base():
@@ -893,6 +941,118 @@ def _save_capture(
         return None
 
 
+def _collect_target_context(
+    target_bar_id,
+    left_male_oid,
+    left_tool_oid,
+    right_male_oid,
+    right_tool_oid,
+):
+    # ---- UX: focus the canvas on this bar (hide unbuilt + inactive tools).
+    show_sequence_colors(target_bar_id, show_unbuilt=False)
+    extra_hidden_tools = _hide_inactive_tool_blocks(target_bar_id)
+
+    # tool0 (flange frame) IS the tool block instance world transform.
+    tool0_left_final = _block_instance_xform_mm(left_tool_oid)
+    tool0_right_final = _block_instance_xform_mm(right_tool_oid)
+    # OCF (object-coordinate-frame) of the male blocks - still saved in the
+    # capture for headless replay parity.
+    ocf_left = _block_instance_xform_mm(left_male_oid)
+    ocf_right = _block_instance_xform_mm(right_male_oid)
+    print(
+        f"RSIKKeyframe: target Ln bar = {target_bar_id} "
+        f"(left tool = {rs.BlockInstanceName(left_tool_oid)}, "
+        f"right tool = {rs.BlockInstanceName(right_tool_oid)})."
+    )
+    return extra_hidden_tools, tool0_left_final, tool0_right_final, ocf_left, ocf_right
+
+
+def _prepare_collision_template_state(
+    rcell,
+    planner,
+    template_state,
+    target_bar_id,
+    left_tool_oid,
+    right_tool_oid,
+):
+    # ---- Per-arm tool collision rigid bodies (one-shot per cell).
+    left_collision_path, right_collision_path = _resolve_tool_collision_paths(
+        left_tool_oid, right_tool_oid
+    )
+    arm_tool_rb_names = robot_cell.attach_arm_tool_rigid_bodies(
+        rcell,
+        planner,
+        left_collision_path=left_collision_path,
+        right_collision_path=right_collision_path,
+        native_scale=0.001,
+    )
+    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
+
+    env_geom = env_collision.collect_built_geometry(target_bar_id, get_bar_seq_map())
+    robot_cell.ensure_env_registered(rcell, env_geom, planner)
+    template_state = env_collision.build_env_state(template_state, env_geom)
+    # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
+    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
+    print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
+    return template_state, env_geom
+
+
+def _compute_approach_targets(tool0_left_final, tool0_right_final):
+    # Approach target: translate tool0 frames along -avg(tool z) * LM_DISTANCE.
+    # Tool block local +Z points OUT of the flange toward the joint, so -Z is
+    # the retreat direction. (Sign convention: validate visually on first run.)
+    z_avg_pre = (tool0_left_final[:3, 2] + tool0_right_final[:3, 2]) / 2.0
+    try:
+        approach_dir_pre = -_unit(z_avg_pre)
+    except ValueError as exc:
+        raise RuntimeError("Tool z-axes sum to zero; cannot derive approach direction.") from exc
+    offset_pre = approach_dir_pre * float(config.LM_DISTANCE)
+    tool0_left_approach = _translate_frame(tool0_left_final, offset_pre)
+    tool0_right_approach = _translate_frame(tool0_right_final, offset_pre)
+    return tool0_left_approach, tool0_right_approach
+
+
+def _resolve_seed_base_frame(
+    planner,
+    template_state,
+    saved_base,
+    seed_base_frame,
+    brep_id,
+    heading_mm,
+    allow_saved_base_prompt,
+):
+    if seed_base_frame is not None:
+        return seed_base_frame, brep_id, heading_mm, allow_saved_base_prompt
+
+    if allow_saved_base_prompt and saved_base is not None:
+        # Default mesh-mode for the preview matches the user's last choice.
+        preview_mode = ik_viz.get_mesh_mode()
+        _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
+        answer = _ask_reuse_saved_base()
+        if answer is None:
+            print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
+            ik_viz.clear_scene()
+            return None
+        if answer:
+            print("RSIKKeyframe: reusing saved base frame (skipping walkable-ground pick).")
+            seed_base_frame = saved_base
+            heading_mm = _heading_mm_from_base_frame(saved_base)
+            # brep_id stays None -> sampling fallback is disabled in this run.
+        ik_viz.clear_scene()
+
+    if seed_base_frame is None:
+        brep_id = _pick_walkable_brep()
+        if brep_id is None:
+            return None
+        _base_origin_mm, _base_normal, heading_mm, seed_base_frame = (
+            _pick_base_frame_on_walkable(brep_id)
+        )
+        if seed_base_frame is None:
+            return None
+
+    return seed_base_frame, brep_id, heading_mm, allow_saved_base_prompt
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -920,82 +1080,26 @@ def main():
         return
     target_bar_id, target_bar_oid, (left_male_oid, left_tool_oid), (right_male_oid, right_tool_oid) = picked
 
-    # ---- UX: focus the canvas on this bar (hide unbuilt + inactive tools).
-    show_sequence_colors(target_bar_id, show_unbuilt=False)
-    extra_hidden_tools = _hide_inactive_tool_blocks(target_bar_id)
-
-    # tool0 (flange frame) IS the tool block instance world transform.
-    tool0_left_final = _block_instance_xform_mm(left_tool_oid)
-    tool0_right_final = _block_instance_xform_mm(right_tool_oid)
-    # OCF (object-coordinate-frame) of the male blocks - still saved in the
-    # capture for headless replay parity.
-    ocf_left = _block_instance_xform_mm(left_male_oid)
-    ocf_right = _block_instance_xform_mm(right_male_oid)
-    print(
-        f"RSIKKeyframe: target Ln bar = {target_bar_id} "
-        f"(left tool = {rs.BlockInstanceName(left_tool_oid)}, "
-        f"right tool = {rs.BlockInstanceName(right_tool_oid)})."
+    extra_hidden_tools, tool0_left_final, tool0_right_final, ocf_left, ocf_right = _collect_target_context(
+        target_bar_id,
+        left_male_oid,
+        left_tool_oid,
+        right_male_oid,
+        right_tool_oid,
     )
-
-    # ---- Per-arm tool collision rigid bodies (one-shot per cell).
-    left_collision_path, right_collision_path = _resolve_tool_collision_paths(
-        left_tool_oid, right_tool_oid
+    template_state, env_geom = _prepare_collision_template_state(
+        rcell,
+        planner,
+        template_state,
+        target_bar_id,
+        left_tool_oid,
+        right_tool_oid,
     )
-    arm_tool_rb_names = robot_cell.attach_arm_tool_rigid_bodies(
-        rcell, planner,
-        left_collision_path=left_collision_path,
-        right_collision_path=right_collision_path,
-        native_scale = 0.001
-    )
-    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
-
-    env_geom = env_collision.collect_built_geometry(target_bar_id, get_bar_seq_map())
-    robot_cell.ensure_env_registered(rcell, env_geom, planner)
-    template_state = env_collision.build_env_state(template_state, env_geom)
-    # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
-    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
-    print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
 
     env_token = None
     keep_highlight = False
     try:
         sc.doc.Views.Redraw()
-
-        # ---- Try reusing a previously-saved base frame.
-        seed_base_frame = None
-        brep_id = None
-        heading_mm = None
-        saved_base = _read_saved_assembly_base_frame(target_bar_oid)
-        if saved_base is not None:
-            # Default mesh-mode for the preview matches the user's last choice.
-            preview_mode = ik_viz.get_mesh_mode()
-            _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
-            answer = _ask_reuse_saved_base()
-            if answer is None:
-                print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
-                ik_viz.clear_scene()
-                return
-            if answer:
-                print("RSIKKeyframe: reusing saved base frame (skipping walkable-ground pick).")
-                seed_base_frame = saved_base
-                heading_mm = _heading_mm_from_base_frame(saved_base)
-                # brep_id stays None -> sampling fallback is disabled in this run.
-            ik_viz.clear_scene()
-
-        # ---- Fall back to interactive pick if no reuse.
-        if seed_base_frame is None:
-            brep_id = _pick_walkable_brep()
-            if brep_id is None:
-                return
-            base_origin_mm, base_normal, heading_mm, seed_base_frame = (
-                _pick_base_frame_on_walkable(brep_id)
-            )
-            if seed_base_frame is None:
-                return
-
-        # Persist the base frame ASAP so a Ctrl+C mid-IK still leaves it on
-        # the bar for the next run's reuse path.
-        _write_assembly_base_frame(target_bar_oid, seed_base_frame)
 
         env_token = highlight_env.highlight_env_for_ik(target_bar_id)
 
@@ -1003,72 +1107,183 @@ def main():
         if collision_opts is None:
             return
         include_self, include_env, mesh_mode = collision_opts
-
-        # Approach target: translate tool0 frames along -avg(tool z) * LM_DISTANCE.
-        # Tool block local +Z points OUT of the flange toward the joint, so -Z is
-        # the retreat direction. (Sign convention: validate visually on first run.)
-        z_avg_pre = (tool0_left_final[:3, 2] + tool0_right_final[:3, 2]) / 2.0
         try:
-            approach_dir_pre = -_unit(z_avg_pre)
-        except ValueError:
-            rs.MessageBox("Tool z-axes sum to zero; cannot derive approach direction.", 0, "RSIKKeyframe")
+            tool0_left_approach, tool0_right_approach = _compute_approach_targets(
+                tool0_left_final,
+                tool0_right_final,
+            )
+        except RuntimeError as exc:
+            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
             return
-        offset_pre = approach_dir_pre * float(config.LM_DISTANCE)
-        tool0_left_approach = _translate_frame(tool0_left_final, offset_pre)
-        tool0_right_approach = _translate_frame(tool0_right_final, offset_pre)
 
-        # ---- IK + viewport-redraw lock around the solve+preview block.
-        rs.EnableRedraw(False)
-        try:
-            print("RSIKKeyframe: solving final-target IK...")
-            final_state, final_base = _solve_with_sampling(
-                planner, template_state, seed_base_frame,
-                tool0_left_final, tool0_right_final,
-                brep_id, heading_mm, include_self, include_env,
+        seed_base_frame = None
+        brep_id = None
+        heading_mm = None
+        saved_base = _read_saved_assembly_base_frame(target_bar_oid)
+        allow_saved_base_prompt = True
+
+        while True:
+            base_resolution = _resolve_seed_base_frame(
+                planner,
+                template_state,
+                saved_base,
+                seed_base_frame,
+                brep_id,
+                heading_mm,
+                allow_saved_base_prompt,
             )
-            if final_state is None:
-                rs.EnableRedraw(True)
-                if _ask_save_failure_capture("Final-target"):
-                    seed_state = template_state.copy()
-                    robot_cell._apply_base_frame_mm(seed_state, seed_base_frame)
-                    _save_capture(
-                        target_bar_id=target_bar_id,
-                        left_oid=left_male_oid,
-                        right_oid=right_male_oid,
-                        ocf_left=ocf_left,
-                        ocf_right=ocf_right,
-                        tool0_left_final=tool0_left_final,
-                        tool0_right_final=tool0_right_final,
-                        tool0_left_approach=tool0_left_approach,
-                        tool0_right_approach=tool0_right_approach,
-                        initial_state=seed_state,
-                        include_self=include_self,
-                        include_env=include_env,
-                        final_state=None,
-                        approach_state=None,
-                        rcell=rcell,
-                        suffix="_ik_fail_final",
-                    )
-                rs.MessageBox("IK failed for the final target (all samples exhausted).", 0, "RSIKKeyframe")
+            if base_resolution is None:
                 return
-            # Sync the PyBullet world to the new state, then update the Rhino viz.
-            robot_cell.set_cell_state(planner, final_state)
-            rs.EnableRedraw(True)
-            ik_viz.show_state(final_state, mesh_mode=mesh_mode)
-            print("RSIKKeyframe: final target reachable. Previewing...")
+            seed_base_frame, brep_id, heading_mm, allow_saved_base_prompt = base_resolution
 
+            # Persist the base frame ASAP so a Ctrl+C mid-IK still leaves it on
+            # the bar for the next run's reuse path.
+            _write_assembly_base_frame(target_bar_oid, seed_base_frame)
+
+            # ---- IK + viewport-redraw lock around the solve+preview block.
             rs.EnableRedraw(False)
-            print("RSIKKeyframe: solving approach-target IK...")
-            approach_state, approach_base = _solve_with_sampling(
-                planner, template_state, final_base,
-                tool0_left_approach, tool0_right_approach,
-                brep_id, heading_mm, include_self, include_env,
-            )
-            if approach_state is None:
+            try:
+                print("RSIKKeyframe: solving final-target IK...")
+                final_state, final_base = _solve_with_sampling(
+                    planner, template_state, seed_base_frame,
+                    tool0_left_final, tool0_right_final,
+                    brep_id, heading_mm, include_self, include_env,
+                )
+                if final_state is None:
+                    rs.EnableRedraw(True)
+                    if _ask_save_failure_capture("Final-target"):
+                        seed_state = template_state.copy()
+                        robot_cell._apply_base_frame_mm(seed_state, seed_base_frame)
+                        _save_capture(
+                            target_bar_id=target_bar_id,
+                            left_oid=left_male_oid,
+                            right_oid=right_male_oid,
+                            ocf_left=ocf_left,
+                            ocf_right=ocf_right,
+                            tool0_left_final=tool0_left_final,
+                            tool0_right_final=tool0_right_final,
+                            tool0_left_approach=tool0_left_approach,
+                            tool0_right_approach=tool0_right_approach,
+                            initial_state=seed_state,
+                            include_self=include_self,
+                            include_env=include_env,
+                            final_state=None,
+                            approach_state=None,
+                            rcell=rcell,
+                            suffix="_ik_fail_final",
+                        )
+                    rs.MessageBox("IK failed for the final target (all samples exhausted).", 0, "RSIKKeyframe")
+                    action = _ask_accept(
+                        "Final-target IK failed. Retry the same base, retry a new base, or give up",
+                        allow_accept=False,
+                    )
+                    if action == "retry_same_base":
+                        print("RSIKKeyframe: retrying final-target IK with the same robot base frame.")
+                        saved_base = seed_base_frame
+                        brep_id = _resolve_sampling_brep_for_base(seed_base_frame, brep_id)
+                        allow_saved_base_prompt = False
+                        ik_viz.clear_scene()
+                        continue
+                    if action == "retry_new_base":
+                        print("RSIKKeyframe: retrying final-target IK with a different robot base frame.")
+                        saved_base = seed_base_frame
+                        seed_base_frame = None
+                        heading_mm = None
+                        brep_id = None
+                        allow_saved_base_prompt = False
+                        ik_viz.clear_scene()
+                        continue
+                    print("RSIKKeyframe: gave up after final-target IK failure.")
+                    return
+                # Sync the PyBullet world to the new state, then update the Rhino viz.
+                robot_cell.set_cell_state(planner, final_state)
                 rs.EnableRedraw(True)
-                if _ask_save_failure_capture("Approach-target"):
+                ik_viz.show_state(final_state, mesh_mode=mesh_mode)
+                print("RSIKKeyframe: final target reachable. Previewing...")
+
+                rs.EnableRedraw(False)
+                print("RSIKKeyframe: solving approach-target IK...")
+                approach_state, approach_base = _solve_with_sampling(
+                    planner, template_state, final_base,
+                    tool0_left_approach, tool0_right_approach,
+                    brep_id, heading_mm, include_self, include_env,
+                )
+                if approach_state is None:
+                    rs.EnableRedraw(True)
+                    if _ask_save_failure_capture("Approach-target"):
+                        seed_state = template_state.copy()
+                        robot_cell._apply_base_frame_mm(seed_state, final_base)
+                        _save_capture(
+                            target_bar_id=target_bar_id,
+                            left_oid=left_male_oid,
+                            right_oid=right_male_oid,
+                            ocf_left=ocf_left,
+                            ocf_right=ocf_right,
+                            tool0_left_final=tool0_left_final,
+                            tool0_right_final=tool0_right_final,
+                            tool0_left_approach=tool0_left_approach,
+                            tool0_right_approach=tool0_right_approach,
+                            initial_state=seed_state,
+                            include_self=include_self,
+                            include_env=include_env,
+                            final_state=final_state,
+                            approach_state=None,
+                            rcell=rcell,
+                            suffix="_ik_fail_approach",
+                        )
+                    rs.MessageBox("IK failed for the approach target (all samples exhausted).", 0, "RSIKKeyframe")
+                    action = _ask_accept(
+                        "Approach-target IK failed. Retry the same base, retry a new base, or give up",
+                        allow_accept=False,
+                    )
+                    if action == "retry_same_base":
+                        print("RSIKKeyframe: retrying approach-target IK with the same robot base frame.")
+                        _write_assembly_base_frame(target_bar_oid, final_base)
+                        saved_base = final_base
+                        seed_base_frame = final_base
+                        heading_mm = _heading_mm_from_base_frame(final_base)
+                        brep_id = _resolve_sampling_brep_for_base(final_base, brep_id)
+                        allow_saved_base_prompt = False
+                        ik_viz.clear_scene()
+                        continue
+                    if action == "retry_new_base":
+                        print("RSIKKeyframe: retrying approach-target IK with a different robot base frame.")
+                        _write_assembly_base_frame(target_bar_oid, final_base)
+                        saved_base = final_base
+                        seed_base_frame = None
+                        heading_mm = None
+                        brep_id = None
+                        allow_saved_base_prompt = False
+                        ik_viz.clear_scene()
+                        continue
+                    print("RSIKKeyframe: gave up after approach-target IK failure.")
+                    return
+                robot_cell.set_cell_state(planner, approach_state)
+                rs.EnableRedraw(True)
+                ik_viz.show_state(approach_state, mesh_mode=mesh_mode)
+                print("RSIKKeyframe: approach target reachable. Previewing...")
+            finally:
+                rs.EnableRedraw(True)
+
+            # Use the same base frame for the stored record (approach_base ~ final_base since we reused).
+            # If sampling drifted, prefer final_base (anchors the assembled pose).
+            stored_base = final_base
+            action = _ask_accept(
+                "IK preview ready. Accept, retry the same base, retry a new base, or give up"
+            )
+
+            if action == "accept":
+                # Re-write base frame (final_base may differ from seed_base_frame
+                # if sampling fallback found a better location).
+                _write_assembly_base_frame(target_bar_oid, stored_base)
+                _write_assembly_keyframes(target_bar_oid, final_state, approach_state, rcell)
+                _write_legacy_assembly_blob(target_bar_oid, stored_base, final_state, approach_state, rcell)
+                # Capture file is a debug artefact (not production state - production
+                # data lives in the bar user-text above). Opt-in, symmetric with the
+                # failure path. Default No.
+                if _ask_save_debug_capture():
                     seed_state = template_state.copy()
-                    robot_cell._apply_base_frame_mm(seed_state, final_base)
+                    robot_cell._apply_base_frame_mm(seed_state, stored_base)
                     _save_capture(
                         target_bar_id=target_bar_id,
                         left_oid=left_male_oid,
@@ -1083,55 +1298,35 @@ def main():
                         include_self=include_self,
                         include_env=include_env,
                         final_state=final_state,
-                        approach_state=None,
+                        approach_state=approach_state,
                         rcell=rcell,
-                        suffix="_ik_fail_approach",
                     )
-                rs.MessageBox("IK failed for the approach target (all samples exhausted).", 0, "RSIKKeyframe")
-                return
-            robot_cell.set_cell_state(planner, approach_state)
-            rs.EnableRedraw(True)
-            ik_viz.show_state(approach_state, mesh_mode=mesh_mode)
-            print("RSIKKeyframe: approach target reachable. Previewing...")
-        finally:
-            rs.EnableRedraw(True)
+                keep_highlight = True
+                break
 
-        # Use the same base frame for the stored record (approach_base ~ final_base since we reused).
-        # If sampling drifted, prefer final_base (anchors the assembled pose).
-        stored_base = final_base
+            if action == "retry_same_base":
+                print("RSIKKeyframe: retrying IK with the same robot base frame.")
+                _write_assembly_base_frame(target_bar_oid, stored_base)
+                saved_base = stored_base
+                seed_base_frame = stored_base
+                heading_mm = _heading_mm_from_base_frame(stored_base)
+                brep_id = _resolve_sampling_brep_for_base(stored_base, brep_id)
+                allow_saved_base_prompt = False
+                ik_viz.clear_scene()
+                continue
 
-        if _ask_accept():
-            # Re-write base frame (final_base may differ from seed_base_frame
-            # if sampling fallback found a better location).
-            _write_assembly_base_frame(target_bar_oid, stored_base)
-            _write_assembly_keyframes(target_bar_oid, final_state, approach_state, rcell)
-            _write_legacy_assembly_blob(target_bar_oid, stored_base, final_state, approach_state, rcell)
-            # Capture file is a debug artefact (not production state - production
-            # data lives in the bar user-text above). Opt-in, symmetric with the
-            # failure path. Default No.
-            if _ask_save_debug_capture():
-                seed_state = template_state.copy()
-                robot_cell._apply_base_frame_mm(seed_state, stored_base)
-                _save_capture(
-                    target_bar_id=target_bar_id,
-                    left_oid=left_male_oid,
-                    right_oid=right_male_oid,
-                    ocf_left=ocf_left,
-                    ocf_right=ocf_right,
-                    tool0_left_final=tool0_left_final,
-                    tool0_right_final=tool0_right_final,
-                    tool0_left_approach=tool0_left_approach,
-                    tool0_right_approach=tool0_right_approach,
-                    initial_state=seed_state,
-                    include_self=include_self,
-                    include_env=include_env,
-                    final_state=final_state,
-                    approach_state=approach_state,
-                    rcell=rcell,
-                )
-            keep_highlight = True
-        else:
-            print("RSIKKeyframe: rejected; bar user-text unchanged (base frame still saved for next run).")
+            if action == "retry_new_base":
+                print("RSIKKeyframe: retrying IK with a different robot base frame.")
+                saved_base = stored_base
+                seed_base_frame = None
+                heading_mm = None
+                brep_id = None
+                allow_saved_base_prompt = False
+                ik_viz.clear_scene()
+                continue
+
+            print("RSIKKeyframe: gave up; bar keyframes unchanged (base frame still saved for next run).")
+            return
 
     finally:
         rs.EnableRedraw(True)

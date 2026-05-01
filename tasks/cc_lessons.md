@@ -4,6 +4,18 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Post-IK prompts should loop on replan in both success and failure paths
+
+When an IK preview is valid or an IK solve fails, offer explicit replan actions like `RetrySameBase`, `RetryNewBase`, and `GiveUp` instead of any branch that immediately exits the command. Add `Accept` only on the success path.
+
+**Why:** In the Rhino IK workflow, both a valid preview and a failed solve can still be one sampling pass away from success. Forcing exit on failure is the same UX bug as forcing exit on reject: it makes the user rerun the whole command and re-enter context they already chose. `RetrySameBase` should reuse the current base directly; `RetryNewBase` should jump back to the walkable-ground pick without re-asking unrelated options.
+
+**How to apply:** Keep the solve/preview/save block inside a tight local loop. On success, branch to `accept`, `retry_same_base`, `retry_new_base`, or `give_up`. On failure, branch to `retry_same_base`, `retry_new_base`, or `give_up`. Reuse the existing base-save and base-pick helpers rather than introducing a second workflow.
+
+When wiring `RetrySameBase`, do NOT clear the walkable `brep_id` unless you intentionally want seed-only retry. Preserve the current brep when available, and if the current path came from a reused saved base with no cached brep, recover the nearest walkable brep from `WALKABLE_GROUND_LAYER` so `_solve_with_sampling(...)` still gets its fallback samples.
+
+---
+
 ## Edit live scripts, not the `yj_functions/` snapshots
 
 `scripts/yj_functions/` holds backup copies of YJ-contributed scripts for reference only. The user iterates on `scripts/rs_*.py` directly. Confirm the target file before editing if both names exist.

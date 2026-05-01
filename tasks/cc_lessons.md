@@ -4,6 +4,16 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Bar-pick filters: build a factory when you need to mask out specific bar IDs
+
+When a `Rhino.Input.Custom.GetObject` workflow needs to forbid the user from picking certain bars (e.g. an active bar can't depend on itself for support), use `core.rhino_bar_pick.make_bar_or_tube_filter(exclude_bar_ids=[...])` instead of writing an inline lambda. It composes on top of the canonical `bar_or_tube_filter` and resolves both centerline curves and tube-preview Breps to their bar IDs.
+
+**Why:** Without a shared factory, every command would re-implement the curve-vs-tube branch and the bar-id lookup, and would silently break when the tube-preview path is used (the `BAR_ID_KEY` UserText lives on the curve, not the tube — tubes carry `TUBE_BAR_ID_KEY`). The factory hides that detail and returns the bare `bar_or_tube_filter` when the exclusion set is empty so we don't pay closure overhead.
+
+**How to apply:** `go.SetCustomGeometryFilter(make_bar_or_tube_filter(exclude_bar_ids=[active_bar_id]))`. For multi-pick prompts use `go.GetMultiple(0, 0)` so Enter-with-no-selection returns `GetResult.Nothing` (treat as empty list) and Esc returns `GetResult.Cancel` (treat as no-op).
+
+---
+
 ## PyBullet verbose flag inside Rhino 8 ScriptEditor
 
 Always start `PyBulletClient` with `verbose=True` when the script runs inside Rhino's ScriptEditor.

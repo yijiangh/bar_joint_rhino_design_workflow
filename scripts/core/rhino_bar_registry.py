@@ -35,6 +35,7 @@ BAR_TYPE_KEY = "bar_type"
 BAR_ID_KEY = "bar_id"
 BAR_GUID_KEY = "bar_guid"
 BAR_SEQ_KEY = "bar_seq"
+BAR_SUPPORTED_UNTIL_KEY = "supported_until"
 BAR_TYPE_VALUE = "scaffolding_bar"
 
 # Layer names are owned by ``core.config`` so the whole toolchain agrees.
@@ -214,6 +215,20 @@ def repair_bar_sequences():
     Returns ``{bar_id: new_seq}`` for every bar whose sequence was changed.
     """
     from collections import defaultdict
+
+    # Scrub stale ``supported_until`` refs FIRST -- before we touch any
+    # sequence numbers and (more importantly) before ``ensure_bar_id``
+    # gets a chance to reassign bar IDs to copy-pasted curves further
+    # downstream.  Otherwise a dependency on a deleted bar id could
+    # silently rebind to a freshly-issued bar id of an unrelated copy.
+    stale = cleanup_stale_supports()
+    if stale:
+        details = ", ".join(
+            f"{bid}->[{','.join(removed)}]" for bid, removed in stale.items()
+        )
+        print(
+            f"repair_bar_sequences: scrubbed stale supported_until refs: {details}"
+        )
 
     bar_data = []  # (oid, bar_id, bar_id_num, old_seq)
     for oid in rs.AllObjects():
@@ -411,6 +426,117 @@ def insert_bar_before(bar_id, target_bar_id):
 
 
 # ---------------------------------------------------------------------------
+# Temporary-support metadata (``supported_until``)
+# ---------------------------------------------------------------------------
+#
+# A bar may need temporary robotic support after it is placed, until some
+# *other* bars further down the assembly sequence are installed.  We store
+# that requirement as a comma-separated list of bar IDs (e.g. ``"B3,B7"``)
+# in the ``supported_until`` UserText key on the bar centerline curve.
+
+
+def _split_bar_id_list(s):
+    if not s:
+        return []
+    return [tok.strip() for tok in s.split(",") if tok.strip()]
+
+
+def get_supported_until(curve_id):
+    """Return the list of bar IDs that must be assembled before *curve_id*
+    is considered stable (empty list if the key is unset)."""
+    return _split_bar_id_list(rs.GetUserText(curve_id, BAR_SUPPORTED_UNTIL_KEY))
+
+
+def set_supported_until(curve_id, bar_ids):
+    """Persist *bar_ids* (list of bar-id strings) on *curve_id*.  Pass an
+    empty list to clear the requirement."""
+    cleaned = [bid for bid in (bar_ids or []) if bid]
+    if cleaned:
+        rs.SetUserText(curve_id, BAR_SUPPORTED_UNTIL_KEY, ",".join(cleaned))
+    else:
+        # Setting to empty string removes the key from the UserText dict.
+        rs.SetUserText(curve_id, BAR_SUPPORTED_UNTIL_KEY, "")
+
+
+def cleanup_stale_supports():
+    """Remove dangling bar-id refs from every ``supported_until`` list.
+
+    A reference is *stale* if no registered bar carries that ``bar_id``
+    in its UserText.  Stale refs are dangerous because:
+
+    * They make the dependent bar perpetually unstable in our analysis
+      (the awaited bar will never appear).
+    * If the bar id later gets reused for a new bar, the dependency
+      silently rebinds to the wrong bar.
+
+    This function MUST run before any pass that reassigns ``bar_id``
+    values (e.g. ``ensure_bar_id`` healing a copy-pasted curve).  It is
+    invoked at the top of :func:`repair_bar_sequences` so every standard
+    entry-point picks it up automatically via ``repair_on_entry``.
+
+    Returns ``{bar_id: removed_dep_ids}`` for bars whose lists changed.
+    """
+    live_ids = set()
+    bar_records = []  # (oid, bar_id)
+    for oid in rs.AllObjects():
+        if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
+            continue
+        bid = rs.GetUserText(oid, BAR_ID_KEY)
+        bar_records.append((oid, bid))
+        if bid:
+            live_ids.add(bid)
+
+    changed = {}
+    for oid, bid in bar_records:
+        deps = get_supported_until(oid)
+        if not deps:
+            continue
+        kept = [d for d in deps if d in live_ids]
+        if len(kept) != len(deps):
+            removed = [d for d in deps if d not in live_ids]
+            set_supported_until(oid, kept)
+            changed[bid or str(oid)] = removed
+    return changed
+
+
+def get_unstable_bars(active_bar_id, bar_map=None):
+    """Return the set of bar IDs that are unstable *at the moment* the
+    active step is being assembled.
+
+    A built bar (``seq < active_seq``) is unstable if its
+    ``supported_until`` list contains any bar whose sequence is **>=**
+    ``active_seq`` -- i.e. the stabilising bar has not yet finished being
+    assembled (the active bar itself only releases supports *after* its
+    own assembly completes, so dependencies on the active bar still
+    count as unstable during this step).
+
+    Returns an empty set if *active_bar_id* is unknown.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    if active_bar_id not in bar_map:
+        return set()
+    _, active_seq = bar_map[active_bar_id]
+    unstable = set()
+    for bar_id, (oid, seq) in bar_map.items():
+        if seq >= active_seq:
+            continue
+        for dep_id in get_supported_until(oid):
+            dep_entry = bar_map.get(dep_id)
+            if dep_entry is None:
+                # Stale dep (bar was deleted) -- treat as still unsatisfied.
+                # Note: ``repair_bar_sequences`` now scrubs these on entry,
+                # so this branch should only fire mid-session before the
+                # next repair pass.
+                unstable.add(bar_id)
+                break
+            if dep_entry[1] >= active_seq:
+                unstable.add(bar_id)
+                break
+    return unstable
+
+
+# ---------------------------------------------------------------------------
 # Sequence colour-coding and visibility
 # ---------------------------------------------------------------------------
 
@@ -420,6 +546,12 @@ SEQ_COLOR_BUILT = (60, 179, 60)  # green — already assembled
 SEQ_COLOR_ACTIVE = (30, 100, 220)  # blue — current step
 #: Colour for bars not yet assembled (later in sequence).
 SEQ_COLOR_UNBUILT = (160, 160, 160)  # grey — not yet assembled
+#: Colour for built bars that still need temporary support (teal — between
+#: built-green and active-blue).
+SEQ_COLOR_UNSTABLE = (40, 170, 160)
+#: Colour used to overlay bars currently selected as supports inside the
+#: ``EditSupports`` toggle-pick mode (dark purple).
+SEQ_COLOR_SUPPORT_PICK = (110, 40, 160)
 
 
 def _set_obj_color(oid, color):
@@ -505,7 +637,11 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
     """Apply sequence colour-coding + visibility to bars, joints, and tools.
 
     Bar visibility / colour
-        - ``seq < active_seq``  -> green (built), shown.
+        - ``seq < active_seq``  -> green (built), shown.  If the bar is
+          unstable *during* this active step -- i.e. its
+          ``supported_until`` list contains a bar with
+          ``seq >= active_seq`` (the active bar itself counts because it
+          only finishes at the end of this step) -- it is teal instead.
         - ``seq == active_seq`` -> blue  (active step), shown.
         - ``seq > active_seq``  -> grey  (unbuilt), shown iff *show_unbuilt*.
 
@@ -523,6 +659,7 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
     if active_bar_id not in bar_map:
         return
     _, active_seq = bar_map[active_bar_id]
+    unstable_ids = get_unstable_bars(active_bar_id, bar_map)
 
     # Build a quick "is this bar visible?" map for the joint pass.
     bar_visible_by_id = {}
@@ -530,7 +667,7 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
     rs.EnableRedraw(False)
     for bar_id, (oid, seq) in bar_map.items():
         if seq < active_seq:
-            color = SEQ_COLOR_BUILT
+            color = SEQ_COLOR_UNSTABLE if bar_id in unstable_ids else SEQ_COLOR_BUILT
             visible = True
         elif seq == active_seq:
             color = SEQ_COLOR_ACTIVE
@@ -549,7 +686,9 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
     bar_color_by_id = {}
     for bar_id_key, (_oid, seq) in bar_map.items():
         if seq < active_seq:
-            bar_color_by_id[bar_id_key] = SEQ_COLOR_BUILT
+            bar_color_by_id[bar_id_key] = (
+                SEQ_COLOR_UNSTABLE if bar_id_key in unstable_ids else SEQ_COLOR_BUILT
+            )
         elif seq == active_seq:
             bar_color_by_id[bar_id_key] = SEQ_COLOR_ACTIVE
         else:

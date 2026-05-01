@@ -12,6 +12,13 @@ Displays all registered bars colour-coded by assembly step and lets the user:
     in the assembly order without leaving the tool.
   - **PickBarAfterThis** to pick any other bar and insert it immediately after
     the current bar in the sequence.
+  - **EditSupports** to declare which other bars must be assembled before the
+    current bar is considered stable.  Inside this mode all unbuilt bars are
+    forced visible, the existing supports are highlighted in **dark purple**,
+    and clicking a bar toggles its membership in the support set.  Press
+    Enter to save, Esc to cancel; the previous unbuilt-visibility setting is
+    restored on exit.  Built bars whose supports are still unbuilt are
+    recoloured **teal** to flag them as unstable.
   - **ShowUnbuilt / HideUnbuilt** to toggle the visibility of bars (and their
     child joints) that come later than the current step, giving an instant
     "assembly stage" preview.  The active step's robotic tool is always shown;
@@ -21,6 +28,7 @@ Displays all registered bars colour-coded by assembly step and lets the user:
 Colour legend
 -------------
 - Green - already assembled (earlier in sequence)
+- Teal  - already assembled but still needs temporary support
 - Blue  - current step (active bar)
 - Grey  - not yet assembled (later in sequence, when shown)
 """
@@ -39,10 +47,14 @@ if SCRIPT_DIR not in sys.path:
 from core import config
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
+    SEQ_COLOR_SUPPORT_PICK,
     get_bar_seq_map,
+    get_supported_until,
+    set_supported_until,
     move_bar_earlier,
     move_bar_later,
     insert_bar_after,
+    paint_bar,
     repair_on_entry,
     show_sequence_colors,
     reset_sequence_colors,
@@ -53,6 +65,7 @@ from core.rhino_bar_registry import (
 # RSJointPlace / RSBarSnap / etc.
 from core.rhino_bar_pick import (
     bar_or_tube_filter as _bar_or_tube_filter,
+    make_bar_or_tube_filter as _make_bar_or_tube_filter,
     resolve_picked_to_bar_curve as _resolve_picked_to_bar_curve,
 )
 
@@ -185,8 +198,111 @@ class _SequenceSession:
             print("RSSequenceEdit: Cannot move a bar after itself.")
             return
         insert_bar_after(picked_bar_id, self.active_bar_id)
-        show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+        # show_sequence_colors(self.active_bar_id, self.show_unbuilt)
         self._print_status()
+        self.select_next()  # move active to the bar we just inserted, which is now next in the sequence
+
+    def do_edit_supports(self):
+        """Toggle-pick the bars that must be assembled before the active bar
+        is considered stable, and persist the list as ``supported_until``
+        UserText on the active bar's centerline curve.
+
+        Behaviour
+        ---------
+        * Forces all unbuilt bars visible while the picker is open so any
+          bar in the model can be toggled, regardless of the current
+          ``ShowUnbuilt`` setting.  The setting is restored on exit.
+        * Pre-existing supports are highlighted in dark purple
+          (``SEQ_COLOR_SUPPORT_PICK``); clicking a bar toggles its
+          membership in the support set and re-tints accordingly.
+        * Enter saves the new set; Esc cancels and leaves the persisted
+          list unchanged.
+        * The active bar itself is masked out by the pick filter.
+        """
+        if self.active_bar_id is None:
+            print("RSSequenceEdit: Select an active bar first.")
+            return
+        bar_map = get_bar_seq_map()
+        active_oid, _ = bar_map[self.active_bar_id]
+        # Drop any deps that don't resolve in the current bar map.  The
+        # entry-point already ran ``cleanup_stale_supports`` via
+        # ``repair_on_entry``, but the file may have been edited mid-session.
+        selected = [b for b in get_supported_until(active_oid) if b in bar_map]
+
+        original_show_unbuilt = self.show_unbuilt
+
+        def _repaint():
+            # Reset to the standard sequence palette with EVERYTHING visible,
+            # then overlay the support-pick purple on currently-selected bars.
+            show_sequence_colors(self.active_bar_id, True)
+            for bid in selected:
+                entry = bar_map.get(bid)
+                if entry:
+                    paint_bar(entry[0], SEQ_COLOR_SUPPORT_PICK)
+
+        _repaint()
+        print(
+            f"RSSequenceEdit: editing supports for {self.active_bar_id}.  "
+            "Click bars to toggle (purple = selected).  Enter = save, Esc = cancel."
+        )
+
+        committed = False
+        while True:
+            go = Rhino.Input.Custom.GetObject()
+            go.SetCommandPrompt(
+                f"Toggle supports for {self.active_bar_id} "
+                f"({len(selected)} selected)  [Enter = save, Esc = cancel]"
+            )
+            go.EnablePreSelect(False, False)
+            go.AcceptNothing(True)
+            go.SetCustomGeometryFilter(
+                _make_bar_or_tube_filter(exclude_bar_ids=[self.active_bar_id])
+            )
+            result = go.Get()
+
+            if result == Rhino.Input.GetResult.Cancel:
+                print("RSSequenceEdit: cancelled, supports unchanged.")
+                break
+
+            if result == Rhino.Input.GetResult.Nothing:
+                set_supported_until(active_oid, selected)
+                committed = True
+                if selected:
+                    print(
+                        f"RSSequenceEdit: {self.active_bar_id} supported until: "
+                        f"{', '.join(selected)}."
+                    )
+                else:
+                    print(
+                        f"RSSequenceEdit: cleared supports for {self.active_bar_id}."
+                    )
+                break
+
+            if result == Rhino.Input.GetResult.Object:
+                picked_id = go.Object(0).ObjectId
+                rs.UnselectObject(picked_id)
+                bar_curve_id = _resolve_picked_to_bar_curve(picked_id)
+                if bar_curve_id is None:
+                    continue
+                bid = rs.GetUserText(bar_curve_id, BAR_ID_KEY)
+                if not bid or bid == self.active_bar_id:
+                    continue
+                if bid in selected:
+                    selected.remove(bid)
+                else:
+                    selected.append(bid)
+                _repaint()
+                continue
+
+            # Anything else (unexpected) -> bail without saving.
+            break
+
+        # Restore the user's preferred unbuilt-visibility setting and refresh
+        # the standard sequence display so unstable bars repaint correctly.
+        self.show_unbuilt = original_show_unbuilt
+        show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+        if committed:
+            self._print_status()
 
     def toggle_unbuilt(self):
         self.show_unbuilt = not self.show_unbuilt
@@ -243,6 +359,7 @@ def _build_get_option(session, last_action):
     go.AddOption("MoveEarlier")
     go.AddOption("MoveLater")
     go.AddOption("PickBarAfterThis")
+    go.AddOption("EditSupports")
     if session.show_unbuilt:
         go.AddOption("HideUnbuilt")
     else:
@@ -265,6 +382,8 @@ def _run_action(name, session):
         session.do_move_later()
     elif name == "PickBarAfterThis":
         session.do_pick_bar_after_this()
+    elif name == "EditSupports":
+        session.do_edit_supports()
     elif name in ("ShowUnbuilt", "HideUnbuilt"):
         session.toggle_unbuilt()
     return True

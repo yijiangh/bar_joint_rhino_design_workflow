@@ -51,6 +51,7 @@ from core.joint_pair import (
 from core.rhino_bar_registry import (
     BAR_TYPE_KEY,
     BAR_TYPE_VALUE,
+    BAR_ID_KEY,
     TUBE_AXIS_GUID_KEY,
     TUBE_BAR_ID_KEY,
 )
@@ -164,6 +165,36 @@ def resolve_picked_to_bar_curve(picked_id):
         ):
             return oid
     return None
+
+
+def _picked_bar_id(rhino_object):
+    """Return the bar id of *rhino_object* (a curve or its tube), or None."""
+    oid = rhino_object.Id
+    bar_id = rs.GetUserText(oid, BAR_ID_KEY)
+    if bar_id:
+        return bar_id
+    return rs.GetUserText(oid, TUBE_BAR_ID_KEY) or None
+
+
+def make_bar_or_tube_filter(exclude_bar_ids=None):
+    """Return a ``GetObject``-compatible filter that accepts bar curves /
+    tubes the same way :func:`bar_or_tube_filter` does, but rejects any
+    object whose bar id is in *exclude_bar_ids*.
+
+    Pass ``None`` or an empty iterable to get the unrestricted filter
+    (equivalent to :func:`bar_or_tube_filter`).
+    """
+    excluded = frozenset(exclude_bar_ids or ())
+    if not excluded:
+        return bar_or_tube_filter
+
+    def _filter(rhino_object, geometry, component_index):
+        if not bar_or_tube_filter(rhino_object, geometry, component_index):
+            return False
+        bar_id = _picked_bar_id(rhino_object)
+        return bar_id not in excluded
+
+    return _filter
 
 
 # ---------------------------------------------------------------------------

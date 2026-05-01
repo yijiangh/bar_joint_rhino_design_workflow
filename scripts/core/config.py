@@ -111,11 +111,15 @@ RIGHT_PINEAPPLE_BLOCK = "AssemblyRight_Pineapple"
 LEFT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyLeft_Pineapple_m.obj")
 RIGHT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyRight_Pineapple_m.obj")
 
-# Layer holding ground Breps for base-point snapping
-WALKABLE_GROUND_LAYER = "WalkableGround"
-
 # Approach distance: tool0 translated by -avg(male z) * LM_DISTANCE before final
 LM_DISTANCE = 15.0  # mm
+
+# Whether to attach per-arm tool collision meshes (LEFT/RIGHT_PINEAPPLE_TOOL_MESH)
+# to the dual-arm RobotCell as ToolModels for IK collision checking. Set False
+# while the per-tool collision-OBJ pipeline is being redesigned (tools will
+# eventually attach as rigid bodies, not ToolModels). With False, IK still runs
+# self/env collision; only tool-vs-anything is skipped.
+IK_ATTACH_TOOL_MESHES = False
 
 # IK base sampling fallback
 IK_BASE_SAMPLE_RADIUS = 150.0  # mm
@@ -193,8 +197,28 @@ ROBOTIQ_GRIPPER_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "Robotiq_Gripper_m.
 # Dual-arm robot loaded as a static articulated tool (collision obstacle) on the support cell
 DUAL_ARM_OBSTACLE_TOOL_NAME = "DualArm"
 
-# IK persistence on supported bar
+# IK persistence on supported bar (legacy single-key blob written by
+# rs_ik_support_keyframe; will be split into the KEY_SUPPORT_* keys below
+# in a follow-up). Keep for backward compat.
 IK_SUPPORT_KEY = "ik_support"
+
+# ---------------------------------------------------------------------------
+# IK keyframe user-text keys (written on the bar curve).
+#
+# Splits the legacy `ik_assembly` / `ik_support` JSON blobs into one key per
+# logical concept so callers can read/edit them individually and the registry
+# is human-greppable. All values are JSON-encoded strings:
+#   - *_BASE_FRAME       -> 4x4 list-of-lists, world mm
+#   - *_IK_APPROACH/...  -> {"left": {"joint_names": [...], "joint_values": [...]},
+#                            "right": {...}}
+# ASSEMBLY = dual-arm Husky (rs_ik_keyframe). SUPPORT = single-arm support
+# robot (rs_ik_support_keyframe).
+KEY_ASSEMBLY_BASE_FRAME = "assembly_robot_base_frame_world_mm"
+KEY_ASSEMBLY_IK_APPROACH = "assembly_ik_approach"
+KEY_ASSEMBLY_IK_ASSEMBLED = "assembly_ik_assembled"
+KEY_SUPPORT_BASE_FRAME = "support_robot_base_frame_world_mm"
+KEY_SUPPORT_IK_APPROACH = "support_ik_approach"
+KEY_SUPPORT_IK_HELD = "support_ik_held"
 
 # Dynamic preview / committed preview layer
 SUPPORT_PREVIEW_LAYER = "IKSupportPreview"
@@ -212,6 +236,10 @@ LAYER_JOINT_MALE_INSTANCES = (
     MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Male Instances"
 )
 LAYER_TOOL_INSTANCES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Robotic Tool Instances"
+LAYER_WALKABLE_GROUND = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Walkable Ground"
+
+# Back-compat alias used by IK keyframe scripts.
+WALKABLE_GROUND_LAYER = LAYER_WALKABLE_GROUND
 
 MANAGED_LAYERS = (
     LAYER_BAR_CENTERLINES,
@@ -219,6 +247,7 @@ MANAGED_LAYERS = (
     LAYER_JOINT_FEMALE_INSTANCES,
     LAYER_JOINT_MALE_INSTANCES,
     LAYER_TOOL_INSTANCES,
+    LAYER_WALKABLE_GROUND,
 )
 
 DEFAULT_LAYER = "Default"

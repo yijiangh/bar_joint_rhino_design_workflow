@@ -9,23 +9,21 @@
 # r: pybullet_planning==0.6.1
 """RSIKKeyframe - Dual-arm IK keyframe workflow.
 
-Pick a single bar that already carries exactly two male joints, each with
-a robotic tool block placed by ``rs_joint_edit`` (one tool with a name
-ending in 'L' for the left arm, one ending in 'R' for the right arm).
-The placed tool block instances ARE the wrist+tool proxies; their world
-origins are tool0 (the robot flange frame) for IK. The script then:
+Pick two male joint blocks (left arm, then right arm). Their joints must
+sit on the same Ln bar (shared `male_parent_bar`). The script then:
 
-1. Resolves left/right tool block instances on the picked bar.
-2. Prompts for a base point on a Brep in the ``Walkable Ground`` layer
-   (under MANAGED Scaffolding) and a heading point defining the base X-axis.
+1. Inserts "pineapple" (wrist + tool) block instances at the derived tool0
+   frames so the user can eyeball collisions.
+2. Prompts for a base point on a Brep in the `WalkableGround` layer and a
+   heading point defining the base X-axis.
 3. Solves dual-arm IK (left then right group). If unreachable, samples
    base frames in a circle around the pick and re-snaps each to the same
    Brep face.
-4. Previews the robot via ``core.ik_viz``.
-5. Repeats 3-4 for the approach pose, offset along
-   ``-unit(avg(tool_z_L, tool_z_R)) * LM_DISTANCE``.
-6. On accept, writes ``ik_assembly`` user-text (JSON payload) on the bar
-   curve; robot meshes are cleared.
+4. Previews the robot via `core.ik_viz`.
+5. Repeats 1-4 for the approach pose, offset along
+   `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE`.
+6. On accept, writes `ik_assembly` user-text (JSON payload) on the shared
+   Ln bar axis line; pineapple preview and robot meshes are cleared.
 """
 
 from __future__ import annotations
@@ -55,27 +53,18 @@ from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
-from core.rhino_bar_pick import pick_bar
-from core.rhino_bar_registry import (
-    BAR_ID_KEY,
-    get_bar_seq_map,
-    repair_on_entry,
-    reset_sequence_colors,
-    show_sequence_colors,
-)
+from core.rhino_bar_registry import get_bar_seq_map, repair_on_entry
 from core.rhino_frame_io import doc_unit_scale_to_mm
-from core.rhino_helpers import suspend_redraw  # noqa: F401  (kept for parity)
-from core.rhino_tool_place import find_tool_for_joint
-from core.robotic_tool import get_robotic_tool
+from core.rhino_helpers import set_objects_layer, suspend_redraw
 
 
 # ---------------------------------------------------------------------------
 # Constants / user-text keys
 # ---------------------------------------------------------------------------
 
-# Legacy single-blob key (kept for back-compat readers; new writes go to the
-# split keys below from `core.config`).
 IK_ASSEMBLY_KEY = "ik_assembly"
+PINEAPPLE_ROLE_KEY = "_ik_pineapple_role"
+PINEAPPLE_LAYER = "IKPineapplePreview"
 
 
 # ---------------------------------------------------------------------------
@@ -154,109 +143,63 @@ def _has_block_definition(name) -> bool:
     return False
 
 
+def _require_block_definition(name) -> str:
+    if not _has_block_definition(name):
+        raise RuntimeError(f"Missing required Rhino block definition '{name}'.")
+    return name
+
+
+def _insert_pineapple(block_name, frame_mm, role):
+    oid = rs.InsertBlock(block_name, [0, 0, 0])
+    if oid is None:
+        raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
+    rs.TransformObject(oid, _np_mm_to_rhino_xform(frame_mm))
+    rs.SetUserText(oid, PINEAPPLE_ROLE_KEY, role)
+    set_objects_layer(oid, PINEAPPLE_LAYER)
+    return oid
+
+
+def _insert_pineapples(tool0_left_mm, tool0_right_mm):
+    _require_block_definition(config.LEFT_PINEAPPLE_BLOCK)
+    _require_block_definition(config.RIGHT_PINEAPPLE_BLOCK)
+    with suspend_redraw():
+        left = _insert_pineapple(config.LEFT_PINEAPPLE_BLOCK, tool0_left_mm, "left")
+        right = _insert_pineapple(config.RIGHT_PINEAPPLE_BLOCK, tool0_right_mm, "right")
+    return [left, right]
+
+
+def _cleanup_ids(oids):
+    if not oids:
+        return
+    with suspend_redraw():
+        for oid in oids:
+            try:
+                rs.DeleteObject(oid)
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
-# Bar -> (left tool, right tool) resolution
+# Male joint picking
 # ---------------------------------------------------------------------------
 
 
-def _arm_side_from_tool_name(tool_name):
-    """Classify a tool by ``tool_name`` user-text suffix: 'L' -> left, 'R' -> right."""
-    if not tool_name:
+def _is_male_block(oid) -> bool:
+    return rs.GetUserText(oid, "joint_subtype") == "Male"
+
+
+def _male_filter(rhino_object, _geometry, _component_index):
+    return _is_male_block(rhino_object.Id)
+
+
+def _pick_male_joint(prompt):
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt(prompt)
+    go.EnablePreSelect(False, False)
+    go.SetCustomGeometryFilter(_male_filter)
+    if go.Get() != Rhino.Input.GetResult.Object:
         return None
-    last = tool_name.strip()[-1].upper()
-    if last == "L":
-        return "left"
-    if last == "R":
-        return "right"
-    return None
-
-
-def _males_on_bar(bar_id):
-    """Return list of male-joint block instance oids whose ``parent_bar_id`` matches."""
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
-        return []
-    return [
-        oid
-        for oid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []
-        if rs.GetUserText(oid, "parent_bar_id") == bar_id
-    ]
-
-
-def _resolve_arm_tools_on_bar(bar_oid):
-    """Return ``(bar_id, left_tuple, right_tuple)`` where each tuple is
-    ``(male_joint_oid, tool_oid)``, or ``(None, error_message)`` on failure.
-
-    Failures are reported as a 2-tuple so the caller can re-prompt without
-    aborting the whole command.
-    """
-    bar_id = rs.GetUserText(bar_oid, BAR_ID_KEY)
-    if not bar_id:
-        return None, f"Picked curve has no '{BAR_ID_KEY}' user-text; not a registered bar."
-
-    males = _males_on_bar(bar_id)
-    if len(males) != 2:
-        return None, (
-            f"Bar '{bar_id}' has {len(males)} male joint(s); need exactly 2 "
-            "(single-male-joint flow not yet supported)."
-        )
-
-    left = right = None
-    for moid in males:
-        jid = rs.GetUserText(moid, "joint_id")
-        if not jid:
-            return None, f"Male block on bar '{bar_id}' is missing 'joint_id' user-text."
-        toid = find_tool_for_joint(jid)
-        if toid is None:
-            return None, (
-                f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed. "
-                "Run RSJointEdit / tool-cycle first."
-            )
-        tname = rs.GetUserText(toid, "tool_name") or ""
-        side = _arm_side_from_tool_name(tname)
-        if side is None:
-            return None, (
-                f"Tool '{tname}' on joint '{jid}' has no L/R suffix in its name; "
-                "cannot decide arm side."
-            )
-        if side == "left":
-            if left is not None:
-                return None, f"Bar '{bar_id}' has two LEFT-suffix tools; need one L + one R."
-            left = (moid, toid)
-        else:
-            if right is not None:
-                return None, f"Bar '{bar_id}' has two RIGHT-suffix tools; need one L + one R."
-            right = (moid, toid)
-
-    if left is None or right is None:
-        missing = "left" if left is None else "right"
-        return None, f"Bar '{bar_id}' is missing the {missing}-arm tool (need one L + one R)."
-
-    return (bar_id, left, right), None
-
-
-def _pick_bar_with_arm_tools():
-    """Loop until the user picks a bar that satisfies the L/R tool layout,
-    or cancels. Returns ``(bar_id, bar_oid, left_tuple, right_tuple)`` or None.
-    """
-    seq_map = get_bar_seq_map()
-    while True:
-        bar_oid = pick_bar(
-            "Pick the Ln bar to assemble (must have 2 male joints with L/R tools placed)"
-        )
-        if bar_oid is None:
-            return None
-        result, err = _resolve_arm_tools_on_bar(bar_oid)
-        if err is not None:
-            print(f"RSIKKeyframe: {err} Pick another bar or press Esc to cancel.")
-            continue
-        bar_id, left, right = result
-        if bar_id not in seq_map:
-            print(
-                f"RSIKKeyframe: bar '{bar_id}' is not in the bar registry. "
-                "Pick another bar or press Esc to cancel."
-            )
-            continue
-        return bar_id, bar_oid, left, right
+    return go.Object(0).ObjectId
 
 
 # ---------------------------------------------------------------------------
@@ -494,104 +437,6 @@ def _ask_accept(prompt="Accept this IK keyframe and save it on the bar"):
     return str(answer).strip().lower().startswith("a")
 
 
-def _ask_reuse_saved_base():
-    """Prompt 'Reuse saved base frame?' with [Reuse|NewPick]; default = Reuse.
-
-    Returns True to reuse, False to pick a new base, or None on Esc.
-    """
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Saved base frame found on this bar; press Enter to reuse")
-    reuse_idx = go.AddOption("Reuse")
-    new_idx = go.AddOption("NewPick")
-    go.AcceptNothing(True)
-    while True:
-        result = go.Get()
-        if result == Rhino.Input.GetResult.Nothing:
-            return True
-        if result == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == reuse_idx:
-                return True
-            if chosen == new_idx:
-                return False
-            continue
-        return None
-
-
-def _preview_robot_at_base(planner, template_state, base_frame_mm, mesh_mode):
-    """Render the dual-arm robot at `base_frame_mm` with default arm config.
-
-    Cheap visualization for the reuse-base prompt: no IK, just the URDF
-    meshes posed at the saved base. Caller is responsible for clearing
-    via `ik_viz.clear_scene()`.
-    """
-    state = template_state.copy()
-    robot_cell._apply_base_frame_mm(state, base_frame_mm)
-    robot_cell.set_cell_state(planner, state)
-    rcell = robot_cell.get_or_load_robot_cell()
-    ik_viz.show_state(state, mesh_mode=mesh_mode, robot_model=rcell.robot_model)
-
-
-def _resolve_tool_collision_paths(left_tool_oid, right_tool_oid):
-    """Return (left_path, right_path) absolute filesystem paths to the per-arm
-    tool collision OBJs declared in `core/robotic_tools.json`.
-
-    Empty string for an arm whose tool entry has no `collision_filename`.
-    """
-    out = {"left": "", "right": ""}
-    for side, oid in (("left", left_tool_oid), ("right", right_tool_oid)):
-        tname = rs.GetUserText(oid, "tool_name") or ""
-        if not tname:
-            print(f"RSIKKeyframe: {side} tool block has no 'tool_name' user-text; cannot look up collision OBJ.")
-            continue
-        try:
-            tooldef = get_robotic_tool(tname)
-        except KeyError as exc:
-            print(f"RSIKKeyframe: {exc}; skipping collision attach for {side} arm.")
-            continue
-        path = tooldef.collision_path()
-        if not path:
-            print(
-                f"RSIKKeyframe: tool '{tname}' has no 'collision_filename' in robotic_tools.json; "
-                f"skipping collision attach for {side} arm."
-            )
-        out[side] = path
-    return out["left"], out["right"]
-
-
-def _hide_inactive_tool_blocks(active_bar_id):
-    """Hide every tool-instance whose joint isn't on `active_bar_id`. Returns
-    a list of oids that were actually hidden (so caller can restore).
-    """
-    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        return []
-    male_layer = config.LAYER_JOINT_MALE_INSTANCES
-    if not rs.IsLayer(male_layer):
-        return []
-    active_joint_ids = {
-        rs.GetUserText(oid, "joint_id")
-        for oid in (rs.ObjectsByLayer(male_layer) or [])
-        if rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-        and rs.GetUserText(oid, "joint_id")
-    }
-    hidden = []
-    for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        jid = rs.GetUserText(oid, "joint_id")
-        if jid in active_joint_ids:
-            continue
-        if rs.IsObjectHidden(oid):
-            continue
-        if rs.HideObject(oid):
-            hidden.append(oid)
-    return hidden
-
-
-def _show_objects(oids):
-    for oid in oids or []:
-        if rs.IsObject(oid):
-            rs.ShowObject(oid)
-
-
 # ---------------------------------------------------------------------------
 # IK solving with base sampling
 # ---------------------------------------------------------------------------
@@ -617,34 +462,22 @@ def _snap_to_brep(brep, origin_mm):
 def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
                          tool0_left_mm, tool0_right_mm,
                          brep_id, heading_mm, include_self, include_env):
-    """Try seed first; on failure, sample base frames around seed until success.
-
-    If `brep_id` is None (reuse-saved-base path), the sampling fallback is
-    disabled and only the seed base frame is attempted. The caller is
-    expected to handle the no-solution case by re-prompting for a fresh
-    base frame on the next run.
-    """
+    """Try seed first; on failure, sample base frames around seed until success."""
     check_collision = bool(include_self or include_env)
     # Environment collision is only meaningful when env geometry is registered in
     # the robot cell; first-pass workflow has none, so include_env alone is a hint.
     attempts = [seed_base_frame_mm]
-    if brep_id is not None:
-        brep = _as_brep(brep_id)
-        for offset in _sample_base_offsets(config.IK_BASE_SAMPLE_MAX_ITER, config.IK_BASE_SAMPLE_RADIUS):
-            sample_origin_mm = seed_base_frame_mm[:3, 3] + offset
-            snapped_origin, normal = _snap_to_brep(brep, sample_origin_mm)
-            if snapped_origin is None:
-                continue
-            try:
-                sample_frame = _frame_from_origin_normal_heading(snapped_origin, normal, heading_mm)
-            except RuntimeError:
-                continue
-            attempts.append(sample_frame)
-    else:
-        print(
-            "RSIKKeyframe: brep_id=None (reuse path) - sampling fallback disabled; "
-            "trying seed base frame only."
-        )
+    brep = _as_brep(brep_id)
+    for offset in _sample_base_offsets(config.IK_BASE_SAMPLE_MAX_ITER, config.IK_BASE_SAMPLE_RADIUS):
+        sample_origin_mm = seed_base_frame_mm[:3, 3] + offset
+        snapped_origin, normal = _snap_to_brep(brep, sample_origin_mm)
+        if snapped_origin is None:
+            continue
+        try:
+            sample_frame = _frame_from_origin_normal_heading(snapped_origin, normal, heading_mm)
+        except RuntimeError:
+            continue
+        attempts.append(sample_frame)
 
     total = len(attempts)
     for idx, base_frame in enumerate(attempts):
@@ -677,8 +510,57 @@ def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
 
 
 # ---------------------------------------------------------------------------
-# Payload
+# Target-bar resolution & payload
 # ---------------------------------------------------------------------------
+
+
+def _resolve_target_bar(male_left_oid, male_right_oid):
+    ln_left = rs.GetUserText(male_left_oid, "male_parent_bar")
+    ln_right = rs.GetUserText(male_right_oid, "male_parent_bar")
+    if not ln_left or not ln_right:
+        raise RuntimeError("Picked male joint blocks are missing 'male_parent_bar' user-text.")
+    if ln_left != ln_right:
+        raise RuntimeError(
+            f"Picked male joints are on different Ln bars: left={ln_left}, right={ln_right}. "
+            "Both must share the same Ln bar to be saved as a single keyframe."
+        )
+    seq_map = get_bar_seq_map()
+    if ln_left not in seq_map:
+        raise RuntimeError(f"Ln bar '{ln_left}' is not registered in the bar registry.")
+    return ln_left, seq_map[ln_left][0]
+
+
+def _tool0_from_male(oid, arm_side):
+    """Return `(tool0_world_mm, ocf_world_mm)` for a picked male-joint block.
+
+    `arm_side` is "left" or "right" — selects which per-arm transform to use
+    from the nested `MALE_JOINT_OCF_TO_TOOL0[joint_type][arm_side]` dict.
+    """
+    # Dispatch by full block-definition name (e.g. "T20_Male"), which matches
+    # the convention used by RSExportGraspTool0TF. Fall back to the composite
+    # of `joint_type` + `joint_subtype` user-text for instances whose block
+    # name has been renamed.
+    key = rs.BlockInstanceName(oid)
+    if key not in config.MALE_JOINT_OCF_TO_TOOL0:
+        jtype = rs.GetUserText(oid, "joint_type")
+        jsubtype = rs.GetUserText(oid, "joint_subtype")
+        fallback = f"{jtype}_{jsubtype}" if jtype and jsubtype else None
+        if fallback and fallback in config.MALE_JOINT_OCF_TO_TOOL0:
+            key = fallback
+        else:
+            raise RuntimeError(
+                f"No MALE_JOINT_OCF_TO_TOOL0 entry for '{key}'. "
+                "Run RSExportGraspTool0TF (Joint mode) for this joint type first."
+            )
+    per_side = config.MALE_JOINT_OCF_TO_TOOL0[key]
+    if arm_side not in per_side:
+        raise RuntimeError(
+            f"MALE_JOINT_OCF_TO_TOOL0['{key}'] has no '{arm_side}' entry. "
+            f"Run RSExportGraspTool0TF (Joint mode) for the {arm_side} arm."
+        )
+    tf = per_side[arm_side]
+    ocf = _block_instance_xform_mm(oid)
+    return ocf @ tf, ocf
 
 
 def _translate_frame(frame_mm, offset_mm):
@@ -700,77 +582,6 @@ def _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell):
             "right": robot_cell.extract_group_config(approach_state, config.RIGHT_GROUP, rcell),
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Split user-text writers (one logical concept per key)
-# ---------------------------------------------------------------------------
-
-
-def _build_group_pair(state, rcell):
-    return {
-        "left": robot_cell.extract_group_config(state, config.LEFT_GROUP, rcell),
-        "right": robot_cell.extract_group_config(state, config.RIGHT_GROUP, rcell),
-    }
-
-
-def _write_assembly_base_frame(bar_oid, base_frame_mm):
-    payload = np.asarray(base_frame_mm, dtype=float).tolist()
-    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME, json.dumps(payload))
-    print(f"RSIKKeyframe: saved '{config.KEY_ASSEMBLY_BASE_FRAME}' on bar.")
-
-
-def _write_assembly_keyframes(bar_oid, final_state, approach_state, rcell):
-    final_payload = _build_group_pair(final_state, rcell)
-    approach_payload = _build_group_pair(approach_state, rcell)
-    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED, json.dumps(final_payload))
-    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH, json.dumps(approach_payload))
-    print(
-        f"RSIKKeyframe: saved '{config.KEY_ASSEMBLY_IK_ASSEMBLED}' + "
-        f"'{config.KEY_ASSEMBLY_IK_APPROACH}' on bar."
-    )
-
-
-def _write_legacy_assembly_blob(bar_oid, base_frame_mm, final_state, approach_state, rcell):
-    """Back-compat: also write the legacy bundled `ik_assembly` blob.
-
-    `rs_ik_support_keyframe.py` and `rs_show_ik.py` still read this single
-    key. Drop this dual-write once both have been migrated to the
-    `KEY_ASSEMBLY_*` split keys.
-    """
-    payload = _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell)
-    rs.SetUserText(bar_oid, IK_ASSEMBLY_KEY, json.dumps(payload))
-    print(f"RSIKKeyframe: also wrote legacy '{IK_ASSEMBLY_KEY}' blob (back-compat).")
-
-
-def _read_saved_assembly_base_frame(bar_oid):
-    """Return previously-saved base frame as a 4x4 np.ndarray (mm), or None."""
-    raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME)
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-        m = np.asarray(data, dtype=float)
-        if m.shape != (4, 4):
-            print(
-                f"RSIKKeyframe: saved base frame on bar has unexpected shape {m.shape}; ignoring."
-            )
-            return None
-        return m
-    except Exception as exc:
-        print(f"RSIKKeyframe: could not parse saved base frame ({exc}); ignoring.")
-        return None
-
-
-def _heading_mm_from_base_frame(base_frame_mm):
-    """Reconstruct a 'heading point' (origin + 100mm * X-axis) from a saved base frame.
-
-    Used so the sampling code in `_solve_with_sampling` (which derives the
-    base X from `heading - origin`) keeps the same X direction across reuse.
-    """
-    origin = np.asarray(base_frame_mm[:3, 3], dtype=float)
-    x_axis = np.asarray(base_frame_mm[:3, 0], dtype=float)
-    return origin + 100.0 * x_axis
 
 
 # ---------------------------------------------------------------------------
@@ -915,87 +726,51 @@ def main():
     template_state = robot_cell.default_cell_state()
 
     rs.UnselectAllObjects()
-    picked = _pick_bar_with_arm_tools()
-    if picked is None:
+    left_oid = _pick_male_joint("Pick LEFT arm male joint block")
+    if left_oid is None:
         return
-    target_bar_id, target_bar_oid, (left_male_oid, left_tool_oid), (right_male_oid, right_tool_oid) = picked
+    right_oid = _pick_male_joint("Pick RIGHT arm male joint block")
+    if right_oid is None:
+        return
 
-    # ---- UX: focus the canvas on this bar (hide unbuilt + inactive tools).
-    show_sequence_colors(target_bar_id, show_unbuilt=False)
-    extra_hidden_tools = _hide_inactive_tool_blocks(target_bar_id)
-
-    # tool0 (flange frame) IS the tool block instance world transform.
-    tool0_left_final = _block_instance_xform_mm(left_tool_oid)
-    tool0_right_final = _block_instance_xform_mm(right_tool_oid)
-    # OCF (object-coordinate-frame) of the male blocks - still saved in the
-    # capture for headless replay parity.
-    ocf_left = _block_instance_xform_mm(left_male_oid)
-    ocf_right = _block_instance_xform_mm(right_male_oid)
-    print(
-        f"RSIKKeyframe: target Ln bar = {target_bar_id} "
-        f"(left tool = {rs.BlockInstanceName(left_tool_oid)}, "
-        f"right tool = {rs.BlockInstanceName(right_tool_oid)})."
-    )
-
-    # ---- Per-arm tool collision rigid bodies (one-shot per cell).
-    left_collision_path, right_collision_path = _resolve_tool_collision_paths(
-        left_tool_oid, right_tool_oid
-    )
-    arm_tool_rb_names = robot_cell.attach_arm_tool_rigid_bodies(
-        rcell, planner,
-        left_collision_path=left_collision_path,
-        right_collision_path=right_collision_path,
-        native_scale = 0.001
-    )
-    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
+    try:
+        target_bar_id, target_bar_oid = _resolve_target_bar(left_oid, right_oid)
+        tool0_left_final, ocf_left = _tool0_from_male(left_oid, arm_side="left")
+        tool0_right_final, ocf_right = _tool0_from_male(right_oid, arm_side="right")
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        return
+    print(f"RSIKKeyframe: target Ln bar = {target_bar_id}")
 
     env_geom = env_collision.collect_built_geometry(target_bar_id, get_bar_seq_map())
     robot_cell.ensure_env_registered(rcell, env_geom, planner)
     template_state = env_collision.build_env_state(template_state, env_geom)
-    # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
-    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
     print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
 
+    pineapple_ids = []
     env_token = None
     keep_highlight = False
     try:
+        try:
+            pineapple_ids = _insert_pineapples(tool0_left_final, tool0_right_final)
+        except RuntimeError as exc:
+            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+            return
+
         sc.doc.Views.Redraw()
+        if not _ask_accept(
+            "Inspect pineapple (wrist+tool) preview at the FINAL target. "
+            "Accept to proceed to base-point selection"
+        ):
+            print("RSIKKeyframe: cancelled at pineapple preview.")
+            return
 
-        # ---- Try reusing a previously-saved base frame.
-        seed_base_frame = None
-        brep_id = None
-        heading_mm = None
-        saved_base = _read_saved_assembly_base_frame(target_bar_oid)
-        if saved_base is not None:
-            # Default mesh-mode for the preview matches the user's last choice.
-            preview_mode = ik_viz.get_mesh_mode()
-            _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
-            answer = _ask_reuse_saved_base()
-            if answer is None:
-                print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
-                ik_viz.clear_scene()
-                return
-            if answer:
-                print("RSIKKeyframe: reusing saved base frame (skipping walkable-ground pick).")
-                seed_base_frame = saved_base
-                heading_mm = _heading_mm_from_base_frame(saved_base)
-                # brep_id stays None -> sampling fallback is disabled in this run.
-            ik_viz.clear_scene()
-
-        # ---- Fall back to interactive pick if no reuse.
+        brep_id = _pick_walkable_brep()
+        if brep_id is None:
+            return
+        base_origin_mm, base_normal, heading_mm, seed_base_frame = _pick_base_frame_on_walkable(brep_id)
         if seed_base_frame is None:
-            brep_id = _pick_walkable_brep()
-            if brep_id is None:
-                return
-            base_origin_mm, base_normal, heading_mm, seed_base_frame = (
-                _pick_base_frame_on_walkable(brep_id)
-            )
-            if seed_base_frame is None:
-                return
-
-        # Persist the base frame ASAP so a Ctrl+C mid-IK still leaves it on
-        # the bar for the next run's reuse path.
-        _write_assembly_base_frame(target_bar_oid, seed_base_frame)
+            return
 
         env_token = highlight_env.highlight_env_for_ik(target_bar_id)
 
@@ -1004,109 +779,100 @@ def main():
             return
         include_self, include_env, mesh_mode = collision_opts
 
-        # Approach target: translate tool0 frames along -avg(tool z) * LM_DISTANCE.
-        # Tool block local +Z points OUT of the flange toward the joint, so -Z is
-        # the retreat direction. (Sign convention: validate visually on first run.)
-        z_avg_pre = (tool0_left_final[:3, 2] + tool0_right_final[:3, 2]) / 2.0
+        # Approach target: translate tool0 frames along -avg(male z) * LM_DISTANCE
+        z_avg_pre = (ocf_left[:3, 2] + ocf_right[:3, 2]) / 2.0
         try:
             approach_dir_pre = -_unit(z_avg_pre)
         except ValueError:
-            rs.MessageBox("Tool z-axes sum to zero; cannot derive approach direction.", 0, "RSIKKeyframe")
+            rs.MessageBox("Male joint z-axes sum to zero; cannot derive approach direction.", 0, "RSIKKeyframe")
             return
         offset_pre = approach_dir_pre * float(config.LM_DISTANCE)
         tool0_left_approach = _translate_frame(tool0_left_final, offset_pre)
         tool0_right_approach = _translate_frame(tool0_right_final, offset_pre)
 
-        # ---- IK + viewport-redraw lock around the solve+preview block.
-        rs.EnableRedraw(False)
-        try:
-            print("RSIKKeyframe: solving final-target IK...")
-            final_state, final_base = _solve_with_sampling(
-                planner, template_state, seed_base_frame,
-                tool0_left_final, tool0_right_final,
-                brep_id, heading_mm, include_self, include_env,
-            )
-            if final_state is None:
-                rs.EnableRedraw(True)
-                if _ask_save_failure_capture("Final-target"):
-                    seed_state = template_state.copy()
-                    robot_cell._apply_base_frame_mm(seed_state, seed_base_frame)
-                    _save_capture(
-                        target_bar_id=target_bar_id,
-                        left_oid=left_male_oid,
-                        right_oid=right_male_oid,
-                        ocf_left=ocf_left,
-                        ocf_right=ocf_right,
-                        tool0_left_final=tool0_left_final,
-                        tool0_right_final=tool0_right_final,
-                        tool0_left_approach=tool0_left_approach,
-                        tool0_right_approach=tool0_right_approach,
-                        initial_state=seed_state,
-                        include_self=include_self,
-                        include_env=include_env,
-                        final_state=None,
-                        approach_state=None,
-                        rcell=rcell,
-                        suffix="_ik_fail_final",
-                    )
-                rs.MessageBox("IK failed for the final target (all samples exhausted).", 0, "RSIKKeyframe")
-                return
-            # Sync the PyBullet world to the new state, then update the Rhino viz.
-            robot_cell.set_cell_state(planner, final_state)
-            rs.EnableRedraw(True)
-            ik_viz.show_state(final_state, mesh_mode=mesh_mode)
-            print("RSIKKeyframe: final target reachable. Previewing...")
+        print("RSIKKeyframe: solving final-target IK...")
+        final_state, final_base = _solve_with_sampling(
+            planner, template_state, seed_base_frame,
+            tool0_left_final, tool0_right_final,
+            brep_id, heading_mm, include_self, include_env,
+        )
+        if final_state is None:
+            if _ask_save_failure_capture("Final-target"):
+                seed_state = template_state.copy()
+                robot_cell._apply_base_frame_mm(seed_state, seed_base_frame)
+                _save_capture(
+                    target_bar_id=target_bar_id,
+                    left_oid=left_oid,
+                    right_oid=right_oid,
+                    ocf_left=ocf_left,
+                    ocf_right=ocf_right,
+                    tool0_left_final=tool0_left_final,
+                    tool0_right_final=tool0_right_final,
+                    tool0_left_approach=tool0_left_approach,
+                    tool0_right_approach=tool0_right_approach,
+                    initial_state=seed_state,
+                    include_self=include_self,
+                    include_env=include_env,
+                    final_state=None,
+                    approach_state=None,
+                    rcell=rcell,
+                    suffix="_ik_fail_final",
+                )
+            rs.MessageBox("IK failed for the final target (all samples exhausted).", 0, "RSIKKeyframe")
+            return
+        # Sync the PyBullet world to the new state, then update the Rhino viz
+        # (mirrors GH_set_cell_state.py + GH_scene_viz.py ordering).
+        robot_cell.set_cell_state(planner, final_state)
+        ik_viz.show_state(final_state, mesh_mode=mesh_mode)
+        print("RSIKKeyframe: final target reachable. Previewing...")
 
-            rs.EnableRedraw(False)
-            print("RSIKKeyframe: solving approach-target IK...")
-            approach_state, approach_base = _solve_with_sampling(
-                planner, template_state, final_base,
-                tool0_left_approach, tool0_right_approach,
-                brep_id, heading_mm, include_self, include_env,
-            )
-            if approach_state is None:
-                rs.EnableRedraw(True)
-                if _ask_save_failure_capture("Approach-target"):
-                    seed_state = template_state.copy()
-                    robot_cell._apply_base_frame_mm(seed_state, final_base)
-                    _save_capture(
-                        target_bar_id=target_bar_id,
-                        left_oid=left_male_oid,
-                        right_oid=right_male_oid,
-                        ocf_left=ocf_left,
-                        ocf_right=ocf_right,
-                        tool0_left_final=tool0_left_final,
-                        tool0_right_final=tool0_right_final,
-                        tool0_left_approach=tool0_left_approach,
-                        tool0_right_approach=tool0_right_approach,
-                        initial_state=seed_state,
-                        include_self=include_self,
-                        include_env=include_env,
-                        final_state=final_state,
-                        approach_state=None,
-                        rcell=rcell,
-                        suffix="_ik_fail_approach",
-                    )
-                rs.MessageBox("IK failed for the approach target (all samples exhausted).", 0, "RSIKKeyframe")
-                return
-            robot_cell.set_cell_state(planner, approach_state)
-            rs.EnableRedraw(True)
-            ik_viz.show_state(approach_state, mesh_mode=mesh_mode)
-            print("RSIKKeyframe: approach target reachable. Previewing...")
-        finally:
-            rs.EnableRedraw(True)
+        # Refresh pineapple preview to approach pose
+        _cleanup_ids(pineapple_ids)
+        pineapple_ids = _insert_pineapples(tool0_left_approach, tool0_right_approach)
+
+        print("RSIKKeyframe: solving approach-target IK...")
+        approach_state, approach_base = _solve_with_sampling(
+            planner, template_state, final_base,
+            tool0_left_approach, tool0_right_approach,
+            brep_id, heading_mm, include_self, include_env,
+        )
+        if approach_state is None:
+            if _ask_save_failure_capture("Approach-target"):
+                seed_state = template_state.copy()
+                robot_cell._apply_base_frame_mm(seed_state, final_base)
+                _save_capture(
+                    target_bar_id=target_bar_id,
+                    left_oid=left_oid,
+                    right_oid=right_oid,
+                    ocf_left=ocf_left,
+                    ocf_right=ocf_right,
+                    tool0_left_final=tool0_left_final,
+                    tool0_right_final=tool0_right_final,
+                    tool0_left_approach=tool0_left_approach,
+                    tool0_right_approach=tool0_right_approach,
+                    initial_state=seed_state,
+                    include_self=include_self,
+                    include_env=include_env,
+                    final_state=final_state,
+                    approach_state=None,
+                    rcell=rcell,
+                    suffix="_ik_fail_approach",
+                )
+            rs.MessageBox("IK failed for the approach target (all samples exhausted).", 0, "RSIKKeyframe")
+            return
+        robot_cell.set_cell_state(planner, approach_state)
+        ik_viz.show_state(approach_state, mesh_mode=mesh_mode)
+        print("RSIKKeyframe: approach target reachable. Previewing...")
 
         # Use the same base frame for the stored record (approach_base ~ final_base since we reused).
         # If sampling drifted, prefer final_base (anchors the assembled pose).
         stored_base = final_base
 
         if _ask_accept():
-            # Re-write base frame (final_base may differ from seed_base_frame
-            # if sampling fallback found a better location).
-            _write_assembly_base_frame(target_bar_oid, stored_base)
-            _write_assembly_keyframes(target_bar_oid, final_state, approach_state, rcell)
-            _write_legacy_assembly_blob(target_bar_oid, stored_base, final_state, approach_state, rcell)
-            # Capture file is a debug artefact (not production state - production
+            payload = _build_assembly_payload(stored_base, final_state, approach_state, rcell)
+            rs.SetUserText(target_bar_oid, IK_ASSEMBLY_KEY, json.dumps(payload))
+            print(f"RSIKKeyframe: saved '{IK_ASSEMBLY_KEY}' on bar {target_bar_id}.")
+            # Capture file is a debug artefact (not production state — production
             # data lives in the bar user-text above). Opt-in, symmetric with the
             # failure path. Default No.
             if _ask_save_debug_capture():
@@ -1114,8 +880,8 @@ def main():
                 robot_cell._apply_base_frame_mm(seed_state, stored_base)
                 _save_capture(
                     target_bar_id=target_bar_id,
-                    left_oid=left_male_oid,
-                    right_oid=right_male_oid,
+                    left_oid=left_oid,
+                    right_oid=right_oid,
                     ocf_left=ocf_left,
                     ocf_right=ocf_right,
                     tool0_left_final=tool0_left_final,
@@ -1131,19 +897,13 @@ def main():
                 )
             keep_highlight = True
         else:
-            print("RSIKKeyframe: rejected; bar user-text unchanged (base frame still saved for next run).")
+            print("RSIKKeyframe: rejected; bar user-text unchanged.")
 
     finally:
-        rs.EnableRedraw(True)
+        _cleanup_ids(pineapple_ids)
         ik_viz.clear_scene()
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)
-        # Restore canvas exactly like RSSequenceEdit exit path.
-        try:
-            _show_objects(extra_hidden_tools)
-            reset_sequence_colors()
-        except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome
-            print(f"RSIKKeyframe: failed to restore sequence colors ({exc}); continuing.")
 
 
 if __name__ == "__main__":

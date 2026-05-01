@@ -63,6 +63,12 @@ class JointHalfDef:
     mesh_filename: str = ""            # URDF mesh, optional
     mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
     preferred_robotic_tool_name: str = ""  # used at first-place time only
+    # OBJ filename (under DEFAULT_ASSET_DIR) used as the low-poly collision
+    # mesh attached as a `compas_fab.robots.RigidBody` for env collision in
+    # the IK keyframe workflow. The OBJ origin must coincide with the block
+    # definition's local frame. Empty string -> fallback to slow Rhino
+    # block-def render-mesh path.
+    collision_filename: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
@@ -71,6 +77,9 @@ class JointHalfDef:
     def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
         return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
 
+    def collision_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
+        return os.path.join(asset_dir, self.collision_filename) if self.collision_filename else ""
+
     def to_dict(self) -> dict:
         return {
             "block_name": self.block_name,
@@ -78,6 +87,7 @@ class JointHalfDef:
             "mesh_filename": self.mesh_filename,
             "mesh_scale": list(self.mesh_scale),
             "preferred_robotic_tool_name": self.preferred_robotic_tool_name,
+            "collision_filename": self.collision_filename,
             "M_block_from_bar": self.M_block_from_bar.tolist(),
             "M_screw_from_block": self.M_screw_from_block.tolist(),
         }
@@ -92,6 +102,7 @@ class JointHalfDef:
             mesh_filename=str(data.get("mesh_filename", "")),
             mesh_scale=tuple(float(v) for v in data.get("mesh_scale", (1.0, 1.0, 1.0))),
             preferred_robotic_tool_name=str(data.get("preferred_robotic_tool_name", "")),
+            collision_filename=str(data.get("collision_filename", "")),
         )
 
 

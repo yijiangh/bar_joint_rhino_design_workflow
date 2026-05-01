@@ -10,6 +10,7 @@
         1.0,
         1.0
       ],
+      "collision_filename": "LeftHandTool_SimpleVis.obj",
       "M_tcp_from_block": [
         [
           1.0,
@@ -47,6 +48,7 @@
         1.0,
         1.0
       ],
+      "collision_filename": "RightHandTool_SimpleVis.obj",
       "M_tcp_from_block": [
         [
           1.0,

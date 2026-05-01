@@ -82,12 +82,21 @@ class RoboticToolDef:
     asset_filename: str = ""
     mesh_filename: str = ""
     mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    # OBJ filename (under DEFAULT_ASSET_DIR) used as the per-tool collision
+    # mesh attached as a `compas_fab.robots.RigidBody` to the arm's tool0
+    # link in the IK keyframe workflow. Must be exported with the block's
+    # local origin coincident with the robot flange (tool0). Empty string
+    # disables the rigid-body attach for that tool.
+    collision_filename: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_tcp_from_block", _as_4x4(self.M_tcp_from_block))
 
     def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
         return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
+
+    def collision_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
+        return os.path.join(asset_dir, self.collision_filename) if self.collision_filename else ""
 
     def to_dict(self) -> dict:
         return {
@@ -96,6 +105,7 @@ class RoboticToolDef:
             "asset_filename": self.asset_filename,
             "mesh_filename": self.mesh_filename,
             "mesh_scale": list(self.mesh_scale),
+            "collision_filename": self.collision_filename,
             "M_tcp_from_block": self.M_tcp_from_block.tolist(),
         }
 
@@ -108,6 +118,7 @@ class RoboticToolDef:
             asset_filename=str(data.get("asset_filename", "")),
             mesh_filename=str(data.get("mesh_filename", "")),
             mesh_scale=tuple(float(v) for v in data.get("mesh_scale", (1.0, 1.0, 1.0))),
+            collision_filename=str(data.get("collision_filename", "")),
         )
 
 

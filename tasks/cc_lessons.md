@@ -4,6 +4,14 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Edit live scripts, not the `yj_functions/` snapshots
+
+`scripts/yj_functions/` holds backup copies of YJ-contributed scripts for reference only. The user iterates on `scripts/rs_*.py` directly. Confirm the target file before editing if both names exist.
+
+## Validation/picking loops: re-prompt instead of aborting on a bad pick
+
+When a user picks a wrong-shape input (e.g. a bar that doesn't have the required L+R tool layout), `print` a helpful diagnostic and `continue` the pick loop. Only `return` from `main` on Esc/explicit cancel. Keeps the user in flow without re-running the command.
+
 ## Bar-pick filters: build a factory when you need to mask out specific bar IDs
 
 When a `Rhino.Input.Custom.GetObject` workflow needs to forbid the user from picking certain bars (e.g. an active bar can't depend on itself for support), use `core.rhino_bar_pick.make_bar_or_tube_filter(exclude_bar_ids=[...])` instead of writing an inline lambda. It composes on top of the canonical `bar_or_tube_filter` and resolves both centerline curves and tube-preview Breps to their bar IDs.
@@ -221,3 +229,29 @@ Run the debug script under Rhino's bundled python — `C:/Users/yijiangh/.rhinoc
 2. **Patch every pp submodule's CLIENT** (only when pp ergonomics matter enough): walk `pybullet_planning` once at startup, find every submodule with a `CLIENT` int attribute, and on each client switch overwrite all of them. The test ships a working `pp_active_client` context manager that does exactly this (~28 modules patched, restored on exit). It works but depends on every relevant submodule already being imported at walk time — lazy imports inside individual helpers can slip past it.
 
 The shipping `pp.set_client(...)` API is unsafe and should not be used as the primary scoping primitive in any new multi-client code.
+---
+
+## env_collision RigidBody cache: share the SAME RigidBody instance under multiple cell names
+
+When many env entries (e.g. all placed T20_Female joints) share identical geometry, build the compas_fab.robots.RigidBody ONCE and reuse the same Python object as the value under every `robot_cell.rigid_body_models[name]` key.
+
+**Why:** `compas_fab` PyBullet backend (`pybullet_set_robot_cell.py` -> `client._add_rigid_body`) iterates `rigid_body_models.items()` and creates a fresh PyBullet body per name regardless of whether the underlying `RigidBody` instance is shared. The slow path was `Rhino brep -> mesh -> mesh.join -> to_obj -> vhacd`; eliminating duplicate work per joint placement drops `ensure_env_registered` from ~40 s to a few hundred ms after the first cold load.
+
+**How to apply:** Cache `RigidBody` in sticky keyed by geometry source (`block_name` for joint OBJ, `(bar_oid, length+radius signature)` for procedurally-built bars). In `register_env_in_robot_cell`, detect change with object identity (`existing is rb`) instead of comparing vertex/face counts. Always store the geometry in the body's LOCAL frame and put the world placement on `RigidBodyState.frame` so the same instance can be reused across positions.
+
+## Procedural bar collision: 12-sided cylinder mesh, no length subdivision
+
+For bar-shaped env obstacles, build the collision mesh in pure Python (compas `Mesh.from_vertices_and_faces`) as a 12-sided polygon ring extruded along `+Z` length L plus two cap fans. Place via `RigidBodyState.frame`.
+
+**Why:** Going through Rhino `Cylinder.ToBrep` -> `Mesh.CreateFromBrep` -> per-vertex Python loop into compas `Mesh` is slow (Brep meshing alone is hundreds of ms per bar). 12 facets * 1 length segment = 12 quads + 2 fans -> tiny mesh; PyBullet handles the long thin triangles fine.
+
+**How to apply:** Build the mesh in METERS in the local frame (origin at bar start, Z = bar axis). Cache key = bar oid + `(round(length_mm,3), round(radius_mm,3))`. Compute the world placement frame separately via `frame_from_axes` so identical-length bars share one `RigidBody` and only `frame_world_mm` differs across entries.
+
+## Attached rigid body transform must use live PyBullet link frame (not model-only FK)
+
+For `RigidBodyState.attached_to_link`, compute the link frame from PyBullet's live robot (`client._get_link_frame(...)`) before applying `attachment_frame`.
+
+**Why:** `robot_model.forward_kinematics(...)` can ignore the runtime mobile-base world pose, so attached rigid bodies look offset/floating in GUI and collision checks desync from what the user sees.
+
+**How to apply:** In `pybullet_set_robot_cell_state`, replace model FK in the attached-to-link branch with `pcf_link_id = client.robot_link_puids[link_name]` + `link_frame = client._get_link_frame(pcf_link_id, client.robot_puid)`, then compose with `attachment_frame` as before.
+

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -236,6 +237,11 @@ def _attach_tool_models(robot_cell, deps):
     exported from a Rhino block whose local origin coincides with tool0
     (block instances are placed at tool0 world frames in `rs_ik_keyframe`).
     """
+    if not getattr(config, "IK_ATTACH_TOOL_MESHES", True):
+        # Tool collision pipeline is being redesigned (rigid bodies, per-tool
+        # OBJ from `robotic_tools.json`). Skip the legacy pineapple ToolModel
+        # attach so IK still runs without tool-vs-anything checks.
+        return
     Frame = deps["Frame"]
     Mesh = deps["Mesh"]
     ToolModel = deps["ToolModel"]
@@ -291,10 +297,12 @@ def get_or_load_robot_cell():
     """
     cached = _STICKY.get(_STICKY_ROBOT_CELL)
     if cached is not None:
+        print("core.robot_cell.get_or_load_robot_cell: returning cached RobotCell.")
         deps = _import_compas_stack()
         _attach_tool_models(cached, deps)
         return cached
 
+    print("core.robot_cell.get_or_load_robot_cell: cold load (URDF + SRDF + geometry).")
     deps = _import_compas_stack()
     deps["compas"].PRECISION = "12f"
 
@@ -311,8 +319,10 @@ def get_or_load_robot_cell():
     dualarm_husky_loader = LocalPackageMeshLoader(pkg_path, "husky_ur_description")
     ur_loader = LocalPackageMeshLoader(pkg_path, "ur_description")
 
+    print(f"core.robot_cell: LocalPackageMeshLoader.load_urdf({config.HUSKY_URDF_FILENAME!r})")
     urdf_stream = main_loader.load_urdf(config.HUSKY_URDF_FILENAME)
     robot_model = deps["RobotModel"].from_urdf_string(urdf_stream.read())
+    print("core.robot_cell: RobotModel.load_geometry(<4 mesh loaders>)")
     robot_model.load_geometry(main_loader, husky_loader, dualarm_husky_loader, ur_loader)
 
     srdf_path = main_loader.build_path(
@@ -371,10 +381,12 @@ def start_pb_client(use_gui: bool = False, verbose: bool = True):
         connection_type="gui" if use_gui else "direct",
         verbose=verbose,
     )
+    print("core.robot_cell.start_pb_client: PyBulletClient.__enter__()")
     client.__enter__()
     planner = deps["PyBulletPlanner"](client)
 
     robot_cell = get_or_load_robot_cell()
+    print("core.robot_cell.start_pb_client: planner.set_robot_cell(<dual-arm>)")
     planner.set_robot_cell(robot_cell)
 
     _STICKY[_STICKY_PB_CLIENT] = client
@@ -393,6 +405,7 @@ def stop_pb_client():
     """
     try:
         deps = _import_compas_stack()
+        print("core.robot_cell.stop_pb_client: pp.disconnect()")
         deps["pp"].disconnect()
     except Exception as exc:
         print(f"stop_pb_client: disconnect raised ({exc}); clearing sticky anyway.")
@@ -400,11 +413,14 @@ def stop_pb_client():
         _STICKY.pop(_STICKY_PB_CLIENT, None)
         _STICKY.pop(_STICKY_PB_PLANNER, None)
         _STICKY.pop(_STICKY_ENV_GEOM, None)
-        # Bar/joint mesh caches built by core.env_collision are tied to the
-        # PB client lifecycle — clear them so the next RSPBStart rebuilds
-        # against possibly-edited bar curves.
+        # Bar/joint mesh + RigidBody caches built by core.env_collision are
+        # tied to the PB client lifecycle -- clear them so the next RSPBStart
+        # rebuilds against possibly-edited bar curves / re-exported joint OBJs.
         _STICKY.pop("bar_joint:env_bar_tube_mesh_cache", None)
         _STICKY.pop("bar_joint:env_joint_def_mesh_cache", None)
+        _STICKY.pop("bar_joint:env_joint_rb_cache", None)
+        _STICKY.pop("bar_joint:env_bar_rb_cache", None)
+        _STICKY.pop("bar_joint:env_joint_obj_path_map", None)
 
 
 def get_planner():
@@ -462,8 +478,10 @@ def set_cell_state(planner, robot_cell_state):
     """
     deps = _import_compas_stack()
     if _STICKY.get(_STICKY_CURRENT_CELL_KIND) != "dual_arm":
+        print("core.robot_cell.set_cell_state: cell-kind swap -> planner.set_robot_cell(<dual-arm>)")
         planner.set_robot_cell(get_or_load_robot_cell())
         _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
+    print("core.robot_cell.set_cell_state: planner.set_robot_cell_state(state) + pp.set_pose(robot_base)")
     planner.set_robot_cell_state(robot_cell_state)
     base_frame = robot_cell_state.robot_base_frame
     deps["pp"].set_pose(planner.client.robot_puid, _pose_from_frame(base_frame))
@@ -495,11 +513,28 @@ def ensure_env_registered(robot_cell, env_geom, planner):
     """
     from core import env_collision
 
+    t_top = time.perf_counter()
     deps = _import_compas_stack()
+    t_deps = time.perf_counter()
     changed = env_collision.register_env_in_robot_cell(robot_cell, env_geom, deps=deps)
+    t_reg = time.perf_counter()
     if changed:
+        print(
+            f"core.robot_cell.ensure_env_registered: env changed "
+            f"({len(env_geom)} bodies) -> planner.set_robot_cell(<dual-arm>)"
+        )
         planner.set_robot_cell(robot_cell)
+    else:
+        print("core.robot_cell.ensure_env_registered: env unchanged; skipping planner.set_robot_cell")
+    t_push = time.perf_counter()
     _STICKY[_STICKY_ENV_GEOM] = env_geom
+    print(
+        f"core.robot_cell.ensure_env_registered: timing "
+        f"deps={ (t_deps-t_top)*1000:.1f}ms "
+        f"register={ (t_reg-t_deps)*1000:.1f}ms "
+        f"set_robot_cell={ (t_push-t_reg)*1000:.1f}ms "
+        f"total={ (t_push-t_top)*1000:.1f}ms"
+    )
 
 
 def solve_dual_arm_ik(
@@ -574,6 +609,10 @@ def solve_dual_arm_ik(
         (right_target, config.RIGHT_GROUP),
     ):
         try:
+            print(
+                f"core.robot_cell.solve_dual_arm_ik: planner.inverse_kinematics(group={group!r}, "
+                f"check_collision={check_collision}, max_results={max_results})"
+            )
             cfg = planner.inverse_kinematics(target, state, group=group, options=options)
         except Exception as exc:
             print(f"IK failed for group '{group}': {exc}")
@@ -597,3 +636,158 @@ def extract_group_config(state, group: str, robot_cell) -> dict:
         float(state.robot_configuration[name]) for name in group_joint_names
     ]
     return {"joint_names": group_joint_names, "joint_values": joint_values}
+
+
+# ---------------------------------------------------------------------------
+# Per-arm tool collision rigid bodies
+# ---------------------------------------------------------------------------
+#
+# The legacy "pineapple" pipeline attached two `ToolModel`s (one per arm)
+# whose meshes were the wrist+tool proxy. The new pipeline attaches each
+# placed tool's collision OBJ (declared in `core/robotic_tools.json` as
+# `collision_filename`) to the corresponding arm's `*_ur_arm_tool0` link
+# as a `compas_fab.robots.RigidBody`. Touch-links cover the wrist links the
+# proxy mesh inherently overlaps so IK does not reject valid poses on
+# proxy-vs-wrist self-collision.
+
+ARM_TOOL_RB_NAMES = {
+    "left": "AssemblyLeftArmToolBody",
+    "right": "AssemblyRightArmToolBody",
+}
+_ARM_TOOL_LINKS = {
+    "left": "left_ur_arm_tool0",
+    "right": "right_ur_arm_tool0",
+}
+_ARM_TOOL_TOUCH_LINKS = {
+    "left": [
+        "left_ur_arm_wrist_1_link",
+        "left_ur_arm_wrist_2_link",
+        "left_ur_arm_wrist_3_link",
+    ],
+    "right": [
+        "right_ur_arm_wrist_1_link",
+        "right_ur_arm_wrist_2_link",
+        "right_ur_arm_wrist_3_link",
+    ],
+}
+
+
+def attach_arm_tool_rigid_bodies(robot_cell, planner, *,
+                                 left_collision_path,
+                                 right_collision_path,
+                                 native_scale=1.0):
+    """Register per-arm tool collision OBJs as `RigidBody`s on `robot_cell.rigid_body_models`.
+
+    Idempotent on (rigid-body name, source path): re-runs that point at
+    the same OBJ are no-ops. If anything changed, re-pushes the cell to
+    the planner so the new collision geometry is in PyBullet's world.
+
+    Parameters
+    ----------
+    robot_cell : compas_fab.robots.RobotCell
+    planner    : compas_fab PyBulletPlanner
+    left_collision_path  : str  -- absolute path to the left-arm tool OBJ;
+                                   pass an empty/missing path to skip.
+    right_collision_path : str  -- as above.
+    native_scale : float -- mesh.scale(native_scale) -> meters. OBJs
+        exported in mm need 0.001; OBJs already in meters use 1.0
+        (default; matches the existing pineapple convention).
+
+    Returns
+    -------
+    dict {"left": rb_name | None, "right": rb_name | None}
+        Names actually registered on the cell, ready to be wired into a
+        state via ``configure_arm_tool_rigid_body_states``.
+    """
+    deps = _import_compas_stack()
+    Mesh = deps["Mesh"]
+    RigidBody = deps["RigidBody"]
+    side_paths = (("left", left_collision_path), ("right", right_collision_path))
+    registered = {"left": None, "right": None}
+    changed = False
+    for side, path in side_paths:
+        name = ARM_TOOL_RB_NAMES[side]
+        if not path or not os.path.isfile(path):
+            print(
+                f"core.robot_cell.attach_arm_tool_rigid_bodies: {side}-arm "
+                f"collision OBJ missing -> {path!r}; skipping (IK will run "
+                "without tool-vs-anything collision for this arm)."
+            )
+            continue
+        existing = robot_cell.rigid_body_models.get(name)
+        if existing is not None and getattr(existing, "_loaded_from", None) == path:
+            registered[side] = name
+            v_count = sum(m.number_of_vertices() for m in (existing.visual_meshes or []))
+            c_count = sum(m.number_of_vertices() for m in (existing.collision_meshes or []))
+            print(
+                f"core.robot_cell.attach_arm_tool_rigid_bodies: reusing '{name}' "
+                f"(visual verts={v_count}, collision verts={c_count})"
+            )
+            continue
+        print(
+            f"core.robot_cell.attach_arm_tool_rigid_bodies: Mesh.from_obj({path!r}) "
+            f"(native_scale={native_scale})"
+        )
+        mesh = Mesh.from_obj(path)
+        rb = RigidBody(visual_meshes=[mesh], collision_meshes=[mesh],
+                       native_scale=native_scale)
+        print(
+            f"core.robot_cell.attach_arm_tool_rigid_bodies: built '{name}' "
+            f"({mesh.number_of_vertices()}v/{mesh.number_of_faces()}f), "
+            f"visual_meshes={len(rb.visual_meshes or [])}, "
+            f"collision_meshes={len(rb.collision_meshes or [])}"
+        )
+        try:
+            rb._loaded_from = path
+        except AttributeError:
+            pass
+        robot_cell.rigid_body_models[name] = rb
+        registered[side] = name
+        changed = True
+    if changed:
+        print(
+            "core.robot_cell.attach_arm_tool_rigid_bodies: arm-tool RBs changed "
+            "-> planner.set_robot_cell(<dual-arm>)"
+        )
+        planner.set_robot_cell(robot_cell)
+    return registered
+
+
+def configure_arm_tool_rigid_body_states(state, registered):
+    """Attach the arm-tool rigid bodies to their tool0 links on `state`.
+
+    `registered` is the dict returned by ``attach_arm_tool_rigid_bodies``.
+    Skipped entries (None) are left alone. Mutates `state` in place.
+    """
+    deps = _import_compas_stack()
+    RigidBodyState = deps["RigidBodyState"]
+    Frame = deps["Frame"]
+    for side, rb_name in registered.items():
+        if rb_name is None:
+            continue
+        link_name = _ARM_TOOL_LINKS[side]
+        touch_links = list(_ARM_TOOL_TOUCH_LINKS[side])
+        rb_state = state.rigid_body_states.get(rb_name)
+        if rb_state is None:
+            state.rigid_body_states[rb_name] = RigidBodyState(
+                frame=None,
+                attached_to_link=link_name,
+                attached_to_tool=None,
+                touch_links=touch_links,
+                touch_bodies=[],
+                attachment_frame=Frame.worldXY(),
+                is_hidden=False,
+            )
+        else:
+            rb_state.attached_to_link = link_name
+            rb_state.attached_to_tool = None
+            rb_state.touch_links = touch_links
+            rb_state.touch_bodies = []
+            rb_state.attachment_frame = Frame.worldXY()
+            rb_state.frame = None
+            rb_state.is_hidden = False
+        print(
+            f"core.robot_cell.configure_arm_tool_rigid_body_states: "
+            f"{rb_name} attached_to_link={link_name} attachment=identity"
+        )
+    return state

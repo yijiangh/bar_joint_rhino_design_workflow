@@ -7,28 +7,28 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSShowIK - Replay a saved `ik_assembly` keyframe (and optional
-`ik_support` keyframe on the same bar).
+"""RSShowIK - Interactive viewer for saved `assembly_ik_*` keyframes
+(and optional legacy `ik_support` keyframe on the same bar).
 
-Pick a bar that has an `ik_assembly` user-text record (written by
-RSIKKeyframe). The script rebuilds the dual-arm robot cell state (base
-frame + left/right group configurations) and shows it in Rhino via
-`core.ik_viz`. Pineapple (wrist + tool) blocks are inserted at the
-tool0 frames derived from FK on the saved configuration so the tool
-geometry is visible alongside the robot.
+The user picks a bar to start; the script enters an interactive loop
+that runs until Esc. Inside the loop the user can:
 
-If the same bar ALSO carries an `ik_support` user-text record (written
-by RSIKSupportKeyframe), the support arm is baked alongside the dual-
-arm using the same mesh-mode, and a Robotiq gripper block is inserted
-at the saved support tool0 frame.
+  * click any other bar to switch the active bar;
+  * press Enter (or `TogglePose`) to cycle through saved poses
+    (currently `assembled` <-> `approach`);
+  * use ShowUnbuilt / HideUnbuilt to toggle the visibility of unbuilt bars.
 
-Use `mode` option to toggle between the `final` and `approach` sub-
-records on the assembly side. Default is `final`. The support side
-always shows its single saved pose (it has no approach phase).
+The active bar is highlighted via the same sequence-color overlay used
+by RSIKKeyframe / RSSequenceEdit. Bars with no saved IK data still
+become active (handy as a navigation aid) but show no robot preview.
+The robot is always rendered with the visual mesh.
 
-The preview is non-baked: when the user dismisses the prompt, both
-robots' meshes, pineapples, and the Robotiq block are deleted (mirrors
-the RSIKKeyframe try/finally cleanup).
+If the active bar ALSO carries an `ik_support` legacy user-text record,
+the support arm + Robotiq gripper preview is baked alongside the dual-
+arm, using the saved `assembled` assembly pose as collision context.
+
+The preview is non-baked: on Esc all robot meshes, pineapples, and the
+Robotiq block are cleaned up and the sequence display is restored.
 """
 
 from __future__ import annotations
@@ -52,19 +52,32 @@ from core import config as _config_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
-from core.rhino_bar_pick import pick_bar
+from core.rhino_bar_pick import (
+    bar_or_tube_filter as _bar_or_tube_filter,
+    pick_bar,
+    resolve_picked_to_bar_curve as _resolve_picked_to_bar_curve,
+)
+from core.rhino_bar_registry import (
+    BAR_ID_KEY,
+    reset_sequence_colors,
+    show_sequence_colors,
+)
 from core.rhino_block_import import has_block_definition
 from core.rhino_frame_io import doc_unit_scale_to_mm
 from core.rhino_helpers import set_objects_layer, suspend_redraw
 
 
-IK_ASSEMBLY_KEY = "ik_assembly"
+# Legacy support-side single-blob key (KEY_SUPPORT_* split is not yet wired
+# in `rs_ik_support_keyframe.py`).
 IK_SUPPORT_KEY = "ik_support"
 PINEAPPLE_ROLE_KEY = "_ik_pineapple_role"
 PINEAPPLE_LAYER = "IKPineapplePreview"
 SUPPORT_GRIPPER_PREVIEW_ROLE = "support_gripper_preview"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
+
+# Pose cycle order. Future poses can be appended; cycling is index-modulo.
+POSES = ("assembled", "approach")
 
 
 def _reload():
@@ -78,36 +91,9 @@ def _reload():
 _reload()
 
 
-def _prompt_mode() -> str:
-    answer = rs.GetString("Show which keyframe", "final", ["final", "approach"])
-    if answer is None:
-        return "final"
-    answer = answer.strip().lower()
-    if answer not in ("final", "approach"):
-        return "final"
-    return answer
-
-
-def _prompt_mesh_mode() -> str:
-    """Ask which robot mesh to display; default = previously cached choice."""
-    current = ik_viz.get_mesh_mode()
-    answer = rs.GetString(
-        "Robot mesh display",
-        current,
-        [ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION],
-    )
-    if answer is None:
-        return current
-    answer = answer.strip().lower()
-    if answer not in (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION):
-        return current
-    ik_viz.set_mesh_mode(answer)
-    return answer
-
-
-def _apply_payload(state, payload_group):
-    """Merge `{left,right}` group configs from payload into `state.robot_configuration`."""
-    for _side, cfg in payload_group.items():
+def _apply_groups(state, groups):
+    """Merge `{left,right}` group configs into `state.robot_configuration`."""
+    for _side, cfg in groups.items():
         names = cfg["joint_names"]
         values = cfg["joint_values"]
         for name, value in zip(names, values):
@@ -123,26 +109,6 @@ def _np_mm_to_rhino_xform(matrix: np.ndarray):
         for j in range(4):
             xform[i, j] = float(doc_matrix[i, j])
     return xform
-
-
-def _insert_pineapple(block_name, frame_mm, role):
-    oid = rs.InsertBlock(block_name, [0, 0, 0])
-    if oid is None:
-        raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
-    rs.TransformObject(oid, _np_mm_to_rhino_xform(frame_mm))
-    rs.SetUserText(oid, PINEAPPLE_ROLE_KEY, role)
-    set_objects_layer(oid, PINEAPPLE_LAYER)
-    return oid
-
-
-def _insert_pineapples(tool0_left_mm, tool0_right_mm):
-    for block_name in (config.LEFT_PINEAPPLE_BLOCK, config.RIGHT_PINEAPPLE_BLOCK):
-        if not has_block_definition(block_name):
-            raise RuntimeError(f"Missing required Rhino block definition '{block_name}'.")
-    with suspend_redraw():
-        left = _insert_pineapple(config.LEFT_PINEAPPLE_BLOCK, tool0_left_mm, "left")
-        right = _insert_pineapple(config.RIGHT_PINEAPPLE_BLOCK, tool0_right_mm, "right")
-    return [left, right]
 
 
 def _cleanup_ids(oids):
@@ -168,7 +134,14 @@ def _detach_drawn_ids():
     return guids
 
 
-def _show_support_state(planner, assembly_payload, support_payload, mesh_mode, deps):
+def _show_support_state(
+    planner,
+    assembly_base_mm,
+    assembled_groups,
+    support_payload,
+    mesh_mode,
+    deps,
+):
     """Bake the support arm meshes via ik_viz at the saved support pose.
     Swaps the planner's cell to the support cell so PyBullet matches; the
     dual-arm meshes are already in the doc and survive the swap because
@@ -177,17 +150,16 @@ def _show_support_state(planner, assembly_payload, support_payload, mesh_mode, d
     cell = robot_cell_support.get_or_load_support_cell()
     state = robot_cell_support.default_support_cell_state()
 
-    # DualArm tool obstacle: configure at the assembly's FINAL pose (the
-    # support keyframe was solved against final, regardless of which mode
-    # the user is currently viewing for the assembly side).
-    da_payload = assembly_payload["final"]
+    # DualArm tool obstacle: always configure at the assembled pose - the
+    # support keyframe was solved against assembled regardless of which
+    # pose the user is currently viewing on the assembly side.
     state = robot_cell_support.configure_dual_arm_obstacle(
         state,
-        base_frame_world_mm=np.asarray(assembly_payload["base_frame_world_mm"], dtype=float),
-        joint_values_left=da_payload["left"]["joint_values"],
-        joint_values_right=da_payload["right"]["joint_values"],
-        joint_names_left=da_payload["left"]["joint_names"],
-        joint_names_right=da_payload["right"]["joint_names"],
+        base_frame_world_mm=np.asarray(assembly_base_mm, dtype=float),
+        joint_values_left=assembled_groups["left"]["joint_values"],
+        joint_values_right=assembled_groups["right"]["joint_values"],
+        joint_names_left=assembled_groups["left"]["joint_names"],
+        joint_names_right=assembled_groups["right"]["joint_names"],
     )
 
     support_base_mm = np.asarray(support_payload["base_frame_world_mm"], dtype=float)
@@ -234,6 +206,234 @@ def _tool0_world_mm(planner, link_name: str) -> np.ndarray:
     return matrix
 
 
+# ---------------------------------------------------------------------------
+# Payload loading
+# ---------------------------------------------------------------------------
+
+
+def _load_assembly_payload(bar_oid):
+    """Read the new split assembly keys off ``bar_oid``.
+
+    Returns ``{"base_frame_world_mm", "assembled", "approach"}`` (any of
+    "assembled" / "approach" may be ``None`` if missing) or ``None`` if
+    the bar has no assembled keyframe at all.
+    """
+    base_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME)
+    assembled_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED)
+    if not base_raw or not assembled_raw:
+        return None
+    approach_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH)
+    try:
+        return {
+            "base_frame_world_mm": np.asarray(json.loads(base_raw), dtype=float),
+            "assembled": json.loads(assembled_raw),
+            "approach": json.loads(approach_raw) if approach_raw else None,
+        }
+    except json.JSONDecodeError as exc:
+        print(f"RSShowIK: malformed user-text on bar ({exc}); skipping IK preview.")
+        return None
+
+
+def _load_support_payload(bar_oid):
+    raw = rs.GetUserText(bar_oid, IK_SUPPORT_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"RSShowIK: malformed '{IK_SUPPORT_KEY}' on bar ({exc}); skipping support preview.")
+        return None
+
+
+def _build_assembly_state(base_mm, groups, deps):
+    state = robot_cell.default_cell_state()
+    origin_m = base_mm[:3, 3] / 1000.0
+    x_axis = base_mm[:3, 0]
+    y_axis = base_mm[:3, 1]
+    state.robot_base_frame = deps["Frame"](
+        list(map(float, origin_m)),
+        list(map(float, x_axis)),
+        list(map(float, y_axis)),
+    )
+    _apply_groups(state, groups)
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Interactive session
+# ---------------------------------------------------------------------------
+
+
+class _PreviewSession:
+    """Holds mutable UI state for one RSShowIK run."""
+
+    def __init__(self, planner):
+        self.planner = planner
+        self.deps = robot_cell.import_compas_stack()
+        self.active_bar_id = None
+        self.active_bar_oid = None
+        self.pose = POSES[0]
+        self.show_unbuilt = False
+        # Doc oids the session owns and must clean up on refresh / exit.
+        self._da_doc_oids = []
+        self._support_block_ids = []
+
+    # ---- mutations -----------------------------------------------------
+
+    def set_active_bar(self, bar_id, bar_oid):
+        self.active_bar_id = bar_id
+        self.active_bar_oid = bar_oid
+        # Reset pose on bar switch so users always start from "assembled".
+        self.pose = POSES[0]
+        self.refresh()
+
+    def cycle_pose(self):
+        if self.active_bar_id is None:
+            return
+        idx = POSES.index(self.pose) if self.pose in POSES else -1
+        self.pose = POSES[(idx + 1) % len(POSES)]
+        self.refresh()
+
+    def toggle_unbuilt(self):
+        self.show_unbuilt = not self.show_unbuilt
+        if self.active_bar_id is not None:
+            show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+
+    # ---- rendering -----------------------------------------------------
+
+    def refresh(self):
+        self._clear_preview()
+        if self.active_bar_id is None:
+            return
+
+        show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+
+        payload = _load_assembly_payload(self.active_bar_oid)
+        if payload is None:
+            print(
+                f"RSShowIK: bar {self.active_bar_id} has no "
+                f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}' record; showing geometry only."
+            )
+            return
+
+        groups = payload.get(self.pose)
+        if groups is None:
+            # Requested pose missing -> fall back to assembled.
+            print(
+                f"RSShowIK: bar {self.active_bar_id} has no '{self.pose}' pose; "
+                f"showing 'assembled' instead."
+            )
+            self.pose = "assembled"
+            groups = payload["assembled"]
+
+        self._render(payload, groups)
+
+    def _render(self, payload, groups):
+        mesh_mode = ik_viz.MESH_MODE_VISUAL
+        ik_viz.set_mesh_mode(mesh_mode)
+
+        state = _build_assembly_state(
+            payload["base_frame_world_mm"], groups, self.deps
+        )
+
+        rs.EnableRedraw(False)
+        try:
+            robot_cell.set_cell_state(self.planner, state)
+            ik_viz.show_state(state, mesh_mode=mesh_mode)
+
+            support_payload = _load_support_payload(self.active_bar_oid)
+            if support_payload is not None:
+                try:
+                    # Detach dual-arm bake from ik_viz tracking so the support
+                    # show_state doesn't wipe it.
+                    self._da_doc_oids = _detach_drawn_ids()
+                    _show_support_state(
+                        self.planner,
+                        payload["base_frame_world_mm"],
+                        payload["assembled"],
+                        support_payload,
+                        mesh_mode,
+                        self.deps,
+                    )
+                    tool0_support_mm = np.asarray(
+                        support_payload["tool0_frame_world_mm"], dtype=float
+                    )
+                    try:
+                        self._support_block_ids = _insert_support_gripper(tool0_support_mm)
+                    except Exception as exc:
+                        print(
+                            f"RSShowIK: SupportGripper preview skipped "
+                            f"({type(exc).__name__}: {exc})."
+                        )
+                    stored_support = support_payload.get("robot_id", "<unknown>")
+                    print(
+                        f"RSShowIK: also showing 'ik_support' for bar "
+                        f"{self.active_bar_id} (robot_id={stored_support})."
+                    )
+                except Exception as exc:
+                    print(
+                        f"RSShowIK: ik_support display failed "
+                        f"({type(exc).__name__}: {exc})."
+                    )
+
+            print(
+                f"RSShowIK: showing '{self.pose}' keyframe for bar "
+                f"{self.active_bar_id} (mesh_mode={mesh_mode})"
+            )
+        finally:
+            rs.EnableRedraw(True)
+
+    # ---- cleanup -------------------------------------------------------
+
+    def _clear_preview(self):
+        _cleanup_ids(self._support_block_ids)
+        _cleanup_ids(self._da_doc_oids)
+        self._support_block_ids = []
+        self._da_doc_oids = []
+        ik_viz.clear_scene()
+
+    def cleanup(self):
+        self._clear_preview()
+        try:
+            reset_sequence_colors()
+        except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome
+            print(f"RSShowIK: failed to restore sequence colors ({exc}); continuing.")
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+
+def _resolve_pick_to_bar(picked_obj_id):
+    """Resolve a clicked oid (centerline curve or tube preview) to
+    ``(bar_id, bar_curve_oid)`` or ``(None, None)``."""
+    bar_curve_id = _resolve_picked_to_bar_curve(picked_obj_id)
+    if bar_curve_id is None:
+        return None, None
+    bar_id = rs.GetUserText(bar_curve_id, BAR_ID_KEY)
+    if not bar_id:
+        return None, None
+    return bar_id, bar_curve_id
+
+
+def _build_get_option(session):
+    go = Rhino.Input.Custom.GetObject()
+    pose_label = session.pose if session.active_bar_id else "-"
+    go.SetCommandPrompt(
+        f"Pick a bar to view, Enter to cycle pose [now: {pose_label}], Esc to exit"
+    )
+    go.EnablePreSelect(False, False)
+    go.AcceptNothing(True)
+    go.SetCustomGeometryFilter(_bar_or_tube_filter)
+    go.AddOption("TogglePose")
+    if session.show_unbuilt:
+        go.AddOption("HideUnbuilt")
+    else:
+        go.AddOption("ShowUnbuilt")
+    return go
+
+
 def main() -> None:
     _reload()
 
@@ -243,95 +443,54 @@ def main() -> None:
     _client, planner = robot_cell.get_planner()
 
     rs.UnselectAllObjects()
-    bar_id = pick_bar("Pick a bar with a saved ik_assembly record")
-    if bar_id is None:
+    initial_oid = pick_bar("Pick a bar to view its IK keyframe (Esc to cancel)")
+    if initial_oid is None:
         return
-
-    raw = rs.GetUserText(bar_id, IK_ASSEMBLY_KEY)
-    if not raw:
+    initial_bar_id = rs.GetUserText(initial_oid, BAR_ID_KEY)
+    if not initial_bar_id:
         rs.MessageBox(
-            f"No '{IK_ASSEMBLY_KEY}' user-text on the selected bar. "
-            "Run RSIKKeyframe first.",
+            "Picked curve is not a registered bar (no 'bar_id' user-text).",
             0,
             "RSShowIK",
         )
         return
 
+    session = _PreviewSession(planner)
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        rs.MessageBox(f"Stored ik_assembly is not valid JSON: {exc}", 0, "RSShowIK")
-        return
+        session.set_active_bar(initial_bar_id, initial_oid)
 
-    mode = _prompt_mode()
-    if mode not in payload:
-        rs.MessageBox(f"'{mode}' keyframe missing in the saved record.", 0, "RSShowIK")
-        return
-    mesh_mode = _prompt_mesh_mode()
+        while True:
+            go = _build_get_option(session)
+            result = go.Get()
 
-    rcell = robot_cell.get_or_load_robot_cell()
-    state = robot_cell.default_cell_state()
+            if result == Rhino.Input.GetResult.Cancel:
+                break
 
-    base_mm = np.array(payload["base_frame_world_mm"], dtype=float)
-    # Use the private mm -> m Frame helper via a public call path.
-    deps = robot_cell.import_compas_stack()
-    origin_m = base_mm[:3, 3] / 1000.0
-    x_axis = base_mm[:3, 0]
-    y_axis = base_mm[:3, 1]
-    state.robot_base_frame = deps["Frame"](
-        list(map(float, origin_m)), list(map(float, x_axis)), list(map(float, y_axis))
-    )
-    _apply_payload(state, payload[mode])
+            if result == Rhino.Input.GetResult.Object:
+                bar_id, bar_oid = _resolve_pick_to_bar(go.Object(0).ObjectId)
+                if bar_id is None:
+                    print("RSShowIK: picked object is not a registered bar; ignoring.")
+                    continue
+                if bar_id == session.active_bar_id:
+                    # Click on already-active bar = cheap refresh (no pose reset).
+                    session.refresh()
+                else:
+                    session.set_active_bar(bar_id, bar_oid)
+                continue
 
-    pineapple_ids = []
-    da_doc_oids = []
-    support_block_ids = []
-    try:
-        robot_cell.set_cell_state(planner, state)
-        ik_viz.show_state(state, mesh_mode=mesh_mode)
+            if result == Rhino.Input.GetResult.Nothing:
+                session.cycle_pose()
+                continue
 
-        try:
-            tool0_left_mm = _tool0_world_mm(planner, LEFT_TOOL0_LINK)
-            tool0_right_mm = _tool0_world_mm(planner, RIGHT_TOOL0_LINK)
-            pineapple_ids = _insert_pineapples(tool0_left_mm, tool0_right_mm)
-        except Exception as exc:
-            print(f"RSShowIK: pineapple preview skipped ({type(exc).__name__}: {exc}).")
-
-        ik_support_raw = rs.GetUserText(bar_id, IK_SUPPORT_KEY)
-        if ik_support_raw:
-            try:
-                support_payload = json.loads(ik_support_raw)
-                # Detach dual-arm bake from ik_viz tracking so the support
-                # show_state doesn't wipe it.
-                da_doc_oids = _detach_drawn_ids()
-                _show_support_state(planner, payload, support_payload, mesh_mode, deps)
-                tool0_support_mm = np.asarray(
-                    support_payload["tool0_frame_world_mm"], dtype=float
-                )
-                try:
-                    support_block_ids = _insert_support_gripper(tool0_support_mm)
-                except Exception as exc:
-                    print(f"RSShowIK: SupportGripper preview skipped "
-                          f"({type(exc).__name__}: {exc}).")
-                stored_support = support_payload.get("robot_id", "<unknown>")
-                print(f"RSShowIK: also showing 'ik_support' for bar {bar_id} "
-                      f"(robot_id={stored_support}).")
-            except Exception as exc:
-                print(f"RSShowIK: ik_support display failed "
-                      f"({type(exc).__name__}: {exc}).")
-
-        stored_robot = payload.get("robot_id", "<unknown>")
-        print(f"RSShowIK: showing '{mode}' keyframe for bar {bar_id}  "
-              f"(robot_id={stored_robot}, mesh_mode={mesh_mode})")
-
-        # Block until user dismisses; cleanup runs in `finally` so the
-        # robot + pineapple meshes never stay baked in the document.
-        rs.GetString("Press Enter to dismiss the IK preview", "OK", ["OK"])
+            if result == Rhino.Input.GetResult.Option:
+                name = go.Option().EnglishName
+                if name == "TogglePose":
+                    session.cycle_pose()
+                elif name in ("ShowUnbuilt", "HideUnbuilt"):
+                    session.toggle_unbuilt()
+                continue
     finally:
-        _cleanup_ids(pineapple_ids)
-        _cleanup_ids(support_block_ids)
-        _cleanup_ids(da_doc_oids)
-        ik_viz.clear_scene()
+        session.cleanup()
 
 
 if __name__ == "__main__":

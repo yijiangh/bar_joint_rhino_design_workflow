@@ -149,25 +149,6 @@ def _require_block_definition(name) -> str:
     return name
 
 
-def _insert_pineapple(block_name, frame_mm, role):
-    oid = rs.InsertBlock(block_name, [0, 0, 0])
-    if oid is None:
-        raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
-    rs.TransformObject(oid, _np_mm_to_rhino_xform(frame_mm))
-    rs.SetUserText(oid, PINEAPPLE_ROLE_KEY, role)
-    set_objects_layer(oid, PINEAPPLE_LAYER)
-    return oid
-
-
-def _insert_pineapples(tool0_left_mm, tool0_right_mm):
-    _require_block_definition(config.LEFT_PINEAPPLE_BLOCK)
-    _require_block_definition(config.RIGHT_PINEAPPLE_BLOCK)
-    with suspend_redraw():
-        left = _insert_pineapple(config.LEFT_PINEAPPLE_BLOCK, tool0_left_mm, "left")
-        right = _insert_pineapple(config.RIGHT_PINEAPPLE_BLOCK, tool0_right_mm, "right")
-    return [left, right]
-
-
 def _cleanup_ids(oids):
     if not oids:
         return
@@ -747,15 +728,9 @@ def main():
     template_state = env_collision.build_env_state(template_state, env_geom)
     print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
 
-    pineapple_ids = []
     env_token = None
     keep_highlight = False
     try:
-        try:
-            pineapple_ids = _insert_pineapples(tool0_left_final, tool0_right_final)
-        except RuntimeError as exc:
-            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
-            return
 
         sc.doc.Views.Redraw()
         if not _ask_accept(
@@ -827,8 +802,6 @@ def main():
         print("RSIKKeyframe: final target reachable. Previewing...")
 
         # Refresh pineapple preview to approach pose
-        _cleanup_ids(pineapple_ids)
-        pineapple_ids = _insert_pineapples(tool0_left_approach, tool0_right_approach)
 
         print("RSIKKeyframe: solving approach-target IK...")
         approach_state, approach_base = _solve_with_sampling(
@@ -900,7 +873,6 @@ def main():
             print("RSIKKeyframe: rejected; bar user-text unchanged.")
 
     finally:
-        _cleanup_ids(pineapple_ids)
         ik_viz.clear_scene()
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)

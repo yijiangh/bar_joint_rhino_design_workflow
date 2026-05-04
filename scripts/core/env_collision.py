@@ -33,17 +33,20 @@ ENV_RB_JOINT_PREFIX = "env_joint_"
 # ---------------------------------------------------------------------------
 
 
-def _bar_tube_compas_mesh(bar_oid, bar_radius_mm: float):
-    """Build a compas Mesh of the bar tube (cylinder along the centerline).
+def bar_tube_compas_mesh_from_geometry(curve, bar_radius_mm: float):
+    """Build a compas Mesh of a bar tube (cylinder) from a Rhino Curve geometry.
 
-    Returns the mesh in METERS (compas convention).
-    Uses Rhino API; only call from inside Rhino.
+    `curve` is a `Rhino.Geometry.Curve` (or anything with `PointAtStart` /
+    `PointAtEnd`) whose endpoints are in mm. Returns the mesh in METERS
+    (compas convention), or None on degenerate input. Uses Rhino API; only
+    call from inside Rhino. Shared by the doc-object and pure-geometry
+    paths so the GH parametric front-end and `rs_*` scripts produce the
+    same env-collision mesh.
     """
     import Rhino
-    import rhinoscriptsyntax as rs
 
-    start = rs.CurveStartPoint(bar_oid)
-    end = rs.CurveEndPoint(bar_oid)
+    start = curve.PointAtStart
+    end = curve.PointAtEnd
     axis = Rhino.Geometry.Vector3d(end.X - start.X, end.Y - start.Y, end.Z - start.Z)
     length = float(axis.Length)
     if length < 1e-9:
@@ -64,6 +67,21 @@ def _bar_tube_compas_mesh(bar_oid, bar_radius_mm: float):
     for piece in pieces:
         combined.Append(piece)
     return _rhino_mesh_to_compas_meters(combined)
+
+
+def _bar_tube_compas_mesh(bar_oid, bar_radius_mm: float):
+    """Build a compas Mesh of the bar tube from a Rhino doc-object id.
+
+    Thin wrapper around `bar_tube_compas_mesh_from_geometry` that resolves
+    `bar_oid` to its curve geometry. Kept for callers that operate on doc
+    objects (e.g. `collect_built_geometry`).
+    """
+    import rhinoscriptsyntax as rs
+
+    curve = rs.coercecurve(bar_oid)
+    if curve is None:
+        return None
+    return bar_tube_compas_mesh_from_geometry(curve, bar_radius_mm)
 
 
 def _block_def_render_mesh(block_def):

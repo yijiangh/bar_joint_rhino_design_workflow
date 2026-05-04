@@ -211,3 +211,67 @@ Run the debug script under Rhino's bundled python — `C:/Users/yijiangh/.rhinoc
 2. **Patch every pp submodule's CLIENT** (only when pp ergonomics matter enough): walk `pybullet_planning` once at startup, find every submodule with a `CLIENT` int attribute, and on each client switch overwrite all of them. The test ships a working `pp_active_client` context manager that does exactly this (~28 modules patched, restored on exit). It works but depends on every relevant submodule already being imported at walk time — lazy imports inside individual helpers can slip past it.
 
 The shipping `pp.set_client(...)` API is unsafe and should not be used as the primary scoping primitive in any new multi-client code.
+
+---
+
+## GHPython components that reuse `core.*` need the same sys.path bootstrap as Rhino scripts
+
+GH components that need `compas_fab` must put `<repo>/scripts` on `sys.path` and `from core import robot_cell` BEFORE any `import compas_fab ...`. The bare `#! python 3` + `# venv: scaffolding_env` directive does NOT load compas_fab.
+
+**Why:** `compas_fab` is pinned as a git submodule at `external/compas_fab`, NOT installed via pip in the `scaffolding_env` venv (per the rule about never listing `# r: compas_fab`). The submodule path is prepended to `sys.path` by `core.robot_cell._ensure_submodule_compas_fab_loaded()`, which runs at import time. Rhino `rs_*` scripts do this correctly because their first action is `from core import ...`. The original `support_materials/gh_keyframe_demos/python/*.py` files import `compas_fab` directly at the top, so they fail with `ModuleNotFoundError: No module named 'compas_fab'` once the venv changed.
+
+**How to apply:** Every GHPython component that uses compas_fab starts with:
+
+```python
+import os, sys
+REPO = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+SCRIPTS = os.path.join(REPO, "scripts")
+if SCRIPTS not in sys.path:
+    sys.path.insert(0, SCRIPTS)
+from core import robot_cell  # triggers _ensure_submodule_compas_fab_loaded
+```
+
+After this, `from compas_fab... import ...` and any of the `core.*` modules can be imported normally. v2 templates live under `support_materials/gh_keyframe_demos/python/v2/`.
+
+---
+
+## Carry 4x4 matrices between GHPython components as `Rhino.Geometry.Transform`, not Python list-of-lists
+
+When piping a 4x4 mm-tagged matrix from one GHPython component to another, output it as `Rhino.Geometry.Transform`. Do NOT output `numpy_array.tolist()` (a nested list).
+
+**Why:** GH wires decompose Python list-of-lists into branches at the boundary. An item-access receiver then sees only the first sublist (the first row, length 4). The downstream code's matmul `(4,) @ (4,4)` succeeds and quietly returns a 1-D vector — the bug surfaces several lines later as `IndexError: too many indices for array: array is 1-dimensional, but 2 were indexed` inside whatever helper indexes `[:3, 3]`. Hit on the first click-test of the v2 GH dual-arm IK chain (C2 → C3). `Rhino.Geometry.Transform` is a single Rhino primitive; GH carries it atomically.
+
+**How to apply:** Pack with the helper pair (already in the v2 components):
+
+```python
+def _np_mm_to_xform_raw(matrix_mm):
+    xf = Rhino.Geometry.Transform(1.0)
+    for i in range(4):
+        for j in range(4):
+            xf[i, j] = float(matrix_mm[i, j])
+    return xf
+
+def _xform_raw_to_np_mm(xform):
+    return np.array([[float(xform[i, j]) for j in range(4)] for i in range(4)], dtype=float)
+```
+
+The Transform here is a *raw* mm carrier, NOT a doc-unit Rhino transform — no `doc_unit_scale_to_mm()` scaling. (Distinct from `rs_ik_keyframe._np_mm_to_rhino_xform`, which DOES scale because it hands the Transform to `rs.TransformObject`.) Set the receiver's input pin type hint to "No type hint / Object". This same trick applies to any non-scalar Python value piped between GHPython components.
+
+---
+
+## In Rhino 8 CPython, force-register compas_fab GH SceneObjects (don't rely on `compas.RHINO`)
+
+Before calling `Scene().add(robot_cell)` from a GHPython component under Rhino 8 CPython, explicitly run:
+
+```python
+from compas.scene import register
+from compas_fab.ghpython.scene import RobotCellObject, RigidBodyObject, ReachabilityMapObject
+from compas_fab.robots import RobotCell, RigidBody, ReachabilityMap
+register(RobotCell, RobotCellObject, context="Grasshopper")
+register(RigidBody, RigidBodyObject, context="Grasshopper")
+register(ReachabilityMap, ReachabilityMapObject, context="Grasshopper")
+```
+
+**Why:** `compas_fab/ghpython/scene/__init__.py` wraps its imports + `@plugin` registration in `if compas.RHINO:`. Under Rhino 8 CPython the `compas.RHINO` flag is sometimes False (the runtime hasn't set it), so the gate skips and the plugin never registers. `Scene.add(robot_cell)` then raises `SceneObjectNotRegisteredError: ... in this context: Grasshopper`. Hit on the v2 GH C5 (`gh_scene_viz`) first run. The legacy GH IronPython demos didn't trip because IronPython's `compas.RHINO` was True.
+
+**How to apply:** Any new GHPython component that draws compas_fab data must call this registration block once (idempotent — `register` overwrites). Wrap it in a `_ensure_gh_registration()` helper so callers don't repeat the boilerplate. Don't try to "fix" `compas.RHINO` upstream — it's a runtime flag and the gate predates Rhino 8 CPython.

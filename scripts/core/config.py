@@ -237,6 +237,9 @@ LAYER_JOINT_MALE_INSTANCES = (
 )
 LAYER_TOOL_INSTANCES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Robotic Tool Instances"
 LAYER_WALKABLE_GROUND = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Walkable Ground"
+# Cached IK preview meshes (robot links + tool models). Baked once on first
+# `ik_viz.update_state(...)`; toggled visible only inside an IK preview session.
+LAYER_IK_CACHE = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "IK Cache"
 
 # Back-compat alias used by IK keyframe scripts.
 WALKABLE_GROUND_LAYER = LAYER_WALKABLE_GROUND
@@ -249,5 +252,7 @@ MANAGED_LAYERS = (
     LAYER_TOOL_INSTANCES,
     LAYER_WALKABLE_GROUND,
 )
-
+# NOTE: ``LAYER_IK_CACHE`` is intentionally NOT in ``MANAGED_LAYERS``: the
+# managed-layer enforcer makes every listed layer visible on every entry-point
+# call, but the IK preview cache should stay hidden outside an active session.
 DEFAULT_LAYER = "Default"

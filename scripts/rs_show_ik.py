@@ -122,16 +122,9 @@ def _cleanup_ids(oids):
                 pass
 
 
-def _detach_drawn_ids():
-    """Steal currently-tracked ik_viz GUIDs out of the sticky dict so a
-    subsequent ``ik_viz.show_state`` call doesn't delete them. Returns the
-    snapshot — caller is responsible for cleanup. Mirrors the pattern used
-    in `rs_ik_support_keyframe.py::_bake_dual_arm_at_captured_pose`.
-    """
-    guids = list(sc.sticky.get(ik_viz._STICKY_DRAWN_IDS, []) or [])
-    sc.sticky[ik_viz._STICKY_DRAWN_IDS] = []
-    sc.sticky.pop(ik_viz._STICKY_SCENE_OBJECT, None)
-    return guids
+# Sub-layer keys under ``config.LAYER_IK_CACHE`` for the two coexisting cells.
+IK_LAYER_KEY_ASSEMBLY = "Assembly"
+IK_LAYER_KEY_SUPPORT = "Support"
 
 
 def _show_support_state(
@@ -142,10 +135,12 @@ def _show_support_state(
     mesh_mode,
     deps,
 ):
-    """Bake the support arm meshes via ik_viz at the saved support pose.
-    Swaps the planner's cell to the support cell so PyBullet matches; the
-    dual-arm meshes are already in the doc and survive the swap because
-    the caller detached their GUIDs from ik_viz tracking first.
+    """Update the support-cell preview at the saved support pose.
+
+    Routed through the new cached ``ik_viz.update_state``: the support cell's
+    meshes live on their own sub-layer (``IK_LAYER_KEY_SUPPORT``) so they
+    coexist with the dual-arm bake without either side wiping the other.
+    PyBullet is also swapped to the support cell so collision queries match.
     """
     cell = robot_cell_support.get_or_load_support_cell()
     state = robot_cell_support.default_support_cell_state()
@@ -169,7 +164,12 @@ def _show_support_state(
         state.robot_configuration[name] = float(value)
 
     robot_cell_support.set_cell_state(planner, state)
-    ik_viz.show_state(state, mesh_mode=mesh_mode, robot_model=cell.robot_model)
+    ik_viz.update_state(
+        state,
+        robot_cell=cell,
+        mesh_mode=mesh_mode,
+        layer_key=IK_LAYER_KEY_SUPPORT,
+    )
 
 
 def _insert_support_gripper(tool0_mm: np.ndarray):
@@ -274,9 +274,9 @@ class _PreviewSession:
         self.active_bar_oid = None
         self.pose = POSES[0]
         self.show_unbuilt = False
-        # Doc oids the session owns and must clean up on refresh / exit.
-        self._da_doc_oids = []
+        # Doc oids the session owns directly (Robotiq gripper block etc).
         self._support_block_ids = []
+        self._session_started = False
 
     # ---- mutations -----------------------------------------------------
 
@@ -304,6 +304,8 @@ class _PreviewSession:
     def refresh(self):
         self._clear_preview()
         if self.active_bar_id is None:
+            ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
             return
 
         show_sequence_colors(self.active_bar_id, self.show_unbuilt)
@@ -314,6 +316,8 @@ class _PreviewSession:
                 f"RSShowIK: bar {self.active_bar_id} has no "
                 f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}' record; showing geometry only."
             )
+            ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
             return
 
         groups = payload.get(self.pose)
@@ -338,15 +342,23 @@ class _PreviewSession:
 
         rs.EnableRedraw(False)
         try:
+            # Open the IK preview session on first render of this _PreviewSession.
+            # `begin_session` is idempotent w.r.t. the cache; subsequent calls
+            # just toggle layer visibility, which is wasteful, so guard.
+            if not self._session_started:
+                ik_viz.begin_session(
+                    robot_cell=robot_cell.get_or_load_robot_cell(),
+                    mesh_mode=mesh_mode,
+                    layer_key=IK_LAYER_KEY_ASSEMBLY,
+                )
+                self._session_started = True
+
             robot_cell.set_cell_state(self.planner, state)
-            ik_viz.show_state(state, mesh_mode=mesh_mode)
+            ik_viz.update_state(state, mesh_mode=mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY)
 
             support_payload = _load_support_payload(self.active_bar_oid)
             if support_payload is not None:
                 try:
-                    # Detach dual-arm bake from ik_viz tracking so the support
-                    # show_state doesn't wipe it.
-                    self._da_doc_oids = _detach_drawn_ids()
                     _show_support_state(
                         self.planner,
                         payload["base_frame_world_mm"],
@@ -375,6 +387,10 @@ class _PreviewSession:
                         f"RSShowIK: ik_support display failed "
                         f"({type(exc).__name__}: {exc})."
                     )
+            else:
+                # Active bar has no support payload; hide stale support arm
+                # left over from a previously-active bar.
+                ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
 
             print(
                 f"RSShowIK: showing '{self.pose}' keyframe for bar "
@@ -386,14 +402,18 @@ class _PreviewSession:
     # ---- cleanup -------------------------------------------------------
 
     def _clear_preview(self):
+        # Clean up the inserted Robotiq gripper block (not part of the cached
+        # cell scene).  The cached robot/tool meshes stay in place; the next
+        # _render() call will delta-transform them to the new pose, or
+        # refresh() will hide their sub-layers if no payload exists.
         _cleanup_ids(self._support_block_ids)
-        _cleanup_ids(self._da_doc_oids)
         self._support_block_ids = []
-        self._da_doc_oids = []
-        ik_viz.clear_scene()
 
     def cleanup(self):
         self._clear_preview()
+        if self._session_started:
+            ik_viz.end_session()
+            self._session_started = False
         try:
             reset_sequence_colors()
         except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome

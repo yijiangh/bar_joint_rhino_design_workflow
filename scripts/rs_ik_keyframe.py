@@ -391,6 +391,11 @@ def _bake_robot_meshes_at_zero():
     """Bake the dual-arm robot URDF visual meshes once at zero config + identity
     base, capture as Rhino.Geometry.Mesh values (in base-link local coords,
     doc units), then delete the baked guids.
+
+    The new cached `ik_viz` path bakes onto `config.LAYER_IK_CACHE` (no longer
+    tracks per-link guids in `_STICKY_DRAWN_IDS`), so we harvest the meshes
+    by layer membership and then `discard_cache()` to leave a clean slate
+    before the dynamic preview takes over.
     """
     cell = robot_cell.get_or_load_robot_cell()
     state = robot_cell.default_cell_state()
@@ -398,13 +403,13 @@ def _bake_robot_meshes_at_zero():
     state.robot_base_frame = deps["Frame"].worldXY()
 
     ik_viz.show_state(state, robot_model=cell.robot_model)
-    guids = list(sc.sticky.get(ik_viz._STICKY_DRAWN_IDS, []) or [])
+    guids = list(rs.ObjectsByLayer(config.LAYER_IK_CACHE) or [])
     meshes = []
     for g in guids:
         m = rs.coercemesh(g)
         if m is not None:
             meshes.append(m.DuplicateMesh())
-    ik_viz.clear_scene()
+    ik_viz.discard_cache()
     return meshes
 
 
@@ -571,7 +576,7 @@ def _preview_robot_at_base(planner, template_state, base_frame_mm, mesh_mode):
 
     Cheap visualization for the reuse-base prompt: no IK, just the URDF
     meshes posed at the saved base. Caller is responsible for clearing
-    via `ik_viz.clear_scene()`.
+    via `ik_viz.end_session()`.
     """
     state = template_state.copy()
     robot_cell._apply_base_frame_mm(state, base_frame_mm)
@@ -1031,14 +1036,14 @@ def _resolve_seed_base_frame(
         answer = _ask_reuse_saved_base()
         if answer is None:
             print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
-            ik_viz.clear_scene()
+            ik_viz.end_session()
             return None
         if answer:
             print("RSIKKeyframe: reusing saved base frame (skipping walkable-ground pick).")
             seed_base_frame = saved_base
             heading_mm = _heading_mm_from_base_frame(saved_base)
             # brep_id stays None -> sampling fallback is disabled in this run.
-        ik_viz.clear_scene()
+        ik_viz.end_session()
 
     if seed_base_frame is None:
         brep_id = _pick_walkable_brep()
@@ -1182,7 +1187,7 @@ def main():
                         saved_base = seed_base_frame
                         brep_id = _resolve_sampling_brep_for_base(seed_base_frame, brep_id)
                         allow_saved_base_prompt = False
-                        ik_viz.clear_scene()
+                        ik_viz.end_session()
                         continue
                     if action == "retry_new_base":
                         print("RSIKKeyframe: retrying final-target IK with a different robot base frame.")
@@ -1191,7 +1196,7 @@ def main():
                         heading_mm = None
                         brep_id = None
                         allow_saved_base_prompt = False
-                        ik_viz.clear_scene()
+                        ik_viz.end_session()
                         continue
                     print("RSIKKeyframe: gave up after final-target IK failure.")
                     return
@@ -1244,7 +1249,7 @@ def main():
                         heading_mm = _heading_mm_from_base_frame(final_base)
                         brep_id = _resolve_sampling_brep_for_base(final_base, brep_id)
                         allow_saved_base_prompt = False
-                        ik_viz.clear_scene()
+                        ik_viz.end_session()
                         continue
                     if action == "retry_new_base":
                         print("RSIKKeyframe: retrying approach-target IK with a different robot base frame.")
@@ -1254,7 +1259,7 @@ def main():
                         heading_mm = None
                         brep_id = None
                         allow_saved_base_prompt = False
-                        ik_viz.clear_scene()
+                        ik_viz.end_session()
                         continue
                     print("RSIKKeyframe: gave up after approach-target IK failure.")
                     return
@@ -1312,7 +1317,7 @@ def main():
                 heading_mm = _heading_mm_from_base_frame(stored_base)
                 brep_id = _resolve_sampling_brep_for_base(stored_base, brep_id)
                 allow_saved_base_prompt = False
-                ik_viz.clear_scene()
+                ik_viz.end_session()
                 continue
 
             if action == "retry_new_base":
@@ -1322,7 +1327,7 @@ def main():
                 heading_mm = None
                 brep_id = None
                 allow_saved_base_prompt = False
-                ik_viz.clear_scene()
+                ik_viz.end_session()
                 continue
 
             print("RSIKKeyframe: gave up; bar keyframes unchanged (base frame still saved for next run).")
@@ -1330,7 +1335,7 @@ def main():
 
     finally:
         rs.EnableRedraw(True)
-        ik_viz.clear_scene()
+        ik_viz.end_session()
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)
         # Restore canvas exactly like RSSequenceEdit exit path.

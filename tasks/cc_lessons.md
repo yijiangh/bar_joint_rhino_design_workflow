@@ -267,3 +267,61 @@ For `RigidBodyState.attached_to_link`, compute the link frame from PyBullet's li
 
 **How to apply:** In `pybullet_set_robot_cell_state`, replace model FK in the attached-to-link branch with `pcf_link_id = client.robot_link_puids[link_name]` + `link_frame = client._get_link_frame(pcf_link_id, client.robot_puid)`, then compose with `attachment_frame` as before.
 
+
+---
+
+## Cached Rhino RobotCellObject ！ bake once, delta-transform every frame
+
+For interactive IK preview in Rhino, **stop deleting + re-adding** robot meshes per state. Use `compas_fab.rhino.scene.RobotCellObject` (vendored at `external/compas_fab/src/compas_fab/rhino/scene/`) with `BaseRobotCellObject.update(state)`: meshes are baked once on the first `update()`, then each subsequent call applies only the *delta* transform of every link via `Rhino.RhinoDoc.Objects.Transform(guid, T, deleteOriginal=True)`. The cache survives across UI frames and across the Esc/restart cycle (sticky-stored).
+
+**Why:** The legacy `ik_viz.show_state` re-baked the entire dual-arm mesh per frame (~30 link meshes deleted + re-added through `RhinoSceneObject.draw_visual`). Pose cycling, bar switching, and IK retry all paid the bake cost. The compas-side machinery already supports incremental updates ！ the missing piece on the Rhino side was a `RobotCellObject` that `_initial_draw`s once and lets the base class drive subsequent transforms.
+
+**How to apply:**
+1. Use `core.ik_viz.begin_session(robot_cell, mesh_mode=..., layer_key="Assembly") / update_state(state, layer_key="Assembly") / end_session()` for the new cached path.
+2. Each cell goes on its own sub-layer under `config.LAYER_IK_CACHE` (`layer_key` arg) so dual-arm + support coexist and can be hidden independently via `set_layer_visible(layer_key, False)`.
+3. End-of-session does NOT delete geometry ！ `end_session` only hides the root layer; the next session reuses the same baked meshes from wherever they were last placed.
+4. Use `discard_cache()` only when the underlying `RobotCell` has been rebuilt (PyBullet restart) or the user explicitly asks for a flush.
+5. Legacy `show_state` / `clear_scene` still exist as back-compat shims for `yj_functions/` callers.
+
+**Gotchas:**
+- `BaseRobotModelObject.update(config, base_frame)` already folds `base_frame` into per-link transforms. **Do NOT** apply the base xform separately as a post-bake step ！ that double-transforms the meshes.
+- `sc.doc.Objects.Transform(guid, T, deleteOriginal=True)` always returns a NEW guid; cache the returned value or your sticky goes stale on the very first delta.
+- Short-circuit identity transforms in `_transform`: stationary links would otherwise burn ~30 GUID allocations per frame.
+- compas_fab's plugin system keys SceneObject registrations on `(item_type, context)`. Adding `context="Rhino"` for an item already registered for `"Grasshopper"` does NOT conflict. The vendored Rhino stack registers under `category="factories", requires=["Rhino"]`.
+- `BaseRobotCellObject._initial_draw` is deferred to the first `update()` / `draw()` call, so `Scene().add(robot_cell, sceneobject_type=RobotCellObject, ...)` is cheap; the bake only happens on the first state push.
+- `native_scale` interpretation: it is "meters per Rhino doc unit" (the base class scales `Frame.from_factors([1/native_scale]*3)`). For a doc in mm, pass `native_scale=0.001`. Compute via `doc_unit_scale_to_mm() / 1000.0`.
+
+
+---
+
+## compas plugin `register_scene_objects` MUST call `compas.scene.register`, not `SceneObject.register`
+
+When writing a `@plugin(category="factories")` `register_scene_objects` function that maps an item type to a Rhino/GH/etc SceneObject, import the **module-level function** `from compas.scene import register` and call `register(ItemType, SceneObjectCls, context="Rhino")`. **Never** call `SceneObject.register(...)` ！ there is no such classmethod on `compas.scene.SceneObject`.
+
+**Why:** `SceneObject.register(...)` raises `AttributeError`. The compas `PluginManager` invokes plugin functions via `selector="collect_all"` and silently swallows per-plugin exceptions, so the registration never lands in `ITEM_SCENEOBJECT[context]`. Discovery prints from neighboring plugins (e.g. `compas_robots/rhino/scene` printing `"Rhino Robot Object registered."`) succeed and the failure looks invisible. The next call to `Scene().add(<item>)` then raises `SceneObjectNotRegisteredError: No scene object is registered for this data type: <ItemType> in this context: Rhino` even though the package's plugin module was correctly listed in `__all_plugins__`.
+
+**How to apply:**
+```python
+from compas.scene import register  # NOT `from compas.scene import SceneObject`
+
+@plugin(category="factories", requires=["Rhino"])
+def register_scene_objects():
+    register(RobotCell, RobotCellObject, context="Rhino")
+```
+Keep the print inside the registration function (not at module top) so the trace clearly shows the function actually ran. If a registration `print` is missing from the trace despite the package being in `compas_fab.__all_plugins__`, suspect a swallowed exception inside the plugin body first.
+
+
+---
+
+## Cached `ik_viz` migration: harvest meshes by layer, swap `clear_scene` for `end_session`
+
+When migrating a caller that used the legacy `ik_viz.show_state` + `_STICKY_DRAWN_IDS` pattern to the new cached path, two follow-ups are required for correctness/perf:
+
+1. **Anything that read `sc.sticky[ik_viz._STICKY_DRAWN_IDS]` to harvest baked link guids must switch to `rs.ObjectsByLayer(config.LAYER_IK_CACHE)`** (or the relevant sub-layer). The new `BaseRobotCellObject` keeps its guid cache inside the SceneObject instance, not in the legacy sticky. `_bake_robot_meshes_at_zero` in `rs_ik_keyframe.py` is the canonical example: bake -> `ObjectsByLayer` -> `discard_cache` to leave a clean slate before the dynamic-preview conduit takes over.
+
+2. **Mid-loop `ik_viz.clear_scene()` calls should become `ik_viz.end_session()`.** `clear_scene` (== `discard_cache`) DELETES every guid on the cache layer AND drops the cached SceneObject, which forces a full re-bake on the next `show_state` (~30 link meshes). `end_session` only HIDES the cache layer; the very next `show_state` call re-shows the layer and delta-transforms the existing meshes in place. In `rs_ik_keyframe.py` the swap turned ~11 mid-IK-loop full re-bakes into pure visibility toggles + ~30 in-place transforms.
+
+**Why:** Symptom of skipping (1): the dynamic mesh preview that follows the cursor over the walkable ground brep silently shows nothing ！ the conduit gets an empty mesh list because the legacy sticky is empty. Symptom of skipping (2): IK retry loops feel sluggish because every `RetrySameBase` rebakes the entire dual-arm.
+
+**How to apply:** Search for `ik_viz._STICKY_DRAWN_IDS` and `ik_viz.clear_scene` together; in the same caller, harvesting + nuking are usually paired. `discard_cache()` is still the right call when you genuinely want to flush (e.g. after harvesting meshes for a one-shot preview, or on PyBullet restart).
+

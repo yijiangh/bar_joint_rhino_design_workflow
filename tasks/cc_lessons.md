@@ -325,3 +325,60 @@ When migrating a caller that used the legacy `ik_viz.show_state` + `_STICKY_DRAW
 
 **How to apply:** Search for `ik_viz._STICKY_DRAWN_IDS` and `ik_viz.clear_scene` together; in the same caller, harvesting + nuking are usually paired. `discard_cache()` is still the right call when you genuinely want to flush (e.g. after harvesting meshes for a one-shot preview, or on PyBullet restart).
 
+
+---
+
+## ik_viz: pre-bake per-mesh-mode sub-sub-layers, toggle = visibility flip
+
+When the user wants to swap visual<->collision mesh display without paying a re-bake cost:
+
+- Cache key = `(id(cell), layer_key, mesh_mode)` (3-tuple), NOT (id(cell), layer_name).
+- Layer hierarchy = `LAYER_IK_CACHE / <layer_key> / <MeshMode>` (mesh_mode is the LEAF). Each mode lives on its own sub-sub-layer so toggling is a single `rs.LayerVisible` call.
+- `begin_session(..., mesh_modes=(visual, collision), active_mesh_mode=visual)` pre-builds BOTH cells.
+- `update_state(state, mesh_modes=...)` defaults to updating EVERY cached mode for that `(cell, layer_key)`, so toggling later shows the latest pose immediately (~2x transform cost is fine for interactive viewer).
+- `set_active_mesh_mode(layer_key, mesh_mode)` iterates the cache and flips `LayerVisible` per entry ¡ª no rebake, no geometry mutation.
+- For collision-highlight: expose `get_link_native_geometry(cell, layer_key, mesh_mode) -> {link_name: [guid, ...]}` and `get_tool_native_geometry` that read `BaseRobotModelObject._links_visual_mesh_native_geometry` / `_links_collision_mesh_native_geometry` (and per-tool via `BaseRobotCellObject._tool_scene_objects`).
+
+## CollisionCheckError: use `.collision_pairs` attribute, not `args[1]`
+
+`CollisionCheckError(message, collision_pairs)` calls `super().__init__(message)` so `exc.args == (message,)`. The pairs list is on the instance attribute `exc.collision_pairs`. Reading `exc.args[1]` IndexErrors. Each pair item is `(Link|ToolModel|RigidBody, Link|ToolModel|RigidBody)`; switch on `type(item).__name__` and read `.name` to map back to env_geom keys / cached link guids.
+
+## CheckCollision in viewer: re-seed env from doc on every press
+
+The viewer doesn't own env state across the session. Each `check_collision()` press should re-run `env_collision.collect_built_geometry(active_bar_id, get_bar_seq_map())` + `robot_cell.ensure_env_registered(rcell, env_geom, planner)` + `env_collision.build_env_state(state, env_geom)` + `set_cell_state`, so changes to built/unbuilt sequencing since the last render are reflected.
+
+
+---
+
+## Collision-check parity: viewer must mirror solver's RB attachments
+
+IK solver in `rs_ik_keyframe` calls `robot_cell.attach_arm_tool_rigid_bodies` + `configure_arm_tool_rigid_body_states` to attach `AssemblyLeftArmToolBody` / `AssemblyRightArmToolBody` to the corresponding `*_ur_arm_tool0` link BEFORE running `check_collision`. Any standalone collision-check (e.g. ShowIK `CheckCollision` button) MUST replay the same attach steps, otherwise the per-arm tool RBs are either missing from the state or attached_to_link=None (sit at world origin) and CC.2/CC.3/CC.5 silently skip every pair involving them ¡ª yielding the puzzling `IK fails on collision but viewer reports no collision`. Shared helper: `core/ik_collision_setup.prepare_assembly_collision_state(rcell, planner, state, bar_id)` does the full setup (arm-tool RBs + env_*) and is the single source of truth used by both the solver entry path and the viewer's check_collision.
+
+
+---
+
+## ShowIK viz: pre-attach all RBs before first cell bake; discard cache on bar switch
+
+BaseRobotCellObject._initial_draw walks obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
+- Mutate cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
+- Discard + rebake the cached scene object whenever the RB key-set changes (e.g. user navigates to a different active bar with a different built-before set).
+
+In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
+
+## ik_viz.begin_session: hide doc layers as a list, not boolean flags
+
+When the cached cell viz visually duplicates user-modeled doc geometry (tube previews, joint block instances, tool block instances), hide those doc layers for the duration of the session and restore prev visibility on end_session. Generic mechanism: hide_doc_layers: Iterable[str] = None kwarg (default = the assembly-overlap layer set) + _STICKY_HIDDEN_DOC_LAYERS dict {layer: prev_visible} that _restore_hidden_doc_layers() walks on session exit. Avoids per-layer boolean flags that don't scale.
+
+---
+
+## ShowIK viz: pre-attach all RBs before first cell bake; discard cache on bar switch
+
+BaseRobotCellObject._initial_draw walks obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
+- Mutate cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
+- Discard + rebake the cached scene object whenever the RB key-set changes (e.g. user navigates to a different active bar with a different built-before set).
+
+In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
+
+## ik_viz.begin_session: hide doc layers as a list, not boolean flags
+
+When the cached cell viz visually duplicates user-modeled doc geometry (tube previews, joint block instances, tool block instances), hide those doc layers for the duration of the session and restore prev visibility on end_session. Generic mechanism: hide_doc_layers: Iterable[str] = None kwarg (default = the assembly-overlap layer set) + _STICKY_HIDDEN_DOC_LAYERS dict {layer: prev_visible} that _restore_hidden_doc_layers() walks on session exit. Avoids per-layer boolean flags that don't scale.

@@ -49,6 +49,8 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config as _config_module
+from core import env_collision as _env_collision_module
+from core import ik_collision_setup as _ik_collision_setup_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
@@ -59,6 +61,7 @@ from core.rhino_bar_pick import (
 )
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
+    get_bar_seq_map,
     reset_sequence_colors,
     show_sequence_colors,
 )
@@ -81,8 +84,10 @@ POSES = ("assembled", "approach")
 
 
 def _reload():
-    global config, ik_viz, robot_cell, robot_cell_support
+    global config, env_collision, ik_collision_setup, ik_viz, robot_cell, robot_cell_support
     config = importlib.reload(_config_module)
+    env_collision = importlib.reload(_env_collision_module)
+    ik_collision_setup = importlib.reload(_ik_collision_setup_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
@@ -132,7 +137,7 @@ def _show_support_state(
     assembly_base_mm,
     assembled_groups,
     support_payload,
-    mesh_mode,
+    mesh_modes,
     deps,
 ):
     """Update the support-cell preview at the saved support pose.
@@ -167,7 +172,7 @@ def _show_support_state(
     ik_viz.update_state(
         state,
         robot_cell=cell,
-        mesh_mode=mesh_mode,
+        mesh_modes=mesh_modes,
         layer_key=IK_LAYER_KEY_SUPPORT,
     )
 
@@ -274,13 +279,29 @@ class _PreviewSession:
         self.active_bar_oid = None
         self.pose = POSES[0]
         self.show_unbuilt = False
+        self.mesh_mode = ik_viz.MESH_MODE_VISUAL
         # Doc oids the session owns directly (Robotiq gripper block etc).
         self._support_block_ids = []
         self._session_started = False
+        # State produced by the most recent _render(); reused by check_collision.
+        self._last_assembly_state = None
+        self._last_assembly_payload = None
+        self._last_assembly_groups = None
+        self._last_support_payload = None
+        # Highlight bookkeeping: {oid: prev_color_source_or_None}
+        self._highlight_oids = []
 
     # ---- mutations -----------------------------------------------------
 
     def set_active_bar(self, bar_id, bar_oid):
+        # Switching bars changes the env_geom (different built-before set) and
+        # may also change which arm tools are attached. Both mutate
+        # ``rcell.rigid_body_models`` whose keys are baked into the cached
+        # ``RobotCellObject._rigid_body_scene_objects`` dict at first draw -- so
+        # the cache must be torn down when the bar changes.
+        if self.active_bar_id is not None and bar_id != self.active_bar_id and self._session_started:
+            ik_viz.discard_cache()
+            self._session_started = False
         self.active_bar_id = bar_id
         self.active_bar_oid = bar_oid
         # Reset pose on bar switch so users always start from "assembled".
@@ -299,10 +320,29 @@ class _PreviewSession:
         if self.active_bar_id is not None:
             show_sequence_colors(self.active_bar_id, self.show_unbuilt)
 
+    def cycle_mesh_mode(self):
+        """Flip visual<->collision (cheap layer-visibility toggle, no rebake)."""
+        self.mesh_mode = (
+            ik_viz.MESH_MODE_COLLISION
+            if self.mesh_mode == ik_viz.MESH_MODE_VISUAL
+            else ik_viz.MESH_MODE_VISUAL
+        )
+        # Clear any stale red highlight (it lives on a particular mode's geometry).
+        self._revert_highlight()
+        if self._session_started:
+            ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
+            ik_viz.set_active_mesh_mode(IK_LAYER_KEY_SUPPORT, self.mesh_mode)
+        print(f"RSShowIK: mesh_mode={self.mesh_mode}")
+
     # ---- rendering -----------------------------------------------------
 
     def refresh(self):
+        self._revert_highlight()
         self._clear_preview()
+        self._last_assembly_state = None
+        self._last_assembly_payload = None
+        self._last_assembly_groups = None
+        self._last_support_payload = None
         if self.active_bar_id is None:
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
             ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
@@ -333,30 +373,55 @@ class _PreviewSession:
         self._render(payload, groups)
 
     def _render(self, payload, groups):
-        mesh_mode = ik_viz.MESH_MODE_VISUAL
-        ik_viz.set_mesh_mode(mesh_mode)
+        modes = (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION)
+        ik_viz.set_mesh_mode(self.mesh_mode)
 
+        rcell = robot_cell.get_or_load_robot_cell()
+        # Build the IK-pose state, then mirror IK keyframe's collision setup
+        # (per-arm tool RBs + env_* bars/joints) so the cached scene object
+        # has the FULL set of rigid bodies to draw -- robot, tools, arm-tool
+        # collision meshes, AND every built bar / joint earlier in sequence.
         state = _build_assembly_state(
             payload["base_frame_world_mm"], groups, self.deps
         )
+        try:
+            state, _env_geom = ik_collision_setup.prepare_assembly_collision_state(
+                rcell, self.planner, state, self.active_bar_id
+            )
+        except Exception as exc:
+            print(
+                f"RSShowIK: prepare_assembly_collision_state failed "
+                f"({type(exc).__name__}: {exc}); rendering robot only."
+            )
 
         rs.EnableRedraw(False)
         try:
             # Open the IK preview session on first render of this _PreviewSession.
-            # `begin_session` is idempotent w.r.t. the cache; subsequent calls
-            # just toggle layer visibility, which is wasteful, so guard.
+            # Pre-bake BOTH visual and collision so MeshMode toggle is a cheap
+            # layer-visibility flip rather than a rebake.
             if not self._session_started:
                 ik_viz.begin_session(
-                    robot_cell=robot_cell.get_or_load_robot_cell(),
-                    mesh_mode=mesh_mode,
+                    robot_cell=rcell,
+                    mesh_modes=modes,
+                    active_mesh_mode=self.mesh_mode,
                     layer_key=IK_LAYER_KEY_ASSEMBLY,
                 )
                 self._session_started = True
 
             robot_cell.set_cell_state(self.planner, state)
-            ik_viz.update_state(state, mesh_mode=mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY)
+            # Update both modes so toggling shows the latest pose immediately.
+            ik_viz.update_state(
+                state, mesh_modes=modes, layer_key=IK_LAYER_KEY_ASSEMBLY
+            )
+            # Make sure the active mode's sub-layer is the visible one.
+            ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
+
+            self._last_assembly_state = state
+            self._last_assembly_payload = payload
+            self._last_assembly_groups = groups
 
             support_payload = _load_support_payload(self.active_bar_oid)
+            self._last_support_payload = support_payload
             if support_payload is not None:
                 try:
                     _show_support_state(
@@ -364,9 +429,10 @@ class _PreviewSession:
                         payload["base_frame_world_mm"],
                         payload["assembled"],
                         support_payload,
-                        mesh_mode,
+                        modes,
                         self.deps,
                     )
+                    ik_viz.set_active_mesh_mode(IK_LAYER_KEY_SUPPORT, self.mesh_mode)
                     tool0_support_mm = np.asarray(
                         support_payload["tool0_frame_world_mm"], dtype=float
                     )
@@ -394,7 +460,7 @@ class _PreviewSession:
 
             print(
                 f"RSShowIK: showing '{self.pose}' keyframe for bar "
-                f"{self.active_bar_id} (mesh_mode={mesh_mode})"
+                f"{self.active_bar_id} (mesh_mode={self.mesh_mode})"
             )
         finally:
             rs.EnableRedraw(True)
@@ -409,7 +475,126 @@ class _PreviewSession:
         _cleanup_ids(self._support_block_ids)
         self._support_block_ids = []
 
+    # ---- collision diagnostic ------------------------------------------
+
+    def check_collision(self):
+        """Run a full-report collision check on the current pose; red-highlight offenders."""
+        if self._last_assembly_state is None or self.active_bar_id is None:
+            print("RSShowIK: no active IK pose to check; pick a bar with an IK record first.")
+            return
+        self._revert_highlight()
+
+        rcell = robot_cell.get_or_load_robot_cell()
+        # Mirror IK keyframe's full collision setup: per-arm tool RBs
+        # (AssemblyLeftArmToolBody/RightArmToolBody, attached_to_link=tool0)
+        # AND env_* bars/joints. Without the arm-tool RBs the check would
+        # silently drop CC.2 / CC.3 / CC.5 pairs involving tool meshes,
+        # which is exactly what was causing IK keyframe to fail while
+        # ShowIK reported "no collisions".
+        try:
+            state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
+                rcell, self.planner, self._last_assembly_state, self.active_bar_id
+            )
+        except Exception as exc:
+            print(
+                f"RSShowIK: prepare_assembly_collision_state failed "
+                f"({type(exc).__name__}: {exc}); aborting."
+            )
+            return
+        try:
+            robot_cell.set_cell_state(self.planner, state)
+        except Exception as exc:
+            print(f"RSShowIK: set_cell_state failed ({exc}); aborting.")
+            return
+
+        from compas_fab.backends import CollisionCheckError
+
+        collision_pairs = []
+        try:
+            self.planner.check_collision(
+                state, options={"full_report": True, "verbose": False}
+            )
+            print("RSShowIK: CheckCollision -- no collisions detected.")
+            return
+        except CollisionCheckError as exc:
+            collision_pairs = list(getattr(exc, "collision_pairs", []) or [])
+            for line in str(exc).splitlines():
+                print(f"RSShowIK: COLLISION -- {line}")
+        except Exception as exc:
+            print(f"RSShowIK: check_collision raised {type(exc).__name__}: {exc}")
+            return
+
+        # Resolve names from the (Link/Tool/RigidBody) pairs.
+        link_names = set()
+        tool_names = set()
+        rb_names = set()
+        for a, b in collision_pairs:
+            for item in (a, b):
+                cls_name = type(item).__name__
+                name = getattr(item, "name", None)
+                if name is None:
+                    continue
+                if cls_name == "Link":
+                    link_names.add(name)
+                elif cls_name == "ToolModel":
+                    tool_names.add(name)
+                else:  # RigidBody
+                    rb_names.add(name)
+
+        red = (255, 40, 40)
+        oids_to_highlight = []
+
+        # Robot links on the currently-visible mode.
+        link_geom = ik_viz.get_link_native_geometry(
+            rcell, IK_LAYER_KEY_ASSEMBLY, self.mesh_mode
+        )
+        for ln in link_names:
+            for guid in link_geom.get(ln, []):
+                oids_to_highlight.append(guid)
+        # Tools.
+        tool_geom = ik_viz.get_tool_native_geometry(
+            rcell, IK_LAYER_KEY_ASSEMBLY, self.mesh_mode
+        )
+        for tn in tool_names:
+            for guid in tool_geom.get(tn, []):
+                oids_to_highlight.append(guid)
+        # Env rigid bodies (bars / joints) -> doc oid via env_geom.
+        for rb in rb_names:
+            payload = env_geom.get(rb)
+            if payload and payload.get("source_oid"):
+                oids_to_highlight.append(payload["source_oid"])
+
+        self._apply_highlight(oids_to_highlight, red)
+        print(
+            f"RSShowIK: CheckCollision -- {len(collision_pairs)} colliding pair(s); "
+            f"highlighted {len(self._highlight_oids)} object(s)."
+        )
+
+    def _apply_highlight(self, oids, rgb):
+        if not oids:
+            return
+        with suspend_redraw():
+            for oid in oids:
+                try:
+                    rs.ObjectColor(oid, rgb)
+                except Exception:
+                    continue
+                self._highlight_oids.append(oid)
+
+    def _revert_highlight(self):
+        if not self._highlight_oids:
+            return
+        with suspend_redraw():
+            for oid in self._highlight_oids:
+                try:
+                    # ColorSource 0 = ByLayer (restore default)
+                    rs.ObjectColorSource(oid, 0)
+                except Exception:
+                    continue
+        self._highlight_oids = []
+
     def cleanup(self):
+        self._revert_highlight()
         self._clear_preview()
         if self._session_started:
             ik_viz.end_session()
@@ -440,13 +625,16 @@ def _resolve_pick_to_bar(picked_obj_id):
 def _build_get_option(session):
     go = Rhino.Input.Custom.GetObject()
     pose_label = session.pose if session.active_bar_id else "-"
+    mesh_label = session.mesh_mode
     go.SetCommandPrompt(
-        f"Pick a bar to view, Enter to cycle pose [now: {pose_label}], Esc to exit"
+        f"Pick a bar to view, Enter to cycle pose [now: {pose_label}, mesh: {mesh_label}], Esc to exit"
     )
     go.EnablePreSelect(False, False)
     go.AcceptNothing(True)
     go.SetCustomGeometryFilter(_bar_or_tube_filter)
     go.AddOption("TogglePose")
+    go.AddOption("MeshMode")
+    go.AddOption("CheckCollision")
     if session.show_unbuilt:
         go.AddOption("HideUnbuilt")
     else:
@@ -506,6 +694,10 @@ def main() -> None:
                 name = go.Option().EnglishName
                 if name == "TogglePose":
                     session.cycle_pose()
+                elif name == "MeshMode":
+                    session.cycle_mesh_mode()
+                elif name == "CheckCollision":
+                    session.check_collision()
                 elif name in ("ShowUnbuilt", "HideUnbuilt"):
                     session.toggle_unbuilt()
                 continue

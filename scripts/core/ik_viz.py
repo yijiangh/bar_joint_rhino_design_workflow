@@ -34,7 +34,7 @@ delegate to the cached path internally.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
@@ -57,7 +57,7 @@ from core.robot_cell import default_cell_state, get_or_load_robot_cell, import_c
 # :func:`end_session` cascades.
 _STICKY_CELL_CACHE = "bar_joint:ik_viz_cell_cache"
 _STICKY_CACHE_INITIALIZED = "bar_joint:ik_viz_cache_initialized"
-_STICKY_TOOL_LAYER_PREV_VISIBLE = "bar_joint:ik_viz_tool_layer_prev_visible"
+_STICKY_HIDDEN_DOC_LAYERS = "bar_joint:ik_viz_hidden_doc_layers"
 _STICKY_MESH_MODE = "bar_joint:ik_viz_mesh_mode"
 
 # Back-compat sticky keys still consulted by yj_functions/ scripts. The new
@@ -153,7 +153,7 @@ def _create_cell_scene_object(robot_cell, mesh_mode: str, layer_name: str):
         robot_cell,
         draw_visual=draw_visual,
         draw_collision=draw_collision,
-        draw_rigid_bodies=False,
+        draw_rigid_bodies=True,
         native_scale=_native_scale_for_doc(),
         layer=layer_name,
     )
@@ -184,46 +184,49 @@ def _flush_cache_layer_once() -> None:
     sc.sticky[_STICKY_CACHE_INITIALIZED] = True
 
 
-def _resolve_layer(layer_key: Optional[str]) -> str:
-    """Map an optional ``layer_key`` to the absolute Rhino layer path.
+def _resolve_layer(layer_key: Optional[str], mesh_mode: Optional[str] = None) -> str:
+    """Map ``(layer_key, mesh_mode)`` to the absolute Rhino layer path.
 
-    ``layer_key=None`` -> bake directly on ``config.LAYER_IK_CACHE``.
-    Otherwise -> ``config.LAYER_IK_CACHE + '::' + layer_key`` (sub-layer).
+    ``LAYER_IK_CACHE [/<layer_key>] [/<MeshMode>]``.  ``mesh_mode`` segment
+    is title-cased so it reads as a normal Rhino layer name ("Visual",
+    "Collision").
     """
-    if not layer_key:
-        return config.LAYER_IK_CACHE
-    return config.LAYER_IK_CACHE + config.LAYER_PATH_SEP + layer_key
+    parts = [config.LAYER_IK_CACHE]
+    if layer_key:
+        parts.append(layer_key)
+    if mesh_mode:
+        parts.append(mesh_mode.capitalize())
+    return config.LAYER_PATH_SEP.join(parts)
+
+
+def _cache_key(robot_cell, layer_key: Optional[str], mesh_mode: str):
+    return (id(robot_cell), layer_key or "", mesh_mode)
 
 
 def _get_or_create_cached_scene_object(robot_cell, mesh_mode: str, layer_key: Optional[str]):
-    """Return the per-(cell, layer) cached :class:`RobotCellObject`,
-    rebuilding when needed.
+    """Return the per-(cell, layer_key, mesh_mode) cached :class:`RobotCellObject`.
 
-    A rebuild is triggered when:
-
-    * no entry is cached for ``(id(robot_cell), layer_key)``; or
-    * the cached entry was built for a different ``mesh_mode``.
-
-    Other cache entries are left untouched.  When a rebuild is needed for
-    one entry, only that entry's layer is purged.
+    Each (cell, layer_key, mesh_mode) gets its OWN sub-sub-layer
+    (``LAYER_IK_CACHE/<layer_key>/<MeshMode>``) so visual + collision can be
+    baked simultaneously and toggled by layer visibility alone -- no rebake
+    on mesh-mode switch.
     """
     _flush_cache_layer_once()
     cache = _get_cell_cache()
-    layer_name = _resolve_layer(layer_key)
-    key = (id(robot_cell), layer_name)
+    layer_name = _resolve_layer(layer_key, mesh_mode)
+    key = _cache_key(robot_cell, layer_key, mesh_mode)
     entry = cache.get(key)
-    if entry is not None and entry.get("mesh_mode") == mesh_mode:
-        return entry["obj"]
-
     if entry is not None:
-        # Mesh-mode swap on this cell: scrub only its sub-layer.
-        print(f"ik_viz: mesh_mode changed for cell on '{layer_name}'; rebuilding.")
-        _delete_layer_objects(layer_name)
-        cache.pop(key, None)
+        return entry["obj"]
 
     ensure_layer(layer_name)
     scene_object = _create_cell_scene_object(robot_cell, mesh_mode, layer_name)
-    cache[key] = {"obj": scene_object, "mesh_mode": mesh_mode, "layer": layer_name}
+    cache[key] = {
+        "obj": scene_object,
+        "mesh_mode": mesh_mode,
+        "layer": layer_name,
+        "layer_key": layer_key or "",
+    }
     return scene_object
 
 
@@ -232,48 +235,100 @@ def _get_or_create_cached_scene_object(robot_cell, mesh_mode: str, layer_key: Op
 # ---------------------------------------------------------------------------
 
 
+def _normalize_modes(mesh_modes, mesh_mode) -> tuple:
+    if mesh_modes is not None:
+        modes = tuple(mesh_modes)
+    elif mesh_mode is not None:
+        modes = (mesh_mode,)
+    else:
+        modes = (get_mesh_mode(),)
+    for m in modes:
+        if m not in _VALID_MESH_MODES:
+            raise ValueError(f"mesh mode must be one of {_VALID_MESH_MODES}, got {m!r}")
+    return modes
+
+
 def begin_session(
     robot_cell=None,
     mesh_mode: Optional[str] = None,
-    hide_tool_instances: bool = True,
+    hide_tool_instances: bool = True,  # back-compat shim; use hide_doc_layers
     layer_key: Optional[str] = None,
+    *,
+    mesh_modes: Optional[Iterable[str]] = None,
+    active_mesh_mode: Optional[str] = None,
+    hide_doc_layers: Optional[Iterable[str]] = None,
 ) -> None:
     """Enter an interactive IK preview session.
 
-    * Ensures the IK cache layer (and the optional sub-layer for ``layer_key``)
-      exists and is visible.
-    * Optionally hides the user's robotic-tool-instance layer for the
-      duration of the session (the cell's tool models are drawn by us
-      instead).
-    * Pre-creates the cached :class:`RobotCellObject` so the very first
-      :func:`update_state` call is the only one that pays the bake cost.
+    * Pre-bakes one :class:`RobotCellObject` per ``mesh_modes`` entry on its
+      own sub-sub-layer so toggling visual<->collision is just a layer
+      visibility flip later.
+    * Ensures only ``active_mesh_mode``'s sub-sub-layer is visible.
+    * Hides every layer in ``hide_doc_layers`` for the duration of the
+      session and restores their previous visibility in :func:`end_session`.
+      Defaults to the user-modeled doc layers that overlap the cell viz
+      (tube previews, female/male joint instances, robotic-tool block
+      instances) so the cached robot/tool/env meshes are the only thing on
+      screen. Pass an empty list to keep everything visible.
     """
-    if mesh_mode is None:
-        mesh_mode = get_mesh_mode()
-    if mesh_mode not in _VALID_MESH_MODES:
-        raise ValueError(f"mesh_mode must be one of {_VALID_MESH_MODES}, got {mesh_mode!r}")
-    set_mesh_mode(mesh_mode)
+    modes = _normalize_modes(mesh_modes, mesh_mode)
+    if active_mesh_mode is None:
+        active_mesh_mode = modes[0]
+    if active_mesh_mode not in _VALID_MESH_MODES:
+        raise ValueError(f"active_mesh_mode must be one of {_VALID_MESH_MODES}, got {active_mesh_mode!r}")
+    set_mesh_mode(active_mesh_mode)
 
     if robot_cell is None:
         robot_cell = get_or_load_robot_cell()
 
     ensure_layer(config.LAYER_IK_CACHE)
     rs.LayerVisible(config.LAYER_IK_CACHE, True)
-    sub_layer = _resolve_layer(layer_key)
-    if sub_layer != config.LAYER_IK_CACHE:
-        ensure_layer(sub_layer)
-        rs.LayerVisible(sub_layer, True)
+    parent = _resolve_layer(layer_key)
+    if parent != config.LAYER_IK_CACHE:
+        ensure_layer(parent)
+        rs.LayerVisible(parent, True)
 
-    if hide_tool_instances and rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        prev_visible = rs.LayerVisible(config.LAYER_TOOL_INSTANCES)
-        sc.sticky[_STICKY_TOOL_LAYER_PREV_VISIBLE] = bool(prev_visible)
-        if prev_visible:
-            rs.LayerVisible(config.LAYER_TOOL_INSTANCES, False)
-    else:
-        sc.sticky[_STICKY_TOOL_LAYER_PREV_VISIBLE] = None
+    if hide_doc_layers is None:
+        # Default = the user-modeled doc layers that visually overlap the
+        # cell viz (tubes / joints / tool blocks). Bar centerlines stay
+        # visible so picking still works.
+        hide_doc_layers = (
+            config.LAYER_BAR_TUBE_PREVIEWS,
+            config.LAYER_JOINT_FEMALE_INSTANCES,
+            config.LAYER_JOINT_MALE_INSTANCES,
+            config.LAYER_TOOL_INSTANCES,
+        )
+        if not hide_tool_instances:
+            hide_doc_layers = tuple(
+                ln for ln in hide_doc_layers if ln != config.LAYER_TOOL_INSTANCES
+            )
+    _hide_doc_layers(hide_doc_layers)
 
-    # Pre-build the cell scene object so the cache is hot before the first update.
-    _get_or_create_cached_scene_object(robot_cell, mesh_mode, layer_key)
+    # Pre-build a cached cell-object per mode so the cache is hot.
+    for m in modes:
+        _get_or_create_cached_scene_object(robot_cell, m, layer_key)
+    set_active_mesh_mode(layer_key, active_mesh_mode)
+
+
+def _hide_doc_layers(layer_names: Iterable[str]) -> None:
+    """Hide each existing layer; record prev visibility for ``end_session`` restore."""
+    prev = dict(sc.sticky.get(_STICKY_HIDDEN_DOC_LAYERS) or {})
+    for ln in layer_names:
+        if not ln or not rs.IsLayer(ln):
+            continue
+        if ln in prev:
+            continue  # already recorded by an earlier begin_session
+        prev[ln] = bool(rs.LayerVisible(ln))
+        if prev[ln]:
+            rs.LayerVisible(ln, False)
+    sc.sticky[_STICKY_HIDDEN_DOC_LAYERS] = prev
+
+
+def _restore_hidden_doc_layers() -> None:
+    prev = sc.sticky.pop(_STICKY_HIDDEN_DOC_LAYERS, None) or {}
+    for ln, was_visible in prev.items():
+        if was_visible and rs.IsLayer(ln):
+            rs.LayerVisible(ln, True)
 
 
 def update_state(
@@ -282,33 +337,43 @@ def update_state(
     robot_cell=None,
     mesh_mode: Optional[str] = None,
     layer_key: Optional[str] = None,
+    mesh_modes: Optional[Iterable[str]] = None,
 ) -> None:
     """Apply ``state`` to the cached Rhino preview.
 
-    First call (per ``(robot_cell, layer_key)``) bakes the robot + tool meshes
-    into the resolved sub-layer; subsequent calls delta-transform them in
-    place.  Use a distinct ``layer_key`` per cell when previewing several
-    cells at once (e.g. ``"Assembly"`` and ``"Support"``) so each can be
-    hidden independently via :func:`set_layer_visible`.
-    """
-    if mesh_mode is None:
-        mesh_mode = get_mesh_mode()
-    if mesh_mode not in _VALID_MESH_MODES:
-        raise ValueError(f"mesh_mode must be one of {_VALID_MESH_MODES}, got {mesh_mode!r}")
+    Updates EVERY ``mesh_modes`` entry on ``layer_key`` (defaults to all
+    cached entries for that cell+layer_key, so a viewer that pre-baked
+    visual+collision keeps both in sync as the user changes pose).
 
+    First call (per ``(robot_cell, layer_key, mode)``) bakes the meshes onto
+    that mode's sub-sub-layer; subsequent calls delta-transform them in place.
+    """
     if robot_cell is None:
         robot_cell = get_or_load_robot_cell()
 
-    scene_object = _get_or_create_cached_scene_object(robot_cell, mesh_mode, layer_key)
+    if mesh_modes is None and mesh_mode is None:
+        # Auto: update every mode that's cached for this (cell, layer_key).
+        cache = _get_cell_cache()
+        modes = tuple(
+            entry["mesh_mode"]
+            for k, entry in cache.items()
+            if k[0] == id(robot_cell) and k[1] == (layer_key or "")
+        )
+        if not modes:
+            modes = (get_mesh_mode(),)
+    else:
+        modes = _normalize_modes(mesh_modes, mesh_mode)
 
-    layer_name = _resolve_layer(layer_key)
-    if rs.IsLayer(layer_name) and not rs.LayerVisible(layer_name):
-        rs.LayerVisible(layer_name, True)
+    parent = _resolve_layer(layer_key)
+    if rs.IsLayer(parent) and not rs.LayerVisible(parent):
+        rs.LayerVisible(parent, True)
 
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        scene_object.update(state)
+        for m in modes:
+            scene_object = _get_or_create_cached_scene_object(robot_cell, m, layer_key)
+            scene_object.update(state)
     finally:
         sc.doc.Views.RedrawEnabled = was
     sc.doc.Views.Redraw()
@@ -326,6 +391,71 @@ def set_layer_visible(layer_key: Optional[str], visible: bool) -> None:
         rs.LayerVisible(layer_name, bool(visible))
 
 
+def set_active_mesh_mode(layer_key: Optional[str], mesh_mode: str) -> None:
+    """Show only ``mesh_mode``'s sub-sub-layer under ``layer_key``; hide the others.
+
+    Cheap (no rebake): each mode's geometry was pre-baked by
+    :func:`begin_session` onto its own sub-sub-layer.
+    """
+    if mesh_mode not in _VALID_MESH_MODES:
+        raise ValueError(f"mesh mode must be one of {_VALID_MESH_MODES}, got {mesh_mode!r}")
+    set_mesh_mode(mesh_mode)
+    cache = _get_cell_cache()
+    target_lkey = layer_key or ""
+    for k, entry in cache.items():
+        if k[1] != target_lkey:
+            continue
+        layer_name = entry["layer"]
+        if rs.IsLayer(layer_name):
+            rs.LayerVisible(layer_name, entry["mesh_mode"] == mesh_mode)
+
+
+def get_cached_scene_object(robot_cell, layer_key: Optional[str], mesh_mode: str):
+    """Return the cached :class:`RobotCellObject` for ``(cell, layer_key, mesh_mode)`` or ``None``."""
+    cache = _get_cell_cache()
+    entry = cache.get(_cache_key(robot_cell, layer_key, mesh_mode))
+    return entry["obj"] if entry else None
+
+
+def get_link_native_geometry(robot_cell, layer_key: Optional[str], mesh_mode: str) -> dict:
+    """Return ``{link_name: [rhino_guid, ...]}`` for the cached robot model.
+
+    Used by collision-highlight code that needs to recolor specific links.
+    Returns ``{}`` if the cell/layer/mode is not cached or the underlying
+    ``RobotModelObject`` has not run its initial draw yet.
+    """
+    so = get_cached_scene_object(robot_cell, layer_key, mesh_mode)
+    if so is None or so._robot_model_scene_object is None:
+        return {}
+    rmo = so._robot_model_scene_object
+    if mesh_mode == MESH_MODE_VISUAL:
+        return dict(rmo._links_visual_mesh_native_geometry)
+    return dict(rmo._links_collision_mesh_native_geometry)
+
+
+def get_tool_native_geometry(
+    robot_cell, layer_key: Optional[str], mesh_mode: str
+) -> dict:
+    """Return ``{tool_name: [rhino_guid, ...]}`` flattening every tool link."""
+    so = get_cached_scene_object(robot_cell, layer_key, mesh_mode)
+    if so is None:
+        return {}
+    out = {}
+    for tool_name, tool_so in (so._tool_scene_objects or {}).items():
+        if tool_so is None:
+            continue
+        guids = []
+        meshes = (
+            tool_so._links_visual_mesh_native_geometry
+            if mesh_mode == MESH_MODE_VISUAL
+            else tool_so._links_collision_mesh_native_geometry
+        )
+        for lst in meshes.values():
+            guids.extend(lst)
+        out[tool_name] = guids
+    return out
+
+
 def end_session() -> None:
     """Exit the IK preview session: hide the cache layer + restore the tool layer.
 
@@ -336,9 +466,7 @@ def end_session() -> None:
     if rs.IsLayer(config.LAYER_IK_CACHE):
         rs.LayerVisible(config.LAYER_IK_CACHE, False)
 
-    prev_visible = sc.sticky.pop(_STICKY_TOOL_LAYER_PREV_VISIBLE, None)
-    if prev_visible is True and rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        rs.LayerVisible(config.LAYER_TOOL_INSTANCES, True)
+    _restore_hidden_doc_layers()
 
 
 def discard_cache() -> None:

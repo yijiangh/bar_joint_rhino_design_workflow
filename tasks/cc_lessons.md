@@ -386,3 +386,84 @@ When the cached cell viz visually duplicates user-modeled doc geometry (tube pre
 ## Upstream hygiene: avoid workflow-specific constructor flags in vendored libs
 
 If a SceneObject option only serves one local workflow policy (for example, hiding rigid bodies in one preview mode), keep that policy in caller code instead of adding a new public constructor parameter in compas_fab. Prefer stable, generic defaults in shared libraries; put project-specific visibility control in app-level layer toggles.
+
+
+---
+
+## Cross-script cache sharing: same (cell_id, layer_key) bundle = shared bake
+
+When two scripts both render the same robot cell, route both through the same `ik_viz` bundle by passing identical `layer_key` (e.g. `ik_viz.LAYER_KEY_ASSEMBLY`). Cache key is `(id(robot_cell), layer_key)` so the singleton `rcell` from `robot_cell.get_or_load_robot_cell()` plus a shared layer-key string makes both scripts hit the SAME cached SOs (robot, tools, RBs). Switching between RSIKKeyframe and RSShowIK on the same bar then incurs zero rebake cost.
+
+**Why:** Each `RobotModelObject` / `RigidBodyObject` bake is expensive (one Rhino `AddMesh` per link face). Without shared keys, each command re-bakes its own copy. Hard-coded layer-key strings duplicated across scripts also drift -- one ends up using `""` (no key) and the other `"Assembly"`, silently splitting the cache.
+
+**How to apply:** Define `LAYER_KEY_*` constants in `core/ik_viz.py` and import them from every script that calls `begin_session` / `update_state`. Never pass an inline string literal.
+
+---
+
+## Direct-ownership > RobotCellObject when you need per-type cache invalidation
+
+`ik_viz` now owns one `RobotModelObject` (robot) + dict of `RobotModelObject` (tools) + dict of `RigidBodyObject` (RBs) per `(cell, layer_key)`, instead of going through `RobotCellObject`. RB keyset is diffed against `rcell.rigid_body_models` on every `update_state` so bar/env switches incrementally add/remove only the changed RBs -- robot + tools stay baked.
+
+**Why:** `BaseRobotCellObject._initial_draw` snapshots `rcell.rigid_body_models` once and never re-syncs. Adding/removing RBs after that requires `discard_cache()` (rebakes EVERYTHING). With direct ownership the robot/tool bake survives across bar switches.
+
+**How to apply:** Use `ik_viz.update_state` exclusively; it calls `_sync_rb_keyset` automatically. Reserve `ik_viz.discard_cache()` for hard resets (PyBullet restart, explicit user-flush).
+
+---
+
+## Mesh-mode toggle via per-GUID hide/show, not separate SO instances
+
+When a SceneObject is built with `draw_visual=True, draw_collision=True`, both visual and collision native geometries are baked onto the same layer. Toggle visibility via `rs.HideObjects` / `rs.ShowObjects` on the per-GUID lists in `_links_<mode>_mesh_native_geometry` (RobotModelObject) / `_<mode>_mesh_native_geometry` (RigidBodyObject). Avoid the older approach of building one SO per mode -- it doubles bake cost and complicates cache invalidation.
+
+---
+
+## PyBullet rigid bodies: split sub-meshes into separate bodies
+
+`compas_fab.backends.pybullet.client._add_rigid_body` was joining all meshes in `rigid_body.collision_meshes` into one OBJ before `createCollisionShape`, which makes PyBullet wrap the whole thing in a convex hull -- false-positive collisions for L-shaped or hollow geometry. Fix: create one PyBullet body per Mesh in the list, append all body-ids to `rigid_bodies_puids[name]` (already typed as list), and the existing pose-update loop iterates them.
+
+---
+
+## Querying a Rhino layer's contents does NOT recurse into sub-layers
+
+`rs.ObjectsByLayer("Parent")` returns only objects whose layer is exactly `Parent`. Objects on `Parent::Child` are NOT included. When meshes are baked onto a sub-layer (e.g. `IK Cache::Visual`), querying the parent layer returns `[]`. Either query the actual sub-layer OR read the SceneObject's native-geometry dicts directly.
+
+---
+
+## ik_viz cache must be invalidated on .3dm reopen (sticky persists across files)
+
+sc.sticky is per Rhino SESSION, not per .3dm. Closing a file and opening another (or reopening the same one with stale baked geometry from a previous save) leaves _STICKY_BUNDLE_CACHE pointing at deleted GUIDs and any orphan meshes saved on LAYER_IK_CACHE stay on screen.
+
+**Why:** the one-shot _STICKY_CACHE_INITIALIZED flag never resets within a Rhino session; without doc-change detection the next `begin_session` returns the dead bundle, `update_state` silently no-ops, and the user sees old geometry.
+
+**How to apply:** Detect doc change with `sc.doc.RuntimeSerialNumber` stored in sticky (key `_STICKY_DOC_SERIAL`). On mismatch, drop `_STICKY_BUNDLE_CACHE` + `_STICKY_CACHE_INITIALIZED` BEFORE the orphan-purge runs so the next bundle build starts from a clean LAYER_IK_CACHE.
+
+---
+
+## `update_state` must force LAYER_IK_CACHE root visible, not just the sub-layer
+
+After `get_robot_link_meshes_at_zero()` hides `LAYER_IK_CACHE` (so the ghost preview is alone during base picking), a successful IK solve calls `update_state` which only ensured the sub-layer (`Assembly`/`Support`) was visible. Rhino layer visibility is hierarchical: a hidden parent hides every child regardless of the child's own visible flag, so nothing renders.
+
+**How to apply:** In `update_state`, force BOTH the root `config.LAYER_IK_CACHE` and the resolved sub-layer visible before issuing the SO updates.
+
+---
+
+## Cached `RobotModelObject` carries the LAST applied pose; re-pose before harvesting
+
+`get_robot_link_meshes_at_zero()` reads `rmo._links_visual_mesh_native_geometry` -- those GUIDs sit at whatever pose the most recent `update_state` applied. For a ghost-preview-at-zero use case this means the ghost appears at the previous IK solution, not at zero, producing a click<->ghost offset.
+
+**How to apply:** Before harvesting, call `rmo.update(zero_state.robot_configuration, Frame.worldXY())` (where `zero_state = default_cell_state()`). Wrap in `Views.RedrawEnabled = False` to avoid a flash.
+
+---
+
+## ACM whitelist for active-bar / mating-joint contacts
+
+Compas_fab CC.4/CC.5 will flag the active bar against the tools that hold it AND the active male joint against its mating env female joint -- both are intentional design contacts that must be in `touch_bodies`.
+
+**Pairs to whitelist (per design intent):**
+* `active_joint_<jid>_male` <-> `env_joint_<jid>_female` (same `joint_id`, opposite subtype) -- the mate during snap.
+* `active_joint_*` <-> both arm tool RBs (gripper engages joint heads).
+* `active_bar_<bid>` <-> all `active_joint_*` on it (rigid bond).
+* `active_bar_<bid>` <-> both arm tool RBs (over-permissive but harmless; bar held via gripped joints).
+
+**How to apply:** Walk `state.rigid_body_states`, parse `active_joint_<jid>_<sub>` keys via `rsplit("_", 1)`, look up the env mate by reconstructing the name, and union into `touch_bodies` mutually. Implemented in `env_collision.configure_active_assembly_acm(state, arm_tool_rb_names)`; call it AFTER `configure_arm_tool_rigid_body_states` (which resets `touch_bodies = []`).
+
+**Do NOT whitelist:** wrist links vs joints, tool vs env bars, robot links vs robot links. Those are real collisions.

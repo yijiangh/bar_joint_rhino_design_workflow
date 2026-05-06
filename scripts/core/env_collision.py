@@ -40,6 +40,16 @@ from core import config
 
 ENV_RB_BAR_PREFIX = "env_bar_"
 ENV_RB_JOINT_PREFIX = "env_joint_"
+# Active = the bar currently being assembled + its joints. Treated as static
+# obstacles in world coords like env_*, but kept under separate prefixes so
+# (a) downstream code can show/hide / re-attach them independently,
+# (b) ShowIK / IK keyframe can decide to attach them to a tool link later.
+ACTIVE_RB_BAR_PREFIX = "active_bar_"
+ACTIVE_RB_JOINT_PREFIX = "active_joint_"
+# Tool side the active bar will be attached to (left tool0). Currently the
+# active bar is registered as a static world-frame RB; tool-following
+# attachment is a follow-up (needs FK on the IK-solved state).
+ACTIVE_BAR_ATTACH_LINK = "left_ur_arm_tool0"
 
 # Sticky cache keys for the lightweight RigidBody pipeline.
 _STICKY_JOINT_RB_CACHE = "bar_joint:env_joint_rb_cache"  # block_name -> RigidBody
@@ -340,6 +350,70 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
     return out
 
 
+def collect_active_geometry(active_bar_id, bar_seq_map):
+    """Build active-bar + active-joint payloads for the bar currently being assembled.
+
+    Same payload format as :func:`collect_built_geometry` but with
+    ``active_bar_`` / ``active_joint_`` name prefixes so downstream visualization
+    and collision-state code can treat them differently from already-built env.
+    Returns ``{}`` if ``active_bar_id`` is unknown or the bar curve is degenerate.
+    """
+    import rhinoscriptsyntax as rs
+
+    deps = _import_deps_for_rb()
+    if active_bar_id not in bar_seq_map:
+        return {}
+    active_oid, _active_seq = bar_seq_map[active_bar_id]
+
+    out = {}
+    length_mm, frame_mm = _bar_world_frame_mm(active_oid)
+    if length_mm <= 0.0:
+        return {}
+    rb, _hit = _get_or_build_bar_rigid_body(
+        active_oid, length_mm, float(config.BAR_RADIUS), deps
+    )
+    if rb is not None:
+        out[f"{ACTIVE_RB_BAR_PREFIX}{active_bar_id}"] = {
+            "rigid_body": rb,
+            "frame_world_mm": frame_mm,
+            "kind": "bar",
+            "source_oid": active_oid,
+        }
+
+    joint_layers = (
+        config.LAYER_JOINT_FEMALE_INSTANCES,
+        config.LAYER_JOINT_MALE_INSTANCES,
+    )
+    for layer in joint_layers:
+        if not rs.IsLayer(layer):
+            continue
+        for joint_oid in rs.ObjectsByLayer(layer) or []:
+            if rs.GetUserText(joint_oid, "parent_bar_id") != active_bar_id:
+                continue
+            joint_id = rs.GetUserText(joint_oid, "joint_id")
+            subtype = rs.GetUserText(joint_oid, "joint_subtype") or "Joint"
+            block_name = rs.BlockInstanceName(joint_oid)
+            if not block_name:
+                continue
+            rb, _hit = _get_or_load_joint_rigid_body(block_name, deps)
+            if rb is None:
+                continue
+            xform_mm = _block_instance_xform_mm(joint_oid)
+            tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
+            out[f"{ACTIVE_RB_JOINT_PREFIX}{tag}"] = {
+                "rigid_body": rb,
+                "frame_world_mm": xform_mm,
+                "kind": "joint",
+                "source_oid": joint_oid,
+                "block_name": block_name,
+                "subtype": subtype,
+            }
+    print(
+        f"core.env_collision.collect_active_geometry: {len(out)} bodies for bar {active_bar_id}"
+    )
+    return out
+
+
 def _import_deps_for_rb():
     """Lazy-import only what the cached RB pipeline needs (Mesh + RigidBody)."""
     from compas.datastructures import Mesh as _Mesh
@@ -367,6 +441,7 @@ def register_env_in_robot_cell(robot_cell, env_geom, *, deps):
     existing_env_names = {
         name for name in robot_cell.rigid_body_models.keys()
         if name.startswith(ENV_RB_BAR_PREFIX) or name.startswith(ENV_RB_JOINT_PREFIX)
+        or name.startswith(ACTIVE_RB_BAR_PREFIX) or name.startswith(ACTIVE_RB_JOINT_PREFIX)
     }
     n_removed = n_added = n_kept = 0
     for stale in existing_env_names - desired_names:
@@ -407,6 +482,7 @@ def build_env_state(template_state, env_geom):
     stale_env_names = [
         name for name in state.rigid_body_states
         if name.startswith(ENV_RB_BAR_PREFIX) or name.startswith(ENV_RB_JOINT_PREFIX)
+        or name.startswith(ACTIVE_RB_BAR_PREFIX) or name.startswith(ACTIVE_RB_JOINT_PREFIX)
     ]
     for name in stale_env_names:
         state.rigid_body_states.pop(name, None)
@@ -531,3 +607,82 @@ def allow_active_joint_touch(state, joint_rb_name: str, arm_side: str):
     rb = state.rigid_body_states[joint_rb_name]
     tool = config.LEFT_TOOL_NAME if arm_side == "left" else config.RIGHT_TOOL_NAME
     rb.touch_bodies = sorted(set(rb.touch_bodies) | {tool})
+
+
+def _add_touch_bodies(rb_state, names):
+    """Union ``names`` into ``rb_state.touch_bodies`` (sorted, deduped)."""
+    if not names:
+        return
+    rb_state.touch_bodies = sorted(set(rb_state.touch_bodies) | set(names))
+
+
+def configure_active_assembly_acm(state, arm_tool_rb_names=None):
+    """Whitelist intentional contacts between active-bar bodies, the arm tools,
+    and the env joint mates.
+
+    Design-intent ACM (see cc_lessons.md "ACM whitelisting"):
+      * ``active_joint_<jid>_male`` ↔ ``env_joint_<jid>_female`` (and the
+        female-active / male-env mirror) — these halves mate on snap; skipping
+        the pair is the entire point of the assembly motion.
+      * ``active_joint_*`` ↔ both arm tool RBs (gripper engages joint heads).
+      * ``active_bar_<bid>`` ↔ all ``active_joint_*`` RBs sharing the bar
+        (rigid structural bond).
+      * ``active_bar_<bid>`` ↔ both arm tool RBs (bar is held via gripped
+        joints; over-permissive but bar body rarely touches tool envelope).
+
+    ``arm_tool_rb_names``: ``{"left": rb_name | None, "right": rb_name | None}``
+    as returned by ``robot_cell.attach_arm_tool_rigid_bodies``. ``None``
+    entries are skipped.
+
+    Mutates ``state`` in place. Safe to call multiple times.
+    """
+    rb_states = state.rigid_body_states
+    tool_names = []
+    if arm_tool_rb_names:
+        for side in ("left", "right"):
+            n = arm_tool_rb_names.get(side)
+            if n:
+                tool_names.append(n)
+
+    active_joint_keys = [k for k in rb_states if k.startswith(ACTIVE_RB_JOINT_PREFIX)]
+    active_bar_keys = [k for k in rb_states if k.startswith(ACTIVE_RB_BAR_PREFIX)]
+    env_joint_keys = {k for k in rb_states if k.startswith(ENV_RB_JOINT_PREFIX)}
+
+    n_mate = 0
+    for ajk in active_joint_keys:
+        # Tag = "<joint_id>_<subtype>" (subtype lowercased on creation).
+        tag = ajk[len(ACTIVE_RB_JOINT_PREFIX):]
+        if "_" not in tag:
+            continue
+        jid, sub = tag.rsplit("_", 1)
+        other_sub = "female" if sub == "male" else ("male" if sub == "female" else None)
+        if other_sub is None:
+            continue
+        mate_env = f"{ENV_RB_JOINT_PREFIX}{jid}_{other_sub}"
+        if mate_env in env_joint_keys:
+            _add_touch_bodies(rb_states[ajk], [mate_env])
+            _add_touch_bodies(rb_states[mate_env], [ajk])
+            n_mate += 1
+        # Tool whitelist (both arms; over-permissive but matches design intent).
+        if tool_names:
+            _add_touch_bodies(rb_states[ajk], tool_names)
+            for tn in tool_names:
+                if tn in rb_states:
+                    _add_touch_bodies(rb_states[tn], [ajk])
+
+    for abk in active_bar_keys:
+        _add_touch_bodies(rb_states[abk], active_joint_keys)
+        for ajk in active_joint_keys:
+            _add_touch_bodies(rb_states[ajk], [abk])
+        if tool_names:
+            _add_touch_bodies(rb_states[abk], tool_names)
+            for tn in tool_names:
+                if tn in rb_states:
+                    _add_touch_bodies(rb_states[tn], [abk])
+
+    print(
+        f"core.env_collision.configure_active_assembly_acm: "
+        f"active_joints={len(active_joint_keys)} active_bars={len(active_bar_keys)} "
+        f"mating_pairs_whitelisted={n_mate} tools={tool_names}"
+    )
+    return state

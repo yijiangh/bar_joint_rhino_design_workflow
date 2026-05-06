@@ -388,29 +388,14 @@ def _world_from_base_doc_xform(origin_doc, normal_doc, heading_doc_vec):
 
 
 def _bake_robot_meshes_at_zero():
-    """Bake the dual-arm robot URDF visual meshes once at zero config + identity
-    base, capture as Rhino.Geometry.Mesh values (in base-link local coords,
-    doc units), then delete the baked guids.
+    """Return Rhino meshes for every robot link at zero config (for the ghost preview).
 
-    The new cached `ik_viz` path bakes onto `config.LAYER_IK_CACHE` (no longer
-    tracks per-link guids in `_STICKY_DRAWN_IDS`), so we harvest the meshes
-    by layer membership and then `discard_cache()` to leave a clean slate
-    before the dynamic preview takes over.
+    Reads from the cached :class:`RobotModelObject` via
+    :func:`ik_viz.get_robot_link_meshes_at_zero` -- baking only happens on the
+    first call and is shared with the rest of the IK preview pipeline (so the
+    bake cost is amortized rather than thrown away).
     """
-    cell = robot_cell.get_or_load_robot_cell()
-    state = robot_cell.default_cell_state()
-    deps = robot_cell.import_compas_stack()
-    state.robot_base_frame = deps["Frame"].worldXY()
-
-    ik_viz.show_state(state, robot_model=cell.robot_model)
-    guids = list(rs.ObjectsByLayer(config.LAYER_IK_CACHE) or [])
-    meshes = []
-    for g in guids:
-        m = rs.coercemesh(g)
-        if m is not None:
-            meshes.append(m.DuplicateMesh())
-    ik_viz.discard_cache()
-    return meshes
+    return ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
 
 
 def _pick_base_frame_on_walkable(brep_id):
@@ -582,7 +567,9 @@ def _preview_robot_at_base(planner, template_state, base_frame_mm, mesh_mode):
     robot_cell._apply_base_frame_mm(state, base_frame_mm)
     robot_cell.set_cell_state(planner, state)
     rcell = robot_cell.get_or_load_robot_cell()
-    ik_viz.show_state(state, mesh_mode=mesh_mode, robot_model=rcell.robot_model)
+    # Same layer_key as ShowIK so the cache is shared across commands.
+    ik_viz.update_state(state, robot_cell=rcell, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+    ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
 
 
 def _resolve_tool_collision_paths(left_tool_oid, right_tool_oid):
@@ -994,10 +981,17 @@ def _prepare_collision_template_state(
     robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
 
     env_geom = env_collision.collect_built_geometry(target_bar_id, get_bar_seq_map())
+    # Include the active bar + its joints so they are visible in the cell
+    # preview AND included in collision checks (matches ShowIK behavior).
+    active_geom = env_collision.collect_active_geometry(target_bar_id, get_bar_seq_map())
+    env_geom.update(active_geom)
     robot_cell.ensure_env_registered(rcell, env_geom, planner)
     template_state = env_collision.build_env_state(template_state, env_geom)
     # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
     robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
+    # Whitelist intentional design contacts: active joint <-> mating env joint,
+    # active bodies <-> arm tool RBs.
+    env_collision.configure_active_assembly_acm(template_state, arm_tool_rb_names)
     print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
     return template_state, env_geom
 
@@ -1203,7 +1197,8 @@ def main():
                 # Sync the PyBullet world to the new state, then update the Rhino viz.
                 robot_cell.set_cell_state(planner, final_state)
                 rs.EnableRedraw(True)
-                ik_viz.show_state(final_state, mesh_mode=mesh_mode)
+                ik_viz.update_state(final_state, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+                ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
                 print("RSIKKeyframe: final target reachable. Previewing...")
 
                 rs.EnableRedraw(False)
@@ -1265,7 +1260,8 @@ def main():
                     return
                 robot_cell.set_cell_state(planner, approach_state)
                 rs.EnableRedraw(True)
-                ik_viz.show_state(approach_state, mesh_mode=mesh_mode)
+                ik_viz.update_state(approach_state, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+                ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
                 print("RSIKKeyframe: approach target reachable. Previewing...")
             finally:
                 rs.EnableRedraw(True)

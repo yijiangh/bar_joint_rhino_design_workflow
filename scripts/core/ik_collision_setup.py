@@ -132,8 +132,15 @@ def prepare_assembly_collision_state(rcell, planner, template_state, bar_id):
         )
 
     env_geom = env_collision.collect_built_geometry(bar_id, get_bar_seq_map())
+    # Add the active bar + its joints (visible + collision) under separate
+    # active_* prefixes so callers can hide/attach them independently later.
+    active_geom = env_collision.collect_active_geometry(bar_id, get_bar_seq_map())
+    env_geom.update(active_geom)
     robot_cell.ensure_env_registered(rcell, env_geom, planner)
     state = env_collision.build_env_state(template_state, env_geom)
     # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
     robot_cell.configure_arm_tool_rigid_body_states(state, arm_tool_rb_names)
+    # Whitelist intentional design contacts: active joint <-> mating env joint,
+    # active bodies <-> arm tool RBs (see env_collision.configure_active_assembly_acm).
+    env_collision.configure_active_assembly_acm(state, arm_tool_rb_names)
     return state, env_geom

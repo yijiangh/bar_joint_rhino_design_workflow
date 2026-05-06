@@ -122,8 +122,8 @@ LM_DISTANCE = 15.0  # mm
 IK_ATTACH_TOOL_MESHES = False
 
 # IK base sampling fallback
-IK_BASE_SAMPLE_RADIUS = 150.0  # mm
-IK_BASE_SAMPLE_MAX_ITER = 5
+IK_BASE_SAMPLE_RADIUS = 200.0  # mm
+IK_BASE_SAMPLE_MAX_ITER = 10
 
 # IK solver tuning (compas_fab PyBullet planner)
 IK_MAX_RESULTS = 20

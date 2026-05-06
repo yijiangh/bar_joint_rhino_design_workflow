@@ -382,3 +382,7 @@ In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BE
 ## ik_viz.begin_session: hide doc layers as a list, not boolean flags
 
 When the cached cell viz visually duplicates user-modeled doc geometry (tube previews, joint block instances, tool block instances), hide those doc layers for the duration of the session and restore prev visibility on end_session. Generic mechanism: hide_doc_layers: Iterable[str] = None kwarg (default = the assembly-overlap layer set) + _STICKY_HIDDEN_DOC_LAYERS dict {layer: prev_visible} that _restore_hidden_doc_layers() walks on session exit. Avoids per-layer boolean flags that don't scale.
+
+## Upstream hygiene: avoid workflow-specific constructor flags in vendored libs
+
+If a SceneObject option only serves one local workflow policy (for example, hiding rigid bodies in one preview mode), keep that policy in caller code instead of adding a new public constructor parameter in compas_fab. Prefer stable, generic defaults in shared libraries; put project-specific visibility control in app-level layer toggles.

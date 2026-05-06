@@ -147,13 +147,12 @@ def _create_cell_scene_object(robot_cell, mesh_mode: str, layer_name: str):
     scene = deps["Scene"]()
     draw_visual = mesh_mode == MESH_MODE_VISUAL
     draw_collision = mesh_mode == MESH_MODE_COLLISION
-    # Bars/joints already exist in the doc as separately-managed Rhino
-    # geometry; the IK preview only needs the robot + the two attached tools.
+    # RobotCellObject now always draws RobotModel + ToolModels + all
+    # registered RigidBodies in the cell.
     return scene.add(
         robot_cell,
         draw_visual=draw_visual,
         draw_collision=draw_collision,
-        draw_rigid_bodies=True,
         native_scale=_native_scale_for_doc(),
         layer=layer_name,
     )

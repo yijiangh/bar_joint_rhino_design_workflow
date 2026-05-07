@@ -270,6 +270,33 @@ def main():
         for e in errors:
             print(f"    - {e}")
 
+    # Bill of materials
+    print("\n--- Bill of Materials ---")
+
+    # Bar lengths: round to 0.1 mm
+    from collections import Counter
+
+    bar_lengths = [round(b["length_mm"] / 0.1) * 0.1 for b in bar_entries]
+    length_counts = Counter(bar_lengths)
+    sorted_lengths = sorted(length_counts.keys())
+    print("\nBar lengths:")
+    for L in sorted_lengths:
+        print(f"  {L:.1f} mm  x{length_counts[L]}")
+    total_bar_length = sum(L * cnt for L, cnt in length_counts.items())
+    print(f"Total bar length: {total_bar_length:.1f} mm")
+
+    # Joint instances
+    joint_keys = Counter(
+        (j["type"], j["subtype"]) for b in bar_entries for j in b["joints"]
+    )
+    if joint_keys:
+        print("\nJoint instances:")
+        for (jtype, jsubtype), cnt in sorted(joint_keys.items()):
+            label = f"{jtype}/{jsubtype}" if jsubtype else jtype
+            print(f"  {label}  x{cnt}")
+
+    print("--- End of BOM ---")
+
     # 6. Save file
     doc_dir = os.path.dirname(doc_path) if doc_path else os.getcwd()
     default_path = os.path.join(doc_dir, f"{doc_name}_prefab.json")

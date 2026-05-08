@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <RhinoUI major_ver="5" minor_ver="0" guid="48d96183-30fe-4951-b00d-aa946e20fa36">
   <tool_bar_groups />
   <tool_bars>
@@ -9,6 +9,9 @@
       </text>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000008" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000008</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001a" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001a</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000001" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000001</left_macro_id>
@@ -196,6 +199,18 @@
         <locale_1033>RSCreateBar</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_create_bar.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001a">
+      <text>
+        <locale_1033>RSRemoveBar</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Remove selected bar(s) and clean up all associated joints and tool instances</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSRemoveBar</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_remove_bar.py"</script>
     </macro_item>
     <!-- RSSetup macros -->
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000006">

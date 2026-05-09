@@ -270,21 +270,21 @@ For `RigidBodyState.attached_to_link`, compute the link frame from PyBullet's li
 
 ---
 
-## Cached Rhino RobotCellObject ¡ª bake once, delta-transform every frame
+## Cached Rhino RobotCellObject ï¿½ï¿½ bake once, delta-transform every frame
 
 For interactive IK preview in Rhino, **stop deleting + re-adding** robot meshes per state. Use `compas_fab.rhino.scene.RobotCellObject` (vendored at `external/compas_fab/src/compas_fab/rhino/scene/`) with `BaseRobotCellObject.update(state)`: meshes are baked once on the first `update()`, then each subsequent call applies only the *delta* transform of every link via `Rhino.RhinoDoc.Objects.Transform(guid, T, deleteOriginal=True)`. The cache survives across UI frames and across the Esc/restart cycle (sticky-stored).
 
-**Why:** The legacy `ik_viz.show_state` re-baked the entire dual-arm mesh per frame (~30 link meshes deleted + re-added through `RhinoSceneObject.draw_visual`). Pose cycling, bar switching, and IK retry all paid the bake cost. The compas-side machinery already supports incremental updates ¡ª the missing piece on the Rhino side was a `RobotCellObject` that `_initial_draw`s once and lets the base class drive subsequent transforms.
+**Why:** The legacy `ik_viz.show_state` re-baked the entire dual-arm mesh per frame (~30 link meshes deleted + re-added through `RhinoSceneObject.draw_visual`). Pose cycling, bar switching, and IK retry all paid the bake cost. The compas-side machinery already supports incremental updates ï¿½ï¿½ the missing piece on the Rhino side was a `RobotCellObject` that `_initial_draw`s once and lets the base class drive subsequent transforms.
 
 **How to apply:**
 1. Use `core.ik_viz.begin_session(robot_cell, mesh_mode=..., layer_key="Assembly") / update_state(state, layer_key="Assembly") / end_session()` for the new cached path.
 2. Each cell goes on its own sub-layer under `config.LAYER_IK_CACHE` (`layer_key` arg) so dual-arm + support coexist and can be hidden independently via `set_layer_visible(layer_key, False)`.
-3. End-of-session does NOT delete geometry ¡ª `end_session` only hides the root layer; the next session reuses the same baked meshes from wherever they were last placed.
+3. End-of-session does NOT delete geometry ï¿½ï¿½ `end_session` only hides the root layer; the next session reuses the same baked meshes from wherever they were last placed.
 4. Use `discard_cache()` only when the underlying `RobotCell` has been rebuilt (PyBullet restart) or the user explicitly asks for a flush.
 5. Legacy `show_state` / `clear_scene` still exist as back-compat shims for `yj_functions/` callers.
 
 **Gotchas:**
-- `BaseRobotModelObject.update(config, base_frame)` already folds `base_frame` into per-link transforms. **Do NOT** apply the base xform separately as a post-bake step ¡ª that double-transforms the meshes.
+- `BaseRobotModelObject.update(config, base_frame)` already folds `base_frame` into per-link transforms. **Do NOT** apply the base xform separately as a post-bake step ï¿½ï¿½ that double-transforms the meshes.
 - `sc.doc.Objects.Transform(guid, T, deleteOriginal=True)` always returns a NEW guid; cache the returned value or your sticky goes stale on the very first delta.
 - Short-circuit identity transforms in `_transform`: stationary links would otherwise burn ~30 GUID allocations per frame.
 - compas_fab's plugin system keys SceneObject registrations on `(item_type, context)`. Adding `context="Rhino"` for an item already registered for `"Grasshopper"` does NOT conflict. The vendored Rhino stack registers under `category="factories", requires=["Rhino"]`.
@@ -296,7 +296,7 @@ For interactive IK preview in Rhino, **stop deleting + re-adding** robot meshes 
 
 ## compas plugin `register_scene_objects` MUST call `compas.scene.register`, not `SceneObject.register`
 
-When writing a `@plugin(category="factories")` `register_scene_objects` function that maps an item type to a Rhino/GH/etc SceneObject, import the **module-level function** `from compas.scene import register` and call `register(ItemType, SceneObjectCls, context="Rhino")`. **Never** call `SceneObject.register(...)` ¡ª there is no such classmethod on `compas.scene.SceneObject`.
+When writing a `@plugin(category="factories")` `register_scene_objects` function that maps an item type to a Rhino/GH/etc SceneObject, import the **module-level function** `from compas.scene import register` and call `register(ItemType, SceneObjectCls, context="Rhino")`. **Never** call `SceneObject.register(...)` ï¿½ï¿½ there is no such classmethod on `compas.scene.SceneObject`.
 
 **Why:** `SceneObject.register(...)` raises `AttributeError`. The compas `PluginManager` invokes plugin functions via `selector="collect_all"` and silently swallows per-plugin exceptions, so the registration never lands in `ITEM_SCENEOBJECT[context]`. Discovery prints from neighboring plugins (e.g. `compas_robots/rhino/scene` printing `"Rhino Robot Object registered."`) succeed and the failure looks invisible. The next call to `Scene().add(<item>)` then raises `SceneObjectNotRegisteredError: No scene object is registered for this data type: <ItemType> in this context: Rhino` even though the package's plugin module was correctly listed in `__all_plugins__`.
 
@@ -321,7 +321,7 @@ When migrating a caller that used the legacy `ik_viz.show_state` + `_STICKY_DRAW
 
 2. **Mid-loop `ik_viz.clear_scene()` calls should become `ik_viz.end_session()`.** `clear_scene` (== `discard_cache`) DELETES every guid on the cache layer AND drops the cached SceneObject, which forces a full re-bake on the next `show_state` (~30 link meshes). `end_session` only HIDES the cache layer; the very next `show_state` call re-shows the layer and delta-transforms the existing meshes in place. In `rs_ik_keyframe.py` the swap turned ~11 mid-IK-loop full re-bakes into pure visibility toggles + ~30 in-place transforms.
 
-**Why:** Symptom of skipping (1): the dynamic mesh preview that follows the cursor over the walkable ground brep silently shows nothing ¡ª the conduit gets an empty mesh list because the legacy sticky is empty. Symptom of skipping (2): IK retry loops feel sluggish because every `RetrySameBase` rebakes the entire dual-arm.
+**Why:** Symptom of skipping (1): the dynamic mesh preview that follows the cursor over the walkable ground brep silently shows nothing ï¿½ï¿½ the conduit gets an empty mesh list because the legacy sticky is empty. Symptom of skipping (2): IK retry loops feel sluggish because every `RetrySameBase` rebakes the entire dual-arm.
 
 **How to apply:** Search for `ik_viz._STICKY_DRAWN_IDS` and `ik_viz.clear_scene` together; in the same caller, harvesting + nuking are usually paired. `discard_cache()` is still the right call when you genuinely want to flush (e.g. after harvesting meshes for a one-shot preview, or on PyBullet restart).
 
@@ -336,7 +336,7 @@ When the user wants to swap visual<->collision mesh display without paying a re-
 - Layer hierarchy = `LAYER_IK_CACHE / <layer_key> / <MeshMode>` (mesh_mode is the LEAF). Each mode lives on its own sub-sub-layer so toggling is a single `rs.LayerVisible` call.
 - `begin_session(..., mesh_modes=(visual, collision), active_mesh_mode=visual)` pre-builds BOTH cells.
 - `update_state(state, mesh_modes=...)` defaults to updating EVERY cached mode for that `(cell, layer_key)`, so toggling later shows the latest pose immediately (~2x transform cost is fine for interactive viewer).
-- `set_active_mesh_mode(layer_key, mesh_mode)` iterates the cache and flips `LayerVisible` per entry ¡ª no rebake, no geometry mutation.
+- `set_active_mesh_mode(layer_key, mesh_mode)` iterates the cache and flips `LayerVisible` per entry ï¿½ï¿½ no rebake, no geometry mutation.
 - For collision-highlight: expose `get_link_native_geometry(cell, layer_key, mesh_mode) -> {link_name: [guid, ...]}` and `get_tool_native_geometry` that read `BaseRobotModelObject._links_visual_mesh_native_geometry` / `_links_collision_mesh_native_geometry` (and per-tool via `BaseRobotCellObject._tool_scene_objects`).
 
 ## CollisionCheckError: use `.collision_pairs` attribute, not `args[1]`
@@ -352,18 +352,22 @@ The viewer doesn't own env state across the session. Each `check_collision()` pr
 
 ## Collision-check parity: viewer must mirror solver's RB attachments
 
-IK solver in `rs_ik_keyframe` calls `robot_cell.attach_arm_tool_rigid_bodies` + `configure_arm_tool_rigid_body_states` to attach `AssemblyLeftArmToolBody` / `AssemblyRightArmToolBody` to the corresponding `*_ur_arm_tool0` link BEFORE running `check_collision`. Any standalone collision-check (e.g. ShowIK `CheckCollision` button) MUST replay the same attach steps, otherwise the per-arm tool RBs are either missing from the state or attached_to_link=None (sit at world origin) and CC.2/CC.3/CC.5 silently skip every pair involving them ¡ª yielding the puzzling `IK fails on collision but viewer reports no collision`. Shared helper: `core/ik_collision_setup.prepare_assembly_collision_state(rcell, planner, state, bar_id)` does the full setup (arm-tool RBs + env_*) and is the single source of truth used by both the solver entry path and the viewer's check_collision.
+IK solver in `rs_ik_keyframe` calls `robot_cell.attach_arm_tool_rigid_bodies` + `configure_arm_tool_rigid_body_states` to attach `AssemblyLeftArmToolBody` / `AssemblyRightArmToolBody` to the corresponding `*_ur_arm_tool0` link BEFORE running `check_collision`. Any standalone collision-check (e.g. ShowIK `CheckCollision` button) MUST replay the same attach steps, otherwise the per-arm tool RBs are either missing from the state or attached_to_link=None (sit at world origin) and CC.2/CC.3/CC.5 silently skip every pair involving them ï¿½ï¿½ yielding the puzzling `IK fails on collision but viewer reports no collision`. Shared helper: `core/ik_collision_setup.prepare_assembly_collision_state(rcell, planner, state, bar_id)` does the full setup (arm-tool RBs + env_*) and is the single source of truth used by both the solver entry path and the viewer's check_collision.
 
 
 ---
 
 ## ShowIK viz: pre-attach all RBs before first cell bake; discard cache on bar switch
 
-BaseRobotCellObject._initial_draw walks obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
-- Mutate cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
+BaseRobotCellObject._initial_draw walks 
+obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
+- Mutate 
+cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + 
+egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
 - Discard + rebake the cached scene object whenever the RB key-set changes (e.g. user navigates to a different active bar with a different built-before set).
 
-In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
+In 
+s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
 
 ## ik_viz.begin_session: hide doc layers as a list, not boolean flags
 
@@ -373,11 +377,15 @@ When the cached cell viz visually duplicates user-modeled doc geometry (tube pre
 
 ## ShowIK viz: pre-attach all RBs before first cell bake; discard cache on bar switch
 
-BaseRobotCellObject._initial_draw walks obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
-- Mutate cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
+BaseRobotCellObject._initial_draw walks 
+obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
+- Mutate 
+cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + 
+egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
 - Discard + rebake the cached scene object whenever the RB key-set changes (e.g. user navigates to a different active bar with a different built-before set).
 
-In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
+In 
+s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
 
 ## ik_viz.begin_session: hide doc layers as a list, not boolean flags
 
@@ -435,6 +443,14 @@ sc.sticky is per Rhino SESSION, not per .3dm. Closing a file and opening another
 **Why:** the one-shot _STICKY_CACHE_INITIALIZED flag never resets within a Rhino session; without doc-change detection the next `begin_session` returns the dead bundle, `update_state` silently no-ops, and the user sees old geometry.
 
 **How to apply:** Detect doc change with `sc.doc.RuntimeSerialNumber` stored in sticky (key `_STICKY_DOC_SERIAL`). On mismatch, drop `_STICKY_BUNDLE_CACHE` + `_STICKY_CACHE_INITIALIZED` BEFORE the orphan-purge runs so the next bundle build starts from a clean LAYER_IK_CACHE.
+
+---
+
+## Orphan-purge must walk sub-layers AND cover sibling preview layers
+
+Corollary of the "ObjectsByLayer doesn't recurse" lesson plus the doc-reopen orphan-purge above. Robot/tool/RB meshes are baked at `LAYER_IK_CACHE::<layer_key>::<MeshMode>` (3 levels deep), so `_delete_layer_objects(LAYER_IK_CACHE)` with a non-recursive `ObjectsByLayer` deletes nothing on file-reopen and the user sees stale geometry from the previous save. Additionally, IK previews bake block instances on sibling layers (`IKPineapplePreview`, `config.SUPPORT_PREVIEW_LAYER`) that are also session-transient.
+
+**How to apply:** In `_flush_cache_layer_once`, (a) recurse via `rs.LayerChildren` when collecting oids and (b) iterate over the full preview-layer list (`LAYER_IK_CACHE`, `SUPPORT_PREVIEW_LAYER`, `IKPineapplePreview`) before setting `_STICKY_CACHE_INITIALIZED`.
 
 ---
 

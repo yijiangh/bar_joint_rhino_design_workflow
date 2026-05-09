@@ -25,7 +25,8 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 
 | Button | Script | Purpose |
 |---|---|---|
-| RSDefineJointPair | `rs_define_joint_pair.py` | Define a new joint pair (female + male blocks + transforms + asset) |
+| RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) — block + bar axis + (screw axis + center) + collision OBJ |
+| RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves; auto-derives `contact_distance_mm` |
 | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite bar lines |
 | RSUpdatePreview | `rs_update_preview.py` | Rebuild stale or missing bar tube previews |
 | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication data JSON |

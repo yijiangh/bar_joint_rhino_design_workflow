@@ -10,7 +10,6 @@ All distances are in millimetres; all angles are in radians.
 
 from __future__ import annotations
 
-import math
 import os
 
 import numpy as np
@@ -53,13 +52,6 @@ BAR_RADIUS = 10.0
 # UI: color used to highlight bars the user has just picked, across all
 # interactive scripts that show selection feedback (snap, brace, …).
 SELECTED_BAR_COLOR = (30, 100, 220)  # blue
-
-# Joint DOF bounds (used by Rhino UI prompts, optimizer bounds, etc.)
-FJP_RANGE = (-500.0, 500.0)
-MJP_RANGE = (-500.0, 500.0)
-FJR_RANGE = (-math.pi, math.pi)
-MJR_RANGE = (-math.pi, math.pi)
-JJR_RANGE = (-math.pi, math.pi)
 
 # Output / optimizer tuning
 DEFAULT_NEW_BAR_LENGTH = 500.0

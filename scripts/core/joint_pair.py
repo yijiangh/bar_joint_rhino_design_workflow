@@ -52,6 +52,9 @@ def _as_4x4(value: Iterable[Iterable[float]]) -> np.ndarray:
     return out
 
 
+VALID_HALF_KINDS = ("male", "female")
+
+
 @dataclass(frozen=True)
 class JointHalfDef:
     """Constant geometry for one half of a joint pair."""
@@ -59,6 +62,7 @@ class JointHalfDef:
     block_name: str
     M_block_from_bar: np.ndarray
     M_screw_from_block: np.ndarray
+    kind: str = "male"                 # "male" or "female"
     asset_filename: str = ""           # e.g. "typical_female.3dm" under asset/
     mesh_filename: str = ""            # URDF mesh, optional
     mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
@@ -73,6 +77,10 @@ class JointHalfDef:
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
         object.__setattr__(self, "M_screw_from_block", _as_4x4(self.M_screw_from_block))
+        if self.kind not in VALID_HALF_KINDS:
+            raise ValueError(
+                f"JointHalfDef.kind must be one of {VALID_HALF_KINDS}, got {self.kind!r}"
+            )
 
     def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
         return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
@@ -83,6 +91,7 @@ class JointHalfDef:
     def to_dict(self) -> dict:
         return {
             "block_name": self.block_name,
+            "kind": self.kind,
             "asset_filename": self.asset_filename,
             "mesh_filename": self.mesh_filename,
             "mesh_scale": list(self.mesh_scale),
@@ -98,11 +107,63 @@ class JointHalfDef:
             block_name=str(data["block_name"]),
             M_block_from_bar=np.asarray(data["M_block_from_bar"], dtype=float),
             M_screw_from_block=np.asarray(data["M_screw_from_block"], dtype=float),
+            kind=str(data.get("kind", "male")),
             asset_filename=str(data.get("asset_filename", "")),
             mesh_filename=str(data.get("mesh_filename", "")),
             mesh_scale=tuple(float(v) for v in data.get("mesh_scale", (1.0, 1.0, 1.0))),
             preferred_robotic_tool_name=str(data.get("preferred_robotic_tool_name", "")),
             collision_filename=str(data.get("collision_filename", "")),
+        )
+
+
+@dataclass(frozen=True)
+class GroundJointDef:
+    """A joint half rigidly anchored to the world (no mate, no screw frame).
+
+    A ground joint is the structural anchor for one end of a bar to the
+    environment.  It exposes the same `(jp, jr)` DOFs as a regular joint
+    half (slide along the bar, rotate about it), but has no `M_screw_from_block`
+    because there is no mating partner.
+    """
+
+    name: str
+    block_name: str
+    M_block_from_bar: np.ndarray
+    asset_filename: str = ""
+    collision_filename: str = ""
+    jp_range: tuple[float, float] = DEFAULT_JP_RANGE
+    jr_range: tuple[float, float] = DEFAULT_JR_RANGE
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
+
+    def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
+        return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
+
+    def collision_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
+        return os.path.join(asset_dir, self.collision_filename) if self.collision_filename else ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "block_name": self.block_name,
+            "asset_filename": self.asset_filename,
+            "collision_filename": self.collision_filename,
+            "jp_range": list(self.jp_range),
+            "jr_range": list(self.jr_range),
+            "M_block_from_bar": self.M_block_from_bar.tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GroundJointDef":
+        return cls(
+            name=str(data["name"]),
+            block_name=str(data["block_name"]),
+            M_block_from_bar=np.asarray(data["M_block_from_bar"], dtype=float),
+            asset_filename=str(data.get("asset_filename", "")),
+            collision_filename=str(data.get("collision_filename", "")),
+            jp_range=tuple(float(v) for v in data.get("jp_range", DEFAULT_JP_RANGE)),
+            jr_range=tuple(float(v) for v in data.get("jr_range", DEFAULT_JR_RANGE)),
         )
 
 
@@ -189,27 +250,141 @@ def fk_half_from_bar_frame(
 # ---------------------------------------------------------------------------
 
 
-def load_joint_pairs(path: str = DEFAULT_REGISTRY_PATH) -> dict[str, JointPairDef]:
+# ---------------------------------------------------------------------------
+# Normalized registry on disk
+# ---------------------------------------------------------------------------
+# The on-disk schema is a 3-table normalized registry:
+#
+#   {
+#     "halves":        [JointHalfDef.to_dict() ...],   # keyed by block_name
+#     "mates":         [{name, contact_distance_mm, jp_range, jr_range,
+#                        female_block_name, male_block_name}, ...],
+#     "ground_joints": [GroundJointDef.to_dict() ...],  # keyed by name
+#   }
+#
+# Each `JointHalfDef` appears exactly once in `halves` (deduplicated by
+# `block_name`).  A `JointPairDef` is reconstructed by joining the two
+# referenced halves into the mate entry.
+
+
+@dataclass(frozen=True)
+class JointRegistry:
+    halves: dict[str, JointHalfDef] = field(default_factory=dict)
+    mates: dict[str, JointPairDef] = field(default_factory=dict)
+    ground_joints: dict[str, GroundJointDef] = field(default_factory=dict)
+
+
+def _mate_to_dict(pair: JointPairDef) -> dict:
+    return {
+        "name": pair.name,
+        "contact_distance_mm": float(pair.contact_distance_mm),
+        "jp_range": list(pair.jp_range),
+        "jr_range": list(pair.jr_range),
+        "female_block_name": pair.female.block_name,
+        "male_block_name": pair.male.block_name,
+    }
+
+
+def load_joint_registry(path: str = DEFAULT_REGISTRY_PATH) -> JointRegistry:
     if not os.path.exists(path):
-        return {}
+        return JointRegistry()
     with open(path, "r", encoding="utf-8") as stream:
         data = json.load(stream)
-    pairs: dict[str, JointPairDef] = {}
-    for entry in data.get("pairs", []):
-        pair = JointPairDef.from_dict(entry)
-        pairs[pair.name] = pair
-    return pairs
+
+    halves: dict[str, JointHalfDef] = {}
+    for entry in data.get("halves", []):
+        half = JointHalfDef.from_dict(entry)
+        halves[half.block_name] = half
+
+    mates: dict[str, JointPairDef] = {}
+    for entry in data.get("mates", []):
+        name = str(entry["name"])
+        fname = str(entry["female_block_name"])
+        mname = str(entry["male_block_name"])
+        if fname not in halves:
+            raise KeyError(
+                f"Mate {name!r} references unknown female half block_name={fname!r}"
+            )
+        if mname not in halves:
+            raise KeyError(
+                f"Mate {name!r} references unknown male half block_name={mname!r}"
+            )
+        mates[name] = JointPairDef(
+            name=name,
+            female=halves[fname],
+            male=halves[mname],
+            contact_distance_mm=float(entry["contact_distance_mm"]),
+            jp_range=tuple(float(v) for v in entry.get("jp_range", DEFAULT_JP_RANGE)),
+            jr_range=tuple(float(v) for v in entry.get("jr_range", DEFAULT_JR_RANGE)),
+        )
+
+    ground_joints: dict[str, GroundJointDef] = {}
+    for entry in data.get("ground_joints", []):
+        gj = GroundJointDef.from_dict(entry)
+        ground_joints[gj.name] = gj
+
+    return JointRegistry(halves=halves, mates=mates, ground_joints=ground_joints)
 
 
-def save_joint_pair(pair: JointPairDef, path: str = DEFAULT_REGISTRY_PATH) -> None:
-    """Insert/overwrite a single pair entry in the JSON registry."""
-
-    pairs = load_joint_pairs(path)
-    pairs[pair.name] = pair
-    payload = {"pairs": [pairs[name].to_dict() for name in sorted(pairs)]}
+def save_joint_registry(
+    registry: JointRegistry, path: str = DEFAULT_REGISTRY_PATH
+) -> None:
+    payload = {
+        "halves": [registry.halves[k].to_dict() for k in sorted(registry.halves)],
+        "mates": [_mate_to_dict(registry.mates[k]) for k in sorted(registry.mates)],
+        "ground_joints": [
+            registry.ground_joints[k].to_dict() for k in sorted(registry.ground_joints)
+        ],
+    }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as stream:
         json.dump(payload, stream, indent=2)
+
+
+def save_joint_half(
+    half: JointHalfDef, path: str = DEFAULT_REGISTRY_PATH
+) -> None:
+    reg = load_joint_registry(path)
+    reg.halves[half.block_name] = half
+    save_joint_registry(reg, path)
+
+
+def save_ground_joint(
+    ground: GroundJointDef, path: str = DEFAULT_REGISTRY_PATH
+) -> None:
+    reg = load_joint_registry(path)
+    reg.ground_joints[ground.name] = ground
+    save_joint_registry(reg, path)
+
+
+# ---------------------------------------------------------------------------
+# Mate-centric API (back-compat: same callers as before the split)
+# ---------------------------------------------------------------------------
+
+
+def load_joint_pairs(path: str = DEFAULT_REGISTRY_PATH) -> dict[str, JointPairDef]:
+    return load_joint_registry(path).mates
+
+
+def save_joint_pair(
+    pair: JointPairDef,
+    path: str = DEFAULT_REGISTRY_PATH,
+    *,
+    overwrite_halves: bool = True,
+) -> None:
+    """Insert/overwrite a mate entry; also upsert its two halves.
+
+    When `overwrite_halves` is True (default), the female/male halves carried
+    by `pair` overwrite any existing halves with the same `block_name`.  Set
+    to False to preserve the existing half geometry (useful when the caller
+    only wants to update mate-level fields like `contact_distance_mm`).
+    """
+    reg = load_joint_registry(path)
+    for half in (pair.female, pair.male):
+        if overwrite_halves or half.block_name not in reg.halves:
+            reg.halves[half.block_name] = half
+    reg.mates[pair.name] = pair
+    save_joint_registry(reg, path)
 
 
 def get_joint_pair(
@@ -223,3 +398,11 @@ def get_joint_pair(
 
 def list_joint_pair_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
     return sorted(load_joint_pairs(path).keys())
+
+
+def list_joint_half_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
+    return sorted(load_joint_registry(path).halves.keys())
+
+
+def list_ground_joint_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
+    return sorted(load_joint_registry(path).ground_joints.keys())

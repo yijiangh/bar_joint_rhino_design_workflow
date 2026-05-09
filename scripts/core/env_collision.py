@@ -107,13 +107,15 @@ def _joint_obj_path_map():
     cached = sticky.get(_STICKY_JOINT_OBJ_PATH_MAP)
     if cached is not None:
         return cached
-    from core.joint_pair import load_joint_pairs, DEFAULT_ASSET_DIR
+    from core.joint_pair import DEFAULT_ASSET_DIR, load_joint_registry
     out: dict = {}
-    pairs = load_joint_pairs()
-    for pair in pairs.values():
-        for half in (pair.female, pair.male):
-            if half.collision_filename and half.block_name not in out:
-                out[half.block_name] = half.collision_path(DEFAULT_ASSET_DIR)
+    registry = load_joint_registry()
+    for half in registry.halves.values():
+        if half.collision_filename and half.block_name not in out:
+            out[half.block_name] = half.collision_path(DEFAULT_ASSET_DIR)
+    for ground in registry.ground_joints.values():
+        if ground.collision_filename and ground.block_name not in out:
+            out[ground.block_name] = ground.collision_path(DEFAULT_ASSET_DIR)
     sticky[_STICKY_JOINT_OBJ_PATH_MAP] = out
     return out
 

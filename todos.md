@@ -3,6 +3,7 @@
 ## VL
 
 - [ ] Add validation examples for prefab export edge cases (missing bar IDs, missing joint metadata).
+- [ ] Ground-joint placement command (`RSGroundPlace`?): pick a bar end, pick the ground-joint definition, anchor and bake the block instance with the same `(jp, jr)` DOFs as a regular half. Currently we have the data model and `RSDefineJointHalf` `Ground` flow, but no placement / preview UX yet.
 
 ## YH 
 

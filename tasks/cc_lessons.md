@@ -493,3 +493,56 @@ Compas_fab CC.4/CC.5 will flag the active bar against the tools that hold it AND
 **How to apply:** Walk `state.rigid_body_states`, parse `active_joint_<jid>_<sub>` keys via `rsplit("_", 1)`, look up the env mate by reconstructing the name, and union into `touch_bodies` mutually. Implemented in `env_collision.configure_active_assembly_acm(state, arm_tool_rb_names)`; call it AFTER `configure_arm_tool_rigid_body_states` (which resets `touch_bodies = []`).
 
 **Do NOT whitelist:** wrist links vs joints, tool vs env bars, robot links vs robot links. Those are real collisions.
+
+
+---
+
+## Joint registry is normalized: halves keyed by `block_name`, mates reference them
+
+scripts/core/joint_pairs.json switched from a denormalized `{"pairs": [...]}`
+schema (each pair embedded its full female + male halves) to a 3-table
+normalized schema: `{"halves": [...], "mates": [...], "ground_joints": [...]}`.
+
+**Why.** A single block (e.g. `T20_Male`) appears in multiple mates (T20,
+T20SFloorLeft, T20SFloorRight). The denormalized schema duplicated its
+geometry across pairs and required a delicate `_resolve_shared_half` check
+at write time to detect transform drift. Normalizing means the half is
+authored ONCE (via `RSDefineJointHalf`) and a mate is just a thin record
+`{name, contact_distance_mm, female_block_name, male_block_name, ranges}`.
+
+**How to apply.** Read via `load_joint_registry()` -> `JointRegistry` (with
+`halves`, `mates`, `ground_joints` dicts). The legacy mate-centric API
+(`load_joint_pairs`, `save_joint_pair`, `get_joint_pair`,
+`list_joint_pair_names`) is preserved as a thin wrapper, so existing
+callers work unchanged. `save_joint_pair(pair, overwrite_halves=False)`
+upserts only the mate record (use this in `RSDefineJointMate` so picking
+new bar lines doesn't accidentally clobber the half geometry authored by
+`RSDefineJointHalf`). Ground joints are first-class: a `GroundJointDef`
+has `M_block_from_bar` only (no screw frame, no mate partner).
+
+---
+
+## OBJ collision meshes for joint halves live in `asset/<block_name>.obj` (mm)
+
+`RSDefineJointHalf` exports the picked block definition's renderable
+geometry as a single-mesh OBJ in MILLIMETRES via
+`core.rhino_block_obj_export.export_block_definition_to_obj_mm` (mirrors
+the pineapple OBJ export, but in mm not metres). The file becomes
+`half.collision_filename` and is consumed by
+`env_collision._joint_obj_path_map` for env-collision rigid bodies.
+
+**Why.** Hand-prepared collision OBJs were a recurring papercut whenever a
+new block definition was added; the half-author was the natural place to
+emit a fresh, registered collision mesh in one shot. Choosing mm here keeps
+the asset in the same unit system as the joint registry (everything else
+in this project lives in mm).
+
+**How to apply.** When adding a new `Define...` workflow that needs a
+collision mesh, reuse `export_block_definition_to_obj_mm(block_name,
+output_path)` directly. The function combines all sub-meshes inside the
+block definition into one `compas.datastructures.Mesh` and writes via
+`cmesh.to_obj`. NOTE this is one mesh per OBJ -- the existing `RigidBody`
+"never merge sub-meshes" lesson is about `rigid_body.collision_meshes`
+(the in-memory list passed to PyBullet), not about how many `o`/`g`
+groups live in a single OBJ file.
+

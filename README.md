@@ -11,7 +11,8 @@ core math stack (`numpy` + `scipy`) and is split into two stages:
 
 Each connector family is described by a **joint pair**: a female + male
 block definition with the geometry needed to drive the optimizer. Joint
-pairs are authored interactively in Rhino with `RSDefineJointPair` and
+pairs are authored interactively in Rhino with `RSDefineJointHalf` /
+`RSDefineJointMate` and
 stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
 assets in `asset/`.
 
@@ -114,24 +115,39 @@ for the toolbar mapping.
 | **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly-sequence viewer/editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks on a bar pair; click to flip orientation |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair |
-| **RSSetup** | RSDefineJointPair | `rs_define_joint_pair.py` | Define a new joint pair from baked Rhino geometry |
+| **RSSetup** | RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) from baked Rhino geometry |
+| **RSSetup** | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure shortest distance between two bars |
 | **RSSetup** | RSUpdatePreview | `rs_update_preview.py` | Refresh all bar tube previews |
 | **RSSetup** | RSExportPrefab | `rs_export_prefab.py` | Export bar prefabrication data as JSON |
 
-### Defining a joint pair
+### Defining joint halves and mates
 
-`RSDefineJointPair` walks you through:
+The joint registry (`scripts/core/joint_pairs.json`) is normalized into
+three tables: `halves` (per block_name), `mates` (named female+male
+relationships), and `ground_joints` (single-half anchors to the world).
 
-1. Selecting the female and male block definitions in the document.
-2. Picking a representative `Le` and `Ln` bar pair that mates them.
-3. Computing the per-pair contact distance and the fixed
-   `M_block_from_bar` / `M_screw_from_block` transforms.
-4. Saving the pair to `scripts/core/joint_pairs.json` and exporting the
-   block definitions to `asset/<block_name>.3dm` so they can be auto-imported
-   on other machines.
+`RSDefineJointHalf` defines ONE half:
 
-After this, the new pair name appears as a `Pair` option whenever
+1. Choose `Male`, `Female`, or `Ground`.
+2. Pick the block instance and its representative bar axis line.
+3. (Male/Female only) Pick the screw axis line and screw center point.
+4. Enter the half name. For Male/Female the name MUST equal the block
+   definition name; for Ground it is the ground-joint key.
+5. The script exports `asset/<block_name>.3dm` and a single-mesh collision
+   `asset/<block_name>.obj` (millimetres), then upserts the half into the
+   registry.
+
+`RSDefineJointMate` then defines the relationship:
+
+1. Pick the female block + female bar axis, then the male block + male bar axis.
+2. Enter the mate name.
+3. The script looks up both halves by `block_name` (must already exist),
+   computes `contact_distance_mm` from the two bar lines, prompts
+   Accept/Edit/Cancel, and persists the mate. Half geometry is left
+   untouched.
+
+After this, the new mate name appears as a `Pair` option whenever
 `RSBarSnap`, `RSBarBrace`, or `RSJointPlace` prompt for the first bar.
 Pick a bar directly to use the cached default pair, or click the `Pair`
 option to switch.

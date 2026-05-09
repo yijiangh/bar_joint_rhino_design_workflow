@@ -803,23 +803,42 @@ def _create_tube_brep(start_xyz, end_xyz, bar_radius):
     return tube_id
 
 
-def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None):
+def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
+                       verbose=False):
     """Make sure a tube preview exists and matches the current curve geometry.
 
-    Creates or regenerates the tube as needed.  Returns list of tube GUIDs.
+    Creates or regenerates the tube as needed.  Returns
+    ``(baked_ids, status)`` where ``status`` is one of ``"reused"``,
+    ``"regenerated"``, or ``"created"``.  Pre-existing single-value
+    callers that ignore the return are unaffected.
     """
     # Check for an existing tube
     existing = _find_existing_tube(curve_id)
     if existing is not None:
         if _tube_geometry_matches(existing, curve_id):
-            return [existing]
+            if verbose:
+                print(f"  ensure_bar_preview[{bar_id or '?'}]: reused tube {existing}")
+            return [existing], "reused"
         # Stale — delete and recreate
+        if verbose:
+            cached_start = _parse_cached_point(rs.GetUserText(existing, TUBE_CACHE_START))
+            cached_end = _parse_cached_point(rs.GetUserText(existing, TUBE_CACHE_END))
+            cur_start = tuple(point_to_array(rs.CurveStartPoint(curve_id)).tolist())
+            cur_end = tuple(point_to_array(rs.CurveEndPoint(curve_id)).tolist())
+            print(f"  ensure_bar_preview[{bar_id or '?'}]: stale tube {existing} -- "
+                  f"cached_start={cached_start} cur_start={cur_start} | "
+                  f"cached_end={cached_end} cur_end={cur_end}")
         delete_objects([existing])
+        status = "regenerated"
+    else:
+        status = "created"
+        if verbose:
+            print(f"  ensure_bar_preview[{bar_id or '?'}]: no existing tube, creating new")
 
     start_xyz, end_xyz = curve_endpoints(curve_id)
     tube_id = _create_tube_brep(start_xyz, end_xyz, bar_radius)
     if tube_id is None:
-        return []
+        return [], "reused"
 
     # Resolve bar_id
     if bar_id is None:
@@ -841,18 +860,35 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None):
         # duplicates: a copy will retain this user text but live under a
         # different object GUID.
         rs.SetUserText(oid, TUBE_SELF_GUID_KEY, str(rs.coerceguid(oid)))
-    return baked_ids
+    return baked_ids, status
 
 
-def update_all_previews(bar_radius, color=None):
+def update_all_previews(bar_radius, color=None, verbose=False):
     """Ensure every registered bar has an up-to-date tube preview.
 
-    Returns the number of bars processed.
+    Returns the number of bars whose tube was actually created or
+    regenerated (i.e. excludes bars whose existing tube was reused
+    as-is).  Pass ``verbose=True`` to log per-bar status (handy when
+    debugging stale-preview issues).
     """
     bars = get_all_bars()
+    n_created = 0
+    n_regen = 0
+    n_reused = 0
     for bar_id, guid in bars.items():
-        ensure_bar_preview(guid, bar_radius, color=color, bar_id=bar_id)
-    return len(bars)
+        _, status = ensure_bar_preview(
+            guid, bar_radius, color=color, bar_id=bar_id, verbose=verbose
+        )
+        if status == "created":
+            n_created += 1
+        elif status == "regenerated":
+            n_regen += 1
+        else:
+            n_reused += 1
+    if verbose:
+        print(f"update_all_previews: total={len(bars)} "
+              f"created={n_created} regenerated={n_regen} reused={n_reused}")
+    return n_created + n_regen
 
 
 # ---------------------------------------------------------------------------

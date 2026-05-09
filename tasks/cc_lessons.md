@@ -4,6 +4,16 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Standalone "refresh" entry points must call `repair_on_entry`, not `update_all_previews` alone
+
+`rs_update_preview.py` originally called only `update_all_previews(bar_radius)`. That helper iterates registered bars and rebuilds stale tubes per `_tube_geometry_matches`, but it does NOT touch ORPHAN tubes whose `tube_axis_id` belongs to a different (still-registered) bar -- which is exactly what user copy-paste of a bar+tube produces. Orphan deletion lives in `_enforce_tube_layer`, only invoked from `enforce_managed_layers` -> `repair_on_entry`. Skipping that pass leaves duplicate tubes overlapping the new bar's tube forever.
+
+**How to apply:** Every entry-point script that asks the user to "fix the previews" must call `repair_on_entry(bar_radius, caller=...)` first. `update_all_previews` is the post-repair canonical pass and may be re-invoked separately for diagnostics (`verbose=True`).
+
+Also: `update_all_previews` previously returned `len(bars)`, so callers that printed "Updated N bar previews" lied even when nothing changed. Make it return `created + regenerated` (excluding `reused`) and have `ensure_bar_preview` return `(baked_ids, status)` with status in `{"reused", "regenerated", "created"}` so the count is meaningful.
+
+---
+
 ## Post-IK prompts should loop on replan in both success and failure paths
 
 When an IK preview is valid or an IK solve fails, offer explicit replan actions like `RetrySameBase`, `RetryNewBase`, and `GiveUp` instead of any branch that immediately exits the command. Add `Accept` only on the success path.

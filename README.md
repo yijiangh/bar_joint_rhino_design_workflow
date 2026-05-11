@@ -30,6 +30,7 @@ required:
 | **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
 | **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks; auto-assigns female/male by sequence, click to flip orientation |
+| **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point (auto-jr aligns block +Y to world up) |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair by clicking female or male block to flip orientation |
 | **RSDesign** | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe (pick 2 male joints, solve IK, save on shared Ln bar) |
 | **RSDesign** | RSShowIK | `rs_show_ik.py` | Replay a saved IK keyframe on a picked bar |
@@ -114,6 +115,7 @@ for the toolbar mapping.
 | **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
 | **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly-sequence viewer/editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks on a bar pair; click to flip orientation |
+| **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair |
 | **RSSetup** | RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) from baked Rhino geometry |
 | **RSSetup** | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves |

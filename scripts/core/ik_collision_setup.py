@@ -44,14 +44,22 @@ def _arm_side_from_tool_name(tool_name: str) -> Optional[str]:
 
 
 def _males_on_bar(bar_id: str) -> list:
-    """Block-instance oids of male joints whose ``parent_bar_id == bar_id``."""
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
-        return []
-    return [
-        oid
-        for oid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []
-        if rs.GetUserText(oid, "parent_bar_id") == bar_id
-    ]
+    """Block-instance oids of tool-bearing joints (male + ground) whose
+    ``parent_bar_id == bar_id``.  Name kept for back-compat; downstream
+    only consumes opaque oids."""
+    out = []
+    for layer in (
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    ):
+        if not rs.IsLayer(layer):
+            continue
+        out.extend(
+            oid
+            for oid in rs.ObjectsByLayer(layer) or []
+            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+        )
+    return out
 
 
 def resolve_arm_tools_on_bar(bar_id: str):
@@ -63,13 +71,13 @@ def resolve_arm_tools_on_bar(bar_id: str):
     males = _males_on_bar(bar_id)
     if len(males) != 2:
         return None, (
-            f"Bar '{bar_id}' has {len(males)} male joint(s); need exactly 2."
+            f"Bar '{bar_id}' has {len(males)} tool-bearing joint(s) (male+ground); need exactly 2."
         )
     sides = {"left": None, "right": None}
     for moid in males:
         jid = rs.GetUserText(moid, "joint_id")
         if not jid:
-            return None, f"Male block on bar '{bar_id}' missing 'joint_id'."
+            return None, f"Joint block on bar '{bar_id}' missing 'joint_id'."
         toid = find_tool_for_joint(jid)
         if toid is None:
             return None, f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed."

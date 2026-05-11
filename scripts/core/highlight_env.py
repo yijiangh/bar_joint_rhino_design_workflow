@@ -62,6 +62,7 @@ def highlight_env_for_ik(active_bar_id):
         joint_layers = (
             config.LAYER_JOINT_FEMALE_INSTANCES,
             config.LAYER_JOINT_MALE_INSTANCES,
+            config.LAYER_JOINT_GROUND_INSTANCES,
         )
         for layer in joint_layers:
             if not rs.IsLayer(layer):

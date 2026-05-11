@@ -16,6 +16,7 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSBarBrace | `rs_bar_brace.py` | Solve and pick brace-bar candidates between two bars |
 | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | RSJointPlace | `rs_joint_place.py` | Place female and male connector blocks on a selected bar pair |
+| RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point; auto-`jr` heuristic aligns block +Y to world up; click block to flip 180 deg |
 | RSJointEdit | `rs_joint_edit.py` | Re-edit the orientation of a previously placed joint pair by clicking a block |
 | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe workflow: pick two male joints, solve IK, save on shared Ln bar |
 | RSShowIK | `rs_show_ik.py` | Replay a saved `ik_assembly` keyframe (final or approach) on a picked bar |

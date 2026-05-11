@@ -86,3 +86,96 @@ def export_block_definition_to_obj_mm(block_name: str, output_path: str) -> bool
         f"(verts={cmesh.number_of_vertices()}, faces={cmesh.number_of_faces()}, scale_to_mm={scale_to_mm:g})"
     )
     return True
+
+
+def export_picked_meshes_to_obj_mm(
+    mesh_object_ids,
+    block_xform_doc,
+    output_path: str,
+    label: str = "",
+) -> bool:
+    """Write picked Rhino meshes to an OBJ in MM, expressed in the block's LOCAL frame.
+
+    `mesh_object_ids` -- list of Rhino object guids; non-mesh objects are
+        skipped with a warning.
+    `block_xform_doc` -- 4x4 numpy InstanceXform of the block instance the
+        meshes were authored against (doc units).  Picked meshes live in
+        WORLD space; we apply `inverse(block_xform_doc)` to bring them into
+        the block-definition local frame, then scale to mm.
+    `output_path` -- absolute OBJ path (parent dir created if missing).
+    `label` -- short tag for log lines (e.g. block_name or ground name).
+
+    Returns True on success.  Verbose progress printed.
+    """
+    import Rhino  # noqa: PLC0415
+    import scriptcontext as sc  # noqa: PLC0415
+
+    from core.rhino_frame_io import doc_unit_scale_to_mm  # noqa: PLC0415
+
+    output_path = os.path.normpath(output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    if not mesh_object_ids:
+        print(f"    [export_picked_obj] no mesh objects supplied for '{label}'.")
+        return False
+
+    # Build inverse(block_xform) as a Rhino.Geometry.Transform so we can
+    # apply it directly to a Rhino mesh (avoids a numpy roundtrip per vertex).
+    rh_xform = Rhino.Geometry.Transform(0.0)
+    for r in range(4):
+        for c in range(4):
+            rh_xform[r, c] = float(block_xform_doc[r, c])
+    ok_inv, rh_xform_inv = rh_xform.TryGetInverse()
+    if not ok_inv:
+        print(
+            f"    [export_picked_obj] block xform for '{label}' is not invertible; "
+            f"cannot transform picked meshes into block-local frame."
+        )
+        return False
+
+    combined = Rhino.Geometry.Mesh()
+    n_picked = 0
+    n_skipped = 0
+    for oid in mesh_object_ids:
+        rh_obj = sc.doc.Objects.FindId(oid)
+        if rh_obj is None:
+            n_skipped += 1
+            continue
+        geom = rh_obj.Geometry
+        if not isinstance(geom, Rhino.Geometry.Mesh):
+            print(f"    [export_picked_obj] skipping non-mesh object {oid} for '{label}'.")
+            n_skipped += 1
+            continue
+        m = geom.DuplicateMesh()
+        m.Transform(rh_xform_inv)
+        combined.Append(m)
+        n_picked += 1
+
+    if combined.Vertices.Count == 0:
+        print(f"    [export_picked_obj] no mesh vertices collected for '{label}' (picked={n_picked}, skipped={n_skipped}).")
+        return False
+
+    scale_to_mm = doc_unit_scale_to_mm()
+    if abs(scale_to_mm - 1.0) > 1e-12:
+        sf = Rhino.Geometry.Transform.Scale(Rhino.Geometry.Point3d.Origin, scale_to_mm)
+        combined.Transform(sf)
+
+    from compas.datastructures import Mesh  # noqa: PLC0415
+
+    vertices = [(float(v.X), float(v.Y), float(v.Z)) for v in combined.Vertices]
+    faces = []
+    for i in range(combined.Faces.Count):
+        f = combined.Faces[i]
+        if f.IsTriangle:
+            faces.append([f.A, f.B, f.C])
+        else:
+            faces.append([f.A, f.B, f.C, f.D])
+    cmesh = Mesh.from_vertices_and_faces(vertices, faces)
+    cmesh.to_obj(output_path)
+    print(
+        f"    [export_picked_obj] '{label}' -> {output_path} "
+        f"(picked={n_picked}, skipped={n_skipped}, "
+        f"verts={cmesh.number_of_vertices()}, faces={cmesh.number_of_faces()}, "
+        f"scale_to_mm={scale_to_mm:g})"
+    )
+    return True

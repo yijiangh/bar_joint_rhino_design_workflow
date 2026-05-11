@@ -44,7 +44,7 @@ if SCRIPT_DIR not in sys.path:
 from core import joint_pair as _joint_pair_module
 from core import joint_pick_helpers as _picks_module
 from core.rhino_block_export import export_block_definition_to_3dm
-from core.rhino_block_obj_export import export_block_definition_to_obj_mm
+from core.rhino_block_obj_export import export_picked_meshes_to_obj_mm
 from core.rhino_helpers import suspend_redraw
 
 
@@ -128,6 +128,20 @@ def main() -> None:
             return
         selected.append(screw_point_id)
 
+    # Collision meshes -- pick AFTER bar/screw geometry so we can hide
+    # everything else and pick stacked meshes cleanly. The user must
+    # hand-model the low-poly collision mesh; we never auto-generate it
+    # from the block render geometry.
+    with picks.temporarily_hidden(selected):
+        mesh_ids = picks.pick_meshes(
+            "Pick collision MESH object(s) (one or more) and press Enter"
+        )
+    if not mesh_ids:
+        print(f"{_DIALOG}: cancelled at collision-mesh pick (none selected).")
+        return
+    selected.extend(mesh_ids)
+    print(f"{_DIALOG}: collision meshes picked = {len(mesh_ids)}")
+
     # Resolve geometry / block name
     block_xform_doc, block_def_name = picks.block_instance_frame(block_id)
     if not block_def_name:
@@ -208,7 +222,9 @@ def main() -> None:
 
     with suspend_redraw():
         ok_3dm = export_block_definition_to_3dm(block_def_name, asset_path)
-        ok_obj = export_block_definition_to_obj_mm(block_def_name, obj_path)
+        ok_obj = export_picked_meshes_to_obj_mm(
+            mesh_ids, block_xform_doc, obj_path, label=block_def_name
+        )
 
     if not ok_3dm:
         rs.MessageBox(

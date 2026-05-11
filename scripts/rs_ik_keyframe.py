@@ -172,14 +172,27 @@ def _arm_side_from_tool_name(tool_name):
 
 
 def _males_on_bar(bar_id):
-    """Return list of male-joint block instance oids whose ``parent_bar_id`` matches."""
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
-        return []
-    return [
-        oid
-        for oid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []
-        if rs.GetUserText(oid, "parent_bar_id") == bar_id
-    ]
+    """Return list of joint block instance oids whose ``parent_bar_id`` matches.
+
+    Scans BOTH the male-joint layer and the ground-joint layer: assembly IK
+    treats any tool-bearing joint instance on the bar as an arm anchor, so a
+    bar with one male + one ground (or two grounds) is a valid 2-anchor
+    configuration.  The variable name is kept as ``males`` for back-compat
+    with downstream code that just consumes opaque block-instance oids.
+    """
+    out = []
+    for layer in (
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    ):
+        if not rs.IsLayer(layer):
+            continue
+        out.extend(
+            oid
+            for oid in rs.ObjectsByLayer(layer) or []
+            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+        )
+    return out
 
 
 def _resolve_arm_tools_on_bar(bar_oid):
@@ -196,8 +209,8 @@ def _resolve_arm_tools_on_bar(bar_oid):
     males = _males_on_bar(bar_id)
     if len(males) != 2:
         return None, (
-            f"Bar '{bar_id}' has {len(males)} male joint(s); need exactly 2 "
-            "(single-male-joint flow not yet supported)."
+            f"Bar '{bar_id}' has {len(males)} tool-bearing joint(s) (male+ground); "
+            "need exactly 2 (single-joint flow not yet supported)."
         )
 
     left = right = None
@@ -241,7 +254,7 @@ def _pick_bar_with_arm_tools():
     seq_map = get_bar_seq_map()
     while True:
         bar_oid = pick_bar(
-            "Pick the Ln bar to assemble (must have 2 male joints with L/R tools placed)"
+            "Pick the Ln bar to assemble (must have 2 tool-bearing joints with L/R tools placed)"
         )
         if bar_oid is None:
             return None
@@ -605,15 +618,19 @@ def _hide_inactive_tool_blocks(active_bar_id):
     """
     if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
         return []
-    male_layer = config.LAYER_JOINT_MALE_INSTANCES
-    if not rs.IsLayer(male_layer):
-        return []
-    active_joint_ids = {
-        rs.GetUserText(oid, "joint_id")
-        for oid in (rs.ObjectsByLayer(male_layer) or [])
-        if rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-        and rs.GetUserText(oid, "joint_id")
-    }
+    active_joint_ids = set()
+    for layer in (
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    ):
+        if not rs.IsLayer(layer):
+            continue
+        for oid in rs.ObjectsByLayer(layer) or []:
+            if (
+                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
+                and rs.GetUserText(oid, "joint_id")
+            ):
+                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
     hidden = []
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
         jid = rs.GetUserText(oid, "joint_id")

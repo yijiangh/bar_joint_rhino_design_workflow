@@ -316,6 +316,7 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
     joint_layers = (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
     )
     j_hits = j_misses = 0
     for layer in joint_layers:
@@ -326,7 +327,13 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
             if parent_bar not in built_bar_ids:
                 continue
             joint_id = rs.GetUserText(joint_oid, "joint_id")
-            subtype = rs.GetUserText(joint_oid, "joint_subtype") or "Joint"
+            # Ground joints store joint_type="ground" but no joint_subtype;
+            # fall back so the env tag suffix is meaningful (`_ground` not `_joint`).
+            subtype = (
+                rs.GetUserText(joint_oid, "joint_subtype")
+                or rs.GetUserText(joint_oid, "joint_type")
+                or "Joint"
+            )
             block_name = rs.BlockInstanceName(joint_oid)
             if not block_name:
                 continue
@@ -385,6 +392,7 @@ def collect_active_geometry(active_bar_id, bar_seq_map):
     joint_layers = (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
     )
     for layer in joint_layers:
         if not rs.IsLayer(layer):
@@ -393,7 +401,12 @@ def collect_active_geometry(active_bar_id, bar_seq_map):
             if rs.GetUserText(joint_oid, "parent_bar_id") != active_bar_id:
                 continue
             joint_id = rs.GetUserText(joint_oid, "joint_id")
-            subtype = rs.GetUserText(joint_oid, "joint_subtype") or "Joint"
+            # See collect_built_geometry: ground joints have no joint_subtype.
+            subtype = (
+                rs.GetUserText(joint_oid, "joint_subtype")
+                or rs.GetUserText(joint_oid, "joint_type")
+                or "Joint"
+            )
             block_name = rs.BlockInstanceName(joint_oid)
             if not block_name:
                 continue

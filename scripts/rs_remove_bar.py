@@ -42,18 +42,24 @@ from core.rhino_tool_place import remove_tool_for_joint
 
 
 def _find_joint_ids_for_bar(bar_id):
-    """Return a list of joint_ids that involve *bar_id* as female or male."""
+    """Return a list of joint_ids that involve *bar_id* as female, male, or ground.
+
+    Female / male blocks store ``female_parent_bar`` and ``male_parent_bar``
+    user text; ground blocks store only ``parent_bar_id``.
+    """
     found = set()
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
     ):
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             fb = rs.GetUserText(oid, "female_parent_bar")
             mb = rs.GetUserText(oid, "male_parent_bar")
-            if fb == bar_id or mb == bar_id:
+            pb = rs.GetUserText(oid, "parent_bar_id")
+            if fb == bar_id or mb == bar_id or pb == bar_id:
                 jid = rs.GetUserText(oid, "joint_id")
                 if jid:
                     found.add(jid)
@@ -61,9 +67,9 @@ def _find_joint_ids_for_bar(bar_id):
 
 
 def _remove_joint_blocks(joint_id):
-    """Delete placed female and male block instances for *joint_id*."""
+    """Delete placed female, male, and ground block instances for *joint_id*."""
     to_delete = []
-    for suffix in ("_female", "_male"):
+    for suffix in ("_female", "_male", "_ground"):
         ids = rs.ObjectsByName(f"{joint_id}{suffix}")
         if ids:
             to_delete.extend(ids)

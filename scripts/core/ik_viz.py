@@ -506,6 +506,7 @@ def begin_session(
             config.LAYER_BAR_TUBE_PREVIEWS,
             config.LAYER_JOINT_FEMALE_INSTANCES,
             config.LAYER_JOINT_MALE_INSTANCES,
+            config.LAYER_JOINT_GROUND_INSTANCES,
             config.LAYER_TOOL_INSTANCES,
         )
         if not hide_tool_instances:

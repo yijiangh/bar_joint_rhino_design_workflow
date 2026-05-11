@@ -546,3 +546,86 @@ block definition into one `compas.datastructures.Mesh` and writes via
 (the in-memory list passed to PyBullet), not about how many `o`/`g`
 groups live in a single OBJ file.
 
+
+
+---
+
+## Joint-half collision OBJs are user-picked, not auto-exported from block geometry
+
+The first cut of `RSDefineJointHalf` auto-rendered the picked block
+definition's full render mesh (Brep meshing + SubD subdivision) and
+wrote it as the collision OBJ. That produced 30k-vertex meshes for a
+single connector -- way too heavy for IK env-collision and not what
+the user wanted: collision geometry must be HAND-MODELED low-poly meshes.
+
+**Why.** Render meshes are visually-tessellated and inherit nested-block
+sub-geometry; collision needs convex / few-tri primitives the user
+explicitly authors. Auto-exporting silently couples the two roles.
+
+**How to apply.** Add a multi-pick mesh step (`rs.GetObjects(filter=32,
+minimum_count=1)`) AFTER the bar/screw geometry picks (so we can hide the
+joint annotations and pick stacked meshes cleanly). Use
+`export_picked_meshes_to_obj_mm(mesh_ids, block_xform_doc, output_path,
+label=...)` -- it applies `inverse(block_xform_doc)` to bring picked
+world-space meshes into the block's local frame, then scales doc-units to
+mm. The OBJ then re-attaches correctly at any future block placement.
+Cancel cleanly if no meshes are picked: a half without collision_filename
+falls back to the slow Rhino render-mesh path in env_collision and is
+almost certainly an authoring mistake.
+
+
+---
+
+## Ground-joint placement: closed-form jr from world-up alignment
+
+When you need to auto-orient a connector block about a bar axis so that the block's local +Y points as close to world +Z as possible (RSGroundPlace heuristic), there's a closed form -- no optimizer needed.
+
+**Why:** With `v = bar_R^T @ world_up` (world-up expressed in bar coords) and `b = M_block_from_bar[:3, 1]` (block local +Y in bar coords before the jr rotation), the projected dot product against world up is
+
+    f(jr) = A cos(jr) + B sin(jr) + C
+
+with `A = v_x*b_x + v_y*b_y`, `B = v_y*b_x - v_x*b_y`, `C = v_z*b_z`. Maximum at `jr = atan2(B, A)`. `atan2(0, 0) == 0` keeps it finite even when the bar is colinear with world up (block-Y can never align in the bar's XY plane in that case anyway).
+
+**How to apply:** `core.ground_placement.auto_jr_world_up(bar_start, bar_end, ground)`. Use the canonical bar frame from `core.joint_pair.canonical_bar_frame_from_line` for both the heuristic and the FK forward path so they match. Same closed form generalises to "align block local +k_i to any world direction" by swapping `world_up` and `b`.
+
+## RSJointEdit click-routing: branch on ObjectLayer, then read role-specific UserText
+
+`rs_joint_edit.py` discovers placed-joint instances by ObjectLayer (`FEMALE_INSTANCES_LAYER` / `MALE_INSTANCES_LAYER` / `GROUND_INSTANCES_LAYER` / `LAYER_TOOL_INSTANCES`). Each branch reads its OWN UserText keyset BEFORE any deletion, then re-bakes via the appropriate `place_*` helper.
+
+**Why:** Female/male blocks share `le_rev` / `ln_rev` / `joint_pair_name` / `female_parent_bar` / `male_parent_bar` because they participate in a 4-variant solver. Ground blocks share none of that -- they only have `ground_joint_name` / `parent_bar_id` / `position_mm` / `rotation_deg` and a single `jr += pi` flip semantics. Trying to read `le_rev` from a ground block yields empty strings and silently corrupts the flip path.
+
+**How to apply:** Add the layer check FIRST (before any common metadata read), short-circuit with a dedicated helper (`_flip_ground_block(clicked_id)`), and `continue` the loop. Per-role helpers own their own metadata schema and their own deletion + re-bake call -- the main loop stays a thin dispatcher.
+
+---
+
+## Ground-joint "flip" must NOT be `jr += pi` -- post-multiply M by `R_y(pi)` instead
+
+For RSGroundPlace, the user-facing "flip" = reverse the block's X axis along the bar while keeping the block's Y axis pointing world-up. With the (jp, jr) parametrization and a fixed `M_block_from_bar`, this is NOT expressible as a jr change: rotating about the bar Z by pi flips both block X AND block Y in world (block ends upside-down).
+
+**Why:** The two "block X along +bar" vs "block X along -bar" orientations differ by 180 deg about the WORLD UP axis. For a horizontal bar, world-up has zero component along bar Z, so this is NOT a rotation about bar Z. So no jr value can turn one into the other while keeping Y up.
+
+**How to apply:** Post-multiply `M_block_from_bar` by `R_y(pi)` (block-local Y, NOT world Y). `R_y(pi) = diag(-1, 1, -1)`: it reverses block-local +X and +Z columns and preserves block-local +Y. Because +Y is preserved, the closed-form `auto_jr_world_up` returns the SAME jr (it depends only on b = M[:3,1]). The composed FK then reverses block world-X while preserving block world-Y. Carry the flag as a `flipped` bool through the session and persist as a UserText (`"flipped": "True"/"False"`) for re-edit. See `core.ground_placement.effective_M_block_from_bar`.
+
+## Lesson: Bake-time UserText is the source of truth for joint identity ！ never derive joint_id deterministically from (asset, parent) alone.
+
+**Why.** Initial `make_ground_joint_id(bar_id, ground_name) -> "G{bar_num}-{ground_name}"` collided whenever the user placed a second ground with the same ground definition on the same bar ！ re-baking with the same ObjectName/UserText silently clobbered the first instance (or got clobbered by the pre-bake `remove_placed_*` cleanup). Symptom: "the first joint disappears".
+
+**How to apply.**
+- Joint id formula must include a uniqueness suffix discovered by *scanning existing baked instances*, not by the user's input alone.
+- Pattern used: `make_ground_joint_id(bar_id, name, *, index)` + `next_ground_joint_index(bar_id, name)` that walks `rs.ObjectsByLayer(GROUND_INSTANCES_LAYER)` and reads each `joint_id` UserText to find the smallest free integer suffix.
+- `place_*_block` allocates a fresh id when `joint_id=None`; re-edit code paths (flip, etc.) MUST pass the existing `joint_id` explicitly so the suffix is preserved across re-bakes.
+- Drop any pre-bake `remove_placed_*` "redo cleanup" ！ once ids are unique per placement, that call destroys the previous joint instead of cleaning up.
+
+---
+
+## Lesson: Tool placement is a generic "TCP coincides with a block-instance frame" operation ！ share one core, not two parallel implementations.
+
+**Why.** Male joints and ground joints both want the robotic tool's TCP to land on a block instance's world frame (`world_tool_block = block_world @ inv(M_tcp_from_block)`). The original `place_tool_at_male_joint` hard-coded `_male_world_frame_from_object` and a `pair` argument it never used in the math, blocking reuse for ground joints (which have no JointPairDef).
+
+**How to apply.**
+- Extract a generic `place_tool_at_block_instance(block_oid, joint_id, tool)` that takes ANY InstanceObject and writes the tool's UserText (`joint_id`, `tool_name`, `tool_id`, `block_name`).
+- Variant auto-placers (`auto_place_tool_at_male_joint`, `auto_place_tool_at_ground_block`) only differ in tool *selection* (per-pair preferred name vs. doc-default fallback), then delegate to the same core.
+- Cycling/finding generalizes too: `find_attached_block_for_joint` dispatches on `joint_id` prefix (`J*` male, `G*` ground) so `cycle_tool_at_tool_instance` works on tools attached to either kind of joint without branching.
+- Re-edit flows (e.g. flip) should capture `get_tool_name_for_joint(joint_id)` BEFORE re-baking the joint block, then re-place via `place_tool_by_name_at_*` so the user's tool choice persists.
+
+---

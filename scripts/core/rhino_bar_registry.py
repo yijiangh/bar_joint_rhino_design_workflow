@@ -580,11 +580,12 @@ def _bar_curve_and_tube(curve_id):
 
 
 def _joint_layer_objects():
-    """All joint block instance ids on the female + male joint layers."""
+    """All joint block instance ids on the female + male + ground layers."""
     out = []
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
     ):
         if rs.IsLayer(layer):
             out.extend(rs.ObjectsByLayer(layer) or [])
@@ -608,15 +609,19 @@ def get_active_tool_oids(active_bar_id):
     """
     if not active_bar_id:
         return []
-    male_layer = config.LAYER_JOINT_MALE_INSTANCES
-    if not rs.IsLayer(male_layer):
-        return []
-    active_joint_ids = {
-        rs.GetUserText(oid, "joint_id")
-        for oid in (rs.ObjectsByLayer(male_layer) or [])
-        if rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-        and rs.GetUserText(oid, "joint_id")
-    }
+    active_joint_ids = set()
+    for layer in (
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    ):
+        if not rs.IsLayer(layer):
+            continue
+        for oid in rs.ObjectsByLayer(layer) or []:
+            if (
+                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
+                and rs.GetUserText(oid, "joint_id")
+            ):
+                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
     if not active_joint_ids:
         return []
     return [
@@ -1027,6 +1032,7 @@ def enforce_managed_layers(caller="RSScaffolding"):
     _JOINT_LAYER_COLORS = {
         config.LAYER_JOINT_MALE_INSTANCES: (105, 105, 105),
         config.LAYER_JOINT_FEMALE_INSTANCES: (230, 230, 230),
+        config.LAYER_JOINT_GROUND_INSTANCES: (180, 120, 60),
     }
     ensure_layer(config.DEFAULT_LAYER)
     ensure_layer(config.MANAGED_LAYER_ROOT)
@@ -1037,6 +1043,7 @@ def enforce_managed_layers(caller="RSScaffolding"):
     _enforce_centerline_layer(caller)
     _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
     _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
+    _enforce_joint_layer(caller, config.LAYER_JOINT_GROUND_INSTANCES)
     _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
 
 

@@ -270,21 +270,21 @@ For `RigidBodyState.attached_to_link`, compute the link frame from PyBullet's li
 
 ---
 
-## Cached Rhino RobotCellObject ¡ª bake once, delta-transform every frame
+## Cached Rhino RobotCellObject ï¿½ï¿½ bake once, delta-transform every frame
 
 For interactive IK preview in Rhino, **stop deleting + re-adding** robot meshes per state. Use `compas_fab.rhino.scene.RobotCellObject` (vendored at `external/compas_fab/src/compas_fab/rhino/scene/`) with `BaseRobotCellObject.update(state)`: meshes are baked once on the first `update()`, then each subsequent call applies only the *delta* transform of every link via `Rhino.RhinoDoc.Objects.Transform(guid, T, deleteOriginal=True)`. The cache survives across UI frames and across the Esc/restart cycle (sticky-stored).
 
-**Why:** The legacy `ik_viz.show_state` re-baked the entire dual-arm mesh per frame (~30 link meshes deleted + re-added through `RhinoSceneObject.draw_visual`). Pose cycling, bar switching, and IK retry all paid the bake cost. The compas-side machinery already supports incremental updates ¡ª the missing piece on the Rhino side was a `RobotCellObject` that `_initial_draw`s once and lets the base class drive subsequent transforms.
+**Why:** The legacy `ik_viz.show_state` re-baked the entire dual-arm mesh per frame (~30 link meshes deleted + re-added through `RhinoSceneObject.draw_visual`). Pose cycling, bar switching, and IK retry all paid the bake cost. The compas-side machinery already supports incremental updates ï¿½ï¿½ the missing piece on the Rhino side was a `RobotCellObject` that `_initial_draw`s once and lets the base class drive subsequent transforms.
 
 **How to apply:**
 1. Use `core.ik_viz.begin_session(robot_cell, mesh_mode=..., layer_key="Assembly") / update_state(state, layer_key="Assembly") / end_session()` for the new cached path.
 2. Each cell goes on its own sub-layer under `config.LAYER_IK_CACHE` (`layer_key` arg) so dual-arm + support coexist and can be hidden independently via `set_layer_visible(layer_key, False)`.
-3. End-of-session does NOT delete geometry ¡ª `end_session` only hides the root layer; the next session reuses the same baked meshes from wherever they were last placed.
+3. End-of-session does NOT delete geometry ï¿½ï¿½ `end_session` only hides the root layer; the next session reuses the same baked meshes from wherever they were last placed.
 4. Use `discard_cache()` only when the underlying `RobotCell` has been rebuilt (PyBullet restart) or the user explicitly asks for a flush.
 5. Legacy `show_state` / `clear_scene` still exist as back-compat shims for `yj_functions/` callers.
 
 **Gotchas:**
-- `BaseRobotModelObject.update(config, base_frame)` already folds `base_frame` into per-link transforms. **Do NOT** apply the base xform separately as a post-bake step ¡ª that double-transforms the meshes.
+- `BaseRobotModelObject.update(config, base_frame)` already folds `base_frame` into per-link transforms. **Do NOT** apply the base xform separately as a post-bake step ï¿½ï¿½ that double-transforms the meshes.
 - `sc.doc.Objects.Transform(guid, T, deleteOriginal=True)` always returns a NEW guid; cache the returned value or your sticky goes stale on the very first delta.
 - Short-circuit identity transforms in `_transform`: stationary links would otherwise burn ~30 GUID allocations per frame.
 - compas_fab's plugin system keys SceneObject registrations on `(item_type, context)`. Adding `context="Rhino"` for an item already registered for `"Grasshopper"` does NOT conflict. The vendored Rhino stack registers under `category="factories", requires=["Rhino"]`.
@@ -296,7 +296,7 @@ For interactive IK preview in Rhino, **stop deleting + re-adding** robot meshes 
 
 ## compas plugin `register_scene_objects` MUST call `compas.scene.register`, not `SceneObject.register`
 
-When writing a `@plugin(category="factories")` `register_scene_objects` function that maps an item type to a Rhino/GH/etc SceneObject, import the **module-level function** `from compas.scene import register` and call `register(ItemType, SceneObjectCls, context="Rhino")`. **Never** call `SceneObject.register(...)` ¡ª there is no such classmethod on `compas.scene.SceneObject`.
+When writing a `@plugin(category="factories")` `register_scene_objects` function that maps an item type to a Rhino/GH/etc SceneObject, import the **module-level function** `from compas.scene import register` and call `register(ItemType, SceneObjectCls, context="Rhino")`. **Never** call `SceneObject.register(...)` ï¿½ï¿½ there is no such classmethod on `compas.scene.SceneObject`.
 
 **Why:** `SceneObject.register(...)` raises `AttributeError`. The compas `PluginManager` invokes plugin functions via `selector="collect_all"` and silently swallows per-plugin exceptions, so the registration never lands in `ITEM_SCENEOBJECT[context]`. Discovery prints from neighboring plugins (e.g. `compas_robots/rhino/scene` printing `"Rhino Robot Object registered."`) succeed and the failure looks invisible. The next call to `Scene().add(<item>)` then raises `SceneObjectNotRegisteredError: No scene object is registered for this data type: <ItemType> in this context: Rhino` even though the package's plugin module was correctly listed in `__all_plugins__`.
 
@@ -321,7 +321,7 @@ When migrating a caller that used the legacy `ik_viz.show_state` + `_STICKY_DRAW
 
 2. **Mid-loop `ik_viz.clear_scene()` calls should become `ik_viz.end_session()`.** `clear_scene` (== `discard_cache`) DELETES every guid on the cache layer AND drops the cached SceneObject, which forces a full re-bake on the next `show_state` (~30 link meshes). `end_session` only HIDES the cache layer; the very next `show_state` call re-shows the layer and delta-transforms the existing meshes in place. In `rs_ik_keyframe.py` the swap turned ~11 mid-IK-loop full re-bakes into pure visibility toggles + ~30 in-place transforms.
 
-**Why:** Symptom of skipping (1): the dynamic mesh preview that follows the cursor over the walkable ground brep silently shows nothing ¡ª the conduit gets an empty mesh list because the legacy sticky is empty. Symptom of skipping (2): IK retry loops feel sluggish because every `RetrySameBase` rebakes the entire dual-arm.
+**Why:** Symptom of skipping (1): the dynamic mesh preview that follows the cursor over the walkable ground brep silently shows nothing ï¿½ï¿½ the conduit gets an empty mesh list because the legacy sticky is empty. Symptom of skipping (2): IK retry loops feel sluggish because every `RetrySameBase` rebakes the entire dual-arm.
 
 **How to apply:** Search for `ik_viz._STICKY_DRAWN_IDS` and `ik_viz.clear_scene` together; in the same caller, harvesting + nuking are usually paired. `discard_cache()` is still the right call when you genuinely want to flush (e.g. after harvesting meshes for a one-shot preview, or on PyBullet restart).
 
@@ -336,7 +336,7 @@ When the user wants to swap visual<->collision mesh display without paying a re-
 - Layer hierarchy = `LAYER_IK_CACHE / <layer_key> / <MeshMode>` (mesh_mode is the LEAF). Each mode lives on its own sub-sub-layer so toggling is a single `rs.LayerVisible` call.
 - `begin_session(..., mesh_modes=(visual, collision), active_mesh_mode=visual)` pre-builds BOTH cells.
 - `update_state(state, mesh_modes=...)` defaults to updating EVERY cached mode for that `(cell, layer_key)`, so toggling later shows the latest pose immediately (~2x transform cost is fine for interactive viewer).
-- `set_active_mesh_mode(layer_key, mesh_mode)` iterates the cache and flips `LayerVisible` per entry ¡ª no rebake, no geometry mutation.
+- `set_active_mesh_mode(layer_key, mesh_mode)` iterates the cache and flips `LayerVisible` per entry ï¿½ï¿½ no rebake, no geometry mutation.
 - For collision-highlight: expose `get_link_native_geometry(cell, layer_key, mesh_mode) -> {link_name: [guid, ...]}` and `get_tool_native_geometry` that read `BaseRobotModelObject._links_visual_mesh_native_geometry` / `_links_collision_mesh_native_geometry` (and per-tool via `BaseRobotCellObject._tool_scene_objects`).
 
 ## CollisionCheckError: use `.collision_pairs` attribute, not `args[1]`
@@ -352,7 +352,7 @@ The viewer doesn't own env state across the session. Each `check_collision()` pr
 
 ## Collision-check parity: viewer must mirror solver's RB attachments
 
-IK solver in `rs_ik_keyframe` calls `robot_cell.attach_arm_tool_rigid_bodies` + `configure_arm_tool_rigid_body_states` to attach `AssemblyLeftArmToolBody` / `AssemblyRightArmToolBody` to the corresponding `*_ur_arm_tool0` link BEFORE running `check_collision`. Any standalone collision-check (e.g. ShowIK `CheckCollision` button) MUST replay the same attach steps, otherwise the per-arm tool RBs are either missing from the state or attached_to_link=None (sit at world origin) and CC.2/CC.3/CC.5 silently skip every pair involving them ¡ª yielding the puzzling `IK fails on collision but viewer reports no collision`. Shared helper: `core/ik_collision_setup.prepare_assembly_collision_state(rcell, planner, state, bar_id)` does the full setup (arm-tool RBs + env_*) and is the single source of truth used by both the solver entry path and the viewer's check_collision.
+IK solver in `rs_ik_keyframe` calls `robot_cell.attach_arm_tool_rigid_bodies` + `configure_arm_tool_rigid_body_states` to attach `AssemblyLeftArmToolBody` / `AssemblyRightArmToolBody` to the corresponding `*_ur_arm_tool0` link BEFORE running `check_collision`. Any standalone collision-check (e.g. ShowIK `CheckCollision` button) MUST replay the same attach steps, otherwise the per-arm tool RBs are either missing from the state or attached_to_link=None (sit at world origin) and CC.2/CC.3/CC.5 silently skip every pair involving them ï¿½ï¿½ yielding the puzzling `IK fails on collision but viewer reports no collision`. Shared helper: `core/ik_collision_setup.prepare_assembly_collision_state(rcell, planner, state, bar_id)` does the full setup (arm-tool RBs + env_*) and is the single source of truth used by both the solver entry path and the viewer's check_collision.
 
 
 ---
@@ -467,3 +467,33 @@ Compas_fab CC.4/CC.5 will flag the active bar against the tools that hold it AND
 **How to apply:** Walk `state.rigid_body_states`, parse `active_joint_<jid>_<sub>` keys via `rsplit("_", 1)`, look up the env mate by reconstructing the name, and union into `touch_bodies` mutually. Implemented in `env_collision.configure_active_assembly_acm(state, arm_tool_rb_names)`; call it AFTER `configure_arm_tool_rigid_body_states` (which resets `touch_bodies = []`).
 
 **Do NOT whitelist:** wrist links vs joints, tool vs env bars, robot links vs robot links. Those are real collisions.
+
+---
+
+## Downstream export = new schema, not a refactor of upstream collision plumbing
+
+When asked to add a downstream artifact (e.g. `BarAssemblyAction.json` for an external motion planner) on top of a mature Rhino IK pipeline, BUILD NEW. Do not refactor `env_collision.py` / `ik_collision_setup.py` / `rs_ik_keyframe.py` to make their internal naming "cleaner" for the export. Mirror upstream conventions verbatim (`active_*`/`env_*` keys, `configure_active_assembly_acm`-style touch_bodies, etc.) and add only the new schema-level metadata (motion class, attachments, ACM transitions per movement).
+
+**Why:** Touching upstream re-opens validated workflows (the user has tested IK across many bars). The downstream artifact only needs the upstream output unchanged + a thin layer that mutates per-movement copies.
+
+**How to apply:** New module under `scripts/core/<feature>.py` for data classes + builder. New `rs_<feature>.py` entry point. Call existing helpers (`prepare_assembly_collision_state`, `configure_active_assembly_acm`, `attach_arm_tool_rigid_bodies`) read-only. Duplicate small private helpers (5-15 LOC) rather than promoting them to public API. The previous "rename `active_*`/`env_*` to canonical state-independent keys" idea was rejected for exactly this reason -- see Ultraplan handoff in commit history.
+
+---
+
+## compas Data subclass dtype = first 2 module path components
+
+`Data.__dtype__` returns `f"{module_path[:2]}/{class_name}"` (`compas/data/data.py:75-76`). For a class at `core.bar_action.RoboticFreeMovement`, the dtype is `core.bar_action/RoboticFreeMovement`. `cls_from_dtype` does `__import__("core.bar_action", fromlist=["RoboticFreeMovement"])`, so the headless loader needs `scripts/` on `sys.path` for `core.bar_action` to resolve.
+
+**Why:** Putting Data subclasses under `scripts/core/...` works headless as long as `scripts/` is prepended to `sys.path` (mirroring the in-Rhino path injection). Going deeper (`scripts/core/foo/bar.py`) drops the third+ path components from the dtype string -- `cls_from_dtype` would then try to `import core.foo` and fail. Keep custom Data classes one level under `core/`.
+
+**How to apply:** When adding new Data subclasses for round-trip JSON, place them in `scripts/core/<module>.py` (NOT a subpackage). Verify with a `json_dumps`/`json_loads` round-trip in CI: every subclass should reconstruct under its own type, not as the base class.
+
+---
+
+## Canonicalize state-dependent RB names on export, not in upstream
+
+When the in-Rhino IK pipeline uses state-dependent rigid-body prefixes (`active_bar_<bid>` / `env_bar_<bid>` / `active_joint_*` / `env_joint_*`), strip those prefixes at *export time* so the saved `RobotCell.json` and `RobotCellState`-bearing artifacts (e.g. `BarAction.json`) use canonical, state-independent keys (`bar_<bid>`, `joint_<jid>_<sub>`). DO NOT mutate the cached upstream `rcell.rigid_body_models`: `env_collision.register_env_in_robot_cell` keys its "stale env to remove" scan on the prefixes and would silently double-register every body on the next call.
+
+**Why:** A single `RobotCell.json` should be reusable across every per-bar state. With prefixes baked in, the cell snapshot reflects which bar was last picked and every state with a different active bar fails the `assert_cell_state_match` check. Doing the rename only on the export copies (swap-dump-restore for the cell; in-place mutation of the per-movement state copies) keeps the in-Rhino session healthy.
+
+**How to apply:** See `scripts/core/bar_action.py` -- `canonical_rb_name`, `canonicalize_state` (mutates state in place AND remaps `touch_bodies` references via `canonical_rb_name(t)` regardless of whether `t` is a state key), `canonical_rigid_body_models` (returns new dict, source untouched), `dump_cell_canonical` (swap-dump-restore so the cached rcell stays prefixed for upstream). The active-set is derived from the original env_geom by collecting `canonical_rb_name(k)` for every `k` that started with `active_*`, BEFORE canonicalization. Per-movement helpers (M1..M4) take that active-set explicitly instead of scanning prefixes.

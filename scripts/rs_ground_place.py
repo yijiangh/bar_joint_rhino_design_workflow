@@ -78,7 +78,10 @@ def _pick_point_on_bar(bar_id, prompt: str):
     gp = Rhino.Input.Custom.GetPoint()
     gp.SetCommandPrompt(prompt)
     gp.Constrain(curve, False)
-    gp.PermitObjectSnap(False)
+    # Allow object snaps so the user can snap onto other geometry (e.g.
+    # an existing joint center, a bar endpoint of another bar) and the
+    # snapped point is then projected onto the constrained bar curve.
+    gp.PermitObjectSnap(True)
     if gp.Get() != Rhino.Input.GetResult.Point:
         return None
     pt = gp.Point()

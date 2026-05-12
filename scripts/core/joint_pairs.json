@@ -1,6 +1,71 @@
 {
   "halves": [
     {
+      "block_name": "T20Deck12_Male",
+      "kind": "male",
+      "asset_filename": "T20Deck12_Male.3dm",
+      "mesh_filename": "",
+      "mesh_scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "preferred_robotic_tool_name": "",
+      "collision_filename": "T20Deck12_Male.obj",
+      "M_block_from_bar": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          1.5987211554602254e-13
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0,
+          2.9999999999999254
+        ],
+        [
+          -1.0,
+          0.0,
+          0.0,
+          38.99999999997574
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "M_screw_from_block": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          2.4158453015843406e-13
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          -29.99999999985141
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          18.99999999999997
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    {
       "block_name": "T20SubLeft_Female",
       "kind": "female",
       "asset_filename": "T20SubLeft_Female.3dm",
@@ -275,6 +340,20 @@
       ],
       "female_block_name": "T20_Female",
       "male_block_name": "T20_Male"
+    },
+    {
+      "name": "T20Deck12_Pair",
+      "contact_distance_mm": 35.99999999999991,
+      "jp_range": [
+        -500.0,
+        500.0
+      ],
+      "jr_range": [
+        -3.141592653589793,
+        3.141592653589793
+      ],
+      "female_block_name": "T20_Female",
+      "male_block_name": "T20Deck12_Male"
     },
     {
       "name": "T20SFloorLeft",

@@ -32,6 +32,7 @@ required:
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks; auto-assigns female/male by sequence, click to flip orientation |
 | **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point (auto-jr aligns block +Y to world up) |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair by clicking female or male block to flip orientation |
+| **RSDesign** | RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint (reverts on exit) |
 | **RSDesign** | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe (pick 2 male joints, solve IK, save on shared Ln bar) |
 | **RSDesign** | RSShowIK | `rs_show_ik.py` | Replay a saved IK keyframe on a picked bar |
 | **RSSetup** | RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames into the document |
@@ -117,6 +118,7 @@ for the toolbar mapping.
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks on a bar pair; click to flip orientation |
 | **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair |
+| **RSDesign** | RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint |
 | **RSSetup** | RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) from baked Rhino geometry |
 | **RSSetup** | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure shortest distance between two bars |
@@ -225,6 +227,14 @@ Rhino resolves the filename via Search Paths (set up above).
 - Click any previously placed female or male joint block to re-open the interactive orientation session for that joint pair.
 - The stored `le_rev` / `ln_rev` state is read from the block's user-text, so the session resumes exactly where it was left.
 - Same click-to-flip interaction as RSJointPlace; Enter or `Accept` writes the updated blocks.
+
+#### RSBarEdit (`rs_bar_edit.py`)
+
+- On entry, scans every registered bar and groups them by rounded length (1 mm bins). Each length group gets a distinct HSV-spaced color; centerline + tube preview are painted together. Temporary text dots at every bar midpoint show `bar_id` and length.
+- `SelectByLength` option lists the available length groups. Picking one selects every matching bar (curve + tube) in the document.
+- `ResizeSelected` prompts for a new length and shortens/elongates each currently-selected bar about its midpoint, then regenerates the tube preview and refreshes the color/label scheme. Only straight-line bars are modified in place; curved bars are skipped with a warning.
+- `Refresh` recomputes groups and dots after manual edits.
+- `Exit` (or Esc) removes the dots, restores by-layer colors, and **preserves the current Rhino selection** so a length-filtered selection can be carried into the next command.
 
 #### RSMeasureGap (`rs_measure_gap.py`)
 

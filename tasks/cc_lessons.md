@@ -4,6 +4,16 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Curve-constrained `GetPoint` should leave object snaps enabled
+
+When a Rhino picker uses `Rhino.Input.Custom.GetPoint().Constrain(curve, False)` to slide along a bar, do NOT also call `gp.PermitObjectSnap(False)`. That blocks osnaps to *other* geometry, so the user can't snap to e.g. another bar's endpoint or a joint center for precise alignment.
+
+**Why:** `Constrain(curve)` already projects every cursor sample (including snapped ones from other geometry) back onto the constrained curve. Disabling object snaps just removes the precision-pick affordance with no benefit. `rs.GetPointOnCurve` (used by `rs_bar_brace.py`) leaves osnaps on by default, which is why brace point-picks felt "snappier" than ground-place ones.
+
+**How to apply:** Default to `gp.PermitObjectSnap(True)` (or omit the call entirely). Only disable osnaps when there is a concrete reason (e.g. the constraint surface is itself made of snap-magnet geometry that would cause feedback).
+
+---
+
 ## Standalone "refresh" entry points must call `repair_on_entry`, not `update_all_previews` alone
 
 `rs_update_preview.py` originally called only `update_all_previews(bar_radius)`. That helper iterates registered bars and rebuilds stale tubes per `_tube_geometry_matches`, but it does NOT touch ORPHAN tubes whose `tube_axis_id` belongs to a different (still-registered) bar -- which is exactly what user copy-paste of a bar+tube produces. Orphan deletion lives in `_enforce_tube_layer`, only invoked from `enforce_managed_layers` -> `repair_on_entry`. Skipping that pass leaves duplicate tubes overlapping the new bar's tube forever.
@@ -606,19 +616,19 @@ For RSGroundPlace, the user-facing "flip" = reverse the block's X axis along the
 
 **How to apply:** Post-multiply `M_block_from_bar` by `R_y(pi)` (block-local Y, NOT world Y). `R_y(pi) = diag(-1, 1, -1)`: it reverses block-local +X and +Z columns and preserves block-local +Y. Because +Y is preserved, the closed-form `auto_jr_world_up` returns the SAME jr (it depends only on b = M[:3,1]). The composed FK then reverses block world-X while preserving block world-Y. Carry the flag as a `flipped` bool through the session and persist as a UserText (`"flipped": "True"/"False"`) for re-edit. See `core.ground_placement.effective_M_block_from_bar`.
 
-## Lesson: Bake-time UserText is the source of truth for joint identity ¡ª never derive joint_id deterministically from (asset, parent) alone.
+## Lesson: Bake-time UserText is the source of truth for joint identity ï¿½ï¿½ never derive joint_id deterministically from (asset, parent) alone.
 
-**Why.** Initial `make_ground_joint_id(bar_id, ground_name) -> "G{bar_num}-{ground_name}"` collided whenever the user placed a second ground with the same ground definition on the same bar ¡ª re-baking with the same ObjectName/UserText silently clobbered the first instance (or got clobbered by the pre-bake `remove_placed_*` cleanup). Symptom: "the first joint disappears".
+**Why.** Initial `make_ground_joint_id(bar_id, ground_name) -> "G{bar_num}-{ground_name}"` collided whenever the user placed a second ground with the same ground definition on the same bar ï¿½ï¿½ re-baking with the same ObjectName/UserText silently clobbered the first instance (or got clobbered by the pre-bake `remove_placed_*` cleanup). Symptom: "the first joint disappears".
 
 **How to apply.**
 - Joint id formula must include a uniqueness suffix discovered by *scanning existing baked instances*, not by the user's input alone.
 - Pattern used: `make_ground_joint_id(bar_id, name, *, index)` + `next_ground_joint_index(bar_id, name)` that walks `rs.ObjectsByLayer(GROUND_INSTANCES_LAYER)` and reads each `joint_id` UserText to find the smallest free integer suffix.
 - `place_*_block` allocates a fresh id when `joint_id=None`; re-edit code paths (flip, etc.) MUST pass the existing `joint_id` explicitly so the suffix is preserved across re-bakes.
-- Drop any pre-bake `remove_placed_*` "redo cleanup" ¡ª once ids are unique per placement, that call destroys the previous joint instead of cleaning up.
+- Drop any pre-bake `remove_placed_*` "redo cleanup" ï¿½ï¿½ once ids are unique per placement, that call destroys the previous joint instead of cleaning up.
 
 ---
 
-## Lesson: Tool placement is a generic "TCP coincides with a block-instance frame" operation ¡ª share one core, not two parallel implementations.
+## Lesson: Tool placement is a generic "TCP coincides with a block-instance frame" operation ï¿½ï¿½ share one core, not two parallel implementations.
 
 **Why.** Male joints and ground joints both want the robotic tool's TCP to land on a block instance's world frame (`world_tool_block = block_world @ inv(M_tcp_from_block)`). The original `place_tool_at_male_joint` hard-coded `_male_world_frame_from_object` and a `pair` argument it never used in the math, blocking reuse for ground joints (which have no JointPairDef).
 

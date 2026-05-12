@@ -18,6 +18,7 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSJointPlace | `rs_joint_place.py` | Place female and male connector blocks on a selected bar pair |
 | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point; auto-`jr` heuristic aligns block +Y to world up; click block to flip 180 deg |
 | RSJointEdit | `rs_joint_edit.py` | Re-edit the orientation of a previously placed joint pair by clicking a block |
+| RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint (display-only; reverts on exit) |
 | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe workflow: pick two male joints, solve IK, save on shared Ln bar |
 | RSShowIK | `rs_show_ik.py` | Replay a saved `ik_assembly` keyframe (final or approach) on a picked bar |
 | RSIKSupportKeyframe | `rs_ik_support_keyframe.py` | Single-arm support-robot IK keyframe: pick the just-assembled bar (which is also the held bar), pick grasp + base, save `ik_support` |

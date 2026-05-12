@@ -20,13 +20,25 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
-from core.rhino_bar_registry import update_all_previews
+from core.rhino_bar_registry import repair_on_entry, update_all_previews
 
 
 def main():
     importlib.reload(config)
-    count = update_all_previews(float(config.BAR_RADIUS))
-    print(f"RSUpdatePreview: Updated {count} bar preview(s).")
+    # Run the standard entry-point repair first: this purges orphan tube
+    # previews left behind by user copy/paste (axis_id pointing at another
+    # bar OR self_guid != actual GUID) before we regenerate the canonical
+    # tubes. Without this pass, copy-pasting a bar+tube to a new spot
+    # leaves the duplicate tube on the layer forever.
+    repair_on_entry(float(config.BAR_RADIUS), caller="RSUpdatePreview")
+    # repair_on_entry already invokes update_all_previews internally; the
+    # second verbose pass below is purely diagnostic so the user sees the
+    # per-bar reused/regenerated/created tally.
+    n_changed = update_all_previews(float(config.BAR_RADIUS), verbose=False)
+    if n_changed:
+        print(f"RSUpdatePreview: regenerated/created {n_changed} bar preview(s).")
+    else:
+        print("RSUpdatePreview: all bar previews already up to date.")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ from core.rhino_bar_registry import get_all_bars, BAR_ID_KEY, repair_on_entry
 
 _FEMALE_INSTANCES_LAYER = config.LAYER_JOINT_FEMALE_INSTANCES
 _MALE_INSTANCES_LAYER = config.LAYER_JOINT_MALE_INSTANCES
+_GROUND_INSTANCES_LAYER = config.LAYER_JOINT_GROUND_INSTANCES
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ def _compute_rotation_deg(joint_z, bar_x, bar_z):
 def _collect_joint_blocks():
     """Return list of (obj_id, flat_data_dict) for all placed joint blocks."""
     results = []
-    for layer in (_FEMALE_INSTANCES_LAYER, _MALE_INSTANCES_LAYER):
+    for layer in (_FEMALE_INSTANCES_LAYER, _MALE_INSTANCES_LAYER, _GROUND_INSTANCES_LAYER):
         objs = rs.ObjectsByLayer(layer) if rs.IsLayer(layer) else []
         if not objs:
             continue

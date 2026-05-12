@@ -11,7 +11,8 @@ core math stack (`numpy` + `scipy`) and is split into two stages:
 
 Each connector family is described by a **joint pair**: a female + male
 block definition with the geometry needed to drive the optimizer. Joint
-pairs are authored interactively in Rhino with `RSDefineJointPair` and
+pairs are authored interactively in Rhino with `RSDefineJointHalf` /
+`RSDefineJointMate` and
 stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
 assets in `asset/`.
 
@@ -29,7 +30,9 @@ required:
 | **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
 | **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks; auto-assigns female/male by sequence, click to flip orientation |
+| **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point (auto-jr aligns block +Y to world up) |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair by clicking female or male block to flip orientation |
+| **RSDesign** | RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint (reverts on exit) |
 | **RSDesign** | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe (pick 2 male joints, solve IK, save on shared Ln bar) |
 | **RSDesign** | RSShowIK | `rs_show_ik.py` | Replay a saved IK keyframe on a picked bar |
 | **RSSetup** | RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames into the document |
@@ -113,25 +116,42 @@ for the toolbar mapping.
 | **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
 | **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly-sequence viewer/editor |
 | **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks on a bar pair; click to flip orientation |
+| **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point |
 | **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair |
-| **RSSetup** | RSDefineJointPair | `rs_define_joint_pair.py` | Define a new joint pair from baked Rhino geometry |
+| **RSDesign** | RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint |
+| **RSSetup** | RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) from baked Rhino geometry |
+| **RSSetup** | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure shortest distance between two bars |
 | **RSSetup** | RSUpdatePreview | `rs_update_preview.py` | Refresh all bar tube previews |
 | **RSSetup** | RSExportPrefab | `rs_export_prefab.py` | Export bar prefabrication data as JSON |
 
-### Defining a joint pair
+### Defining joint halves and mates
 
-`RSDefineJointPair` walks you through:
+The joint registry (`scripts/core/joint_pairs.json`) is normalized into
+three tables: `halves` (per block_name), `mates` (named female+male
+relationships), and `ground_joints` (single-half anchors to the world).
 
-1. Selecting the female and male block definitions in the document.
-2. Picking a representative `Le` and `Ln` bar pair that mates them.
-3. Computing the per-pair contact distance and the fixed
-   `M_block_from_bar` / `M_screw_from_block` transforms.
-4. Saving the pair to `scripts/core/joint_pairs.json` and exporting the
-   block definitions to `asset/<block_name>.3dm` so they can be auto-imported
-   on other machines.
+`RSDefineJointHalf` defines ONE half:
 
-After this, the new pair name appears as a `Pair` option whenever
+1. Choose `Male`, `Female`, or `Ground`.
+2. Pick the block instance and its representative bar axis line.
+3. (Male/Female only) Pick the screw axis line and screw center point.
+4. Enter the half name. For Male/Female the name MUST equal the block
+   definition name; for Ground it is the ground-joint key.
+5. The script exports `asset/<block_name>.3dm` and a single-mesh collision
+   `asset/<block_name>.obj` (millimetres), then upserts the half into the
+   registry.
+
+`RSDefineJointMate` then defines the relationship:
+
+1. Pick the female block + female bar axis, then the male block + male bar axis.
+2. Enter the mate name.
+3. The script looks up both halves by `block_name` (must already exist),
+   computes `contact_distance_mm` from the two bar lines, prompts
+   Accept/Edit/Cancel, and persists the mate. Half geometry is left
+   untouched.
+
+After this, the new mate name appears as a `Pair` option whenever
 `RSBarSnap`, `RSBarBrace`, or `RSJointPlace` prompt for the first bar.
 Pick a bar directly to use the cached default pair, or click the `Pair`
 option to switch.
@@ -207,6 +227,14 @@ Rhino resolves the filename via Search Paths (set up above).
 - Click any previously placed female or male joint block to re-open the interactive orientation session for that joint pair.
 - The stored `le_rev` / `ln_rev` state is read from the block's user-text, so the session resumes exactly where it was left.
 - Same click-to-flip interaction as RSJointPlace; Enter or `Accept` writes the updated blocks.
+
+#### RSBarEdit (`rs_bar_edit.py`)
+
+- On entry, scans every registered bar and groups them by rounded length (1 mm bins). Each length group gets a distinct HSV-spaced color; centerline + tube preview are painted together. Temporary text dots at every bar midpoint show `bar_id` and length.
+- `SelectByLength` option lists the available length groups. Picking one selects every matching bar (curve + tube) in the document.
+- `ResizeSelected` prompts for a new length and shortens/elongates each currently-selected bar about its midpoint, then regenerates the tube preview and refreshes the color/label scheme. Only straight-line bars are modified in place; curved bars are skipped with a warning.
+- `Refresh` recomputes groups and dots after manual edits.
+- `Exit` (or Esc) removes the dots, restores by-layer colors, and **preserves the current Rhino selection** so a length-filtered selection can be carried into the next command.
 
 #### RSMeasureGap (`rs_measure_gap.py`)
 

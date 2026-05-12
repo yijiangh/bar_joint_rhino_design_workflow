@@ -113,20 +113,37 @@ def _native_scale_for_doc() -> float:
     return doc_unit_scale_to_mm() / 1000.0
 
 
-def _delete_layer_objects(layer_name: str) -> int:
-    """Delete every Rhino doc object on ``layer_name``; return the count."""
+def _delete_layer_objects(layer_name: str, recursive: bool = True) -> int:
+    """Delete every Rhino doc object on ``layer_name`` (and, by default, on
+    every descendant sub-layer); return the total count.
+
+    ``rs.ObjectsByLayer`` only matches the exact layer path, so without the
+    recursive walk we'd miss baked geometry living on
+    ``LAYER_IK_CACHE::<layer_key>::<MeshMode>`` sub-layers.
+    """
     if not rs.IsLayer(layer_name):
         return 0
-    oids = rs.ObjectsByLayer(layer_name) or []
-    if not oids:
+    layers = [layer_name]
+    if recursive:
+        i = 0
+        while i < len(layers):
+            kids = rs.LayerChildren(layers[i]) or []
+            layers.extend(kids)
+            i += 1
+    all_oids = []
+    for lname in layers:
+        oids = rs.ObjectsByLayer(lname) or []
+        if oids:
+            all_oids.extend(oids)
+    if not all_oids:
         return 0
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        rs.DeleteObjects(oids)
+        rs.DeleteObjects(all_oids)
     finally:
         sc.doc.Views.RedrawEnabled = was
-    return len(oids)
+    return len(all_oids)
 
 
 def _ensure_compas_fab_rhino_registered() -> None:
@@ -221,11 +238,25 @@ def _flush_cache_layer_once() -> None:
         sc.sticky[_STICKY_DOC_SERIAL] = cur_serial
     if sc.sticky.get(_STICKY_CACHE_INITIALIZED):
         return
+    # Purge every transient preview layer the IK commands bake onto.
+    # `LAYER_IK_CACHE` holds robot/tool/RB meshes (recursive sub-layers per
+    # layer_key + mesh-mode); the preview layers hold inserted block
+    # instances (pineapples, Robotiq gripper) baked by rs_show_ik /
+    # rs_ik_keyframe. All are purely transient previews -- safe to drop on
+    # first IK touch in a freshly-opened doc.
     ensure_layer(config.LAYER_IK_CACHE)
-    n_purged = _delete_layer_objects(config.LAYER_IK_CACHE)
-    if n_purged:
-        print(f"ik_viz: purged {n_purged} orphan object(s) from "
-              f"'{config.LAYER_IK_CACHE}' before initial bake.")
+    purge_targets = [
+        config.LAYER_IK_CACHE,
+        getattr(config, "SUPPORT_PREVIEW_LAYER", None),
+        "IKPineapplePreview",
+    ]
+    total = 0
+    for lname in purge_targets:
+        if not lname:
+            continue
+        total += _delete_layer_objects(lname)
+    if total:
+        print(f"ik_viz: purged {total} orphan preview object(s) before initial bake.")
     sc.sticky[_STICKY_CACHE_INITIALIZED] = True
 
 
@@ -475,6 +506,7 @@ def begin_session(
             config.LAYER_BAR_TUBE_PREVIEWS,
             config.LAYER_JOINT_FEMALE_INSTANCES,
             config.LAYER_JOINT_MALE_INSTANCES,
+            config.LAYER_JOINT_GROUND_INSTANCES,
             config.LAYER_TOOL_INSTANCES,
         )
         if not hide_tool_instances:

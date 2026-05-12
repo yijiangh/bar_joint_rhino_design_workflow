@@ -83,18 +83,22 @@ def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
         return False
 
 
-def _male_world_frame_from_object(male_id) -> np.ndarray:
-    """Return the world transform of an inserted male block instance."""
+def _block_instance_world_xform(block_id) -> np.ndarray:
+    """Return the world transform of any inserted block instance."""
     import Rhino  # noqa: PLC0415
     import scriptcontext as sc  # noqa: PLC0415
 
-    rh_obj = sc.doc.Objects.FindId(male_id)
+    rh_obj = sc.doc.Objects.FindId(block_id)
     if rh_obj is None or not isinstance(rh_obj, Rhino.DocObjects.InstanceObject):
-        raise ValueError(f"Object {male_id} is not a block instance.")
+        raise ValueError(f"Object {block_id} is not a block instance.")
     xform = rh_obj.InstanceXform
     return np.array(
         [[xform[r, c] for c in range(4)] for r in range(4)], dtype=float
     )
+
+
+# Back-compat alias.
+_male_world_frame_from_object = _block_instance_world_xform
 
 
 def remove_tool_for_joint(joint_id: str) -> int:
@@ -114,29 +118,21 @@ def remove_tool_for_joint(joint_id: str) -> int:
     return removed
 
 
-def place_tool_at_male_joint(
-    male_id,
+def place_tool_at_block_instance(
+    block_id,
     joint_id: str,
-    pair,
     tool: _robotic_tool.RoboticToolDef,
 ):
-    """Insert the chosen tool block aligned to the male joint's screw frame.
+    """Insert *tool*'s block aligned to *block_id*'s frame.
 
-    Parameters
-    ----------
-    male_id : Rhino object id
-        The already-placed male joint block instance.
-    joint_id : str
-        The joint identifier (e.g. ``"J1-2"``); used in the tool object's
-        name (``"T<joint_id>"``) and ``joint_id`` user-text.
-    pair : core.joint_pair.JointPairDef
-        Used to look up ``M_screw_from_block`` for the male half.
-    tool : RoboticToolDef
-        The tool to place.
+    Generic core: works for ANY block instance whose origin frame is the
+    target TCP coordinate frame -- both male joint blocks and ground
+    joint blocks satisfy this (the OCF / block-origin convention).
 
-    Returns
-    -------
-    Rhino object id of the inserted tool block, or ``None`` on failure.
+    Computes ``world_tool_block = block_world @ inv(M_tcp_from_block)``
+    so the tool's TCP coincides with ``block_world``.
+
+    Returns the inserted tool's Rhino object id, or ``None`` on failure.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
@@ -147,17 +143,12 @@ def place_tool_at_male_joint(
         )
         return None
 
-    # Remove any prior tool tagged with this joint_id (idempotent placement).
+    # Idempotent placement: drop any existing tool tagged with this joint_id.
     remove_tool_for_joint(joint_id)
 
-    male_world = _male_world_frame_from_object(male_id)
+    block_world = _block_instance_world_xform(block_id)
     M_tcp_from_block = np.asarray(tool.M_tcp_from_block, dtype=float)
-
-    # The tool's TCP should be coincident with the male joint block's
-    # origin frame (not the screw frame).  We want
-    #   world_tool_block @ M_tcp_from_block == male_world
-    #   => world_tool_block = male_world @ inv(M_tcp_from_block)
-    world_tool_block = male_world @ np.linalg.inv(M_tcp_from_block)
+    world_tool_block = block_world @ np.linalg.inv(M_tcp_from_block)
 
     tool_oid = rs.InsertBlock(tool.block_name, [0, 0, 0])
     if tool_oid is None:
@@ -173,6 +164,20 @@ def place_tool_at_male_joint(
     rs.SetUserText(tool_oid, "joint_id", joint_id)
     rs.SetUserText(tool_oid, "block_name", tool.block_name)
     return tool_oid
+
+
+def place_tool_at_male_joint(
+    male_id,
+    joint_id: str,
+    pair,
+    tool: _robotic_tool.RoboticToolDef,
+):
+    """Back-compat wrapper around :func:`place_tool_at_block_instance`
+    for the male-joint workflow.  ``pair`` is currently unused (the math
+    only needs the male block's world frame) but kept for API parity.
+    """
+    del pair  # unused
+    return place_tool_at_block_instance(male_id, joint_id, tool)
 
 
 def auto_place_tool_at_male_joint(male_id, joint_id: str, pair):
@@ -212,6 +217,49 @@ def auto_place_tool_at_male_joint(male_id, joint_id: str, pair):
         name = sorted(all_tools.keys())[0]
         print(f"  [tool] no default set; falling back to first tool '{name}'.")
     return place_tool_at_male_joint(male_id, joint_id, pair, all_tools[name])
+
+
+def _resolve_default_tool_name(all_tools: dict) -> str:
+    """Pick a default tool name: doc-default if registered, else alphabetic first."""
+    name = get_default_tool_name()
+    if not name or name not in all_tools:
+        name = sorted(all_tools.keys())[0]
+    return name
+
+
+def auto_place_tool_at_ground_block(ground_id, joint_id: str):
+    """Place the appropriate tool at a newly-created ground joint block.
+
+    Same resolution order as the male variant minus the per-pair preference
+    (ground joints have no `pair.male.preferred_robotic_tool_name`).
+    """
+    all_tools = _robotic_tool.load_robotic_tools()
+    if not all_tools:
+        print("  [tool] no robotic tools registered; skipping tool placement.")
+        return None
+    name = _resolve_default_tool_name(all_tools)
+    return place_tool_at_block_instance(ground_id, joint_id, all_tools[name])
+
+
+def place_tool_by_name_at_ground_block(
+    ground_id, joint_id: str, tool_name: str | None
+):
+    """Re-place a specific named tool at a ground block (used by RSJointEdit
+    flip path to preserve whichever tool the user previously chose).
+    Falls back to :func:`auto_place_tool_at_ground_block` when ``tool_name``
+    is None or unknown.
+    """
+    if tool_name:
+        try:
+            tool = _robotic_tool.get_robotic_tool(tool_name)
+        except KeyError:
+            print(
+                f"  [tool] requested tool '{tool_name}' not found in registry; "
+                f"falling back to default."
+            )
+        else:
+            return place_tool_at_block_instance(ground_id, joint_id, tool)
+    return auto_place_tool_at_ground_block(ground_id, joint_id)
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +327,38 @@ def find_male_block_for_joint(joint_id: str):
     return None
 
 
+def find_ground_block_for_joint(joint_id: str):
+    """Return the Rhino object id of the ground joint block tagged with
+    *joint_id*, or ``None``."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    ids = rs.ObjectsByName(f"{joint_id}_ground") or []
+    if ids:
+        return ids[0]
+    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
+        return None
+    for oid in rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or []:
+        if rs.GetUserText(oid, "joint_id") == joint_id:
+            return oid
+    return None
+
+
+def find_attached_block_for_joint(joint_id: str):
+    """Return the Rhino object id of the joint block (male OR ground) the
+    tool is attached to.  Dispatches by the ``joint_id`` prefix (``J*`` =
+    male pair, ``G*`` = ground), with a search of the other layer as
+    fallback so renamed ids still resolve."""
+    if joint_id.startswith("G"):
+        oid = find_ground_block_for_joint(joint_id)
+        if oid is not None:
+            return oid
+        return find_male_block_for_joint(joint_id)
+    oid = find_male_block_for_joint(joint_id)
+    if oid is not None:
+        return oid
+    return find_ground_block_for_joint(joint_id)
+
+
 def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     """Replace the clicked tool instance with the next tool in the registry.
 
@@ -313,9 +393,9 @@ def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
             idx = -1
         next_name = names[(idx + 1) % len(names)]
 
-    male_id = find_male_block_for_joint(joint_id)
+    male_id = find_attached_block_for_joint(joint_id)
     if male_id is None:
-        print(f"  [tool] could not locate male joint block for {joint_id}.")
+        print(f"  [tool] could not locate joint block for {joint_id}.")
         return None
 
     try:
@@ -324,7 +404,7 @@ def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
         print(f"  [tool] tool '{next_name}' not found in registry.")
         return None
 
-    new_oid = place_tool_at_male_joint(male_id, joint_id, pair, tool)
+    new_oid = place_tool_at_block_instance(male_id, joint_id, tool)
     if new_oid is None:
         return None
     set_default_tool_name(next_name)

@@ -10,7 +10,6 @@ All distances are in millimetres; all angles are in radians.
 
 from __future__ import annotations
 
-import math
 import os
 
 import numpy as np
@@ -53,13 +52,6 @@ BAR_RADIUS = 10.0
 # UI: color used to highlight bars the user has just picked, across all
 # interactive scripts that show selection feedback (snap, brace, …).
 SELECTED_BAR_COLOR = (30, 100, 220)  # blue
-
-# Joint DOF bounds (used by Rhino UI prompts, optimizer bounds, etc.)
-FJP_RANGE = (-500.0, 500.0)
-MJP_RANGE = (-500.0, 500.0)
-FJR_RANGE = (-math.pi, math.pi)
-MJR_RANGE = (-math.pi, math.pi)
-JJR_RANGE = (-math.pi, math.pi)
 
 # Output / optimizer tuning
 DEFAULT_NEW_BAR_LENGTH = 500.0
@@ -242,6 +234,9 @@ LAYER_JOINT_FEMALE_INSTANCES = (
 LAYER_JOINT_MALE_INSTANCES = (
     MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Male Instances"
 )
+LAYER_JOINT_GROUND_INSTANCES = (
+    MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Ground Instances"
+)
 LAYER_TOOL_INSTANCES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Robotic Tool Instances"
 LAYER_WALKABLE_GROUND = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Walkable Ground"
 # Cached IK preview meshes (robot links + tool models). Baked once on first
@@ -256,6 +251,7 @@ MANAGED_LAYERS = (
     LAYER_BAR_TUBE_PREVIEWS,
     LAYER_JOINT_FEMALE_INSTANCES,
     LAYER_JOINT_MALE_INSTANCES,
+    LAYER_JOINT_GROUND_INSTANCES,
     LAYER_TOOL_INSTANCES,
     LAYER_WALKABLE_GROUND,
 )

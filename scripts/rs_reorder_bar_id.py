@@ -275,7 +275,7 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
             if old != new:
                 n_bars += 1
 
-        # 2. Tube previews.
+        # 2. Tube previews: tube_bar_id user-text + ObjectName + reference_label.
         for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
             old = rs.GetUserText(oid, TUBE_BAR_ID_KEY)
             if not old:
@@ -283,6 +283,12 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
             new = bar_rename.get(old)
             if new and new != old:
                 rs.SetUserText(oid, TUBE_BAR_ID_KEY, new)
+                new_label = f"{new}_tube"
+                rs.ObjectName(oid, new_label)
+                # `reference_label` mirrors the ObjectName (set by
+                # apply_object_display); keep them in sync.
+                if rs.GetUserText(oid, "reference_label"):
+                    rs.SetUserText(oid, "reference_label", new_label)
                 n_tubes += 1
 
         # 3 + 4. supported_until + ik_support live on the bar curves themselves.

@@ -59,6 +59,7 @@ from core.rhino_bar_registry import (
     show_sequence_colors,
     reset_sequence_colors,
 )
+from core.rhino_helpers import curve_endpoints
 
 # Reuse the tube-aware bar filter and tube->centerline resolver so clicking
 # the bar's tube preview works the same way it does in
@@ -81,6 +82,40 @@ class _SequenceSession:
     def __init__(self):
         self.active_bar_id = None
         self.show_unbuilt = True
+        # GUID of the temporary text-dot label drawn at the active bar's
+        # end-point.  Recreated on every set_active(), cleaned up on exit.
+        self._active_dot_id = None
+
+    # ------------------------------------------------------------------
+    # Active-bar end-point label
+
+    def _clear_active_dot(self):
+        if self._active_dot_id is not None and rs.IsObject(self._active_dot_id):
+            rs.DeleteObject(self._active_dot_id)
+        self._active_dot_id = None
+
+    def _refresh_active_dot(self):
+        """Place a text-dot at the active bar's end-point showing
+        ``bar_id`` and assembly sequence number.  This is the same end of
+        the bar where the physical label will be applied."""
+        self._clear_active_dot()
+        if self.active_bar_id is None:
+            return
+        bar_map = get_bar_seq_map()
+        entry = bar_map.get(self.active_bar_id)
+        if entry is None:
+            return
+        oid, seq = entry
+        try:
+            _start, end = curve_endpoints(oid)
+        except Exception:
+            return
+        label = f"{self.active_bar_id}\nstep {seq}"
+        dot_id = rs.AddTextDot(
+            label, (float(end[0]), float(end[1]), float(end[2]))
+        )
+        if dot_id:
+            self._active_dot_id = dot_id
 
     # ------------------------------------------------------------------
     # Helpers
@@ -118,6 +153,7 @@ class _SequenceSession:
     def set_active(self, bar_id):
         self.active_bar_id = bar_id
         show_sequence_colors(bar_id, self.show_unbuilt)
+        self._refresh_active_dot()
         self._print_status()
 
     def select_next(self):
@@ -402,57 +438,60 @@ def main():
     # Default Enter action - walks forward through the sequence.
     last_action = "Next"
 
-    while True:
-        # Create a fresh GetObject each iteration so a previous pick doesn't
-        # re-trigger via pre-selection (which would cause an infinite loop).
-        go = _build_get_option(session, last_action)
-        result = go.Get()
+    try:
+        while True:
+            # Create a fresh GetObject each iteration so a previous pick doesn't
+            # re-trigger via pre-selection (which would cause an infinite loop).
+            go = _build_get_option(session, last_action)
+            result = go.Get()
 
-        if result == Rhino.Input.GetResult.Cancel:
-            break
+            if result == Rhino.Input.GetResult.Cancel:
+                break
 
-        if result == Rhino.Input.GetResult.Object:
-            picked_id = go.Object(0).ObjectId
-            bar_curve_id = _resolve_picked_to_bar_curve(picked_id)
-            if bar_curve_id is not None:
-                bar_id = rs.GetUserText(bar_curve_id, BAR_ID_KEY)
-                if bar_id:
-                    session.set_active(bar_id)
-            # Picking a bar doesn't change the repeat action.
-            continue
+            if result == Rhino.Input.GetResult.Object:
+                picked_id = go.Object(0).ObjectId
+                bar_curve_id = _resolve_picked_to_bar_curve(picked_id)
+                if bar_curve_id is not None:
+                    bar_id = rs.GetUserText(bar_curve_id, BAR_ID_KEY)
+                    if bar_id:
+                        session.set_active(bar_id)
+                # Picking a bar doesn't change the repeat action.
+                continue
 
-        if result == Rhino.Input.GetResult.String:
-            kind, value = _parse_typed_selector(
-                go.StringResult(), len(get_bar_seq_map())
-            )
-            if kind == "bar":
-                session.select_by_bar_id(value)
-            elif kind == "step":
-                session.select_by_step(value)
+            if result == Rhino.Input.GetResult.String:
+                kind, value = _parse_typed_selector(
+                    go.StringResult(), len(get_bar_seq_map())
+                )
+                if kind == "bar":
+                    session.select_by_bar_id(value)
+                elif kind == "step":
+                    session.select_by_step(value)
+                else:
+                    print(f"RSSequenceEdit: {value}")
+                # Typed input doesn't change the repeat action either.
+                continue
+
+            if result == Rhino.Input.GetResult.Nothing:
+                # Bare Enter - repeat last action.
+                action_name = last_action
+            elif result == Rhino.Input.GetResult.Option:
+                action_name = go.Option().EnglishName
             else:
-                print(f"RSSequenceEdit: {value}")
-            # Typed input doesn't change the repeat action either.
-            continue
+                continue
 
-        if result == Rhino.Input.GetResult.Nothing:
-            # Bare Enter - repeat last action.
-            action_name = last_action
-        elif result == Rhino.Input.GetResult.Option:
-            action_name = go.Option().EnglishName
-        else:
-            continue
+            if not _run_action(action_name, session):
+                break
 
-        if not _run_action(action_name, session):
-            break
+            # Update repeat target for all actions except the visibility toggle
+            # (toggling twice in a row would be confusing).
+            if action_name not in ("ShowUnbuilt", "HideUnbuilt"):
+                last_action = action_name
 
-        # Update repeat target for all actions except the visibility toggle
-        # (toggling twice in a row would be confusing).
-        if action_name not in ("ShowUnbuilt", "HideUnbuilt"):
-            last_action = action_name
-
-    # Restore normal display on exit
-    reset_sequence_colors()
-    print("RSSequenceEdit: Finished. Display restored.")
+    finally:
+        # Restore normal display on exit and remove the active-bar dot.
+        session._clear_active_dot()
+        reset_sequence_colors()
+        print("RSSequenceEdit: Finished. Display restored.")
 
 
 if __name__ == "__main__":

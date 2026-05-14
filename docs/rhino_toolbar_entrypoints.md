@@ -31,6 +31,7 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves; auto-derives `contact_distance_mm` |
 | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite bar lines |
 | RSUpdatePreview | `rs_update_preview.py` | Rebuild stale or missing bar tube previews |
+| RSReorderBarID | `rs_reorder_bar_id.py` | Renumber every bar so `B<n>` matches assembly seq `n`; cascades to joint / ground / tool IDs |
 | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication data JSON |
 | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint OCF → tool0 and bar-grasp → tool0 transforms (IK keyframe workflows) |
 | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client (GUI or Direct); load robot cell into the planner |

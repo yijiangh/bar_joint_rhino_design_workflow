@@ -123,6 +123,7 @@ for the toolbar mapping.
 | **RSSetup** | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves |
 | **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure shortest distance between two bars |
 | **RSSetup** | RSUpdatePreview | `rs_update_preview.py` | Refresh all bar tube previews |
+| **RSSetup** | RSReorderBarID | `rs_reorder_bar_id.py` | Renumber every bar so `B<n>` matches assembly seq `n`; cascades to joint / ground / tool IDs |
 | **RSSetup** | RSExportPrefab | `rs_export_prefab.py` | Export bar prefabrication data as JSON |
 
 ### Defining joint halves and mates

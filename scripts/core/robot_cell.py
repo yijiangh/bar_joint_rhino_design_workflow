@@ -646,9 +646,13 @@ def extract_group_config(state, group: str, robot_cell) -> dict:
 # whose meshes were the wrist+tool proxy. The new pipeline attaches each
 # placed tool's collision OBJ (declared in `core/robotic_tools.json` as
 # `collision_filename`) to the corresponding arm's `*_ur_arm_tool0` link
-# as a `compas_fab.robots.RigidBody`. Touch-links cover the wrist links the
-# proxy mesh inherently overlaps so IK does not reject valid poses on
-# proxy-vs-wrist self-collision.
+# as a `compas_fab.robots.RigidBody`.
+#
+# Historical note: the touch_links list used to whitelist the three wrist
+# links to paper over the legacy proxy mesh overlapping the wrist. The
+# current per-tool OBJs are authored to start at tool0 and NOT extend back
+# into the wrist, so any tool<->wrist contact is a real bad pose we want
+# IK to catch. Touch_links is intentionally empty for both arms.
 
 ARM_TOOL_RB_NAMES = {
     "left": "AssemblyLeftArmToolBody",
@@ -659,16 +663,8 @@ _ARM_TOOL_LINKS = {
     "right": "right_ur_arm_tool0",
 }
 _ARM_TOOL_TOUCH_LINKS = {
-    "left": [
-        "left_ur_arm_wrist_1_link",
-        "left_ur_arm_wrist_2_link",
-        "left_ur_arm_wrist_3_link",
-    ],
-    "right": [
-        "right_ur_arm_wrist_1_link",
-        "right_ur_arm_wrist_2_link",
-        "right_ur_arm_wrist_3_link",
-    ],
+    "left": [],
+    "right": [],
 }
 
 

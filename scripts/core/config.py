@@ -106,6 +106,13 @@ RIGHT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyRight_Pine
 # Approach distance: tool0 translated by -avg(male z) * LM_DISTANCE before final
 LM_DISTANCE = 15.0  # mm
 
+# Home configurations for each arm (UR5e, 6 DOF). Used by RSExportBarAction
+# as the start config of M1 (CDFM home->approach) and the target config of
+# M4 (free motion home).
+# TODO(yh): replace zero-config placeholders with safe-pose values.
+HOME_CONFIG_LEFT = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+HOME_CONFIG_RIGHT = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
 # Whether to attach per-arm tool collision meshes (LEFT/RIGHT_PINEAPPLE_TOOL_MESH)
 # to the dual-arm RobotCell as ToolModels for IK collision checking. Set False
 # while the per-tool collision-OBJ pipeline is being redesigned (tools will

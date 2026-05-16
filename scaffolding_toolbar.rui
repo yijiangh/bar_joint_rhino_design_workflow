@@ -46,6 +46,13 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000017" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000017</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001b" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001b</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001d" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001d</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001f</right_macro_id>
+      </tool_bar_item>
     </tool_bar>
     <!-- RSSetup: calibration and utilities -->
     <tool_bar guid="c5d6e7f8-3333-4bbb-b333-000000000001">
@@ -87,6 +94,9 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000019" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000019</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001e" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001e</left_macro_id>
       </tool_bar_item>
     </tool_bar>
   </tool_bars>
@@ -248,6 +258,42 @@
       </button_text>
       <script>! _-ScriptEditor _R "rs_remove_bar.py"</script>
     </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001b">
+      <text>
+        <locale_1033>RSExportRobotCell</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Save the loaded RobotCell to &lt;root&gt;/RobotCell.json (compas json_dump)</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSExportRobotCell</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_export_robotcell.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001d">
+      <text>
+        <locale_1033>RSExportBarAction</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Left-click: pick a bar; save its assembly cycle (M1-M4) to &lt;root&gt;/BarActions/&lt;bar_id&gt;.json. Right-click: export every bar with IK results + RobotCell.json.</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSExportBarAction</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_export_bar_action.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001f">
+      <text>
+        <locale_1033>RSExportAllBarActions</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Export BarAssemblyAction JSON for every bar with IK results, plus RobotCell.json, to &lt;root&gt;</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSExportAllBarActions</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_export_all_bar_actions.py"</script>
+    </macro_item>
     <!-- RSSetup macros -->
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000006">
       <text>
@@ -392,6 +438,18 @@
         <locale_1033>RSPBStart</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_pb_start.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001e">
+      <text>
+        <locale_1033>RSExportBarTool0TF</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Pick a bar; export bar-OCF -&gt; tool0_left/right transforms to &lt;root&gt;/BarTool0TF/&lt;bar_id&gt;.json</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSExportBarTool0TF</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_export_bar_tool0_tf.py"</script>
     </macro_item>
   </macros>
   <bitmaps>

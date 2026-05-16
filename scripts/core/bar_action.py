@@ -899,9 +899,11 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     arm_to_male = _classify_male_joints_per_arm(bar_id)
 
     # 5) Build slim base state, then run upstream collision-state prep.
+    # NOTE: do NOT seed slim_state.robot_configuration from payload["assembled"]
+    # here — every Mi builder writes its own robot_configuration (HOME for M1,
+    # approach for M2, assembled for M3, None for M4), so seeding is dead.
     slim_state = robot_cell.default_cell_state()
     _set_robot_base_frame(slim_state, base_frame_world_mm)
-    _apply_groups_to_config(slim_state, payload["assembled"])
     template_state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
         rcell, planner, slim_state, bar_id,
     )

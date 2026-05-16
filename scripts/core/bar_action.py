@@ -401,82 +401,86 @@ def _detach_to_world(state, world_mm, rb_key: str) -> None:
 # ---------------------------------------------------------------------------
 # ACM helpers (per-movement)
 # ---------------------------------------------------------------------------
+#
+# Design: `build_bar_assembly_action` wipes ALL touch_bodies on the
+# canonicalized template_state (see `_clear_all_touch_bodies` below) so the
+# template carries NO whitelist. Each Mi builder then opts in the specific
+# by-design contacts active during THAT movement, scoped to this bar's
+# joints / mate pairs only. Categories:
+#
+#   bar<->both arm tools      : whole bar is gripped while moving (M1/M2/M3)
+#   bar<->active joints       : male+female joints rigidly bonded to the bar
+#                               are in contact with it the whole time
+#                               (M1/M2/M3)
+#   male<->matching arm tool  : gripper jaws are around the male head while
+#                               it is grasped (M1/M2) and while it retreats
+#                               from the mated position (M3)
+#   mate pairs (male<->female): the two joints engage during M2 linear-mate
+#                               and stay engaged in M3 retreat
+#
+# M4 (free home, robot empty-handed) needs NO whitelist: everything is
+# stationary or compas_fab's auto-skip rules (stationary<->stationary,
+# hidden bodies) take care of it.
+#
+# Earlier versions called `env_collision.configure_active_assembly_acm` on
+# the template; that path globally whitelisted every mate pair in the doc
+# (including for bars that aren't this action's active bar) and inherited
+# leaked whitelisting from any previous ShowIK/IK call on the cached cell.
+# Replaced by these explicit per-Mi rules.
 
 
-def _clear_active_touch_bodies(state, active_keys) -> None:
-    """Empty touch_bodies on every key in `active_keys`. M1/M2 ACM is set by
-    upstream `configure_active_assembly_acm` and then carried over via
-    canonicalization; M3/M4 callers wipe and selectively rewrite."""
-    for k in active_keys:
-        rb = state.rigid_body_states.get(k)
-        if rb is not None:
-            rb.touch_bodies = []
+def _clear_all_touch_bodies(state) -> None:
+    """Wipe touch_bodies on every rigid_body_state and tool_state."""
+    for rb in state.rigid_body_states.values():
+        rb.touch_bodies = []
+    for ts in (state.tool_states or {}).values():
+        ts.touch_bodies = []
 
 
-def _whitelist_mate_pairs(state) -> int:
-    """Whitelist every `joint_<jid>_male` <-> `joint_<jid>_female` pair in the
-    state by adding each side to the other's `touch_bodies`.
-
-    Operates on canonical names: every existing male/female pair (regardless
-    of whether either side was active or env upstream) is by-design contact
-    once mated, so the whitelist prevents false positives in M3/M4.
-
-    Returns the number of pairs whitelisted.
-    """
-    rb_states = state.rigid_body_states
-    seen = set()
-    n = 0
-    for key in list(rb_states.keys()):
-        if not key.startswith(CANONICAL_JOINT_PREFIX):
-            continue
-        tag = key[len(CANONICAL_JOINT_PREFIX):]
-        if "_" not in tag:
-            continue
-        jid, sub = tag.rsplit("_", 1)
-        if sub == "male":
-            other = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
-        elif sub == "female":
-            other = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
-        else:
-            continue
-        if other not in rb_states:
-            continue
-        pair = tuple(sorted([key, other]))
-        if pair in seen:
-            continue
-        seen.add(pair)
-        a_tb = set(rb_states[key].touch_bodies or [])
-        e_tb = set(rb_states[other].touch_bodies or [])
-        a_tb.add(other)
-        e_tb.add(key)
-        rb_states[key].touch_bodies = sorted(a_tb)
-        rb_states[other].touch_bodies = sorted(e_tb)
-        n += 1
-    return n
+def _touch_pair(state, a: str, b: str) -> None:
+    """Bidirectionally add (a, b) to touch_bodies. No-op if either key is absent."""
+    rbs = state.rigid_body_states
+    if a not in rbs or b not in rbs:
+        return
+    rbs[a].touch_bodies = sorted(set(rbs[a].touch_bodies or []) | {b})
+    rbs[b].touch_bodies = sorted(set(rbs[b].touch_bodies or []) | {a})
 
 
-def _whitelist_gripper_male_adjacency(state, arm_to_male: dict, arm_tool_rb_names: dict) -> int:
-    """Add `joint_<jid>_male` <-> matching arm tool RB to touch_bodies.
-
-    Used in M3 retreat: gripper is still adjacent to the just-mated joint as
-    it pulls back; that contact should not flag.
-    """
-    rb_states = state.rigid_body_states
-    n = 0
-    for jid, arm in arm_to_male.items():
-        rb_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
-        tool_rb = arm_tool_rb_names.get(arm)
-        if rb_key not in rb_states or not tool_rb:
-            continue
-        a_tb = set(rb_states[rb_key].touch_bodies or [])
-        a_tb.add(tool_rb)
-        rb_states[rb_key].touch_bodies = sorted(a_tb)
-        if tool_rb in rb_states:
-            t_tb = set(rb_states[tool_rb].touch_bodies or [])
-            t_tb.add(rb_key)
-            rb_states[tool_rb].touch_bodies = sorted(t_tb)
-        n += 1
-    return n
+def _apply_per_movement_acm(
+    state,
+    *,
+    bar_key: Optional[str],
+    jids,
+    arm_to_male: dict,
+    arm_tool_rb_names: dict,
+    whitelist_bar_tools: bool = False,
+    whitelist_bar_joints: bool = False,
+    whitelist_male_tools: bool = False,
+    whitelist_mates: bool = False,
+) -> None:
+    """Single per-movement ACM entry point. See module-level note above for
+    which flags each Mi turns on."""
+    tool_names = [n for n in arm_tool_rb_names.values() if n]
+    if whitelist_bar_tools and bar_key:
+        for tn in tool_names:
+            _touch_pair(state, bar_key, tn)
+    if whitelist_bar_joints and bar_key:
+        for jid in jids:
+            for sub in ("male", "female"):
+                _touch_pair(state, bar_key, f"{CANONICAL_JOINT_PREFIX}{jid}_{sub}")
+    if whitelist_male_tools:
+        for jid in jids:
+            arm = arm_to_male.get(jid)
+            tn = arm_tool_rb_names.get(arm) if arm else None
+            if tn:
+                _touch_pair(state, f"{CANONICAL_JOINT_PREFIX}{jid}_male", tn)
+    if whitelist_mates:
+        for jid in jids:
+            _touch_pair(
+                state,
+                f"{CANONICAL_JOINT_PREFIX}{jid}_male",
+                f"{CANONICAL_JOINT_PREFIX}{jid}_female",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +605,7 @@ def _build_m1(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_tool_rb_names: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -620,6 +625,18 @@ def _build_m1(
         state, active_keys, env_geom, arm_to_male,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
+    )
+    # M1 ACM: bar gripped by both arms + male heads in gripper jaws + bar
+    # rigidly bonded to its joints. No mate-pair contact yet (still at home).
+    _apply_per_movement_acm(
+        state,
+        bar_key=f"{CANONICAL_BAR_PREFIX}{bar_id}",
+        jids=list(arm_to_male.keys()),
+        arm_to_male=arm_to_male,
+        arm_tool_rb_names=arm_tool_rb_names,
+        whitelist_bar_tools=True,
+        whitelist_bar_joints=True,
+        whitelist_male_tools=True,
     )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
         tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
@@ -647,6 +664,7 @@ def _build_m2(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_tool_rb_names: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -661,6 +679,18 @@ def _build_m2(
         state, active_keys, env_geom, arm_to_male,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
+    )
+    # M2 ACM: same as M1 + mate pairs engage during this linear motion.
+    _apply_per_movement_acm(
+        state,
+        bar_key=f"{CANONICAL_BAR_PREFIX}{bar_id}",
+        jids=list(arm_to_male.keys()),
+        arm_to_male=arm_to_male,
+        arm_tool_rb_names=arm_tool_rb_names,
+        whitelist_bar_tools=True,
+        whitelist_bar_joints=True,
+        whitelist_male_tools=True,
+        whitelist_mates=True,
     )
     return RoboticLinearMovement(
         movement_id=f"{bar_id}_M2_LM_mate",
@@ -696,9 +726,20 @@ def _build_m3(
     _set_robot_base_frame(state, base_frame_world_mm)
     _apply_groups_to_config(state, assembled_groups)
     _detach_active_to_assembled_world(state, active_keys, env_geom)
-    _clear_active_touch_bodies(state, active_keys)
-    _whitelist_mate_pairs(state)
-    _whitelist_gripper_male_adjacency(state, arm_to_male, arm_tool_rb_names)
+    # M3 ACM: bar+joints stationary at assembled pose, mate pairs engaged,
+    # gripper retreats past the bar / off the male heads. Same whitelist as
+    # M2 (with grasp detached but contacts the same).
+    _apply_per_movement_acm(
+        state,
+        bar_key=f"{CANONICAL_BAR_PREFIX}{bar_id}",
+        jids=list(arm_to_male.keys()),
+        arm_to_male=arm_to_male,
+        arm_tool_rb_names=arm_tool_rb_names,
+        whitelist_bar_tools=True,
+        whitelist_bar_joints=True,
+        whitelist_male_tools=True,
+        whitelist_mates=True,
+    )
 
     retreat_axes_world = {}
     target_left_mm = tool0_left_assembled_mm
@@ -755,8 +796,9 @@ def _build_m4(
     # Per plan: M4.start.robot_configuration is None (planner fills from M3.end).
     state.robot_configuration = None
     _detach_active_to_assembled_world(state, active_keys, env_geom)
-    _clear_active_touch_bodies(state, active_keys)
-    _whitelist_mate_pairs(state)
+    # M4 ACM: empty. Robot is empty-handed; bar+joints stationary in assembled
+    # pose (auto-skipped by compas_fab stationary<->stationary rule); no
+    # by-design contact remains. Any flagged collision here is a real bug.
 
     home_cfg = _build_home_configuration(
         template_state, rcell, home_left, home_right, left_group, right_group,
@@ -929,6 +971,22 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     canonicalize_state(template_state)
     env_geom = canonicalize_env_geom(env_geom)
 
+    # 5d) Per design: the template_state carries NO ACM whitelist. Strip what
+    # `prepare_assembly_collision_state` set via `configure_active_assembly_acm`
+    # (and whatever leaked from earlier ShowIK/IK calls on the cached cell).
+    # Each Mi builder opts in only the contacts that ARE by-design for that
+    # specific movement. See ACM helpers section above.
+    _clear_all_touch_bodies(template_state)
+
+    # 5e) Per design: the template_state's active bar/joint rigid bodies have
+    # NO meaningful frame. Every Mi rewrites it via `_attach_active_bar_to_arm`
+    # (M1/M2 - attached, frame=None) or `_detach_to_world` (M3/M4 - placed at
+    # assembled world). Clear template frames so debugging is unambiguous.
+    for k in active_keys:
+        rb = template_state.rigid_body_states.get(k)
+        if rb is not None:
+            rb.frame = None
+
     if future_keys:
         from compas_fab.robots import RigidBodyState
         # NB: use a distinct name here -- `payload` is the bar-keyframe dict
@@ -965,6 +1023,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
 
     m1 = _build_m1(
         template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        arm_tool_rb_names,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
@@ -973,6 +1032,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     )
     m2 = _build_m2(
         template_state, bar_id, env_geom, active_keys, arm_to_male,
+        arm_tool_rb_names,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         payload["approach"],

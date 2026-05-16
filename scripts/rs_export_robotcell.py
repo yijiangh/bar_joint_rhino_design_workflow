@@ -20,6 +20,16 @@ Rigid-body names in the JSON are state-independent (``bar_<bid>`` /
 cached in-Rhino cell keeps the upstream ``active_*`` / ``env_*`` prefixes
 so the IK pipeline is unaffected.
 
+Before dumping, this script ALWAYS calls
+``core.bar_action._register_full_assembly_geom`` to push every bar +
+every joint of the assembly into the cached cell. The cached cell would
+otherwise reflect whichever bar's IK / BarAction was last prepared (per-bar
+``prepare_assembly_collision_state`` strips env_*/active_* keys outside its
+active context, see ``env_collision.register_env_in_robot_cell``). Forcing
+the full-assembly registration here guarantees the dumped cell is the
+state-independent superset, regardless of session history. Requires
+PyBullet (RSPBStart).
+
 The last-used root is remembered in ``sc.sticky`` and pre-selected in the
 folder dialog; the user can always pick a different folder.
 """
@@ -62,7 +72,37 @@ def main() -> None:
     robot_cell = importlib.reload(_robot_cell_module)
     bar_action = importlib.reload(_bar_action_module)
 
+    if not robot_cell.is_pb_running():
+        rs.MessageBox(
+            "PyBullet is not running. Click RSPBStart first (the full-assembly "
+            "registration step needs the planner).",
+            0,
+            "RSExportRobotCell",
+        )
+        return
+    _client, planner = robot_cell.get_planner()
     rcell = robot_cell.get_or_load_robot_cell()
+
+    # Force-register every bar + joint of the assembly into the cached cell
+    # BEFORE dump, so the saved RobotCell.json is the full state-independent
+    # superset regardless of what the last in-session IK / BarAction call left
+    # behind. (Otherwise the cell reflects whichever bar's
+    # `prepare_assembly_collision_state` ran last.)
+    pre_rb_count = len(rcell.rigid_body_models)
+    full_geom = bar_action._register_full_assembly_geom(rcell, planner)
+    # Also force-register the per-arm tool RBs (`AssemblyLeftArmToolBody`,
+    # `AssemblyRightArmToolBody`). Otherwise they're missing if no IK pass /
+    # BarAction export had run in this session before the cell dump.
+    tools_ok = bar_action._attach_arm_tools_to_cell(rcell, planner)
+    post_rb_count = len(rcell.rigid_body_models)
+    if full_geom:
+        print(
+            f"RSExportRobotCell: registered full assembly -- "
+            f"{len(full_geom)} bar/joint bodies, arm tools {'OK' if tools_ok else 'MISSING'} "
+            f"(rcell {pre_rb_count} -> {post_rb_count} rigid_body_models)."
+        )
+    else:
+        print("RSExportRobotCell: bar_seq_map is empty -- no full-assembly geometry to register.")
 
     n_rb = len(rcell.rigid_body_models)
     if n_rb == 0:

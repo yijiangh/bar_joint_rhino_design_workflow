@@ -16,7 +16,8 @@ The Rhino IK pipeline (`RSIKKeyframe`) already produces and persists per-bar app
 | M4 | `RoboticFreeMovement` | Both arms unconstrained, no grasp, return to `HOME_CONFIG`. |
 
 Companion exports:
-- `RSExportRobotCell` (`scripts/rs_export_robotcell.py`, macro suffix `1b`) — writes `<root>/RobotCell.json` with canonicalized rigid-body names.
+- `RSExportBarAction` left-click = single picked bar (above). **Right-click** = batch: `RSExportAllBarActions` (`scripts/rs_export_all_bar_actions.py`, macro suffix `1f`) iterates every bar with IK results in assembly-sequence order, writes `<root>/BarActions/<bar_id>.json` for each, then also dumps `<root>/RobotCell.json` (canonical names) so the whole bundle is self-consistent. Bars without IK results are skipped with a note.
+- `RSExportRobotCell` (`scripts/rs_export_robotcell.py`, macro suffix `1b`) — writes only `<root>/RobotCell.json` with canonicalized rigid-body names. (Redundant if you used the right-click batch above.)
 - The `RSExportRobotCellState` button **was removed**: the BarAction superseded it. Don't try to import `rs_export_robotcell_state` — it no longer exists.
 
 ## 2. File layout produced
@@ -221,7 +222,8 @@ These are recorded in `tasks/cc_lessons.md` and replicated here so the planner a
 | Path | Role |
 |---|---|
 | `scripts/core/bar_action.py` | Data classes + builder + canonicalization helpers (`canonical_rb_name`, `canonicalize_state`, `canonical_rigid_body_models`, `dump_cell_canonical`). |
-| `scripts/rs_export_bar_action.py` | Rhino entry point; macro GUID suffix `1d`. |
+| `scripts/rs_export_bar_action.py` | Rhino entry point (left-click); macro GUID suffix `1d`. |
+| `scripts/rs_export_all_bar_actions.py` | Batch exporter (right-click on the `1d` button); macro GUID suffix `1f`. Loops bars with IK results + dumps RobotCell.json. |
 | `scripts/rs_export_robotcell.py` | Rhino cell exporter; uses `dump_cell_canonical`. Macro suffix `1b`. |
 | `scripts/core/config.py` | `HOME_CONFIG_LEFT` / `HOME_CONFIG_RIGHT` (zero-config placeholders, TODO). |
 | `tests/debug_load_bar_action.py` | Headless verifier. Bundles its own `_start_planner` / `_verify_state` / `_find_robot_cell_path` (originally a separate file, inlined here when `RSExportRobotCellState` was removed). |

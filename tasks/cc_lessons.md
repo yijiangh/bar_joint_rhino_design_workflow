@@ -639,3 +639,14 @@ For RSGroundPlace, the user-facing "flip" = reverse the block's X axis along the
 - Re-edit flows (e.g. flip) should capture `get_tool_name_for_joint(joint_id)` BEFORE re-baking the joint block, then re-place via `place_tool_by_name_at_*` so the user's tool choice persists.
 
 ---
+
+## Lesson: RSExportRobotCell must force-register the full assembly before dumping the cell.
+
+**Why.** The cached `rcell.rigid_body_models` is mutated by every call to `env_collision.register_env_in_robot_cell` (run by every `prepare_assembly_collision_state` from RSIKKeyframe, RSShowIK, the BarAction builder, etc.) — it shrinks the cell to whichever bar's *active context* that last call ran for. So dumping the cached cell as-is produces a per-bar snapshot, NOT the full assembly, unless the very last operation before the dump happened to be a full-assembly registration. Symptom: BarAction state has 32 bars + their joints; cell has only 25; `assert_cell_state_match` raises *"workpieces in the cell state do not match the workpieces in the robot cell. Mismatch: {bar_B235, bar_B237, …, joint_J234-256_male, …}"*.
+
+**How to apply.**
+- In `scripts/rs_export_robotcell.py`, call `bar_action._register_full_assembly_geom(rcell, planner)` immediately before `dump_cell_canonical`. The dump is now deterministic regardless of session history. Requires PyBullet (RSPBStart).
+- Same belt-and-suspenders in `scripts/rs_export_all_bar_actions.py` right before its final cell dump, in case the last build iteration failed AFTER `prepare_assembly_collision_state` (which shrinks the cell) but BEFORE its own `_register_full_assembly_geom`.
+- Diagnostic: load both `RobotCell.json` and `BarActions/<bar>.json`; diff `cell.rigid_body_models.keys()` against `mv.start_state.rigid_body_states.keys()`. If the cell is a strict subset, the cell was dumped from a shrunken per-bar context.
+
+**Follow-up — also re-assert arm-tool RBs at dump time.** The above only covers bar / joint bodies. The two per-arm tool collision RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`) come from `robot_cell.attach_arm_tool_rigid_bodies`, which is only called inside `prepare_assembly_collision_state`. If `RSExportRobotCell` runs in a session that never went through an IK pass or BarAction export, the arm-tool RBs are missing and every BarAction state mismatches on those two names. Symptom: *"Mismatch: {'AssemblyLeftArmToolBody', 'AssemblyRightArmToolBody'}"*. Fix: `bar_action._attach_arm_tools_to_cell(rcell, planner)` scans the doc for any bar with both left+right tools placed, resolves collision paths via `robotic_tools.json`, attaches. Called in both export scripts right before `dump_cell_canonical`.

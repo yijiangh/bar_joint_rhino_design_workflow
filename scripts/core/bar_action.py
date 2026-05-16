@@ -779,6 +779,51 @@ def _build_m4(
 # ---------------------------------------------------------------------------
 
 
+def _attach_arm_tools_to_cell(rcell, planner) -> bool:
+    """Ensure ``AssemblyLeftArmToolBody`` / ``AssemblyRightArmToolBody`` are
+    registered on ``rcell.rigid_body_models``.
+
+    Scans the document for ANY bar that has both a left- and right-arm tool
+    placed (via ``ik_collision_setup.resolve_arm_tools_on_bar``), reads each
+    tool's collision OBJ path from ``robotic_tools.json`` and calls
+    ``robot_cell.attach_arm_tool_rigid_bodies``. The arm-tool RBs are global
+    (per-arm, geometry-only) -- the same bodies any BarAction state expects --
+    so it doesn't matter which bar provides the tool config.
+
+    Returns True if both RBs end up registered; False if no bar with both
+    tools could be found (cell will lack the arm-tool RBs and any BarAction
+    state will mismatch on ``AssemblyLeftArmToolBody`` / ``AssemblyRightArmToolBody``).
+    Idempotent: re-runs that point at the same OBJ are no-ops.
+    """
+    from core import ik_collision_setup
+    from core import robot_cell
+    from core.rhino_bar_registry import get_bar_seq_map
+
+    seq_map = get_bar_seq_map()
+    arm_tools = None
+    for bar_id in seq_map:
+        result, err = ik_collision_setup.resolve_arm_tools_on_bar(bar_id)
+        if err is None:
+            arm_tools = result
+            break
+    if arm_tools is None:
+        print(
+            "core.bar_action._attach_arm_tools_to_cell: no bar in the document "
+            "carries both left+right arm tools; skipping arm-tool RB attach."
+        )
+        return False
+    left_path, right_path = ik_collision_setup.resolve_tool_collision_paths(
+        arm_tools["left"], arm_tools["right"],
+    )
+    registered = robot_cell.attach_arm_tool_rigid_bodies(
+        rcell, planner,
+        left_collision_path=left_path,
+        right_collision_path=right_path,
+        native_scale=0.001,
+    )
+    return bool(registered.get("left")) and bool(registered.get("right"))
+
+
 def _register_full_assembly_geom(rcell, planner) -> dict:
     """Register EVERY bar + EVERY joint of the assembly into ``rcell.rigid_body_models``.
 
@@ -837,6 +882,8 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     from core import robot_cell
     from core.rhino_bar_registry import get_bar_seq_map
 
+    print(f"core.bar_action.build_bar_assembly_action: building bar '{bar_id}' ...")
+
     # 1) Read keyframe + base from the bar curve.
     payload = _read_bar_payload(bar_oid)
     if payload is None:
@@ -890,10 +937,12 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
 
     if future_keys:
         from compas_fab.robots import RigidBodyState
+        # NB: use a distinct name here -- `payload` is the bar-keyframe dict
+        # read above and is still needed below for M2/M3 (approach/assembled).
         for fk in sorted(future_keys):
-            payload = full_geom_canonical[fk]
+            fk_geom = full_geom_canonical[fk]
             template_state.rigid_body_states[fk] = RigidBodyState(
-                frame=_mm4_to_frame(payload["frame_world_mm"]),
+                frame=_mm4_to_frame(fk_geom["frame_world_mm"]),
                 attached_to_link=None,
                 attached_to_tool=None,
                 touch_links=[],

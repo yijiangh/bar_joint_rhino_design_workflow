@@ -16,7 +16,9 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSBarBrace | `rs_bar_brace.py` | Solve and pick brace-bar candidates between two bars |
 | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
 | RSJointPlace | `rs_joint_place.py` | Place female and male connector blocks on a selected bar pair |
+| RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point; auto-`jr` heuristic aligns block +Y to world up; click block to flip 180 deg |
 | RSJointEdit | `rs_joint_edit.py` | Re-edit the orientation of a previously placed joint pair by clicking a block |
+| RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint (display-only; reverts on exit) |
 | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe workflow: pick two male joints, solve IK, save on shared Ln bar |
 | RSShowIK | `rs_show_ik.py` | Replay a saved `ik_assembly` keyframe (final or approach) on a picked bar |
 | RSIKSupportKeyframe | `rs_ik_support_keyframe.py` | Single-arm support-robot IK keyframe: pick the just-assembled bar (which is also the held bar), pick grasp + base, save `ik_support` |
@@ -25,7 +27,8 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 
 | Button | Script | Purpose |
 |---|---|---|
-| RSDefineJointPair | `rs_define_joint_pair.py` | Define a new joint pair (female + male blocks + transforms + asset) |
+| RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) — block + bar axis + (screw axis + center) + collision OBJ |
+| RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves; auto-derives `contact_distance_mm` |
 | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite bar lines |
 | RSUpdatePreview | `rs_update_preview.py` | Rebuild stale or missing bar tube previews |
 | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication data JSON |

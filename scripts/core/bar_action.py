@@ -668,6 +668,88 @@ def _build_m4(
 
 
 # ---------------------------------------------------------------------------
+# Full-assembly registration (state-independent RobotCell)
+# ---------------------------------------------------------------------------
+
+
+def _attach_arm_tools_to_cell(rcell, planner) -> bool:
+    """Ensure ``AssemblyLeftArmToolBody`` / ``AssemblyRightArmToolBody`` are
+    registered on ``rcell.rigid_body_models``.
+
+    Scans the document for ANY bar that has both a left- and right-arm tool
+    placed (via ``ik_collision_setup.resolve_arm_tools_on_bar``), reads each
+    tool's collision OBJ path from ``robotic_tools.json`` and calls
+    ``robot_cell.attach_arm_tool_rigid_bodies``. The arm-tool RBs are global
+    (per-arm, geometry-only) -- the same bodies any BarAction state expects --
+    so it doesn't matter which bar provides the tool config.
+
+    Returns True if both RBs end up registered; False if no bar with both
+    tools could be found (cell will lack the arm-tool RBs and any BarAction
+    state will mismatch on ``AssemblyLeftArmToolBody`` / ``AssemblyRightArmToolBody``).
+    Idempotent: re-runs that point at the same OBJ are no-ops.
+    """
+    from core import ik_collision_setup
+    from core import robot_cell
+    from core.rhino_bar_registry import get_bar_seq_map
+
+    seq_map = get_bar_seq_map()
+    arm_tools = None
+    for bar_id in seq_map:
+        result, err = ik_collision_setup.resolve_arm_tools_on_bar(bar_id)
+        if err is None:
+            arm_tools = result
+            break
+    if arm_tools is None:
+        print(
+            "core.bar_action._attach_arm_tools_to_cell: no bar in the document "
+            "carries both left+right arm tools; skipping arm-tool RB attach."
+        )
+        return False
+    left_path, right_path = ik_collision_setup.resolve_tool_collision_paths(
+        arm_tools["left"], arm_tools["right"],
+    )
+    registered = robot_cell.attach_arm_tool_rigid_bodies(
+        rcell, planner,
+        left_collision_path=left_path,
+        right_collision_path=right_path,
+        native_scale=0.001,
+    )
+    return bool(registered.get("left")) and bool(registered.get("right"))
+
+
+def _register_full_assembly_geom(rcell, planner) -> dict:
+    """Register EVERY bar + EVERY joint of the assembly into ``rcell.rigid_body_models``.
+
+    ``env_collision.collect_built_geometry(last_bar)`` yields all bars with
+    ``seq < last_seq`` + their joints; ``collect_active_geometry(last_bar)``
+    yields the last bar + its joints. The union is the full assembly. Keys
+    keep the upstream prefixes (``env_bar_*`` for all but the last, ``active_bar_*``
+    for the last bar's bodies); the caller canonicalizes them.
+
+    Pushed via ``robot_cell.ensure_env_registered`` so the in-Rhino cached cell
+    and the planner's collision world both carry the full set. (Subsequent
+    upstream IK calls re-sync the cell to whatever bar is active then -- this
+    full set is transient, only meaningful for the export that follows.)
+
+    Returns the merged prefixed-key geom dict, or ``{}`` if no bars are registered.
+    """
+    from core import env_collision
+    from core import robot_cell
+    from core.rhino_bar_registry import get_bar_seq_map
+
+    seq_map = get_bar_seq_map()
+    if not seq_map:
+        return {}
+    last_bar = max(seq_map, key=lambda b: seq_map[b][1])
+    full_geom = {}
+    full_geom.update(env_collision.collect_built_geometry(last_bar, seq_map))
+    full_geom.update(env_collision.collect_active_geometry(last_bar, seq_map))
+    if full_geom:
+        robot_cell.ensure_env_registered(rcell, full_geom, planner)
+    return full_geom
+
+
+# ---------------------------------------------------------------------------
 # Top-level factory
 # ---------------------------------------------------------------------------
 
@@ -675,10 +757,16 @@ def _build_m4(
 def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     """Build a `BarAssemblyAction` for `bar_id`. Rhino-only call.
 
-    Side effect: `prepare_assembly_collision_state` registers env+arm-tool RBs
-    onto `rcell.rigid_body_models` and configures `configure_active_assembly_acm`
-    on the returned state. We treat that as the M1/M2 collision template
-    and clone+mutate it for each of the four movements.
+    Side effects:
+    - `prepare_assembly_collision_state` registers env+arm-tool RBs onto
+      `rcell.rigid_body_models` and `configure_active_assembly_acm` on the
+      returned state. We treat that as the M1/M2 collision template and
+      clone+mutate it for each of the four movements.
+    - `_register_full_assembly_geom` then registers EVERY bar + joint onto
+      `rcell.rigid_body_models` so a subsequent `RSExportRobotCell` writes a
+      state-independent cell. To keep the per-movement states' workpiece
+      key-set equal to the (full) cell's, the not-yet-built bars/joints are
+      added to every movement's start_state as `is_hidden=True` rigid bodies.
     """
     import rhinoscriptsyntax as rs  # noqa: F401  (kept; surrounding helpers import lazily)
     from core import config
@@ -686,6 +774,8 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     from core import ik_collision_setup
     from core import robot_cell
     from core.rhino_bar_registry import get_bar_seq_map
+
+    print(f"core.bar_action.build_bar_assembly_action: building bar '{bar_id}' ...")
 
     # 1) Read keyframe + base from the bar curve.
     payload = _read_bar_payload(bar_oid)
@@ -718,16 +808,41 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     )
 
     # 5b) Canonicalize names: identify which canonical keys belong to the
-    # active bar (= came from active_* upstream), then strip the prefixes
-    # off template_state.rigid_body_states / env_geom for the export path.
-    # The cached rcell.rigid_body_models is NOT touched -- it keeps the
-    # active_*/env_* prefixes so subsequent upstream calls keep working.
+    # active bar (= came from active_* upstream) and which are present at
+    # this bar's stage (built or active), then strip the prefixes off
+    # template_state.rigid_body_states / env_geom for the export path.
     active_keys = {
         canonical_rb_name(k) for k in env_geom
         if k.startswith(ACTIVE_RB_BAR_PREFIX) or k.startswith(ACTIVE_RB_JOINT_PREFIX)
     }
+    present_keys = {canonical_rb_name(k) for k in env_geom}
+
+    # 5c) Register the FULL assembly (every bar + joint) onto the cached cell
+    # so RSExportRobotCell writes a state-independent RobotCell.json. Then the
+    # not-yet-built bodies (future bars/joints) are added to template_state as
+    # hidden, so the state's workpiece key-set matches the full cell.
+    full_geom_raw = _register_full_assembly_geom(rcell, planner)
+    full_geom_canonical = {canonical_rb_name(k): v for k, v in full_geom_raw.items()}
+    future_keys = set(full_geom_canonical.keys()) - present_keys
+
     canonicalize_state(template_state)
     env_geom = canonicalize_env_geom(env_geom)
+
+    if future_keys:
+        from compas_fab.robots import RigidBodyState
+        # NB: use a distinct name here -- `payload` is the bar-keyframe dict
+        # read above and is still needed below for M2/M3 (approach/assembled).
+        for fk in sorted(future_keys):
+            fk_geom = full_geom_canonical[fk]
+            template_state.rigid_body_states[fk] = RigidBodyState(
+                frame=_mm4_to_frame(fk_geom["frame_world_mm"]),
+                attached_to_link=None,
+                attached_to_tool=None,
+                touch_links=[],
+                touch_bodies=[],
+                attachment_frame=None,
+                is_hidden=True,
+            )
 
     # 6) Recover arm tool RB names (mirror of robot_cell.ARM_TOOL_RB_NAMES,
     # filtered to those actually attached for THIS bar's tools).

@@ -4,6 +4,26 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Curve-constrained `GetPoint` should leave object snaps enabled
+
+When a Rhino picker uses `Rhino.Input.Custom.GetPoint().Constrain(curve, False)` to slide along a bar, do NOT also call `gp.PermitObjectSnap(False)`. That blocks osnaps to *other* geometry, so the user can't snap to e.g. another bar's endpoint or a joint center for precise alignment.
+
+**Why:** `Constrain(curve)` already projects every cursor sample (including snapped ones from other geometry) back onto the constrained curve. Disabling object snaps just removes the precision-pick affordance with no benefit. `rs.GetPointOnCurve` (used by `rs_bar_brace.py`) leaves osnaps on by default, which is why brace point-picks felt "snappier" than ground-place ones.
+
+**How to apply:** Default to `gp.PermitObjectSnap(True)` (or omit the call entirely). Only disable osnaps when there is a concrete reason (e.g. the constraint surface is itself made of snap-magnet geometry that would cause feedback).
+
+---
+
+## Standalone "refresh" entry points must call `repair_on_entry`, not `update_all_previews` alone
+
+`rs_update_preview.py` originally called only `update_all_previews(bar_radius)`. That helper iterates registered bars and rebuilds stale tubes per `_tube_geometry_matches`, but it does NOT touch ORPHAN tubes whose `tube_axis_id` belongs to a different (still-registered) bar -- which is exactly what user copy-paste of a bar+tube produces. Orphan deletion lives in `_enforce_tube_layer`, only invoked from `enforce_managed_layers` -> `repair_on_entry`. Skipping that pass leaves duplicate tubes overlapping the new bar's tube forever.
+
+**How to apply:** Every entry-point script that asks the user to "fix the previews" must call `repair_on_entry(bar_radius, caller=...)` first. `update_all_previews` is the post-repair canonical pass and may be re-invoked separately for diagnostics (`verbose=True`).
+
+Also: `update_all_previews` previously returned `len(bars)`, so callers that printed "Updated N bar previews" lied even when nothing changed. Make it return `created + regenerated` (excluding `reused`) and have `ensure_bar_preview` return `(baked_ids, status)` with status in `{"reused", "regenerated", "created"}` so the count is meaningful.
+
+---
+
 ## Post-IK prompts should loop on replan in both success and failure paths
 
 When an IK preview is valid or an IK solve fails, offer explicit replan actions like `RetrySameBase`, `RetryNewBase`, and `GiveUp` instead of any branch that immediately exits the command. Add `Accept` only on the success path.
@@ -359,11 +379,15 @@ IK solver in `rs_ik_keyframe` calls `robot_cell.attach_arm_tool_rigid_bodies` + 
 
 ## ShowIK viz: pre-attach all RBs before first cell bake; discard cache on bar switch
 
-BaseRobotCellObject._initial_draw walks obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
-- Mutate cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
+BaseRobotCellObject._initial_draw walks 
+obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
+- Mutate 
+cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + 
+egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
 - Discard + rebake the cached scene object whenever the RB key-set changes (e.g. user navigates to a different active bar with a different built-before set).
 
-In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
+In 
+s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
 
 ## ik_viz.begin_session: hide doc layers as a list, not boolean flags
 
@@ -373,11 +397,15 @@ When the cached cell viz visually duplicates user-modeled doc geometry (tube pre
 
 ## ShowIK viz: pre-attach all RBs before first cell bake; discard cache on bar switch
 
-BaseRobotCellObject._initial_draw walks obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
-- Mutate cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
+BaseRobotCellObject._initial_draw walks 
+obot_cell.rigid_body_models exactly ONCE and caches a _rigid_body_scene_objects[id] dict. RBs added (or removed) AFTER the first draw will silently NOT appear (or worse: stale entries reference deleted models). When a viewer wants to show env_* + arm-tool RBs alongside the robot/tools, you must:
+- Mutate 
+cell.rigid_body_models (via ttach_arm_tool_rigid_bodies + 
+egister_env_in_robot_cell) BEFORE calling Scene().add(robot_cell, draw_rigid_bodies=True, ...).
 - Discard + rebake the cached scene object whenever the RB key-set changes (e.g. user navigates to a different active bar with a different built-before set).
 
-In s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
+In 
+s_show_ik._PreviewSession: _render calls prepare_assembly_collision_state BEFORE ik_viz.begin_session, and set_active_bar calls ik_viz.discard_cache() when switching to a different bar.
 
 ## ik_viz.begin_session: hide doc layers as a list, not boolean flags
 
@@ -438,6 +466,14 @@ sc.sticky is per Rhino SESSION, not per .3dm. Closing a file and opening another
 
 ---
 
+## Orphan-purge must walk sub-layers AND cover sibling preview layers
+
+Corollary of the "ObjectsByLayer doesn't recurse" lesson plus the doc-reopen orphan-purge above. Robot/tool/RB meshes are baked at `LAYER_IK_CACHE::<layer_key>::<MeshMode>` (3 levels deep), so `_delete_layer_objects(LAYER_IK_CACHE)` with a non-recursive `ObjectsByLayer` deletes nothing on file-reopen and the user sees stale geometry from the previous save. Additionally, IK previews bake block instances on sibling layers (`IKPineapplePreview`, `config.SUPPORT_PREVIEW_LAYER`) that are also session-transient.
+
+**How to apply:** In `_flush_cache_layer_once`, (a) recurse via `rs.LayerChildren` when collecting oids and (b) iterate over the full preview-layer list (`LAYER_IK_CACHE`, `SUPPORT_PREVIEW_LAYER`, `IKPineapplePreview`) before setting `_STICKY_CACHE_INITIALIZED`.
+
+---
+
 ## `update_state` must force LAYER_IK_CACHE root visible, not just the sub-layer
 
 After `get_robot_link_meshes_at_zero()` hides `LAYER_IK_CACHE` (so the ghost preview is alone during base picking), a successful IK solve calls `update_state` which only ensured the sub-layer (`Assembly`/`Support`) was visible. Rhino layer visibility is hierarchical: a hidden parent hides every child regardless of the child's own visible flag, so nothing renders.
@@ -468,32 +504,149 @@ Compas_fab CC.4/CC.5 will flag the active bar against the tools that hold it AND
 
 **Do NOT whitelist:** wrist links vs joints, tool vs env bars, robot links vs robot links. Those are real collisions.
 
----
-
-## Downstream export = new schema, not a refactor of upstream collision plumbing
-
-When asked to add a downstream artifact (e.g. `BarAssemblyAction.json` for an external motion planner) on top of a mature Rhino IK pipeline, BUILD NEW. Do not refactor `env_collision.py` / `ik_collision_setup.py` / `rs_ik_keyframe.py` to make their internal naming "cleaner" for the export. Mirror upstream conventions verbatim (`active_*`/`env_*` keys, `configure_active_assembly_acm`-style touch_bodies, etc.) and add only the new schema-level metadata (motion class, attachments, ACM transitions per movement).
-
-**Why:** Touching upstream re-opens validated workflows (the user has tested IK across many bars). The downstream artifact only needs the upstream output unchanged + a thin layer that mutates per-movement copies.
-
-**How to apply:** New module under `scripts/core/<feature>.py` for data classes + builder. New `rs_<feature>.py` entry point. Call existing helpers (`prepare_assembly_collision_state`, `configure_active_assembly_acm`, `attach_arm_tool_rigid_bodies`) read-only. Duplicate small private helpers (5-15 LOC) rather than promoting them to public API. The previous "rename `active_*`/`env_*` to canonical state-independent keys" idea was rejected for exactly this reason -- see Ultraplan handoff in commit history.
 
 ---
 
-## compas Data subclass dtype = first 2 module path components
+## Joint registry is normalized: halves keyed by `block_name`, mates reference them
 
-`Data.__dtype__` returns `f"{module_path[:2]}/{class_name}"` (`compas/data/data.py:75-76`). For a class at `core.bar_action.RoboticFreeMovement`, the dtype is `core.bar_action/RoboticFreeMovement`. `cls_from_dtype` does `__import__("core.bar_action", fromlist=["RoboticFreeMovement"])`, so the headless loader needs `scripts/` on `sys.path` for `core.bar_action` to resolve.
+scripts/core/joint_pairs.json switched from a denormalized `{"pairs": [...]}`
+schema (each pair embedded its full female + male halves) to a 3-table
+normalized schema: `{"halves": [...], "mates": [...], "ground_joints": [...]}`.
 
-**Why:** Putting Data subclasses under `scripts/core/...` works headless as long as `scripts/` is prepended to `sys.path` (mirroring the in-Rhino path injection). Going deeper (`scripts/core/foo/bar.py`) drops the third+ path components from the dtype string -- `cls_from_dtype` would then try to `import core.foo` and fail. Keep custom Data classes one level under `core/`.
+**Why.** A single block (e.g. `T20_Male`) appears in multiple mates (T20,
+T20SFloorLeft, T20SFloorRight). The denormalized schema duplicated its
+geometry across pairs and required a delicate `_resolve_shared_half` check
+at write time to detect transform drift. Normalizing means the half is
+authored ONCE (via `RSDefineJointHalf`) and a mate is just a thin record
+`{name, contact_distance_mm, female_block_name, male_block_name, ranges}`.
 
-**How to apply:** When adding new Data subclasses for round-trip JSON, place them in `scripts/core/<module>.py` (NOT a subpackage). Verify with a `json_dumps`/`json_loads` round-trip in CI: every subclass should reconstruct under its own type, not as the base class.
+**How to apply.** Read via `load_joint_registry()` -> `JointRegistry` (with
+`halves`, `mates`, `ground_joints` dicts). The legacy mate-centric API
+(`load_joint_pairs`, `save_joint_pair`, `get_joint_pair`,
+`list_joint_pair_names`) is preserved as a thin wrapper, so existing
+callers work unchanged. `save_joint_pair(pair, overwrite_halves=False)`
+upserts only the mate record (use this in `RSDefineJointMate` so picking
+new bar lines doesn't accidentally clobber the half geometry authored by
+`RSDefineJointHalf`). Ground joints are first-class: a `GroundJointDef`
+has `M_block_from_bar` only (no screw frame, no mate partner).
 
 ---
 
-## Canonicalize state-dependent RB names on export, not in upstream
+## OBJ collision meshes for joint halves live in `asset/<block_name>.obj` (mm)
 
-When the in-Rhino IK pipeline uses state-dependent rigid-body prefixes (`active_bar_<bid>` / `env_bar_<bid>` / `active_joint_*` / `env_joint_*`), strip those prefixes at *export time* so the saved `RobotCell.json` and `RobotCellState`-bearing artifacts (e.g. `BarAction.json`) use canonical, state-independent keys (`bar_<bid>`, `joint_<jid>_<sub>`). DO NOT mutate the cached upstream `rcell.rigid_body_models`: `env_collision.register_env_in_robot_cell` keys its "stale env to remove" scan on the prefixes and would silently double-register every body on the next call.
+`RSDefineJointHalf` exports the picked block definition's renderable
+geometry as a single-mesh OBJ in MILLIMETRES via
+`core.rhino_block_obj_export.export_block_definition_to_obj_mm` (mirrors
+the pineapple OBJ export, but in mm not metres). The file becomes
+`half.collision_filename` and is consumed by
+`env_collision._joint_obj_path_map` for env-collision rigid bodies.
 
-**Why:** A single `RobotCell.json` should be reusable across every per-bar state. With prefixes baked in, the cell snapshot reflects which bar was last picked and every state with a different active bar fails the `assert_cell_state_match` check. Doing the rename only on the export copies (swap-dump-restore for the cell; in-place mutation of the per-movement state copies) keeps the in-Rhino session healthy.
+**Why.** Hand-prepared collision OBJs were a recurring papercut whenever a
+new block definition was added; the half-author was the natural place to
+emit a fresh, registered collision mesh in one shot. Choosing mm here keeps
+the asset in the same unit system as the joint registry (everything else
+in this project lives in mm).
 
-**How to apply:** See `scripts/core/bar_action.py` -- `canonical_rb_name`, `canonicalize_state` (mutates state in place AND remaps `touch_bodies` references via `canonical_rb_name(t)` regardless of whether `t` is a state key), `canonical_rigid_body_models` (returns new dict, source untouched), `dump_cell_canonical` (swap-dump-restore so the cached rcell stays prefixed for upstream). The active-set is derived from the original env_geom by collecting `canonical_rb_name(k)` for every `k` that started with `active_*`, BEFORE canonicalization. Per-movement helpers (M1..M4) take that active-set explicitly instead of scanning prefixes.
+**How to apply.** When adding a new `Define...` workflow that needs a
+collision mesh, reuse `export_block_definition_to_obj_mm(block_name,
+output_path)` directly. The function combines all sub-meshes inside the
+block definition into one `compas.datastructures.Mesh` and writes via
+`cmesh.to_obj`. NOTE this is one mesh per OBJ -- the existing `RigidBody`
+"never merge sub-meshes" lesson is about `rigid_body.collision_meshes`
+(the in-memory list passed to PyBullet), not about how many `o`/`g`
+groups live in a single OBJ file.
+
+
+
+---
+
+## Joint-half collision OBJs are user-picked, not auto-exported from block geometry
+
+The first cut of `RSDefineJointHalf` auto-rendered the picked block
+definition's full render mesh (Brep meshing + SubD subdivision) and
+wrote it as the collision OBJ. That produced 30k-vertex meshes for a
+single connector -- way too heavy for IK env-collision and not what
+the user wanted: collision geometry must be HAND-MODELED low-poly meshes.
+
+**Why.** Render meshes are visually-tessellated and inherit nested-block
+sub-geometry; collision needs convex / few-tri primitives the user
+explicitly authors. Auto-exporting silently couples the two roles.
+
+**How to apply.** Add a multi-pick mesh step (`rs.GetObjects(filter=32,
+minimum_count=1)`) AFTER the bar/screw geometry picks (so we can hide the
+joint annotations and pick stacked meshes cleanly). Use
+`export_picked_meshes_to_obj_mm(mesh_ids, block_xform_doc, output_path,
+label=...)` -- it applies `inverse(block_xform_doc)` to bring picked
+world-space meshes into the block's local frame, then scales doc-units to
+mm. The OBJ then re-attaches correctly at any future block placement.
+Cancel cleanly if no meshes are picked: a half without collision_filename
+falls back to the slow Rhino render-mesh path in env_collision and is
+almost certainly an authoring mistake.
+
+
+---
+
+## Ground-joint placement: closed-form jr from world-up alignment
+
+When you need to auto-orient a connector block about a bar axis so that the block's local +Y points as close to world +Z as possible (RSGroundPlace heuristic), there's a closed form -- no optimizer needed.
+
+**Why:** With `v = bar_R^T @ world_up` (world-up expressed in bar coords) and `b = M_block_from_bar[:3, 1]` (block local +Y in bar coords before the jr rotation), the projected dot product against world up is
+
+    f(jr) = A cos(jr) + B sin(jr) + C
+
+with `A = v_x*b_x + v_y*b_y`, `B = v_y*b_x - v_x*b_y`, `C = v_z*b_z`. Maximum at `jr = atan2(B, A)`. `atan2(0, 0) == 0` keeps it finite even when the bar is colinear with world up (block-Y can never align in the bar's XY plane in that case anyway).
+
+**How to apply:** `core.ground_placement.auto_jr_world_up(bar_start, bar_end, ground)`. Use the canonical bar frame from `core.joint_pair.canonical_bar_frame_from_line` for both the heuristic and the FK forward path so they match. Same closed form generalises to "align block local +k_i to any world direction" by swapping `world_up` and `b`.
+
+## RSJointEdit click-routing: branch on ObjectLayer, then read role-specific UserText
+
+`rs_joint_edit.py` discovers placed-joint instances by ObjectLayer (`FEMALE_INSTANCES_LAYER` / `MALE_INSTANCES_LAYER` / `GROUND_INSTANCES_LAYER` / `LAYER_TOOL_INSTANCES`). Each branch reads its OWN UserText keyset BEFORE any deletion, then re-bakes via the appropriate `place_*` helper.
+
+**Why:** Female/male blocks share `le_rev` / `ln_rev` / `joint_pair_name` / `female_parent_bar` / `male_parent_bar` because they participate in a 4-variant solver. Ground blocks share none of that -- they only have `ground_joint_name` / `parent_bar_id` / `position_mm` / `rotation_deg` and a single `jr += pi` flip semantics. Trying to read `le_rev` from a ground block yields empty strings and silently corrupts the flip path.
+
+**How to apply:** Add the layer check FIRST (before any common metadata read), short-circuit with a dedicated helper (`_flip_ground_block(clicked_id)`), and `continue` the loop. Per-role helpers own their own metadata schema and their own deletion + re-bake call -- the main loop stays a thin dispatcher.
+
+---
+
+## Ground-joint "flip" must NOT be `jr += pi` -- post-multiply M by `R_y(pi)` instead
+
+For RSGroundPlace, the user-facing "flip" = reverse the block's X axis along the bar while keeping the block's Y axis pointing world-up. With the (jp, jr) parametrization and a fixed `M_block_from_bar`, this is NOT expressible as a jr change: rotating about the bar Z by pi flips both block X AND block Y in world (block ends upside-down).
+
+**Why:** The two "block X along +bar" vs "block X along -bar" orientations differ by 180 deg about the WORLD UP axis. For a horizontal bar, world-up has zero component along bar Z, so this is NOT a rotation about bar Z. So no jr value can turn one into the other while keeping Y up.
+
+**How to apply:** Post-multiply `M_block_from_bar` by `R_y(pi)` (block-local Y, NOT world Y). `R_y(pi) = diag(-1, 1, -1)`: it reverses block-local +X and +Z columns and preserves block-local +Y. Because +Y is preserved, the closed-form `auto_jr_world_up` returns the SAME jr (it depends only on b = M[:3,1]). The composed FK then reverses block world-X while preserving block world-Y. Carry the flag as a `flipped` bool through the session and persist as a UserText (`"flipped": "True"/"False"`) for re-edit. See `core.ground_placement.effective_M_block_from_bar`.
+
+## Lesson: Bake-time UserText is the source of truth for joint identity �� never derive joint_id deterministically from (asset, parent) alone.
+
+**Why.** Initial `make_ground_joint_id(bar_id, ground_name) -> "G{bar_num}-{ground_name}"` collided whenever the user placed a second ground with the same ground definition on the same bar �� re-baking with the same ObjectName/UserText silently clobbered the first instance (or got clobbered by the pre-bake `remove_placed_*` cleanup). Symptom: "the first joint disappears".
+
+**How to apply.**
+- Joint id formula must include a uniqueness suffix discovered by *scanning existing baked instances*, not by the user's input alone.
+- Pattern used: `make_ground_joint_id(bar_id, name, *, index)` + `next_ground_joint_index(bar_id, name)` that walks `rs.ObjectsByLayer(GROUND_INSTANCES_LAYER)` and reads each `joint_id` UserText to find the smallest free integer suffix.
+- `place_*_block` allocates a fresh id when `joint_id=None`; re-edit code paths (flip, etc.) MUST pass the existing `joint_id` explicitly so the suffix is preserved across re-bakes.
+- Drop any pre-bake `remove_placed_*` "redo cleanup" �� once ids are unique per placement, that call destroys the previous joint instead of cleaning up.
+
+---
+
+## Lesson: Tool placement is a generic "TCP coincides with a block-instance frame" operation �� share one core, not two parallel implementations.
+
+**Why.** Male joints and ground joints both want the robotic tool's TCP to land on a block instance's world frame (`world_tool_block = block_world @ inv(M_tcp_from_block)`). The original `place_tool_at_male_joint` hard-coded `_male_world_frame_from_object` and a `pair` argument it never used in the math, blocking reuse for ground joints (which have no JointPairDef).
+
+**How to apply.**
+- Extract a generic `place_tool_at_block_instance(block_oid, joint_id, tool)` that takes ANY InstanceObject and writes the tool's UserText (`joint_id`, `tool_name`, `tool_id`, `block_name`).
+- Variant auto-placers (`auto_place_tool_at_male_joint`, `auto_place_tool_at_ground_block`) only differ in tool *selection* (per-pair preferred name vs. doc-default fallback), then delegate to the same core.
+- Cycling/finding generalizes too: `find_attached_block_for_joint` dispatches on `joint_id` prefix (`J*` male, `G*` ground) so `cycle_tool_at_tool_instance` works on tools attached to either kind of joint without branching.
+- Re-edit flows (e.g. flip) should capture `get_tool_name_for_joint(joint_id)` BEFORE re-baking the joint block, then re-place via `place_tool_by_name_at_*` so the user's tool choice persists.
+
+---
+
+## Lesson: RSExportRobotCell must force-register the full assembly before dumping the cell.
+
+**Why.** The cached `rcell.rigid_body_models` is mutated by every call to `env_collision.register_env_in_robot_cell` (run by every `prepare_assembly_collision_state` from RSIKKeyframe, RSShowIK, the BarAction builder, etc.) — it shrinks the cell to whichever bar's *active context* that last call ran for. So dumping the cached cell as-is produces a per-bar snapshot, NOT the full assembly, unless the very last operation before the dump happened to be a full-assembly registration. Symptom: BarAction state has 32 bars + their joints; cell has only 25; `assert_cell_state_match` raises *"workpieces in the cell state do not match the workpieces in the robot cell. Mismatch: {bar_B235, bar_B237, …, joint_J234-256_male, …}"*.
+
+**How to apply.**
+- In `scripts/rs_export_robotcell.py`, call `bar_action._register_full_assembly_geom(rcell, planner)` immediately before `dump_cell_canonical`. The dump is now deterministic regardless of session history. Requires PyBullet (RSPBStart).
+- Same belt-and-suspenders in `scripts/rs_export_all_bar_actions.py` right before its final cell dump, in case the last build iteration failed AFTER `prepare_assembly_collision_state` (which shrinks the cell) but BEFORE its own `_register_full_assembly_geom`.
+- Diagnostic: load both `RobotCell.json` and `BarActions/<bar>.json`; diff `cell.rigid_body_models.keys()` against `mv.start_state.rigid_body_states.keys()`. If the cell is a strict subset, the cell was dumped from a shrunken per-bar context.
+
+**Follow-up — also re-assert arm-tool RBs at dump time.** The above only covers bar / joint bodies. The two per-arm tool collision RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`) come from `robot_cell.attach_arm_tool_rigid_bodies`, which is only called inside `prepare_assembly_collision_state`. If `RSExportRobotCell` runs in a session that never went through an IK pass or BarAction export, the arm-tool RBs are missing and every BarAction state mismatches on those two names. Symptom: *"Mismatch: {'AssemblyLeftArmToolBody', 'AssemblyRightArmToolBody'}"*. Fix: `bar_action._attach_arm_tools_to_cell(rcell, planner)` scans the doc for any bar with both left+right tools placed, resolves collision paths via `robotic_tools.json`, attaches. Called in both export scripts right before `dump_cell_canonical`.

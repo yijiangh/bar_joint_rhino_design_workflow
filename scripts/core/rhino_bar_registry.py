@@ -580,11 +580,12 @@ def _bar_curve_and_tube(curve_id):
 
 
 def _joint_layer_objects():
-    """All joint block instance ids on the female + male joint layers."""
+    """All joint block instance ids on the female + male + ground layers."""
     out = []
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
     ):
         if rs.IsLayer(layer):
             out.extend(rs.ObjectsByLayer(layer) or [])
@@ -608,15 +609,19 @@ def get_active_tool_oids(active_bar_id):
     """
     if not active_bar_id:
         return []
-    male_layer = config.LAYER_JOINT_MALE_INSTANCES
-    if not rs.IsLayer(male_layer):
-        return []
-    active_joint_ids = {
-        rs.GetUserText(oid, "joint_id")
-        for oid in (rs.ObjectsByLayer(male_layer) or [])
-        if rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-        and rs.GetUserText(oid, "joint_id")
-    }
+    active_joint_ids = set()
+    for layer in (
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    ):
+        if not rs.IsLayer(layer):
+            continue
+        for oid in rs.ObjectsByLayer(layer) or []:
+            if (
+                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
+                and rs.GetUserText(oid, "joint_id")
+            ):
+                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
     if not active_joint_ids:
         return []
     return [
@@ -803,23 +808,42 @@ def _create_tube_brep(start_xyz, end_xyz, bar_radius):
     return tube_id
 
 
-def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None):
+def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
+                       verbose=False):
     """Make sure a tube preview exists and matches the current curve geometry.
 
-    Creates or regenerates the tube as needed.  Returns list of tube GUIDs.
+    Creates or regenerates the tube as needed.  Returns
+    ``(baked_ids, status)`` where ``status`` is one of ``"reused"``,
+    ``"regenerated"``, or ``"created"``.  Pre-existing single-value
+    callers that ignore the return are unaffected.
     """
     # Check for an existing tube
     existing = _find_existing_tube(curve_id)
     if existing is not None:
         if _tube_geometry_matches(existing, curve_id):
-            return [existing]
+            if verbose:
+                print(f"  ensure_bar_preview[{bar_id or '?'}]: reused tube {existing}")
+            return [existing], "reused"
         # Stale — delete and recreate
+        if verbose:
+            cached_start = _parse_cached_point(rs.GetUserText(existing, TUBE_CACHE_START))
+            cached_end = _parse_cached_point(rs.GetUserText(existing, TUBE_CACHE_END))
+            cur_start = tuple(point_to_array(rs.CurveStartPoint(curve_id)).tolist())
+            cur_end = tuple(point_to_array(rs.CurveEndPoint(curve_id)).tolist())
+            print(f"  ensure_bar_preview[{bar_id or '?'}]: stale tube {existing} -- "
+                  f"cached_start={cached_start} cur_start={cur_start} | "
+                  f"cached_end={cached_end} cur_end={cur_end}")
         delete_objects([existing])
+        status = "regenerated"
+    else:
+        status = "created"
+        if verbose:
+            print(f"  ensure_bar_preview[{bar_id or '?'}]: no existing tube, creating new")
 
     start_xyz, end_xyz = curve_endpoints(curve_id)
     tube_id = _create_tube_brep(start_xyz, end_xyz, bar_radius)
     if tube_id is None:
-        return []
+        return [], "reused"
 
     # Resolve bar_id
     if bar_id is None:
@@ -841,18 +865,35 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None):
         # duplicates: a copy will retain this user text but live under a
         # different object GUID.
         rs.SetUserText(oid, TUBE_SELF_GUID_KEY, str(rs.coerceguid(oid)))
-    return baked_ids
+    return baked_ids, status
 
 
-def update_all_previews(bar_radius, color=None):
+def update_all_previews(bar_radius, color=None, verbose=False):
     """Ensure every registered bar has an up-to-date tube preview.
 
-    Returns the number of bars processed.
+    Returns the number of bars whose tube was actually created or
+    regenerated (i.e. excludes bars whose existing tube was reused
+    as-is).  Pass ``verbose=True`` to log per-bar status (handy when
+    debugging stale-preview issues).
     """
     bars = get_all_bars()
+    n_created = 0
+    n_regen = 0
+    n_reused = 0
     for bar_id, guid in bars.items():
-        ensure_bar_preview(guid, bar_radius, color=color, bar_id=bar_id)
-    return len(bars)
+        _, status = ensure_bar_preview(
+            guid, bar_radius, color=color, bar_id=bar_id, verbose=verbose
+        )
+        if status == "created":
+            n_created += 1
+        elif status == "regenerated":
+            n_regen += 1
+        else:
+            n_reused += 1
+    if verbose:
+        print(f"update_all_previews: total={len(bars)} "
+              f"created={n_created} regenerated={n_regen} reused={n_reused}")
+    return n_created + n_regen
 
 
 # ---------------------------------------------------------------------------
@@ -991,6 +1032,7 @@ def enforce_managed_layers(caller="RSScaffolding"):
     _JOINT_LAYER_COLORS = {
         config.LAYER_JOINT_MALE_INSTANCES: (105, 105, 105),
         config.LAYER_JOINT_FEMALE_INSTANCES: (230, 230, 230),
+        config.LAYER_JOINT_GROUND_INSTANCES: (180, 120, 60),
     }
     ensure_layer(config.DEFAULT_LAYER)
     ensure_layer(config.MANAGED_LAYER_ROOT)
@@ -1001,6 +1043,7 @@ def enforce_managed_layers(caller="RSScaffolding"):
     _enforce_centerline_layer(caller)
     _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
     _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
+    _enforce_joint_layer(caller, config.LAYER_JOINT_GROUND_INSTANCES)
     _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
 
 

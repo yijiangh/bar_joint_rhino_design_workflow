@@ -42,7 +42,7 @@ if os.path.isdir(SUBMODULE_PATH) and SUBMODULE_PATH not in sys.path:
 
 DEFAULT_DATA_ROOT = (
     r"D:\GDrive\.shortcut-targets-by-id\1kAas3Pk4TrTZiJ9VmlCxLEf3oRIuSqM5"
-    r"\2025-03 Husky Assembly\data_design_study\2026-05-08_dual-arm_transfer_test"
+    r"\2025-03 Husky Assembly\data_design_study\2026-05-14_foc_demo_reduced"
 )
 LEFT_GROUP = "base_left_arm_manipulator"
 RIGHT_GROUP = "base_right_arm_manipulator"

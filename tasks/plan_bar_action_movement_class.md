@@ -16,7 +16,8 @@ The Rhino IK pipeline (`RSIKKeyframe`) already produces and persists per-bar app
 | M4 | `RoboticFreeMovement` | Both arms unconstrained, no grasp, return to `HOME_CONFIG`. |
 
 Companion exports:
-- `RSExportRobotCell` (`scripts/rs_export_robotcell.py`, macro suffix `1b`) — writes `<root>/RobotCell.json` with canonicalized rigid-body names.
+- `RSExportBarAction` left-click = single picked bar (above). **Right-click** = batch: `RSExportAllBarActions` (`scripts/rs_export_all_bar_actions.py`, macro suffix `1f`) iterates every bar with IK results in assembly-sequence order, writes `<root>/BarActions/<bar_id>.json` for each, then also dumps `<root>/RobotCell.json` (canonical names) so the whole bundle is self-consistent. Bars without IK results are skipped with a note.
+- `RSExportRobotCell` (`scripts/rs_export_robotcell.py`, macro suffix `1b`) — writes only `<root>/RobotCell.json` with canonicalized rigid-body names. (Redundant if you used the right-click batch above.)
 - The `RSExportRobotCellState` button **was removed**: the BarAction superseded it. Don't try to import `rs_export_robotcell_state` — it no longer exists.
 
 ## 2. File layout produced
@@ -81,13 +82,23 @@ Why the rename only happens on the export copies: if the cached rcell were mutat
 
 Collision invariant: for any joint id `J`, the male and female halves end up on at most one bar each (a joint half is unique). So `canonical_rb_name` never produces a key collision in practice. Both `canonicalize_state` and `canonical_rigid_body_models` raise `RuntimeError` if they detect one.
 
+**State-independent cell = full-assembly cell + full-assembly states.** `compas_fab.RobotCellState.assert_cell_state_match` requires the state's `rigid_body_states` key-set to EXACTLY equal the cell's `rigid_body_models` key-set. So:
+- `RobotCell.json` carries EVERY bar (`bar_<bid>` for all bars in `assembly_seq`) + EVERY joint half (`joint_<jid>_<sub>`) + the two arm-tool RBs. (Implemented by `core.bar_action._register_full_assembly_geom`, which calls `env_collision.collect_built_geometry(last_bar)` ∪ `collect_active_geometry(last_bar)` = the full assembly, then `robot_cell.ensure_env_registered`, before `dump_cell_canonical`.)
+- Every `Movement.start_state.rigid_body_states` therefore also carries that same full key-set. Bars/joints not yet built at that movement's assembly stage (`seq > active_seq`, or a joint half mounted on such a bar) are present as `RigidBodyState(frame=<final assembled pose>, is_hidden=True)` — compas_fab skips hidden bodies for collision and visualization, so they cost nothing but keep the key-sets equal.
+
+Consumer note: a `RigidBodyState` with `is_hidden=True` is a not-yet-built workpiece. Ignore it for planning; do not collision-check against it; do not render it. It becomes a normal env body in the BarAction whose `active_bar_id` builds it (and in every later bar's action).
+
 ## 5. Per-movement details
 
 All four movements share the same `RobotCellState`-bearing `start_state` shape:
 - `state.robot_base_frame` — saved base frame in meters (Frame).
 - `state.robot_configuration` — left + right arm joint values (or `None` for M4 only).
 - `state.tool_states` — wired by `robot_cell.configure_arm_tool_rigid_body_states`. The left/right arm tools have `attached_to_group` set to their planning group + wrist touch_links.
-- `state.rigid_body_states` — canonical-keyed (see §4); attachments per movement (see below).
+- `state.rigid_body_states` — canonical-keyed (see §4); contains the FULL assembly key-set in every movement. Per-stage classification:
+  - **built env** (`seq < active_seq`): `frame` = final assembled world pose (Frame, meters), `attached_to_*` = None, `is_hidden` = False. Real static obstacle.
+  - **active** (the bar being assembled now + its joints): M1/M2 → `attached_to_link` set; M3/M4 → detached at final pose. See per-movement below.
+  - **not-yet-built** (`seq > active_seq`, or a joint half mounted on such a bar): `frame` = final assembled world pose, `attached_to_*` = None, `is_hidden` = True. Ignore for planning.
+  - arm-tool RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`): `attached_to_link` = the matching `*_ur_arm_tool0`, wrist `touch_links` set.
 
 Geometry references:
 - `tool0_<arm>_assembled_world_mm` = 4×4 world transform of the placed tool block instance (= tool0 at IK_ASSEMBLED). Recoverable from the bar via Rhino, not stored in the action.
@@ -211,12 +222,17 @@ These are recorded in `tasks/cc_lessons.md` and replicated here so the planner a
 | Path | Role |
 |---|---|
 | `scripts/core/bar_action.py` | Data classes + builder + canonicalization helpers (`canonical_rb_name`, `canonicalize_state`, `canonical_rigid_body_models`, `dump_cell_canonical`). |
-| `scripts/rs_export_bar_action.py` | Rhino entry point; macro GUID suffix `1d`. |
+| `scripts/rs_export_bar_action.py` | Rhino entry point (left-click); macro GUID suffix `1d`. |
+| `scripts/rs_export_all_bar_actions.py` | Batch exporter (right-click on the `1d` button); macro GUID suffix `1f`. Loops bars with IK results + dumps RobotCell.json. |
 | `scripts/rs_export_robotcell.py` | Rhino cell exporter; uses `dump_cell_canonical`. Macro suffix `1b`. |
 | `scripts/core/config.py` | `HOME_CONFIG_LEFT` / `HOME_CONFIG_RIGHT` (zero-config placeholders, TODO). |
 | `tests/debug_load_bar_action.py` | Headless verifier. Bundles its own `_start_planner` / `_verify_state` / `_find_robot_cell_path` (originally a separate file, inlined here when `RSExportRobotCellState` was removed). |
 | `scaffolding_toolbar.rui` | Toolbar definitions; `RSExportBarAction` is GUID `…1d`, `RSExportRobotCell` is `…1b`. |
 | `tasks/cc_lessons.md` | All lessons listed in §9. |
+
+## 10b. Migration note (2026-05-12)
+
+The "state-independent cell" change (full-assembly cell + hidden future bodies in every state) invalidates older `RobotCell.json` / `BarActions/*.json` pairs. **Re-export both** with the current code: run `RSExportBarAction` for each bar, then `RSExportRobotCell` once. Any single `RSExportBarAction` already registers the full assembly onto the cached cell, so the order among bars doesn't matter, and `RSExportRobotCell` can run any time after at least one `RSExportBarAction` (the warning still applies if the cell is empty).
 
 ## 11. Out of scope (consumer follow-ups)
 

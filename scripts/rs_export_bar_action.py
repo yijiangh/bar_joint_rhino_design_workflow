@@ -99,53 +99,66 @@ def main() -> None:
         )
         return
 
+    # B11: build_bar_assembly_action pollutes the cached cell with future-bar
+    # + arm-tool RBs (needed to make the per-bar M states reference a stable
+    # superset cell). Snapshot BEFORE the build call and restore at the end so
+    # subsequent ShowIK / IK keyframe in this Rhino session see the cell as
+    # it was before the export.
+    rb_snapshot = bar_action.snapshot_cell_rigid_bodies(rcell)
     try:
-        action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
-    except RuntimeError as exc:
-        rs.MessageBox(str(exc), 0, "RSExportBarAction")
-        return
-
-    n_seq = len(action.assembly_seq)
-    try:
-        idx = action.assembly_seq.index(action.active_bar_id)
-    except ValueError:
-        idx = -1
-    print(
-        f"RSExportBarAction: built {len(action.movements)} movement(s) for bar "
-        f"'{action.active_bar_id}' (assembly index {idx}/{n_seq})."
-    )
-    for mv in action.movements:
-        n_rbs = len(mv.start_state.rigid_body_states) if mv.start_state else 0
-        cfg_status = "None" if (mv.start_state is None or mv.start_state.robot_configuration is None) else "set"
-        print(
-            f"  - {mv.movement_id}: {type(mv).__name__}, "
-            f"start_state.config={cfg_status}, rb_states={n_rbs}, "
-            f"target_ee_frames={'yes' if mv.target_ee_frames else 'no'}, "
-            f"target_configuration={'yes' if mv.target_configuration is not None else 'no'}"
-        )
-
-    root = _prompt_export_root()
-    if not root:
-        print("RSExportBarAction: cancelled.")
-        return
-
-    out_dir = os.path.join(root, "BarActions")
-    os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, f"{bar_id}.json")
-
-    if os.path.exists(out):
-        ans = rs.MessageBox(
-            f"'{out}' exists. Overwrite?",
-            4 | 32,  # YesNo | Question
-            "RSExportBarAction",
-        )
-        if ans != 6:  # 6 == Yes
-            print("RSExportBarAction: cancelled (kept existing file).")
+        try:
+            action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
+        except RuntimeError as exc:
+            rs.MessageBox(str(exc), 0, "RSExportBarAction")
             return
 
-    with open(out, "w") as f:
-        json_dump(action, f, pretty=True)
-    print(f"RSExportBarAction: saved {out} for bar '{bar_id}'.")
+        n_seq = len(action.assembly_seq)
+        try:
+            idx = action.assembly_seq.index(action.active_bar_id)
+        except ValueError:
+            idx = -1
+        print(
+            f"RSExportBarAction: built {len(action.movements)} movement(s) for bar "
+            f"'{action.active_bar_id}' (assembly index {idx}/{n_seq})."
+        )
+        for mv in action.movements:
+            n_rbs = len(mv.start_state.rigid_body_states) if mv.start_state else 0
+            cfg_status = "None" if (mv.start_state is None or mv.start_state.robot_configuration is None) else "set"
+            print(
+                f"  - {mv.movement_id}: {type(mv).__name__}, "
+                f"start_state.config={cfg_status}, rb_states={n_rbs}, "
+                f"target_ee_frames={'yes' if mv.target_ee_frames else 'no'}, "
+                f"target_configuration={'yes' if mv.target_configuration is not None else 'no'}"
+            )
+
+        root = _prompt_export_root()
+        if not root:
+            print("RSExportBarAction: cancelled.")
+            return
+
+        out_dir = os.path.join(root, "BarActions")
+        os.makedirs(out_dir, exist_ok=True)
+        out = os.path.join(out_dir, f"{bar_id}.json")
+
+        if os.path.exists(out):
+            ans = rs.MessageBox(
+                f"'{out}' exists. Overwrite?",
+                4 | 32,  # YesNo | Question
+                "RSExportBarAction",
+            )
+            if ans != 6:  # 6 == Yes
+                print("RSExportBarAction: cancelled (kept existing file).")
+                return
+
+        with open(out, "w") as f:
+            json_dump(action, f, pretty=True)
+        print(f"RSExportBarAction: saved {out} for bar '{bar_id}'.")
+    finally:
+        bar_action.restore_cell_rigid_bodies(rcell, rb_snapshot, planner)
+        print(
+            f"RSExportBarAction: restored cached cell to pre-export state "
+            f"({len(rcell.rigid_body_models)} rigid_body_models)."
+        )
 
 
 if __name__ == "__main__":

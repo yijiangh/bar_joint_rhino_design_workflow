@@ -83,6 +83,13 @@ def main() -> None:
     _client, planner = robot_cell.get_planner()
     rcell = robot_cell.get_or_load_robot_cell()
 
+    # B11: snapshot the cell BEFORE the full-assembly + arm-tool registration
+    # so we can restore the cached cell to its pre-export state. The exported
+    # RobotCell.json carries the full superset; the in-memory cached cell is
+    # restored so subsequent ShowIK / IK keyframe in this Rhino session don't
+    # see extra env_bar_<future> / AssemblyArmToolBody RBs.
+    rb_snapshot = bar_action.snapshot_cell_rigid_bodies(rcell)
+
     # Force-register every bar + joint of the assembly into the cached cell
     # BEFORE dump, so the saved RobotCell.json is the full state-independent
     # superset regardless of what the last in-session IK / BarAction call left
@@ -152,6 +159,14 @@ def main() -> None:
     print(
         f"RSExportRobotCell: saved {out} "
         f"(rigid-body names canonicalized: bar_<bid> / joint_<jid>_<sub>)."
+    )
+
+    # B11: restore cached cell so the export-only superset doesn't leak into
+    # subsequent IK / ShowIK / BarAction runs in this Rhino session.
+    bar_action.restore_cell_rigid_bodies(rcell, rb_snapshot, planner)
+    print(
+        f"RSExportRobotCell: restored cached cell to pre-export state "
+        f"({len(rcell.rigid_body_models)} rigid_body_models)."
     )
 
 

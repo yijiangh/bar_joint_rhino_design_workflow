@@ -378,6 +378,28 @@ def dump_cell_canonical(rcell, fileobj, *, pretty: bool = True) -> None:
         rcell.rigid_body_models = original
 
 
+def snapshot_cell_rigid_bodies(rcell) -> dict:
+    """Shallow snapshot of ``rcell.rigid_body_models`` (key -> RigidBody)
+    for use by ``restore_cell_rigid_bodies`` in an export try/finally.
+
+    The export flow registers every bar + joint + arm-tool RB onto the cached
+    cell singleton so the dumped ``RobotCell.json`` is the full superset.
+    Without restoration, that polluted cell leaks into subsequent ShowIK /
+    IK keyframe runs in the same Rhino session -- those workflows rely on
+    ``prepare_assembly_collision_state`` registering only the currently-built
+    + active bodies, and a polluted cell holding extra ``env_bar_<future>``
+    RBs will produce state<->cell key-set mismatches in the planner.
+    """
+    return dict(rcell.rigid_body_models)
+
+
+def restore_cell_rigid_bodies(rcell, snapshot: dict, planner) -> None:
+    """Restore ``rcell.rigid_body_models`` from ``snapshot`` and re-push the
+    cell to ``planner`` so the PyBullet world matches the restored cell."""
+    rcell.rigid_body_models = dict(snapshot)
+    planner.set_robot_cell(rcell)
+
+
 def _attach_active_bar_to_arm(state, body_world_mm, tool0_arm_assembled_mm, arm_side: str, rb_key: str) -> None:
     """Set rb_state to be attached to <arm>_ur_arm_tool0 with grasp = inv(tool0) @ body_world."""
     rb = state.rigid_body_states[rb_key]

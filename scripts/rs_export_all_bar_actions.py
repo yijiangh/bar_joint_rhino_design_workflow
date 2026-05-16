@@ -127,33 +127,47 @@ def main() -> None:
     n_ok = 0
     failures = []
     total = len(with_ik)
-    for i, (bar_id, bar_oid) in enumerate(with_ik, start=1):
-        print(f"  [{i}/{total}] exporting bar '{bar_id}' ...")
-        try:
-            action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
-        except Exception as exc:  # noqa: BLE001 -- one bad bar must not abort the batch
-            import traceback
-            tb = traceback.format_exc().strip().splitlines()
-            failures.append((bar_id, f"{type(exc).__name__}: {exc}"))
-            print(f"  [x] {bar_id}: {type(exc).__name__}: {exc}")
-            print(f"      (last frame: {tb[-2] if len(tb) >= 2 else tb[-1]})")
-            continue
-        out = os.path.join(actions_dir, f"{bar_id}.json")
-        with open(out, "w") as f:
-            json_dump(action, f, pretty=True)
-        n_ok += 1
-        print(f"  [OK] {bar_id} -> {out} ({len(action.movements)} movements)")
+    # B11: snapshot the cell's rigid_body_models so the export-only pollution
+    # (full-assembly + arm-tool RB registration done by build_bar_assembly_action
+    # and the belt-and-suspenders calls below) is undone before returning to
+    # the user's Rhino session. Otherwise the cached cell carries extra
+    # env_bar_<future> / AssemblyArmToolBody RBs that ShowIK / IK keyframe
+    # don't expect, producing state<->cell key-set mismatches.
+    rb_snapshot = bar_action.snapshot_cell_rigid_bodies(rcell)
+    try:
+        for i, (bar_id, bar_oid) in enumerate(with_ik, start=1):
+            print(f"  [{i}/{total}] exporting bar '{bar_id}' ...")
+            try:
+                action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
+            except Exception as exc:  # noqa: BLE001 -- one bad bar must not abort the batch
+                import traceback
+                tb = traceback.format_exc().strip().splitlines()
+                failures.append((bar_id, f"{type(exc).__name__}: {exc}"))
+                print(f"  [x] {bar_id}: {type(exc).__name__}: {exc}")
+                print(f"      (last frame: {tb[-2] if len(tb) >= 2 else tb[-1]})")
+                continue
+            out = os.path.join(actions_dir, f"{bar_id}.json")
+            with open(out, "w") as f:
+                json_dump(action, f, pretty=True)
+            n_ok += 1
+            print(f"  [OK] {bar_id} -> {out} ({len(action.movements)} movements)")
 
-    # Re-assert the full-assembly registration before dumping the cell --
-    # belt-and-suspenders, in case the last loop iteration failed AFTER
-    # `prepare_assembly_collision_state` (which shrinks the cell to that
-    # bar's active context) but BEFORE `_register_full_assembly_geom`.
-    bar_action._register_full_assembly_geom(rcell, planner)
-    bar_action._attach_arm_tools_to_cell(rcell, planner)
-    cell_out = os.path.join(root, "RobotCell.json")
-    with open(cell_out, "w") as f:
-        bar_action.dump_cell_canonical(rcell, f, pretty=True)
-    print(f"  [OK] RobotCell -> {cell_out} ({len(rcell.rigid_body_models)} rigid bodies, names canonicalized)")
+        # Re-assert the full-assembly registration before dumping the cell --
+        # belt-and-suspenders, in case the last loop iteration failed AFTER
+        # `prepare_assembly_collision_state` (which shrinks the cell to that
+        # bar's active context) but BEFORE `_register_full_assembly_geom`.
+        bar_action._register_full_assembly_geom(rcell, planner)
+        bar_action._attach_arm_tools_to_cell(rcell, planner)
+        cell_out = os.path.join(root, "RobotCell.json")
+        with open(cell_out, "w") as f:
+            bar_action.dump_cell_canonical(rcell, f, pretty=True)
+        print(f"  [OK] RobotCell -> {cell_out} ({len(rcell.rigid_body_models)} rigid bodies, names canonicalized)")
+    finally:
+        bar_action.restore_cell_rigid_bodies(rcell, rb_snapshot, planner)
+        print(
+            f"RSExportAllBarActions: restored cached cell to pre-export state "
+            f"({len(rcell.rigid_body_models)} rigid_body_models)."
+        )
 
     os.makedirs(os.path.join(root, "Trajectories"), exist_ok=True)
 

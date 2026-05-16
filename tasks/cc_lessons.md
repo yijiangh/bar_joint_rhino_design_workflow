@@ -686,3 +686,13 @@ Tools↔stationary env-bar/env-joint contacts are auto-skipped by `_skip_collisi
 - Before the polluting call(s) in each export entry-point, capture `snap = bar_action.snapshot_cell_rigid_bodies(rcell)`.
 - Wrap everything that mutates the cell (build, register-full, attach-arm-tools, dump) in `try:` and put `bar_action.restore_cell_rigid_bodies(rcell, snap, planner)` in `finally:`. The restore re-pushes the cell to the planner so the next collision check sees the pre-export shape.
 - Wired in `scripts/rs_export_bar_action.py`, `scripts/rs_export_all_bar_actions.py`, `scripts/rs_export_robotcell.py`. Other future export-style scripts that call any of those three helpers MUST follow the same pattern.
+
+---
+
+## Shared schemas loaded from Rhino: submodule + sys.path prepend, not `pip git+<sha>` in requirements.txt
+
+When a python package is shared across this repo and sibling Rhino-loading repos (e.g. monitor / planner), vendor it as a git submodule under `external/<pkg>/` and prepend its package root onto `sys.path` from the first module that imports it — mirroring how `core.robot_cell` loads `external/compas_fab/src`. Do NOT add `# r: <pkg>` to any Rhino script, and prefer this over `pip install git+...@<sha>` in `requirements.txt`.
+
+**Why:** Rhino's ScriptEditor `# r:` install caches by package name, not by git SHA, so a later `git+...@<newsha>` won't refresh the venv — the gotcha documented in `tasks/yh_lesson.md`. A submodule pins the bytes directly in the working tree and a sys.path prepend gives deterministic resolution that won't be shadowed by a stale install from a sibling Rhino session.
+
+**How to apply:** `git submodule add <url> external/<pkg>` and `git checkout <sha>` inside it. In the consuming module, compute `_ROOT = <repo>/external/<pkg>`, tolerate flat vs `src/` layout, raise a `RuntimeError` with `git submodule update --init --recursive` instructions if missing, then `sys.path.insert(0, _SRC)` before the `import <pkg>`. Document under a README "Submodule dependency for ..." subsection and add an entry to the Project Structure tree. Wired this way for `rs_data_structure` (BarAction schema) in `scripts/core/bar_action.py`.

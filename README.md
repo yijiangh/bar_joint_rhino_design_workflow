@@ -76,6 +76,10 @@ git submodule update --init --recursive
 
 The IK scripts still declare the remaining transitive dependencies (`compas`, `compas_robots`, `pybullet`, `pybullet_planning`, plus `numpy` / `scipy`) via `# r:` so Rhino's ScriptEditor installs them into `scaffolding_env` on first run. Do **not** add `# r: compas_fab` — that would bypass the submodule and silently shadow it.
 
+### Submodule dependency for BarAction export
+
+The BarAction export workflow (RSExportBarAction, RSExportAllBarActions, RSExportRobotCell) shares its `Movement` / `BarAssemblyAction` schema with the monitor repo and the planner repos via [rs_data_structure](https://github.com/yijiangh/rs_data_structure), vendored as a git submodule at `external/rs_data_structure`. The package is loaded by prepending the submodule onto `sys.path` from `scripts/core/bar_action.py` (mirroring how `core.robot_cell` loads `compas_fab`) — **do not** add `# r: rs_data_structure` to any Rhino script; that would silently shadow the submodule. The same `git submodule update --init --recursive` invocation above pulls this submodule too. To switch to a different upstream commit, `cd external/rs_data_structure && git fetch && git checkout <sha>`.
+
 ### Optional developer install
 
 Use `requirements-dev.txt` when you want the optional tooling:
@@ -478,6 +482,7 @@ support_materials/
   specs.pdf                    # Design specifications
 external/
   compas_fab/                  # Pinned wip_process branch (git submodule) — loaded via sys.path in core/robot_cell.py
+  rs_data_structure/           # Shared Movement / BarAssemblyAction schema (git submodule) — loaded via sys.path in core/bar_action.py
 asset/
   husky_urdf/                  # Husky URDF/SRDF/meshes (git submodule)
 ```

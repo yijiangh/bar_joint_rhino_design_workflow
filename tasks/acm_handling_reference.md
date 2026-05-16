@@ -1,5 +1,9 @@
 # ACM (Allowed Collision Matrix) handling in `rs_ik_keyframe.py`
 
+> **PARTIALLY SUPERSEDED (branch `vh/bar-action-state-cleanup`).** This file describes the ACM model used by the IK keyframe / ShowIK template snapshot. That path is unchanged. HOWEVER:
+> - Layer 1's `_ARM_TOOL_TOUCH_LINKS = [wrist_1/2/3]` has been emptied (commit `cf2eeb2`). Current arm-tool collision OBJs do not extend into the wrist, so no wrist whitelist is needed; any tool↔wrist contact is now a real bad pose.
+> - The bar-action export pipeline (`scripts/core/bar_action.py`) NO LONGER uses `configure_active_assembly_acm`. It clears `touch_bodies` after canonicalize and applies a per-movement (M1/M2/M3/M4) opt-in instead. See `tasks/cc_lessons.md` lesson "Per-movement ACM scoping in BarAssemblyAction export". Anything below referring to the template-level whitelist applies to the IK keyframe path only.
+
 Reference for which collisions are intentionally whitelisted during dual-arm IK, and where in the code each rule lives.
 
 The ACM is built in two layers inside `_prepare_collision_template_state` (`scripts/rs_ik_keyframe.py:962-996`). Both layers mutate `template_state.rigid_body_states[*].touch_links` / `touch_bodies`.

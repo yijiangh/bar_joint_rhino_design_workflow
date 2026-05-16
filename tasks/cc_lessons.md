@@ -193,12 +193,12 @@ Whitelist a collision pair (`touch_bodies` / `touch_links`) only when the contac
 - joint ↔ matched-arm **tool**: WHITELIST — the gripper is gripping the joint, that's the whole point.
 - joint ↔ matched-arm **wrist**: NOT whitelisted — the wrist isn't meant to touch the joint; if it does, IK has produced a bad pose and we want to know.
 
-Counter-example for context: the existing pineapple `tool_state.touch_links = [wrist_1/2/3]` is a different beast — the proxy mesh geometrically extends backward into those links as a *modeling* artifact (the OBJ encompasses the wrist visualization), so the overlap is a property of the proxy, not of the assembly contact. Both kinds of whitelisting exist; just be explicit about which one each entry is.
+Historical note (now obsolete): an earlier pineapple-style proxy mesh extended backward into the arm's `wrist_1/2/3_link`, so `_ARM_TOOL_TOUCH_LINKS` whitelisted those wrist links as a *modeling artifact*. The current per-tool collision OBJs (in `robotic_tools.json`) are authored to start at tool0 and stay forward of the wrist, so that whitelist is gone (`_ARM_TOOL_TOUCH_LINKS = {"left": [], "right": []}` as of commit `cf2eeb2`). Any tool↔wrist contact now is a real bad pose we want IK to reject.
 
 **How to apply:** When exposing ACM seams for future use:
 - Whitelist tool body (`touch_bodies = [tool_name]`) — the gripper is at the joint by design.
-- Do NOT pre-add the wrist link to `touch_links`. If a real engagement pose later needs it, justify it pose-by-pose, not as a blanket allowance.
-- Document each `touch_*` entry inline with WHICH category it belongs to: design-intent contact, or modeling-artifact overlap. The two have different lifecycles (design-intent expires when the assembly step ends; modeling-artifact persists as long as the mesh).
+- Do NOT pre-add the wrist link to `touch_links`. If a real engagement pose later needs it, that means the tool collision mesh has been re-authored to overlap the wrist again — fix the mesh, not the ACM.
+- Document each `touch_*` entry inline with WHY it is design-intent (which kinematic step it covers).
 
 ---
 
@@ -490,19 +490,19 @@ After `get_robot_link_meshes_at_zero()` hides `LAYER_IK_CACHE` (so the ghost pre
 
 ---
 
-## ACM whitelist for active-bar / mating-joint contacts
+## ACM whitelist for active-bar / mating-joint contacts (IK keyframe / ShowIK)
 
-Compas_fab CC.4/CC.5 will flag the active bar against the tools that hold it AND the active male joint against its mating env female joint -- both are intentional design contacts that must be in `touch_bodies`.
+The IK keyframe + ShowIK path (`scripts/rs_ik_keyframe.py` / `scripts/rs_show_ik.py` / `scripts/core/ik_collision_setup.prepare_assembly_collision_state`) sets the same five-category whitelist on the template state because those workflows run as a single snapshot at the assembled pose (no per-Mi distinction). `env_collision.configure_active_assembly_acm` is the implementation.
 
 **Pairs to whitelist (per design intent):**
-* `active_joint_<jid>_male` <-> `env_joint_<jid>_female` (same `joint_id`, opposite subtype) -- the mate during snap.
-* `active_joint_*` <-> both arm tool RBs (gripper engages joint heads).
-* `active_bar_<bid>` <-> all `active_joint_*` on it (rigid bond).
-* `active_bar_<bid>` <-> both arm tool RBs (over-permissive but harmless; bar held via gripped joints).
+* `active_joint_<jid>_male` ↔ `env_joint_<jid>_female` (same `joint_id`, opposite subtype) — the mate during snap.
+* `active_joint_*` ↔ both arm tool RBs — gripper engages joint heads.
+* `active_bar_<bid>` ↔ all `active_joint_*` on it — rigid bond.
+* `active_bar_<bid>` ↔ both arm tool RBs — over-permissive but harmless; bar held via gripped joints.
 
-**How to apply:** Walk `state.rigid_body_states`, parse `active_joint_<jid>_<sub>` keys via `rsplit("_", 1)`, look up the env mate by reconstructing the name, and union into `touch_bodies` mutually. Implemented in `env_collision.configure_active_assembly_acm(state, arm_tool_rb_names)`; call it AFTER `configure_arm_tool_rigid_body_states` (which resets `touch_bodies = []`).
+**Do NOT whitelist:** wrist links vs joints, tool vs env bars, robot links vs robot links — those are real collisions.
 
-**Do NOT whitelist:** wrist links vs joints, tool vs env bars, robot links vs robot links. Those are real collisions.
+**bar_action export uses a different model:** the per-bar export pipeline (`scripts/core/bar_action.py`) does NOT use this template-level whitelist. It clears all touch_bodies after canonicalize and each Mi (M1/M2/M3/M4) builder opts in only the contacts that are by-design for THAT movement, scoped to this bar's joints/pairs. See the next lesson.
 
 
 ---
@@ -650,3 +650,39 @@ For RSGroundPlace, the user-facing "flip" = reverse the block's X axis along the
 - Diagnostic: load both `RobotCell.json` and `BarActions/<bar>.json`; diff `cell.rigid_body_models.keys()` against `mv.start_state.rigid_body_states.keys()`. If the cell is a strict subset, the cell was dumped from a shrunken per-bar context.
 
 **Follow-up — also re-assert arm-tool RBs at dump time.** The above only covers bar / joint bodies. The two per-arm tool collision RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`) come from `robot_cell.attach_arm_tool_rigid_bodies`, which is only called inside `prepare_assembly_collision_state`. If `RSExportRobotCell` runs in a session that never went through an IK pass or BarAction export, the arm-tool RBs are missing and every BarAction state mismatches on those two names. Symptom: *"Mismatch: {'AssemblyLeftArmToolBody', 'AssemblyRightArmToolBody'}"*. Fix: `bar_action._attach_arm_tools_to_cell(rcell, planner)` scans the doc for any bar with both left+right tools placed, resolves collision paths via `robotic_tools.json`, attaches. Called in both export scripts right before `dump_cell_canonical`.
+
+---
+
+## Per-movement ACM scoping in BarAssemblyAction export (M1-M4)
+
+The bar-action export pipeline (`scripts/core/bar_action.py::build_bar_assembly_action`) does NOT use the template-level `configure_active_assembly_acm` whitelist. After canonicalizing the start state, it CLEARS every `rigid_body_states[*].touch_bodies` and then each per-movement builder (`_build_m1` / `_build_m2` / `_build_m3` / `_build_m4`) opts in ONLY the contacts that are by-design for THAT movement, scoped to the active bar.
+
+**Why.** The template snapshot says "everything that will touch sometime during the whole action is whitelisted everywhere" — which over-permits. M1 (arm reaches in with bar + held joints, mate not yet engaged) must still flag spurious mate↔female contact; only M2 (the snap moment) and M3 (held against mate) should whitelist mate-pair touch. The user's framing: *"the template cell state should only contain the relationship of the tool and the robot, the two tools in the two arms. The rest of the explicit exceptions should be made per movement."*
+
+**Per-Mi whitelist matrix (this bar's keys only):**
+
+| Movement | bar↔arm-tool RB | bar↔this bar's joints | male↔matching-arm tool RB | mate (male↔female) pair |
+|---|---|---|---|---|
+| M1 reach   | ✓ | ✓ | ✓ | ✗ |
+| M2 snap    | ✓ | ✓ | ✓ | ✓ |
+| M3 hold    | ✓ | ✓ | ✓ | ✓ |
+| M4 retract | ✗ | ✗ | ✗ | ✗ |
+
+Tools↔stationary env-bar/env-joint contacts are auto-skipped by `_skip_collision_check` (stationary↔hidden / stationary↔stationary) — never whitelist them.
+
+**How to apply.**
+- Use `_clear_all_touch_bodies(state)` after canonicalize; never inherit upstream `touch_bodies`.
+- Use `_touch_pair(state, a, b)` for every intentional contact (mutates both sides).
+- Drive the per-Mi opt-in via `_apply_per_movement_acm(state, *, bar_key, jids, arm_to_male, arm_tool_rb_names, whitelist_bar_tools=…, whitelist_bar_joints=…, whitelist_male_tools=…, whitelist_mates=…)` with the matrix above.
+- Wrist↔anything is NEVER in this matrix. If a real M2 pose needs the wrist into the joint, fix the tool OBJ (or the IK seed), not the ACM.
+
+---
+
+## Cached `rcell.rigid_body_models` is mutated by every export; snapshot+restore in script-level try/finally
+
+`build_bar_assembly_action` + `_register_full_assembly_geom` + `_attach_arm_tools_to_cell` all mutate `rcell.rigid_body_models` in place (necessary: the dumped `RobotCell.json` must be a state-independent superset across all bars + arm tools). The cached `rcell` is the same singleton other workflows in the same Rhino session see, so unrestored mutations leak: a subsequent RSShowIK / RSIKKeyframe runs against a cell whose key set no longer matches the state it builds, producing `assert_cell_state_match` mismatches on bars/joints registered only for export.
+
+**How to apply.**
+- Before the polluting call(s) in each export entry-point, capture `snap = bar_action.snapshot_cell_rigid_bodies(rcell)`.
+- Wrap everything that mutates the cell (build, register-full, attach-arm-tools, dump) in `try:` and put `bar_action.restore_cell_rigid_bodies(rcell, snap, planner)` in `finally:`. The restore re-pushes the cell to the planner so the next collision check sees the pre-export shape.
+- Wired in `scripts/rs_export_bar_action.py`, `scripts/rs_export_all_bar_actions.py`, `scripts/rs_export_robotcell.py`. Other future export-style scripts that call any of those three helpers MUST follow the same pattern.

@@ -1,6 +1,8 @@
 # BarAssemblyAction — schema, semantics & motion-planning hand-off
 
 > Status: implemented (2026-05-11). This document was originally a build plan; rewritten as the spec for the downstream motion-planning consumer. Items marked **DEVIATION** moved away from the original plan during implementation — listed explicitly so a future agent doesn't read stale guidance.
+>
+> **ACM section updated on branch `vh/bar-action-state-cleanup`.** Earlier wording said M1/M2/M3 inherit `touch_bodies` from `configure_active_assembly_acm`; that template-level whitelist is no longer applied by `bar_action.build_bar_assembly_action`. After canonicalize, all `touch_bodies` are cleared and each Mi opts in only the contacts it needs (bar↔arm-tools, bar↔this-bar's-joints, male↔matching-arm-tool, mate pair). M4 has no whitelist. Arm-tool `touch_links` is empty (no wrist whitelist). See `tasks/cc_lessons.md` lesson "Per-movement ACM scoping in BarAssemblyAction export" for the authoritative matrix; any conflicting line in §M1-§M4 below is superseded.
 
 ## 1. Context
 
@@ -93,12 +95,12 @@ Consumer note: a `RigidBodyState` with `is_hidden=True` is a not-yet-built workp
 All four movements share the same `RobotCellState`-bearing `start_state` shape:
 - `state.robot_base_frame` — saved base frame in meters (Frame).
 - `state.robot_configuration` — left + right arm joint values (or `None` for M4 only).
-- `state.tool_states` — wired by `robot_cell.configure_arm_tool_rigid_body_states`. The left/right arm tools have `attached_to_group` set to their planning group + wrist touch_links.
+- `state.tool_states` — wired by `robot_cell.configure_arm_tool_rigid_body_states`. The left/right arm tools have `attached_to_group` set to their planning group; `touch_links` is empty (see banner).
 - `state.rigid_body_states` — canonical-keyed (see §4); contains the FULL assembly key-set in every movement. Per-stage classification:
   - **built env** (`seq < active_seq`): `frame` = final assembled world pose (Frame, meters), `attached_to_*` = None, `is_hidden` = False. Real static obstacle.
   - **active** (the bar being assembled now + its joints): M1/M2 → `attached_to_link` set; M3/M4 → detached at final pose. See per-movement below.
   - **not-yet-built** (`seq > active_seq`, or a joint half mounted on such a bar): `frame` = final assembled world pose, `attached_to_*` = None, `is_hidden` = True. Ignore for planning.
-  - arm-tool RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`): `attached_to_link` = the matching `*_ur_arm_tool0`, wrist `touch_links` set.
+  - arm-tool RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`): `attached_to_link` = the matching `*_ur_arm_tool0`; `touch_links` empty.
 
 Geometry references:
 - `tool0_<arm>_assembled_world_mm` = 4×4 world transform of the placed tool block instance (= tool0 at IK_ASSEMBLED). Recoverable from the bar via Rhino, not stored in the action.
@@ -122,7 +124,7 @@ Geometry references:
 
 - `start_state` = copy of M1's start_state with `robot_configuration` overwritten by `KEY_ASSEMBLY_IK_APPROACH` (deserialized from bar user-text).
 - Bar/joint attachments unchanged from M1 (same `attachment_frame`s — invariant w.r.t. tool0).
-- ACM (`touch_bodies`) inherits the M1/M2 ACM set by upstream `configure_active_assembly_acm` and canonicalized: mate pair `joint_<jid>_male ↔ joint_<jid>_female`, bar↔arm-tool RB, joints↔arm-tool RBs.
+- ACM (`touch_bodies`): see banner + cc_lessons "Per-movement ACM scoping in BarAssemblyAction export" — M2 is the snap, so bar↔arm-tools, bar↔this-bar's joints, male↔matching-arm-tool, AND the mate pair are all whitelisted (scoped to this bar's keys).
 - `target_ee_frames` = {`"left"`: Frame(tool0_left_assembled), `"right"`: Frame(tool0_right_assembled)} in meters.
 - `target_configuration = None`.
 - `notes = {"lm_axis": "per_tool0_z_avg", "lm_distance_mm": 15.0, "bar_arm_side": "left"}`.
@@ -131,10 +133,7 @@ Geometry references:
 
 - `start_state.robot_configuration` = `KEY_ASSEMBLY_IK_ASSEMBLED`.
 - Bar/joints are **detached**: every `bar_<…>` / `joint_<…>` RB on the active bar has `attached_to_link = None`, `attached_to_tool = None`, `attachment_frame = None`, `frame = world_frame_at_assembled` (Frame, meters).
-- ACM (`touch_bodies`):
-  1. **DEVIATION from original plan** — mate pairs `joint_<jid>_male ↔ joint_<jid>_female` are STILL whitelisted (every male/female pair in the state, regardless of active/env origin). Plan originally said "remove mate pair in M3" because retreat should pull apart; in practice the just-mated halves are in static contact at M3.start and removing the whitelist produces false-positive collision flags. The whitelist remains; the planner will see clean contact at start, then no contact mid-retreat.
-  2. Each just-mated `joint_<jid>_male` has the matching arm's tool RB added to `touch_bodies` (gripper adjacent to joint head as it pulls back). Implemented in `_whitelist_gripper_male_adjacency`.
-  3. All other `touch_bodies` on active bodies are cleared (no bar↔tool whitelist in M3).
+- ACM (`touch_bodies`): see banner + cc_lessons "Per-movement ACM scoping in BarAssemblyAction export". M3 is hold/retreat-start: same opt-ins as M2 (bar↔arm-tools, bar↔this-bar's joints, male↔matching-arm-tool, mate pair). All other `touch_bodies` are cleared.
 - `target_ee_frames`:
   - Per-arm independent retreat. For each arm `s`: read joint OCF (= block instance world xform of `joint_<arm_to_male[s]>_male`) from the action's M2.start_state, take its world `-Z` axis as the retreat direction, translate `tool0_<s>_assembled` by `axis * LM_DISTANCE` (mm), then convert to a meters Frame.
 - `target_configuration = None`.
@@ -143,7 +142,7 @@ Geometry references:
 ### M4 — `RoboticFreeMovement` (home)
 
 - `start_state.robot_configuration = None`. **Consumer contract: this is the "planner fills it" slot** — the consumer must derive M4.start config from M3's solved retreat trajectory's final waypoint (after the planner runs).
-- `start_state.rigid_body_states` — same as M3 (bar/joints env, mates still whitelisted; tool RBs keep their default wrist touch_links).
+- `start_state.rigid_body_states` — same body classification as M3 (bar/joints detached at assembled pose). ACM: M4 has NO whitelist — every `touch_bodies` is empty (see banner).
 - `target_ee_frames = None`.
 - `target_configuration` = HOME (Configuration with joined left+right joint values; the HOME placeholder until `HOME_CONFIG_LEFT/RIGHT` are replaced).
 - `notes = {"start_config_is_none": True, "planner_fills": "start_state.robot_configuration"}`.

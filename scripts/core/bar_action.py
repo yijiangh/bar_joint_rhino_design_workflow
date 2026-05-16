@@ -40,130 +40,23 @@ Module is importable without Rhino; the `build_*` helpers import
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 import numpy as np
 
-from compas.data import Data
 from compas.geometry import Frame
 from compas_robots import Configuration
 
-
-# ---------------------------------------------------------------------------
-# Data classes (pure python, no Rhino dependency)
-# ---------------------------------------------------------------------------
-
-
-class Movement(Data):
-    """One robot movement in an assembly action.
-
-    Class is a base; the concrete subclass (`RoboticFreeMovement`,
-    `RoboticLinearMovement`, `RoboticDualArmConstrainedMovement`) IS the
-    discriminator -- no `motion_kind` string field.
-    """
-
-    def __init__(
-        self,
-        movement_id: str = "",
-        tag: str = "",
-        start_state=None,
-        target_ee_frames: Optional[dict] = None,
-        target_configuration: Optional[Configuration] = None,
-        trajectory=None,
-        notes: Optional[dict] = None,
-    ):
-        super(Movement, self).__init__()
-        self.movement_id = movement_id
-        self.tag = tag
-        self.start_state = start_state
-        self.target_ee_frames = target_ee_frames if target_ee_frames is not None else {}
-        self.target_configuration = target_configuration
-        self.trajectory = trajectory
-        self.notes = notes if notes is not None else {}
-
-    @property
-    def __data__(self):
-        return {
-            "movement_id": self.movement_id,
-            "tag": self.tag,
-            "start_state": self.start_state,
-            "target_ee_frames": self.target_ee_frames,
-            "target_configuration": self.target_configuration,
-            "trajectory": self.trajectory,
-            "notes": self.notes,
-        }
-
-
-class RoboticFreeMovement(Movement):
-    """Unconstrained joint-space motion (typically free-home)."""
-
-
-class RoboticLinearMovement(Movement):
-    """Cartesian linear motion of the tool flange(s)."""
-
-
-class RoboticDualArmConstrainedMovement(Movement):
-    """Dual-arm motion preserving the relative tool0_left -> tool0_right transform.
-
-    The constraint is implied by the class type AND by the rigid body
-    attachments inside `start_state` (one body attached to each arm's
-    tool0).
-    """
-
-
-class Action(Data):
-    """Base class for any high-level action that groups a list of movements."""
-
-    def __init__(
-        self,
-        action_id: str = "",
-        tag: str = "",
-        movements: Optional[list] = None,
-    ):
-        super(Action, self).__init__()
-        self.action_id = action_id
-        self.tag = tag
-        self.movements = list(movements) if movements is not None else []
-
-    @property
-    def __data__(self):
-        return {
-            "action_id": self.action_id,
-            "tag": self.tag,
-            "movements": self.movements,
-        }
-
-
-class BarAssemblyAction(Action):
-    """One bar's full assemble cycle (M1 .. M4).
-
-    ``assembly_seq`` is the full ordered list of bar ids in the Rhino assembly
-    sequence (ascending ``bar_seq``), not just the active bar's index. The
-    downstream planner can derive the active bar's position via
-    ``assembly_seq.index(active_bar_id)`` and use the prefix list as the set
-    of "already-built env" bars.
-    """
-
-    def __init__(
-        self,
-        action_id: str = "",
-        tag: str = "",
-        movements: Optional[list] = None,
-        active_bar_id: str = "",
-        assembly_seq: Optional[list] = None,
-    ):
-        super(BarAssemblyAction, self).__init__(
-            action_id=action_id, tag=tag, movements=movements,
-        )
-        self.active_bar_id = active_bar_id
-        self.assembly_seq = list(assembly_seq) if assembly_seq is not None else []
-
-    @property
-    def __data__(self):
-        d = dict(super(BarAssemblyAction, self).__data__)
-        d["active_bar_id"] = self.active_bar_id
-        d["assembly_seq"] = self.assembly_seq
-        return d
+# Data classes were extracted to the shared `rs_data_structure` package so
+# this repo, husky-assembly-teleop, and husky_assembly_tamp all share the
+# same interchange schema. The submodule lives at external/rs_data_structure.
+from rs_data_structure.bar_action import (
+    Movement,
+    RoboticFreeMovement,
+    RoboticLinearMovement,
+    RoboticDualArmConstrainedMovement,
+    Action,
+    BarAssemblyAction,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -827,18 +827,13 @@ def _attach_arm_tools_to_cell(rcell, planner) -> bool:
 def _register_full_assembly_geom(rcell, planner) -> dict:
     """Register EVERY bar + EVERY joint of the assembly into ``rcell.rigid_body_models``.
 
-    ``env_collision.collect_built_geometry(last_bar)`` yields all bars with
-    ``seq < last_seq`` + their joints; ``collect_active_geometry(last_bar)``
-    yields the last bar + its joints. The union is the full assembly. Keys
-    keep the upstream prefixes (``env_bar_*`` for all but the last, ``active_bar_*``
-    for the last bar's bodies); the caller canonicalizes them.
-
     Pushed via ``robot_cell.ensure_env_registered`` so the in-Rhino cached cell
     and the planner's collision world both carry the full set. (Subsequent
     upstream IK calls re-sync the cell to whatever bar is active then -- this
     full set is transient, only meaningful for the export that follows.)
 
-    Returns the merged prefixed-key geom dict, or ``{}`` if no bars are registered.
+    Returns the full geom dict (``env_bar_*`` / ``env_joint_*`` keys), or ``{}``
+    if no bars are registered.
     """
     from core import env_collision
     from core import robot_cell
@@ -847,10 +842,7 @@ def _register_full_assembly_geom(rcell, planner) -> dict:
     seq_map = get_bar_seq_map()
     if not seq_map:
         return {}
-    last_bar = max(seq_map, key=lambda b: seq_map[b][1])
-    full_geom = {}
-    full_geom.update(env_collision.collect_built_geometry(last_bar, seq_map))
-    full_geom.update(env_collision.collect_active_geometry(last_bar, seq_map))
+    full_geom = env_collision.collect_all_geometry(seq_map)
     if full_geom:
         robot_cell.ensure_env_registered(rcell, full_geom, planner)
     return full_geom

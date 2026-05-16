@@ -429,6 +429,82 @@ def collect_active_geometry(active_bar_id, bar_seq_map):
     return out
 
 
+def collect_all_geometry(bar_seq_map):
+    """Collect env-collision payloads for ALL bars and joints in the assembly.
+
+    Same payload format as :func:`collect_built_geometry` but covers every bar
+    regardless of assembly sequence. All keys use the ``env_bar_`` /
+    ``env_joint_`` prefix so downstream canonicalization strips them uniformly.
+
+    Use this when you need the full scene (e.g. export) rather than a
+    per-step IK collision context.
+    """
+    import rhinoscriptsyntax as rs
+    import time
+
+    deps = _import_deps_for_rb()
+    t_total = time.perf_counter()
+    out = {}
+    bar_hits = bar_misses = 0
+    for bid, (oid, _seq) in bar_seq_map.items():
+        length_mm, frame_mm = _bar_world_frame_mm(oid)
+        if length_mm <= 0.0:
+            continue
+        rb, hit = _get_or_build_bar_rigid_body(oid, length_mm, float(config.BAR_RADIUS), deps)
+        if rb is None:
+            continue
+        bar_hits += int(hit); bar_misses += int(not hit)
+        out[f"{ENV_RB_BAR_PREFIX}{bid}"] = {
+            "rigid_body": rb,
+            "frame_world_mm": frame_mm,
+            "kind": "bar",
+            "source_oid": oid,
+        }
+
+    joint_layers = (
+        config.LAYER_JOINT_FEMALE_INSTANCES,
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    )
+    j_hits = j_misses = 0
+    for layer in joint_layers:
+        if not rs.IsLayer(layer):
+            continue
+        for joint_oid in rs.ObjectsByLayer(layer) or []:
+            parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
+            if parent_bar not in bar_seq_map:
+                continue
+            joint_id = rs.GetUserText(joint_oid, "joint_id")
+            subtype = (
+                rs.GetUserText(joint_oid, "joint_subtype")
+                or rs.GetUserText(joint_oid, "joint_type")
+                or "Joint"
+            )
+            block_name = rs.BlockInstanceName(joint_oid)
+            if not block_name:
+                continue
+            rb, hit = _get_or_load_joint_rigid_body(block_name, deps)
+            if rb is None:
+                continue
+            j_hits += int(hit); j_misses += int(not hit)
+            xform_mm = _block_instance_xform_mm(joint_oid)
+            tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
+            out[f"{ENV_RB_JOINT_PREFIX}{tag}"] = {
+                "rigid_body": rb,
+                "frame_world_mm": xform_mm,
+                "kind": "joint",
+                "source_oid": joint_oid,
+                "block_name": block_name,
+                "subtype": subtype,
+            }
+    print(
+        f"core.env_collision.collect_all_geometry: {len(out)} bodies "
+        f"(bars hit/miss={bar_hits}/{bar_misses}, joints hit/miss={j_hits}/{j_misses}) "
+        f"in {(time.perf_counter()-t_total)*1000:.1f} ms"
+    )
+    return out
+
+
 def _import_deps_for_rb():
     """Lazy-import only what the cached RB pipeline needs (Mesh + RigidBody)."""
     from compas.datastructures import Mesh as _Mesh

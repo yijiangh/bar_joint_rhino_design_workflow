@@ -43,6 +43,7 @@ required:
 | **RSSetup** | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client used by IK workflows |
 | **RSSetup** | RSPBStop | `rs_pb_stop.py` | Disconnect the shared PyBullet client |
 | **RSSetup** | RSExportPineappleOBJ | `rs_export_pineapple_obj.py` | Export pineapple block defs as OBJ (meters) for IK collision tool models |
+| **RSMoCap** | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one OptiTrack rigid body's labeled markers and bake them as points on the `MoCap_Retrieval` layer |
 
 These scripts do not require PyBullet. They only need `numpy` and `scipy`.
 

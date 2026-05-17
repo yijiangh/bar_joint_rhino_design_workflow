@@ -39,6 +39,12 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSExportPineappleOBJ | `rs_export_pineapple_obj.py` | Export pineapple block definitions to OBJ (meters) for IK collision tool models |
 | RSBakeFrame | `rs_bake_frame.py` | Bake a right-handed frame group (X/Y/Z axes + optional text-dot label) from three picked points |
 
+## RSMoCap Buttons
+
+| Button | Script | Purpose |
+|---|---|---|
+| RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one OptiTrack rigid body's labeled markers from Motive (NatNet) and bake them as named points on the `MoCap_Retrieval` layer |
+
 ## Maintenance Rule
 
 When adding, renaming, or removing a Rhino entrypoint script:

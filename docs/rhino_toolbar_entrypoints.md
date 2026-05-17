@@ -44,6 +44,7 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | Button | Script | Purpose |
 |---|---|---|
 | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one OptiTrack rigid body's labeled markers from Motive (NatNet) and bake them as named points on the `MoCap_Retrieval` layer |
+| RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit three model bars to three baked mocap lines and rigid-transform all managed-layer geometry to that pose |
 
 ## Maintenance Rule
 

@@ -6,6 +6,38 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ## Curve-constrained `GetPoint` should leave object snaps enabled
 
+## Alignment solver diagnostics: keep runtime logs concise, keep deep dumps opt-in
+
+For regular Rhino command runs, print only the essential fit diagnostics (before/after RMSE, stop reason, stage count, total nfev, threshold, last improvement, solver status/message) and keep the MessageBox focused on user decisions.
+
+**Why:** Large per-pair geometry dumps are noisy in day-to-day use and make command output hard to scan. The concise summary is enough to validate convergence quality while staying readable.
+
+**How to apply:** Default entry points to compact `[align]` summaries. If a hard-to-reproduce failure appears, add temporary deep-dump logging in a short-lived dev script instead of making verbose dumps the default behavior.
+
+## 6-DoF rigid alignment: TRF + jac scaling + closed-form init + direction residual
+
+For least-squares pose fitting where parameters mix rotation (radians ~1e-2) and translation (mm ~1e2–1e3), use `least_squares(method="trf", x_scale="jac", max_nfev>=10000)` with a closed-form (Kabsch-on-directions) initial guess and a direction-alignment residual augmenting the geometric one. Avoid `method="lm"` with `x0=zeros` — it stalls when the model starts far from the target (saw RMSE 60 mm vs achievable 1.5 mm because nfev=2006 exceeded `max_nfev=2000`).
+
+**Why:** LM has no Jacobian scaling, so a 1e-2 rotation step and a 1e3 translation step look identically "large" to it; combined with a far-from-optimum start, it wastes budget making translational micro-steps. TRF with `x_scale='jac'` normalises step magnitudes per parameter. The direction residual `weight*(1-|cos θ|)` breaks rotational degeneracy. Closed-form init alone is not great (centroid mapping is biased when bars/lines differ in length), but starts refinement in the correct basin so convergence is fast and identical for near and far starts.
+
+**How to apply:** When adding a new 6-DoF fit, copy the pattern from `_solve_transform` in [scripts/rs_align_model_three_bars.py](scripts/rs_align_model_three_bars.py): closed-form init via SVD on direction vectors, augmented residual function, TRF solve, then *score* with the un-augmented geometric residual so reported metrics are not inflated by the regularising direction term.
+
+## Rhino ScriptEditor solver scripts: include `# r:` deps + explicit staged stop criterion
+
+When a Rhino entry-point script imports third-party packages (for example `numpy`, `scipy`), add matching `# r:` header lines near `# venv:` so ScriptEditor can auto-resolve packages in the runtime environment. For iterative fitting commands, also expose a user-visible staged stop criterion based on per-iteration improvement (for example stop when RMSE gain <= threshold) instead of relying only on solver-internal termination strings.
+
+**Why:** Missing `# r:` metadata causes "works on my env" breakage across Rhino machines. Solver-internal termination can be opaque to users; reporting threshold + last improvement makes convergence behavior auditable.
+
+**How to apply:** In entry scripts, declare `# r: numpy==...` / `# r: scipy==...` directly under `# venv:`. In solve wrappers, run refinement in bounded stages, compute before/after metric each stage, stop when gain <= configured threshold, and print/report the threshold, last gain, stage count, and total nfev.
+
+## SciPy OptimizeResult fields can be None (avoid int-casting directly)
+
+When printing diagnostics from `scipy.optimize.least_squares`, fields like `njev` (and sometimes `nfev` depending on method/path) may be `None`. Do not call `int(...)` on them directly.
+
+**Why:** Direct casting raises `TypeError: int() argument must be ... not 'NoneType'`, which crashes the Rhino command after object picks.
+
+**How to apply:** Use a tiny formatter helper (e.g. `_safe_int_or_na`) that returns `"n/a"` for `None`, otherwise casts safely.
+
 When a Rhino picker uses `Rhino.Input.Custom.GetPoint().Constrain(curve, False)` to slide along a bar, do NOT also call `gp.PermitObjectSnap(False)`. That blocks osnaps to *other* geometry, so the user can't snap to e.g. another bar's endpoint or a joint center for precise alignment.
 
 **Why:** `Constrain(curve)` already projects every cursor sample (including snapped ones from other geometry) back onto the constrained curve. Disabling object snaps just removes the precision-pick affordance with no benefit. `rs.GetPointOnCurve` (used by `rs_bar_brace.py`) leaves osnaps on by default, which is why brace point-picks felt "snappier" than ground-place ones.

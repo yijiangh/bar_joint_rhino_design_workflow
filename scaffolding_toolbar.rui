@@ -83,9 +83,6 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000d" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000d</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000e" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000e</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000f" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000f</left_macro_id>
       </tool_bar_item>
@@ -402,18 +399,6 @@
         <locale_1033>RSPBStop</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_pb_stop.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000e">
-      <text>
-        <locale_1033>RSExportPineappleOBJ</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Export pineapple block definitions to OBJ (meters) for IK collision check</locale_1033>
-      </tooltip>
-      <button_text>
-        <locale_1033>RSExportPineappleOBJ</locale_1033>
-      </button_text>
-      <script>! _-ScriptEditor _R "rs_export_pineapple_obj.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000f">
       <text>

@@ -5,9 +5,9 @@ collision mesh.
 The OBJ origin coincides with the block definition's local frame, so the
 mesh can be attached at the block's pose without any extra transform.
 
-Mirrors the approach used by `rs_export_pineapple_obj.py`, but writes
-millimetres (not metres) because joint-half collision meshes live in the
-same unit system as the joint registry (`scripts/core/joint_pairs.json`).
+Writes millimetres (not metres) because joint-half collision meshes live
+in the same unit system as the joint registry
+(`scripts/core/joint_pairs.json`).
 """
 
 from __future__ import annotations

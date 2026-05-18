@@ -4,6 +4,26 @@ Short notes on patterns we've hit before. Lead with the pattern; add **Why** and
 
 ---
 
+## Before deleting "legacy" tool-attachment code, confirm the *current* attachment path still works end-to-end
+
+When cleaning up an obsolete tool pipeline (e.g. the pineapple `ToolModel` proxy), the runtime tool attachment may have already been migrated to a different mechanism (per-arm `RigidBody`s on `*_ur_arm_tool0` from `core/robotic_tools.json` via `attach_arm_tool_rigid_bodies`). Grep for the *new* path's symbols (`ARM_TOOL_RB_NAMES`, `attach_arm_tool_rigid_bodies`, `robotic_tools.json`) before deleting the *old* path to verify they are independent.
+
+**Why.** It is easy to delete a `_TOOL_TARGETS` tuple or `_attach_tool_models` helper and silently break tool visualization/collision if the new path secretly still depends on the old one (shared dep imports, shared constants). In this repo the two paths are fully independent, but that was not obvious without a grep.
+
+**How to apply.** During cleanup PRs that touch `core/robot_cell.py`, run `grep -E "attach_arm_tool|ARM_TOOL_RB_NAMES|robotic_tools"` to confirm the active per-arm RigidBody attachment path is untouched. Mention the active path explicitly in the cleanup commit message so future cleanup passes do not re-question it.
+
+---
+
+## Pineapple role-key user-text was write-only; layer-based cleanup is the real contract
+
+In `rs_show_ik.py`, `rs_ik_keyframe.py`, and `rs_ik_support_keyframe.py` the legacy `PINEAPPLE_ROLE_KEY` user-text was written on every preview block instance but never read back — cleanup is driven entirely by layer name (`config.SUPPORT_PREVIEW_LAYER`, `IKPineapplePreview`). Safe to delete the keys + writes outright rather than rename + migrate.
+
+**Why.** Write-only metadata costs surface area (constants, comments, search hits) with zero downstream value. Renaming would have implied a fake migration story.
+
+**How to apply.** When cleaning vestigial tagging, `grep -E "GetUserText.*<KEY>"` first. If zero readers, delete the key + every `SetUserText` write rather than renaming. Keep the *layer name* in any purge list for one release as a backward-compat sweep against orphaned blocks in already-saved docs.
+
+---
+
 ## Curve-constrained `GetPoint` should leave object snaps enabled
 
 ## Alignment solver diagnostics: keep runtime logs concise, keep deep dumps opt-in
@@ -568,9 +588,8 @@ has `M_block_from_bar` only (no screw frame, no mate partner).
 
 `RSDefineJointHalf` exports the picked block definition's renderable
 geometry as a single-mesh OBJ in MILLIMETRES via
-`core.rhino_block_obj_export.export_block_definition_to_obj_mm` (mirrors
-the pineapple OBJ export, but in mm not metres). The file becomes
-`half.collision_filename` and is consumed by
+`core.rhino_block_obj_export.export_block_definition_to_obj_mm`. The
+file becomes `half.collision_filename` and is consumed by
 `env_collision._joint_obj_path_map` for env-collision rigid bodies.
 
 **Why.** Hand-prepared collision OBJs were a recurring papercut whenever a

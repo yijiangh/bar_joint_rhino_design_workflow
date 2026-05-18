@@ -66,8 +66,6 @@ from core.rhino_helpers import set_objects_layer, suspend_redraw
 # ---------------------------------------------------------------------------
 
 IK_ASSEMBLY_KEY = "ik_assembly"
-PINEAPPLE_ROLE_KEY = "_ik_support_pineapple_role"
-SUPPORT_PREVIEW_BLOCK_ROLE = "support_grasp_preview"
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +439,6 @@ def _insert_robotiq_at_tool0(tool0_world_mm):
     if oid is None:
         raise RuntimeError(f"Failed to insert '{config.ROBOTIQ_GRIPPER_BLOCK}' block.")
     rs.TransformObject(oid, _np_mm_to_rhino_xform(tool0_world_mm))
-    rs.SetUserText(oid, PINEAPPLE_ROLE_KEY, SUPPORT_PREVIEW_BLOCK_ROLE)
     set_objects_layer(oid, config.SUPPORT_PREVIEW_LAYER)
     return oid
 

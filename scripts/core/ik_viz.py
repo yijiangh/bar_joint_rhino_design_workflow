@@ -241,9 +241,10 @@ def _flush_cache_layer_once() -> None:
     # Purge every transient preview layer the IK commands bake onto.
     # `LAYER_IK_CACHE` holds robot/tool/RB meshes (recursive sub-layers per
     # layer_key + mesh-mode); the preview layers hold inserted block
-    # instances (pineapples, Robotiq gripper) baked by rs_show_ik /
+    # instances (tool previews, Robotiq gripper) baked by rs_show_ik /
     # rs_ik_keyframe. All are purely transient previews -- safe to drop on
-    # first IK touch in a freshly-opened doc.
+    # first IK touch in a freshly-opened doc. `IKPineapplePreview` is the
+    # legacy layer name still purged so old docs auto-clean on first IK run.
     ensure_layer(config.LAYER_IK_CACHE)
     purge_targets = [
         config.LAYER_IK_CACHE,

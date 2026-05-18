@@ -101,7 +101,7 @@ def block_definition_meshes(block_name):
 
     Curves and other non-mesh items are skipped. Breps and Extrusions are
     meshed with default MeshingParameters. Used to feed mesh_preview()
-    with a Robotiq-gripper or pineapple block geometry without baking an
+    with a Robotiq-gripper or tool block geometry without baking an
     instance into the doc.
     """
     idef = sc.doc.InstanceDefinitions.Find(block_name, True)

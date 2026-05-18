@@ -6,7 +6,7 @@ A note about `tests/debug_dual_client_isolation.py` — what it tests, what we l
 
 Today the IK workflows share **one** `compas_fab.PyBulletClient` and **one** `PyBulletPlanner`:
 
-- `RSIKKeyframe` uses the dual-arm cell (Cindy + assembly pineapple tools).
+- `RSIKKeyframe` uses the dual-arm cell (Cindy + per-arm tool rigid bodies).
 - `RSIKSupportKeyframe` uses the support cell (Alice + Robotiq gripper + dual-arm wrapped as a `DualArm` tool obstacle).
 
 When the user ping-pongs between the two scripts in a Rhino session, our `set_cell_state` calls `planner.set_robot_cell(other_cell)`, which **re-uploads URDFs and rebuilds collision geometry** in PyBullet — slow.

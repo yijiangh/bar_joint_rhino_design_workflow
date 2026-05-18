@@ -36,7 +36,6 @@ This document is the canonical map of Rhino toolbar buttons to script entrypoint
 | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint OCF → tool0 and bar-grasp → tool0 transforms (IK keyframe workflows) |
 | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client (GUI or Direct); load robot cell into the planner |
 | RSPBStop | `rs_pb_stop.py` | Disconnect the shared PyBullet client |
-| RSExportPineappleOBJ | `rs_export_pineapple_obj.py` | Export pineapple block definitions to OBJ (meters) for IK collision tool models |
 | RSBakeFrame | `rs_bake_frame.py` | Bake a right-handed frame group (X/Y/Z axes + optional text-dot label) from three picked points |
 
 ## RSMoCap Buttons

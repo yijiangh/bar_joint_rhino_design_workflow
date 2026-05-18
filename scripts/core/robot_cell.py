@@ -194,112 +194,17 @@ def _pose_from_frame(frame):
 # ---------------------------------------------------------------------------
 
 
-_TOOL_TARGETS = (
-    # (tool_name, group_name, touch_links, mesh_path_attr)
-    # touch_links cover the arm links the pineapple OBJ INHERENTLY overlaps
-    # when attached at tool0. The proxy mesh extends ~157 mm backward from
-    # tool0 along -Z (wrist visualization plus tool), which on a UR5e
-    # reaches across wrist_3 + wrist_2 + into wrist_1's volume. All three
-    # must be allowed; otherwise IK rejects valid poses on the wrist_1
-    # overlap that's a property of the proxy, not a real collision.
-    # forearm_link is left OUT — the proxy does not reach forearm in
-    # practice; if it ever does, that IS worth flagging as a real bad pose.
-    (
-        "LEFT_TOOL_NAME", "LEFT_GROUP",
-        [
-            "left_ur_arm_wrist_1_link",
-            "left_ur_arm_wrist_2_link",
-            "left_ur_arm_wrist_3_link",
-        ],
-        "LEFT_PINEAPPLE_TOOL_MESH",
-    ),
-    (
-        "RIGHT_TOOL_NAME", "RIGHT_GROUP",
-        [
-            "right_ur_arm_wrist_1_link",
-            "right_ur_arm_wrist_2_link",
-            "right_ur_arm_wrist_3_link",
-        ],
-        "RIGHT_PINEAPPLE_TOOL_MESH",
-    ),
-)
-
-
-def _attach_tool_models(robot_cell, deps):
-    """Load pineapple OBJs as `ToolModel`s on `robot_cell.tool_models`.
-
-    Idempotent: if the same OBJ has already been attached under the same
-    tool_name, this is a no-op (per `_loaded_from` marker stored on the
-    ToolModel). Missing OBJs are skipped with a one-line note pointing at
-    `RSExportPineappleOBJ`.
-
-    The attached tool's `frame` is `Frame.worldXY()` because the OBJ was
-    exported from a Rhino block whose local origin coincides with tool0
-    (block instances are placed at tool0 world frames in `rs_ik_keyframe`).
-    """
-    if not getattr(config, "IK_ATTACH_TOOL_MESHES", True):
-        # Tool collision pipeline is being redesigned (rigid bodies, per-tool
-        # OBJ from `robotic_tools.json`). Skip the legacy pineapple ToolModel
-        # attach so IK still runs without tool-vs-anything checks.
-        return
-    Frame = deps["Frame"]
-    Mesh = deps["Mesh"]
-    ToolModel = deps["ToolModel"]
-    for tool_attr, _group_attr, _touch_links, mesh_attr in _TOOL_TARGETS:
-        tool_name = getattr(config, tool_attr)
-        mesh_path = getattr(config, mesh_attr)
-        existing = robot_cell.tool_models.get(tool_name)
-        if existing is not None and getattr(existing, "_loaded_from", None) == mesh_path:
-            continue  # already attached from this exact OBJ
-        if not os.path.isfile(mesh_path):
-            if existing is None:
-                print(
-                    f"core.robot_cell: tool mesh '{mesh_path}' missing; "
-                    f"skipping tool '{tool_name}'. Run RSExportPineappleOBJ "
-                    f"so IK collision can see the wrist + tool geometry."
-                )
-            continue
-        mesh = Mesh.from_obj(mesh_path)
-        tool = ToolModel(mesh, Frame.worldXY(), name=tool_name)
-        try:
-            tool._loaded_from = mesh_path  # cheap cache key for the next call
-        except AttributeError:
-            pass
-        robot_cell.tool_models[tool_name] = tool
-        print(f"core.robot_cell: attached tool '{tool_name}' from {mesh_path}")
-
-
-def _configure_tool_states(state):
-    """Wire `tool_states[AssemblyLeftTool/AssemblyRightTool]` to their planning groups + touch links.
-
-    Mirrors `GH_create_robot_cell.py`. Run on every fresh state because
-    `RobotCell.default_cell_state()` produces a state with default
-    (unattached) tool_states each time.
-    """
-    for tool_attr, group_attr, touch_links, _mesh_attr in _TOOL_TARGETS:
-        tool_name = getattr(config, tool_attr)
-        if tool_name not in state.tool_states:
-            continue  # tool wasn't attached (mesh missing) — IK still works, just no tool collision
-        ts = state.tool_states[tool_name]
-        ts.attached_to_group = getattr(config, group_attr)
-        ts.touch_links = list(touch_links)
-
-
 def get_or_load_robot_cell():
     """Return a cached `RobotCell`, loading URDF/SRDF + geometry on first call.
 
-    Tool models are (re-)attached on every call so that exporting the
-    pineapple OBJs after the cell was first loaded picks up automatically
-    on the next call. The PyBullet planner snapshot (`set_robot_cell`)
-    happens once at `start_pb_client`; if you change tool meshes mid-
-    session, run `RSPBStop` + `RSPBStart` (or Reload Python 3 Engine) to
-    push the new geometry into the planner's collision world.
+    Per-tool collision geometry is NOT attached here. Tools are registered
+    on demand by `attach_arm_tool_rigid_bodies` (per-arm RigidBody from
+    `core/robotic_tools.json`); IK still runs self/env collision without
+    them.
     """
     cached = _STICKY.get(_STICKY_ROBOT_CELL)
     if cached is not None:
         print("core.robot_cell.get_or_load_robot_cell: returning cached RobotCell.")
-        deps = _import_compas_stack()
-        _attach_tool_models(cached, deps)
         return cached
 
     print("core.robot_cell.get_or_load_robot_cell: cold load (URDF + SRDF + geometry).")
@@ -332,23 +237,15 @@ def get_or_load_robot_cell():
     robot_semantics = deps["RobotSemantics"].from_srdf_file(srdf_path, robot_model)
 
     robot_cell = deps["RobotCell"](robot_model, robot_semantics)
-    _attach_tool_models(robot_cell, deps)
 
     _STICKY[_STICKY_ROBOT_CELL] = robot_cell
     return robot_cell
 
 
 def default_cell_state():
-    """Return a fresh default `RobotCellState` with tool attachments wired in.
-
-    Callers should use this rather than `robot_cell.default_cell_state()`
-    directly so the per-state `tool_states[AssemblyLeftTool/AssemblyRightTool].attached_to_group` and
-    `touch_links` get configured in lockstep with the tool models.
-    """
+    """Return a fresh default `RobotCellState` for the cached robot cell."""
     robot_cell = get_or_load_robot_cell()
-    state = robot_cell.default_cell_state()
-    _configure_tool_states(state)
-    return state
+    return robot_cell.default_cell_state()
 
 
 # ---------------------------------------------------------------------------
@@ -642,17 +539,13 @@ def extract_group_config(state, group: str, robot_cell) -> dict:
 # Per-arm tool collision rigid bodies
 # ---------------------------------------------------------------------------
 #
-# The legacy "pineapple" pipeline attached two `ToolModel`s (one per arm)
-# whose meshes were the wrist+tool proxy. The new pipeline attaches each
-# placed tool's collision OBJ (declared in `core/robotic_tools.json` as
-# `collision_filename`) to the corresponding arm's `*_ur_arm_tool0` link
-# as a `compas_fab.robots.RigidBody`.
+# Each placed tool's collision OBJ (declared in `core/robotic_tools.json`
+# as `collision_filename`) is attached to the corresponding arm's
+# `*_ur_arm_tool0` link as a `compas_fab.robots.RigidBody`.
 #
-# Historical note: the touch_links list used to whitelist the three wrist
-# links to paper over the legacy proxy mesh overlapping the wrist. The
-# current per-tool OBJs are authored to start at tool0 and NOT extend back
-# into the wrist, so any tool<->wrist contact is a real bad pose we want
-# IK to catch. Touch_links is intentionally empty for both arms.
+# Per-tool OBJs are authored to start at tool0 and NOT extend back into
+# the wrist, so any tool<->wrist contact is a real bad pose we want IK to
+# catch. Touch_links is intentionally empty for both arms.
 
 ARM_TOOL_RB_NAMES = {
     "left": "AssemblyLeftArmToolBody",
@@ -663,8 +556,8 @@ _ARM_TOOL_LINKS = {
     "right": "right_ur_arm_tool0",
 }
 _ARM_TOOL_TOUCH_LINKS = {
-    "left": [],
-    "right": [],
+    "left": ["left_ur_arm_wrist_2_link", "left_ur_arm_wrist_3_link"],
+    "right": ["right_ur_arm_wrist_2_link", "right_ur_arm_wrist_3_link"],
 }
 
 
@@ -687,7 +580,7 @@ def attach_arm_tool_rigid_bodies(robot_cell, planner, *,
     right_collision_path : str  -- as above.
     native_scale : float -- mesh.scale(native_scale) -> meters. OBJs
         exported in mm need 0.001; OBJs already in meters use 1.0
-        (default; matches the existing pineapple convention).
+        (default).
 
     Returns
     -------

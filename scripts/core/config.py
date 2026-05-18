@@ -92,17 +92,6 @@ HUSKY_URDF_PKG_NAME = "mt_husky_dual_ur5_e_moveit_config"
 HUSKY_URDF_FILENAME = "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf"
 HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
 
-# Pineapple (wrist + tool) proxy block names, pre-baked by user
-LEFT_PINEAPPLE_BLOCK = "AssemblyLeft_Pineapple"
-RIGHT_PINEAPPLE_BLOCK = "AssemblyRight_Pineapple"
-
-# Tool meshes exported from the pineapple Rhino block definitions, in METERS
-# (compas convention). Written by `RSExportPineappleOBJ`; consumed by
-# `core.robot_cell.get_or_load_robot_cell` when attaching tool models for
-# IK collision checking.
-LEFT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyLeft_Pineapple_m.obj")
-RIGHT_PINEAPPLE_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "AssemblyRight_Pineapple_m.obj")
-
 # Approach distance: tool0 translated by -avg(male z) * LM_DISTANCE before final
 LM_DISTANCE = 15.0  # mm
 
@@ -112,13 +101,6 @@ LM_DISTANCE = 15.0  # mm
 # TODO(yh): replace zero-config placeholders with safe-pose values.
 HOME_CONFIG_LEFT = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 HOME_CONFIG_RIGHT = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
-# Whether to attach per-arm tool collision meshes (LEFT/RIGHT_PINEAPPLE_TOOL_MESH)
-# to the dual-arm RobotCell as ToolModels for IK collision checking. Set False
-# while the per-tool collision-OBJ pipeline is being redesigned (tools will
-# eventually attach as rigid bodies, not ToolModels). With False, IK still runs
-# self/env collision; only tool-vs-anything is skipped.
-IK_ATTACH_TOOL_MESHES = False
 
 # IK base sampling fallback
 IK_BASE_SAMPLE_RADIUS = 200.0  # mm

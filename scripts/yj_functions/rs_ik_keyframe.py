@@ -12,8 +12,8 @@
 Pick two male joint blocks (left arm, then right arm). Their joints must
 sit on the same Ln bar (shared `male_parent_bar`). The script then:
 
-1. Inserts "pineapple" (wrist + tool) block instances at the derived tool0
-   frames so the user can eyeball collisions.
+1. Inserts tool preview block instances at the derived tool0 frames so
+   the user can eyeball collisions.
 2. Prompts for a base point on a Brep in the `WalkableGround` layer and a
    heading point defining the base X-axis.
 3. Solves dual-arm IK (left then right group). If unreachable, samples
@@ -23,7 +23,7 @@ sit on the same Ln bar (shared `male_parent_bar`). The script then:
 5. Repeats 1-4 for the approach pose, offset along
    `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE`.
 6. On accept, writes `ik_assembly` user-text (JSON payload) on the shared
-   Ln bar axis line; pineapple preview and robot meshes are cleared.
+   Ln bar axis line; tool preview and robot meshes are cleared.
 """
 
 from __future__ import annotations
@@ -63,8 +63,6 @@ from core.rhino_helpers import set_objects_layer, suspend_redraw
 # ---------------------------------------------------------------------------
 
 IK_ASSEMBLY_KEY = "ik_assembly"
-PINEAPPLE_ROLE_KEY = "_ik_pineapple_role"
-PINEAPPLE_LAYER = "IKPineapplePreview"
 
 
 # ---------------------------------------------------------------------------
@@ -734,10 +732,10 @@ def main():
 
         sc.doc.Views.Redraw()
         if not _ask_accept(
-            "Inspect pineapple (wrist+tool) preview at the FINAL target. "
+            "Inspect tool preview at the FINAL target. "
             "Accept to proceed to base-point selection"
         ):
-            print("RSIKKeyframe: cancelled at pineapple preview.")
+            print("RSIKKeyframe: cancelled at tool preview.")
             return
 
         brep_id = _pick_walkable_brep()
@@ -801,7 +799,7 @@ def main():
         ik_viz.show_state(final_state, mesh_mode=mesh_mode)
         print("RSIKKeyframe: final target reachable. Previewing...")
 
-        # Refresh pineapple preview to approach pose
+        # Refresh tool preview to approach pose
 
         print("RSIKKeyframe: solving approach-target IK...")
         approach_state, approach_base = _solve_with_sampling(

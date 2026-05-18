@@ -27,7 +27,7 @@ If the active bar ALSO carries an `ik_support` legacy user-text record,
 the support arm + Robotiq gripper preview is baked alongside the dual-
 arm, using the saved `assembled` assembly pose as collision context.
 
-The preview is non-baked: on Esc all robot meshes, pineapples, and the
+The preview is non-baked: on Esc all robot meshes, tool previews, and the
 Robotiq block are cleaned up and the sequence display is restored.
 """
 
@@ -73,9 +73,6 @@ from core.rhino_helpers import set_objects_layer, suspend_redraw
 # Legacy support-side single-blob key (KEY_SUPPORT_* split is not yet wired
 # in `rs_ik_support_keyframe.py`).
 IK_SUPPORT_KEY = "ik_support"
-PINEAPPLE_ROLE_KEY = "_ik_pineapple_role"
-PINEAPPLE_LAYER = "IKPineapplePreview"
-SUPPORT_GRIPPER_PREVIEW_ROLE = "support_gripper_preview"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 
@@ -186,7 +183,6 @@ def _insert_support_gripper(tool0_mm: np.ndarray):
         if oid is None:
             raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
         rs.TransformObject(oid, _np_mm_to_rhino_xform(tool0_mm))
-        rs.SetUserText(oid, PINEAPPLE_ROLE_KEY, SUPPORT_GRIPPER_PREVIEW_ROLE)
         set_objects_layer(oid, config.SUPPORT_PREVIEW_LAYER)
     return [oid]
 

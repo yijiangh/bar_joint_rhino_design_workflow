@@ -28,7 +28,7 @@
 
 - [] need to also support the DeckMale
 
-- optional collision checks for pineapple and show diagnosis
+- optional collision checks for tool preview and show diagnosis
 
 - if bar gets moved, IK should be removed
     - don't have an auto hook atm, needs manual management

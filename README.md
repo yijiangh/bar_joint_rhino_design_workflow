@@ -42,7 +42,6 @@ required:
 | **RSSetup** | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint OCF → tool0 and bar-grasp → tool0 transforms (IK keyframe workflow) |
 | **RSSetup** | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client used by IK workflows |
 | **RSSetup** | RSPBStop | `rs_pb_stop.py` | Disconnect the shared PyBullet client |
-| **RSSetup** | RSExportPineappleOBJ | `rs_export_pineapple_obj.py` | Export pineapple block defs as OBJ (meters) for IK collision tool models |
 | **RSMoCap** | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one OptiTrack rigid body's labeled markers and bake them as points on the `MoCap_Retrieval` layer |
 | **RSMoCap** | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit three model bars to three baked mocap lines and rigid-transform all managed-layer geometry to that pose |
 
@@ -260,13 +259,6 @@ Rhino resolves the filename via Search Paths (set up above).
 - Both dicts live in `scripts/core/config_generated_ik.py`. Re-running either mode preserves the other dict and other entries within the same dict.
 - Needed once per joint type/arm before running the dual-arm IK keyframe workflow, and once per gripper kind before running the support-arm IK keyframe workflow.
 
-#### RSExportPineappleOBJ (`rs_export_pineapple_obj.py`)
-
-- Walks the two block definitions named in `core.config` (`LEFT_PINEAPPLE_BLOCK`, `RIGHT_PINEAPPLE_BLOCK`), combines all renderable geometry into a single mesh per block, scales to meters, writes to `asset/AssemblyLeft_Pineapple_m.obj` and `asset/AssemblyRight_Pineapple_m.obj`.
-- If a target file already exists, prompts per file: `Reuse` keeps the existing OBJ, `Reexport` overwrites.
-- Run once per project, plus whenever the pineapple geometry changes.
-- The OBJs are loaded as `compas_robots.ToolModel` instances by `core.robot_cell.get_or_load_robot_cell` so the IK self-collision check sees the wrist + tool geometry.
-
 #### RSPBStart / RSPBStop (`rs_pb_start.py`, `rs_pb_stop.py`)
 
 - RSPBStart launches a shared PyBullet client (GUI or Direct), loads the dual-arm Husky URDF/SRDF, and caches the client + planner in `scriptcontext.sticky`.
@@ -277,15 +269,15 @@ Rhino resolves the filename via Search Paths (set up above).
 #### RSIKKeyframe (`rs_ik_keyframe.py`)
 
 - Prerequisite: RSPBStart must have been run, and `MALE_JOINT_OCF_TO_TOOL0` must contain an entry for each picked joint's `joint_type` (populate via RSExportGraspTool0TF in Joint mode).
-- Prerequisite: Rhino document contains block definitions `AssemblyLeft_Pineapple` and `AssemblyRight_Pineapple`, and at least one Brep on layer `WalkableGround`.
+- Prerequisite: Rhino document contains at least one Brep on layer `WalkableGround`.
 - Workflow:
   1. Pick the left arm male joint block, then the right arm male joint block. Both must share `male_parent_bar` (the new Ln bar being assembled).
-  2. Pineapple blocks preview the wrist + tool at the derived tool0 frames so collisions can be visually inspected.
+  2. A live mesh preview shows the robot + tool at the derived tool0 frames so collisions can be visually inspected (via `core.dynamic_preview`; no blocks are baked).
   3. Pick a base point snapped to a Brep in `WalkableGround`; the Brep face normal defines the base Z-axis. Pick a second point for the base +X heading.
   4. Prompt for collision options (self, environment).
   5. IK solves the final target; if unreachable, samples base positions in a disc of radius `IK_BASE_SAMPLE_RADIUS` around the pick (each re-snapped to the same Brep) up to `IK_BASE_SAMPLE_MAX_ITER` attempts.
   6. Repeats for the approach target, offset by `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE`.
-  7. On `Accept`, serializes `ik_assembly` (robot id, base frame in world mm, `final` + `approach` per-group configs) as JSON user-text on the shared Ln bar axis line. Preview meshes and pineapples are always cleared at end of run.
+  7. On `Accept`, serializes `ik_assembly` (robot id, base frame in world mm, `final` + `approach` per-group configs) as JSON user-text on the shared Ln bar axis line. Preview meshes are always cleared at end of run.
 
 #### RSShowIK (`rs_show_ik.py`)
 
@@ -463,7 +455,6 @@ scripts/
   rs_export_config.py          # Rhino: export CAD-backed fixed transforms
   rs_export_case.py            # Rhino: export a reproducible T1-S2 solver case as JSON
   rs_export_grasp_tool0_tf.py  # Rhino: export male-joint OCF -> tool0 and bar-grasp -> tool0 transforms for IK
-  rs_export_pineapple_obj.py   # Rhino: export pineapple block defs to OBJ (m) for IK tool models
   rs_pb_start.py               # Rhino: start the shared PyBullet client (GUI / Direct)
   rs_pb_stop.py                # Rhino: disconnect the shared PyBullet client
   rs_ik_keyframe.py            # Rhino: dual-arm IK keyframe workflow (main)

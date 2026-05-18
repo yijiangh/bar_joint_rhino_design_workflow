@@ -12,10 +12,9 @@
 Pick a bar; the script reads its IK keyframe data (`KEY_ASSEMBLY_*` user-text
 written by ``rs_ik_keyframe.py``), reuses
 ``core.ik_collision_setup.prepare_assembly_collision_state`` to seed the
-per-bar collision context (tool RBs + env_*/active_* RBs + ACM via
-``configure_active_assembly_acm``), then builds the four movements via
-``core.bar_action.build_bar_assembly_action`` and writes them to
-``<root>/BarActions/<bar_id>.json`` using ``compas.json_dump``.
+per-bar collision context (tool RBs + env_*/active_* RBs), then builds the
+four movements via ``core.bar_action.build_bar_assembly_action`` and writes
+them to ``<root>/BarActions/<bar_id>.json`` using ``compas.json_dump``.
 
 Side effect: ``prepare_assembly_collision_state`` registers env bars +
 arm-tool RBs into ``rcell.rigid_body_models`` (cached). A subsequent

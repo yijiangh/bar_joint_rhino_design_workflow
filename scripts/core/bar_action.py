@@ -713,9 +713,9 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
 
     Side effects:
     - `prepare_assembly_collision_state` registers env+arm-tool RBs onto
-      `rcell.rigid_body_models` and `configure_active_assembly_acm` on the
-      returned state. We treat that as the M1/M2 collision template and
-      clone+mutate it for each of the four movements.
+      `rcell.rigid_body_models`. We treat the returned state as the
+      collision template and clone+mutate it for each of the four
+      movements.
     - `_register_full_assembly_geom` then registers EVERY bar + joint onto
       `rcell.rigid_body_models` so a subsequent `RSExportRobotCell` writes a
       state-independent cell. To keep the per-movement states' workpiece
@@ -785,11 +785,10 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     env_geom = canonicalize_env_geom(env_geom)
 
     # 5d) Per design: every movement starts with EMPTY ACM. Wipe whatever
-    # `prepare_assembly_collision_state` (configure_active_assembly_acm) and
-    # any prior ShowIK/IK call on the cached cell left here. Earlier versions
-    # opted contacts back in per-movement; that masked real collisions (see
-    # tasks/cc_lessons.md). Investigate flagged contacts case by case; do
-    # not preemptively whitelist.
+    # upstream (or any prior ShowIK/IK call on the cached cell) may have
+    # left here. Earlier versions opted contacts back in per-movement;
+    # that masked real collisions (see tasks/cc_lessons.md). Investigate
+    # flagged contacts case by case; do not preemptively whitelist.
     for _rb in template_state.rigid_body_states.values():
         _rb.touch_bodies = []
     for _ts in (template_state.tool_states or {}).values():

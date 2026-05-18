@@ -1006,9 +1006,6 @@ def _prepare_collision_template_state(
     template_state = env_collision.build_env_state(template_state, env_geom)
     # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
     robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
-    # Whitelist intentional design contacts: active joint <-> mating env joint,
-    # active bodies <-> arm tool RBs.
-    env_collision.configure_active_assembly_acm(template_state, arm_tool_rb_names)
     print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
     return template_state, env_geom
 

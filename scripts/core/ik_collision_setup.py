@@ -149,3 +149,118 @@ def prepare_assembly_collision_state(rcell, planner, template_state, bar_id):
     # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
     robot_cell.configure_arm_tool_rigid_body_states(state, arm_tool_rb_names)
     return state, env_geom
+
+
+def compute_assembly_allowed_touches(env_geom, arm_to_male):
+    """Compute the 5 legitimate-contact pairs for the active assembly.
+
+    Returns ``{rb_name: [other_rb_name, ...]}`` suitable for merging into
+    ``state.rigid_body_states[rb_name].touch_bodies``.
+
+    Partner names use the SAME naming scheme present in ``env_geom``
+    (active_* if any active_* keys are present, else canonical bar_/joint_).
+    Tool RB names are stable.
+    """
+    from core.robot_cell import ARM_TOOL_RB_NAMES
+    from core import bar_action
+
+    if not env_geom:
+        return {}
+
+    has_active_prefix = any(
+        k.startswith(bar_action.ACTIVE_RB_BAR_PREFIX)
+        or k.startswith(bar_action.ACTIVE_RB_JOINT_PREFIX)
+        for k in env_geom
+    )
+    if has_active_prefix:
+        bar_prefix = bar_action.ACTIVE_RB_BAR_PREFIX
+        joint_prefix = bar_action.ACTIVE_RB_JOINT_PREFIX
+    else:
+        bar_prefix = bar_action.CANONICAL_BAR_PREFIX
+        joint_prefix = bar_action.CANONICAL_JOINT_PREFIX
+
+    if has_active_prefix:
+        active_bar_keys = [k for k in env_geom if k.startswith(bar_action.ACTIVE_RB_BAR_PREFIX)]
+    else:
+        active_bar_keys = [
+            k for k in env_geom
+            if k.startswith(bar_action.CANONICAL_BAR_PREFIX) and not k.startswith("bar_env_")
+        ]
+    if not active_bar_keys:
+        print("compute_assembly_allowed_touches: no active bar key found in env_geom; returning {}.")
+        return {}
+    if len(active_bar_keys) > 1:
+        raise ValueError(
+            f"compute_assembly_allowed_touches: multiple active bar keys: {active_bar_keys}"
+        )
+    active_bar_key = active_bar_keys[0]
+
+    out = {}
+    left_rb = ARM_TOOL_RB_NAMES["left"]
+    right_rb = ARM_TOOL_RB_NAMES["right"]
+    out.setdefault(left_rb, []).append(active_bar_key)
+    out.setdefault(right_rb, []).append(active_bar_key)
+
+    for jid, arm in arm_to_male.items():
+        male_key = f"{joint_prefix}{jid}_male"
+        female_key = f"{joint_prefix}{jid}_female"
+        if male_key not in env_geom:
+            print(f"compute_assembly_allowed_touches: male key {male_key!r} missing from env_geom; skipping.")
+            continue
+        tool_rb = ARM_TOOL_RB_NAMES.get(arm)
+        if tool_rb is None:
+            print(f"compute_assembly_allowed_touches: unknown arm {arm!r} for joint {jid}; skipping.")
+            continue
+        out.setdefault(tool_rb, []).append(male_key)
+        if female_key in env_geom:
+            out.setdefault(male_key, []).append(female_key)
+        else:
+            print(f"compute_assembly_allowed_touches: female sibling {female_key!r} missing; skipping mate-pair.")
+
+    for k, lst in out.items():
+        seen = set()
+        out[k] = [x for x in lst if not (x in seen or seen.add(x))]
+    return out
+
+
+def apply_allowed_touches(state, allowed_dict):
+    """Merge ``allowed_dict`` into ``state.rigid_body_states[name].touch_bodies``.
+
+    Unions existing entries with new partners. Prints a warning when
+    ``rb_name`` is missing from ``state``. Mutates ``state`` in place.
+    Returns the number of (rb_name, partner) pairs newly added.
+    """
+    added = 0
+    rb_states = getattr(state, "rigid_body_states", None) or {}
+    for rb_name, partners in (allowed_dict or {}).items():
+        rb = rb_states.get(rb_name)
+        if rb is None:
+            print(f"apply_allowed_touches: rigid_body_state {rb_name!r} not in state; skipping.")
+            continue
+        existing = set(rb.touch_bodies or [])
+        for p in partners:
+            if p not in existing:
+                existing.add(p)
+                added += 1
+        rb.touch_bodies = sorted(existing)
+    return added
+
+
+def build_assembly_ik_state(rcell, planner, template_state, bar_id):
+    """Shared IK/MP collision-state builder for assembling ``bar_id``.
+
+    Pipeline: prepare_assembly_collision_state -> _classify_male_joints_per_arm
+    -> compute_assembly_allowed_touches -> apply_allowed_touches.
+
+    State uses active_*/env_* naming (NOT canonicalized); downstream
+    ``canonicalize_state`` remaps touch_bodies entries correctly.
+
+    Returns ``(state, env_geom, arm_to_male, allowed)``.
+    """
+    from core import bar_action
+
+    state, env_geom = prepare_assembly_collision_state(rcell, planner, template_state, bar_id)
+    arm_to_male = bar_action._classify_male_joints_per_arm(bar_id)
+    allowed = compute_assembly_allowed_touches(env_geom, arm_to_male)
+    apply_allowed_touches(state, allowed)
+    return state, env_geom, arm_to_male, allowed

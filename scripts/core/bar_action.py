@@ -750,16 +750,13 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
     tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
 
-    # 4) Joint -> arm classifier (joint_id keyed).
-    arm_to_male = _classify_male_joints_per_arm(bar_id)
-
-    # 5) Build slim base state, then run upstream collision-state prep.
+    # 4) Build slim base state, then run upstream collision-state prep.
     # NOTE: do NOT seed slim_state.robot_configuration from payload["assembled"]
     # here — every Mi builder writes its own robot_configuration (HOME for M1,
     # approach for M2, assembled for M3, None for M4), so seeding is dead.
     slim_state = robot_cell.default_cell_state()
     _set_robot_base_frame(slim_state, base_frame_world_mm)
-    template_state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
+    template_state, env_geom, arm_to_male, _allowed = ik_collision_setup.build_assembly_ik_state(
         rcell, planner, slim_state, bar_id,
     )
 
@@ -783,16 +780,6 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
 
     canonicalize_state(template_state)
     env_geom = canonicalize_env_geom(env_geom)
-
-    # 5d) Per design: every movement starts with EMPTY ACM. Wipe whatever
-    # upstream (or any prior ShowIK/IK call on the cached cell) may have
-    # left here. Earlier versions opted contacts back in per-movement;
-    # that masked real collisions (see tasks/cc_lessons.md). Investigate
-    # flagged contacts case by case; do not preemptively whitelist.
-    for _rb in template_state.rigid_body_states.values():
-        _rb.touch_bodies = []
-    for _ts in (template_state.tool_states or {}).values():
-        _ts.touch_bodies = []
 
     # 5e) Per design: the template_state's active bar/joint rigid bodies have
     # NO meaningful frame. Every Mi rewrites it via `_attach_active_bar_to_arm`

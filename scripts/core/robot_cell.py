@@ -543,9 +543,12 @@ def extract_group_config(state, group: str, robot_cell) -> dict:
 # as `collision_filename`) is attached to the corresponding arm's
 # `*_ur_arm_tool0` link as a `compas_fab.robots.RigidBody`.
 #
-# Per-tool OBJs are authored to start at tool0 and NOT extend back into
-# the wrist, so any tool<->wrist contact is a real bad pose we want IK to
-# catch. Touch_links is intentionally empty for both arms.
+# Each arm's tool collision OBJ slightly extends back into the wrist
+# (the tool body is mounted on top of the wrist flange, and the proximal
+# end of the OBJ overlaps wrist_2/wrist_3). Whitelist those two wrist
+# links so the unavoidable static overlap is not flagged as a collision;
+# any tool<->wrist_1 (or further back) contact remains a real bad pose
+# that IK should reject.
 
 ARM_TOOL_RB_NAMES = {
     "left": "AssemblyLeftArmToolBody",

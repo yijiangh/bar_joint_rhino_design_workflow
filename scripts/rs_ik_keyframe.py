@@ -53,6 +53,7 @@ from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
+from core import ik_collision_setup as _ik_collision_setup_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core.rhino_bar_pick import pick_bar
@@ -84,13 +85,14 @@ IK_ASSEMBLY_KEY = "ik_assembly"
 
 
 def _reload_runtime_modules():
-    global capture_io, config, dynamic_preview, env_collision, highlight_env, ik_viz, robot_cell
+    global capture_io, config, dynamic_preview, env_collision, highlight_env, ik_collision_setup, ik_viz, robot_cell
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
     env_collision = importlib.reload(_env_collision_module)
     highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
+    ik_collision_setup = importlib.reload(_ik_collision_setup_module)
     capture_io = importlib.reload(_capture_io_module)
 
 
@@ -585,33 +587,6 @@ def _preview_robot_at_base(planner, template_state, base_frame_mm, mesh_mode):
     ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
 
 
-def _resolve_tool_collision_paths(left_tool_oid, right_tool_oid):
-    """Return (left_path, right_path) absolute filesystem paths to the per-arm
-    tool collision OBJs declared in `core/robotic_tools.json`.
-
-    Empty string for an arm whose tool entry has no `collision_filename`.
-    """
-    out = {"left": "", "right": ""}
-    for side, oid in (("left", left_tool_oid), ("right", right_tool_oid)):
-        tname = rs.GetUserText(oid, "tool_name") or ""
-        if not tname:
-            print(f"RSIKKeyframe: {side} tool block has no 'tool_name' user-text; cannot look up collision OBJ.")
-            continue
-        try:
-            tooldef = get_robotic_tool(tname)
-        except KeyError as exc:
-            print(f"RSIKKeyframe: {exc}; skipping collision attach for {side} arm.")
-            continue
-        path = tooldef.collision_path()
-        if not path:
-            print(
-                f"RSIKKeyframe: tool '{tname}' has no 'collision_filename' in robotic_tools.json; "
-                f"skipping collision attach for {side} arm."
-            )
-        out[side] = path
-    return out["left"], out["right"]
-
-
 def _hide_inactive_tool_blocks(active_bar_id):
     """Hide every tool-instance whose joint isn't on `active_bar_id`. Returns
     a list of oids that were actually hidden (so caller can restore).
@@ -981,32 +956,19 @@ def _prepare_collision_template_state(
     planner,
     template_state,
     target_bar_id,
-    left_tool_oid,
-    right_tool_oid,
+    left_tool_oid,  # noqa: ARG001 -- kept for caller-side logging; resolved internally via target_bar_id
+    right_tool_oid,  # noqa: ARG001
 ):
-    # ---- Per-arm tool collision rigid bodies (one-shot per cell).
-    left_collision_path, right_collision_path = _resolve_tool_collision_paths(
-        left_tool_oid, right_tool_oid
+    # Delegate to the shared assembly IK state builder. This matches the
+    # collision context used by `core.bar_action.build_bar_assembly_action`
+    # for M2/M3 planner-export states, including the 5 allowed-touch pairs
+    # for legitimate physical contacts (tool<->held workpiece, mating
+    # joint halves). See `core.ik_collision_setup.build_assembly_ik_state`.
+    template_state, env_geom, _arm_to_male, allowed = ik_collision_setup.build_assembly_ik_state(
+        rcell, planner, template_state, target_bar_id,
     )
-    arm_tool_rb_names = robot_cell.attach_arm_tool_rigid_bodies(
-        rcell,
-        planner,
-        left_collision_path=left_collision_path,
-        right_collision_path=right_collision_path,
-        native_scale=0.001,
-    )
-    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
-
-    env_geom = env_collision.collect_built_geometry(target_bar_id, get_bar_seq_map())
-    # Include the active bar + its joints so they are visible in the cell
-    # preview AND included in collision checks (matches ShowIK behavior).
-    active_geom = env_collision.collect_active_geometry(target_bar_id, get_bar_seq_map())
-    env_geom.update(active_geom)
-    robot_cell.ensure_env_registered(rcell, env_geom, planner)
-    template_state = env_collision.build_env_state(template_state, env_geom)
-    # `build_env_state` returns a fresh copy; re-apply tool-RB attachments.
-    robot_cell.configure_arm_tool_rigid_body_states(template_state, arm_tool_rb_names)
     print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
+    print(f"RSIKKeyframe: allowed-touch pairs applied = {sum(len(v) for v in allowed.values())}")
     return template_state, env_geom
 
 

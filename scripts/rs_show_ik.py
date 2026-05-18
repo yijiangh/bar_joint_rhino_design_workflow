@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import os
 import sys
 
@@ -497,11 +498,21 @@ class _PreviewSession:
                 f"({type(exc).__name__}: {exc}); aborting."
             )
             return
+        self._run_collision_check_on_state(state, env_geom, verbose=True)
+
+    def _run_collision_check_on_state(self, state, env_geom, *, verbose: bool) -> int:
+        """Push ``state`` to the planner, run a full-report collision check,
+        and red-highlight the offending links / tools / rigid bodies.
+
+        Returns the number of colliding pairs (0 if none). Used by both the
+        one-shot ``check_collision`` command and the InteractiveCollisionCheck
+        jog dialog (which calls this on every slider tick).
+        """
         try:
             robot_cell.set_cell_state(self.planner, state)
         except Exception as exc:
             print(f"RSShowIK: set_cell_state failed ({exc}); aborting.")
-            return
+            return 0
 
         from compas_fab.backends import CollisionCheckError
 
@@ -510,15 +521,17 @@ class _PreviewSession:
             self.planner.check_collision(
                 state, options={"full_report": True, "verbose": False}
             )
-            print("RSShowIK: CheckCollision -- no collisions detected.")
-            return
+            if verbose:
+                print("RSShowIK: CheckCollision -- no collisions detected.")
+            return 0
         except CollisionCheckError as exc:
             collision_pairs = list(getattr(exc, "collision_pairs", []) or [])
-            for line in str(exc).splitlines():
-                print(f"RSShowIK: COLLISION -- {line}")
+            if verbose:
+                for line in str(exc).splitlines():
+                    print(f"RSShowIK: COLLISION -- {line}")
         except Exception as exc:
             print(f"RSShowIK: check_collision raised {type(exc).__name__}: {exc}")
-            return
+            return 0
 
         # Resolve names from the (Link/Tool/RigidBody) pairs.
         link_names = set()
@@ -537,6 +550,7 @@ class _PreviewSession:
                 else:  # RigidBody
                     rb_names.add(name)
 
+        rcell = robot_cell.get_or_load_robot_cell()
         red = (255, 40, 40)
         oids_to_highlight = []
 
@@ -561,10 +575,76 @@ class _PreviewSession:
                 oids_to_highlight.append(payload["source_oid"])
 
         self._apply_highlight(oids_to_highlight, red)
-        print(
-            f"RSShowIK: CheckCollision -- {len(collision_pairs)} colliding pair(s); "
-            f"highlighted {len(self._highlight_oids)} object(s)."
-        )
+        if verbose:
+            print(
+                f"RSShowIK: CheckCollision -- {len(collision_pairs)} colliding pair(s); "
+                f"highlighted {len(self._highlight_oids)} object(s)."
+            )
+        return len(collision_pairs)
+
+    # ---- interactive jog dialog ---------------------------------------
+
+    def interactive_collision_check(self):
+        """Open a modal Eto dialog with one slider per configurable joint.
+
+        Every slider tick mutates the prepared collision state's
+        ``robot_configuration``, pushes it to the planner + Rhino preview,
+        and re-runs the same collision check used by ``CheckCollision`` so
+        the user can intentionally jog the robot into known bad poses and
+        confirm that offenders light up red.
+
+        On dialog close the highlights are cleared but the last jogged
+        configuration is left in place. Use ``TogglePose`` (Enter) to
+        snap back to a saved IK pose.
+        """
+        if self._last_assembly_state is None or self.active_bar_id is None:
+            print(
+                "RSShowIK: pick a bar with an IK record and let it render first "
+                "(no _last_assembly_state); InteractiveCollisionCheck aborted."
+            )
+            return
+        self._revert_highlight()
+
+        rcell = robot_cell.get_or_load_robot_cell()
+        try:
+            state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
+                rcell, self.planner, self._last_assembly_state, self.active_bar_id
+            )
+        except Exception as exc:
+            print(
+                f"RSShowIK: prepare_assembly_collision_state failed "
+                f"({type(exc).__name__}: {exc}); aborting."
+            )
+            return
+
+        joint_specs = []  # list of (group, name, lower_rad, upper_rad)
+        for group in (config.LEFT_GROUP, config.RIGHT_GROUP):
+            try:
+                names = list(rcell.get_configurable_joint_names(group))
+            except Exception as exc:
+                print(f"RSShowIK: get_configurable_joint_names({group!r}) failed ({exc}); skipping group.")
+                continue
+            for name in names:
+                joint = None
+                try:
+                    joint = rcell.robot_model.get_joint_by_name(name)
+                except Exception:
+                    joint = None
+                lim = getattr(joint, "limit", None) if joint is not None else None
+                lo = float(getattr(lim, "lower", -math.pi)) if lim is not None else -math.pi
+                hi = float(getattr(lim, "upper",  math.pi)) if lim is not None else  math.pi
+                if hi <= lo:
+                    lo, hi = -math.pi, math.pi
+                joint_specs.append((group, name, lo, hi))
+
+        if not joint_specs:
+            print("RSShowIK: no configurable joints found; aborting InteractiveCollisionCheck.")
+            return
+
+        _run_collision_jog_dialog(self, state, env_geom, joint_specs)
+        # Dialog closed: drop highlights, leave the jogged configuration as-is.
+        self._revert_highlight()
+        print("RSShowIK: InteractiveCollisionCheck closed.")
 
     def _apply_highlight(self, oids, rgb):
         if not oids:
@@ -606,6 +686,213 @@ class _PreviewSession:
 # ---------------------------------------------------------------------------
 
 
+def _run_collision_jog_dialog(session, state, env_geom, joint_specs):
+    """Open a modal Eto dialog of per-joint sliders for `state.robot_configuration`.
+
+    Each slider tick:
+      1. writes the slider's joint value (radians) into ``state.robot_configuration``;
+      2. pushes the state to the planner;
+      3. updates the cached Rhino preview via ``ik_viz.update_state``;
+      4. runs ``session._run_collision_check_on_state`` to re-highlight offenders.
+
+    ``joint_specs`` is a list of ``(group, joint_name, lower_rad, upper_rad)``.
+    Sliders are integer 0..1000 mapped linearly onto each joint's [lower, upper]
+    range; the value label shows degrees with one decimal.
+    """
+    import Eto.Forms as forms
+    import Eto.Drawing as drawing
+
+    # Eto control constructors don't accept keyword args under Rhino's CPython
+    # PythonNet host (TypeError "No overload ... takes '0' arguments"). Use
+    # tiny helpers that construct then assign.
+    def _label(text):
+        lbl = forms.Label()
+        lbl.Text = text
+        return lbl
+
+    def _button(text):
+        btn = forms.Button()
+        btn.Text = text
+        return btn
+
+    SLIDER_STEPS = 1000
+
+    def slider_value_to_rad(value, lo, hi):
+        return lo + (hi - lo) * (float(value) / SLIDER_STEPS)
+
+    def rad_to_slider_value(rad, lo, hi):
+        if hi <= lo:
+            return 0
+        v = (float(rad) - lo) / (hi - lo)
+        return int(round(max(0.0, min(1.0, v)) * SLIDER_STEPS))
+
+    dlg = forms.Dialog[bool]()
+    dlg.Title = f"Interactive Collision Check - bar {session.active_bar_id}"
+    dlg.Padding = drawing.Padding(8)
+    dlg.Resizable = True
+    dlg.MinimumSize = drawing.Size(520, 360)
+
+    status_label = _label("Move a slider to jog the robot.")
+    pair_count_label = _label("Collisions: -")
+
+    layout = forms.DynamicLayout()
+    layout.Spacing = drawing.Size(6, 4)
+    layout.BeginVertical()
+
+    # Header row.
+    layout.AddRow(_label("Joint"), _label("Jog"), _label("Value (deg)"))
+
+    # Track widgets to allow a "Reset" button to snap sliders back to the
+    # starting configuration (the IK pose currently rendered).
+    initial_values = {}
+    sliders_by_name = {}
+    value_labels = {}
+
+    # Reusable mode list for ik_viz updates.
+    modes = (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION)
+
+    def make_handler(name, lo, hi, val_label):
+        def handler(_sender, _args):
+            slider = sliders_by_name[name]
+            rad = slider_value_to_rad(slider.Value, lo, hi)
+            try:
+                state.robot_configuration[name] = float(rad)
+            except Exception as exc:  # noqa: BLE001
+                status_label.Text = f"set {name}={rad:.3f} failed: {exc}"
+                return
+            val_label.Text = f"{math.degrees(rad):+7.1f}"
+
+            rs.EnableRedraw(False)
+            try:
+                try:
+                    ik_viz.update_state(
+                        state, mesh_modes=modes, layer_key=IK_LAYER_KEY_ASSEMBLY
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status_label.Text = f"ik_viz.update_state failed: {exc}"
+                    return
+                # Drop previous highlights before re-checking so cleared bodies
+                # don't stay red across ticks.
+                session._revert_highlight()
+                n = session._run_collision_check_on_state(
+                    state, env_geom, verbose=False
+                )
+            finally:
+                rs.EnableRedraw(True)
+                try:
+                    sc.doc.Views.Redraw()
+                except Exception:
+                    pass
+
+            pair_count_label.Text = (
+                "Collisions: 0 (clear)" if n == 0 else f"Collisions: {n} colliding pair(s)"
+            )
+            status_label.Text = f"{name} = {math.degrees(rad):+.1f} deg ({rad:+.3f} rad)"
+        return handler
+
+    cur_group = None
+    for (group, name, lo, hi) in joint_specs:
+        if group != cur_group:
+            layout.AddRow(_label(f"-- {group} --"))
+            cur_group = group
+
+        try:
+            cur_rad = float(state.robot_configuration[name])
+        except Exception:
+            cur_rad = 0.0
+        cur_rad = max(lo, min(hi, cur_rad))
+        initial_values[name] = cur_rad
+
+        slider = forms.Slider()
+        slider.MinValue = 0
+        slider.MaxValue = SLIDER_STEPS
+        slider.Value = rad_to_slider_value(cur_rad, lo, hi)
+        slider.Width = 260
+        sliders_by_name[name] = slider
+
+        val_label = _label(f"{math.degrees(cur_rad):+7.1f}")
+        val_label.Width = 70
+        value_labels[name] = val_label
+
+        slider.ValueChanged += make_handler(name, lo, hi, val_label)
+
+        # Compact joint label: drop the long group prefix where possible.
+        short = name.split("_", 2)[-1] if name.startswith(("left_", "right_")) else name
+        side = "L" if name.startswith("left_") else ("R" if name.startswith("right_") else "?")
+        joint_label = _label(f"[{side}] {short}")
+        joint_label.Width = 170
+
+        layout.AddRow(joint_label, slider, val_label)
+
+    layout.AddRow(None)  # spacer
+    layout.AddRow(status_label)
+    layout.AddRow(pair_count_label)
+
+    reset_btn = _button("Reset to current pose")
+    verbose_btn = _button("Verbose check (dump pairs)")
+    close_btn = _button("Close")
+
+    def on_reset(_sender, _args):
+        for name, rad in initial_values.items():
+            slider = sliders_by_name[name]
+            # Find this joint's lo/hi so we can map back; small linear search.
+            spec = next(s for s in joint_specs if s[1] == name)
+            _, _, lo, hi = spec
+            slider.Value = rad_to_slider_value(rad, lo, hi)
+            # ValueChanged fires from the assignment above and updates state.
+
+    def on_verbose(_sender, _args):
+        # One-shot full CC dump: enumerates every CC.1..CC.5 pair with
+        # PASS / COLLISION / SKIPPED reason. Use to verify that
+        # AssemblyLeftArmToolBody / AssemblyRightArmToolBody actually get
+        # paired against env_bar_* / env_joint_* in CC.4.
+        print("=" * 78)
+        print("RSShowIK: InteractiveCollisionCheck -- VERBOSE DUMP")
+        print("Look for CC.4 lines mentioning 'AssemblyLeftArmToolBody' / "
+              "'AssemblyRightArmToolBody'.")
+        print("=" * 78)
+        try:
+            n = session._run_collision_check_on_state(
+                state, env_geom, verbose=True
+            )
+            pair_count_label.Text = (
+                "Collisions: 0 (clear)" if n == 0 else f"Collisions: {n} colliding pair(s)"
+            )
+            status_label.Text = f"verbose dump complete -- see Rhino command log"
+        except Exception as exc:  # noqa: BLE001
+            status_label.Text = f"verbose check failed: {exc}"
+
+    def on_close(_sender, _args):
+        dlg.Close(True)
+
+    reset_btn.Click += on_reset
+    verbose_btn.Click += on_verbose
+    close_btn.Click += on_close
+    layout.AddRow(reset_btn, verbose_btn, close_btn)
+    layout.EndVertical()
+    dlg.Content = layout
+    dlg.AbortButton = close_btn
+
+    # Run an initial check so the pair-count label is meaningful even before
+    # any slider is moved.
+    try:
+        n0 = session._run_collision_check_on_state(state, env_geom, verbose=False)
+        pair_count_label.Text = (
+            "Collisions: 0 (clear)" if n0 == 0 else f"Collisions: {n0} colliding pair(s)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        pair_count_label.Text = f"initial check failed: {exc}"
+
+    try:
+        parent = Rhino.UI.RhinoEtoApp.MainWindow
+    except Exception:
+        parent = None
+    if parent is None:
+        dlg.ShowModal()
+    else:
+        dlg.ShowModal(parent)
+
+
 def _resolve_pick_to_bar(picked_obj_id):
     """Resolve a clicked oid (centerline curve or tube preview) to
     ``(bar_id, bar_curve_oid)`` or ``(None, None)``."""
@@ -631,6 +918,7 @@ def _build_get_option(session):
     go.AddOption("TogglePose")
     go.AddOption("MeshMode")
     go.AddOption("CheckCollision")
+    go.AddOption("InteractiveCollisionCheck")
     if session.show_unbuilt:
         go.AddOption("HideUnbuilt")
     else:
@@ -694,6 +982,8 @@ def main() -> None:
                     session.cycle_mesh_mode()
                 elif name == "CheckCollision":
                     session.check_collision()
+                elif name == "InteractiveCollisionCheck":
+                    session.interactive_collision_check()
                 elif name in ("ShowUnbuilt", "HideUnbuilt"):
                     session.toggle_unbuilt()
                 continue

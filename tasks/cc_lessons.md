@@ -704,28 +704,16 @@ For RSGroundPlace, the user-facing "flip" = reverse the block's X axis along the
 
 ---
 
-## Per-movement ACM scoping in BarAssemblyAction export (M1-M4)
+## BarAction ACM starts EMPTY — do not preemptively whitelist by-design contacts
 
-The bar-action export pipeline (`scripts/core/bar_action.py::build_bar_assembly_action`) does NOT use the template-level `configure_active_assembly_acm` whitelist. After canonicalizing the start state, it CLEARS every `rigid_body_states[*].touch_bodies` and then each per-movement builder (`_build_m1` / `_build_m2` / `_build_m3` / `_build_m4`) opts in ONLY the contacts that are by-design for THAT movement, scoped to the active bar.
+`build_bar_assembly_action` wipes every `rigid_body_states[*].touch_bodies` and every `tool_states[*].touch_bodies` on the canonicalized template (the two-loop inline wipe at step 5d). Each Mi builder inherits an empty ACM via `template_state.copy()` and adds NOTHING back. No per-movement matrix.
 
-**Why.** The template snapshot says "everything that will touch sometime during the whole action is whitelisted everywhere" — which over-permits. M1 (arm reaches in with bar + held joints, mate not yet engaged) must still flag spurious mate↔female contact; only M2 (the snap moment) and M3 (held against mate) should whitelist mate-pair touch. The user's framing: *"the template cell state should only contain the relationship of the tool and the robot, the two tools in the two arms. The rest of the explicit exceptions should be made per movement."*
-
-**Per-Mi whitelist matrix (this bar's keys only):**
-
-| Movement | bar↔arm-tool RB | bar↔this bar's joints | male↔matching-arm tool RB | mate (male↔female) pair |
-|---|---|---|---|---|
-| M1 reach   | ✓ | ✓ | ✓ | ✗ |
-| M2 snap    | ✓ | ✓ | ✓ | ✓ |
-| M3 hold    | ✓ | ✓ | ✓ | ✓ |
-| M4 retract | ✗ | ✗ | ✗ | ✗ |
-
-Tools↔stationary env-bar/env-joint contacts are auto-skipped by `_skip_collision_check` (stationary↔hidden / stationary↔stationary) — never whitelist them.
+**Why.** An earlier per-Mi matrix opted in `bar↔arm-tool`, `bar↔this-bar's joints`, `male↔matching-arm tool`, and (for M2/M3) `mate-pair` contacts as "by-design". In practice the whitelists masked a real B6 robot-tool ↔ joint collision: compas_fab logged it as `SKIPPED (ALLOWED TOUCH BODY)` even though the trajectory pose was genuinely interpenetrating. Any preemptive whitelist over-permits — and the resulting silent "pass" hides bugs in the tool OBJ, IK seed, or joint mesh.
 
 **How to apply.**
-- Use `_clear_all_touch_bodies(state)` after canonicalize; never inherit upstream `touch_bodies`.
-- Use `_touch_pair(state, a, b)` for every intentional contact (mutates both sides).
-- Drive the per-Mi opt-in via `_apply_per_movement_acm(state, *, bar_key, jids, arm_to_male, arm_tool_rb_names, whitelist_bar_tools=…, whitelist_bar_joints=…, whitelist_male_tools=…, whitelist_mates=…)` with the matrix above.
-- Wrist↔anything is NEVER in this matrix. If a real M2 pose needs the wrist into the joint, fix the tool OBJ (or the IK seed), not the ACM.
+- After `canonicalize_state(template_state)`, wipe every `rigid_body_states[*].touch_bodies` AND every `tool_states[*].touch_bodies`. Do NOT inherit upstream `touch_bodies` set by `prepare_assembly_collision_state → configure_active_assembly_acm`, and do NOT rely on prior ShowIK/IK leaving the right state on the cached cell.
+- If a collision report flags a contact you believe is by-design, fix the *geometry* — shrink the tool OBJ, adjust the IK seed, or revise the joint mesh — not the ACM.
+- Tools↔stationary env-bar/env-joint contacts are still auto-skipped by `compas_fab`'s `_skip_collision_check` (stationary↔hidden / stationary↔stationary). Those skip rules are correct and shared — they're separate from the empty-touch_bodies policy here.
 
 ---
 

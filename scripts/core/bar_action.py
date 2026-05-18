@@ -455,6 +455,28 @@ def _detach_active_to_assembled_world(state, active_keys, env_geom: dict) -> Non
         _detach_to_world(state, payload["frame_world_mm"], key)
 
 
+def _strip_mate_pair_touch_bodies(state, arm_to_male: dict) -> None:
+    """Remove male<->female mate-pair entries from ``state.rigid_body_states``.
+
+    `compute_assembly_allowed_touches` whitelists each male/female pair (and
+    the bar<->female pair) so the IK solver and M2 (linear mate -> assembled)
+    tolerate contact at the mated pose. M1 (home -> approach) ends with the
+    joint halves still apart, so those pairs should not be advertised as
+    allowed touches on M1's state copy. Bar<->male is kept (always-bonded
+    rigid pair), bar<->female and male<->female are stripped.
+    """
+    for jid in arm_to_male:
+        male_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
+        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        male_rb = state.rigid_body_states.get(male_key)
+        if male_rb is not None and male_rb.touch_bodies:
+            male_rb.touch_bodies = [t for t in male_rb.touch_bodies if t != female_key]
+        # Also drop bar<->female (only legitimate once joint halves are mated).
+        for k, rb in state.rigid_body_states.items():
+            if k.startswith(CANONICAL_BAR_PREFIX) and rb.touch_bodies:
+                rb.touch_bodies = [t for t in rb.touch_bodies if t != female_key]
+
+
 def _build_m1(
     template_state,
     bar_id: str,
@@ -482,6 +504,10 @@ def _build_m1(
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
     )
+    # M1 ends at the approach pose: joint halves are still apart, so the
+    # male<->female and bar<->female mate-pair allowances inherited from the
+    # template state must not be advertised on this movement.
+    _strip_mate_pair_touch_bodies(state, arm_to_male)
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
         tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
     )

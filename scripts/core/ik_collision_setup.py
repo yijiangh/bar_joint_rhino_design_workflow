@@ -212,8 +212,17 @@ def compute_assembly_allowed_touches(env_geom, arm_to_male):
             print(f"compute_assembly_allowed_touches: unknown arm {arm!r} for joint {jid}; skipping.")
             continue
         out.setdefault(tool_rb, []).append(male_key)
+        # Rigid-bond pair: each joint half is fixed to the active bar's
+        # centerline by design (the half-joint blocks live on the bar's
+        # local OCF). They will always overlap the bar's tube geometry, so
+        # whitelist bar<->male and bar<->female across all movements.
+        out.setdefault(active_bar_key, []).append(male_key)
         if female_key in env_geom:
+            # Mate pair (male <-> female) only legitimate at the assembled
+            # pose. M1 (home -> approach) must strip it back out --
+            # see `core.bar_action.MATE_PAIR_TOUCH_BODY_KEYS`.
             out.setdefault(male_key, []).append(female_key)
+            out.setdefault(active_bar_key, []).append(female_key)
         else:
             print(f"compute_assembly_allowed_touches: female sibling {female_key!r} missing; skipping mate-pair.")
 

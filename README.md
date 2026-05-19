@@ -16,38 +16,39 @@ pairs are authored interactively in Rhino with `RSDefineJointHalf` /
 stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
 assets in `asset/`.
 
-## Setup
+## Rhino 8 Workshop Install (Start Here)
 
-### Rhino 8
+### 1. Get the repository onto your machine
 
-Each Rhino entry-point script declares its own virtual environment and
-requirements via ScriptEditor directives, so no manual install is
-required:
+Use either option:
 
-| Toolbar | Button | Script | Purpose |
-|---------|--------|--------|---------|
-| **RSDesign** | RSBarSnap | `rs_bar_snap.py` | Snap a new bar onto an existing bar at contact distance |
-| **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
-| **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer and editor |
-| **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks; auto-assigns female/male by sequence, click to flip orientation |
-| **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point (auto-jr aligns block +Y to world up) |
-| **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair by clicking female or male block to flip orientation |
-| **RSDesign** | RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint (reverts on exit) |
-| **RSDesign** | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe (pick 2 male joints, solve IK, save on shared Ln bar) |
-| **RSDesign** | RSShowIK | `rs_show_ik.py` | Replay a saved IK keyframe on a picked bar |
-| **RSSetup** | RSBakeFrame | `rs_bake_frame.py` | Bake named CAD reference frames into the document |
-| **RSSetup** | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector geometry to `config_generated.py` |
-| **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure closest distance between two line segments |
-| **RSSetup** | RSExportCase | `rs_export_case.py` | Export a T1-S2 optimization case to JSON for testing |
-| **RSSetup** | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint OCF → tool0 and bar-grasp → tool0 transforms (IK keyframe workflow) |
-| **RSSetup** | RSPBStart | `rs_pb_start.py` | Start the shared PyBullet client used by IK workflows |
-| **RSSetup** | RSPBStop | `rs_pb_stop.py` | Disconnect the shared PyBullet client |
-| **RSMoCap** | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one OptiTrack rigid body's labeled markers and bake them as points on the `MoCap_Retrieval` layer |
-| **RSMoCap** | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit three model bars to three baked mocap lines and rigid-transform all managed-layer geometry to that pose |
+- **Clone with Git**
 
-These scripts do not require PyBullet. They only need `numpy` and `scipy`.
+  ```bash
+  git clone https://github.com/<org>/bar_joint_rhino_design_workflow.git
+  ```
 
-**No manual pip install is needed.** Each script declares its own virtual environment and requirements using Rhino 8 ScriptEditor directives:
+- **Download ZIP** from GitHub, then unzip it to a local folder (for example, inside Documents).
+
+Example install location:
+
+`C:\Users\<your-user>\Documents\bar_joint_rhino_design_workflow`
+
+### 2. Configure Rhino 8
+
+1. Open **Tools -> Options -> Files -> Search Paths**.
+2. Add the repository's `scripts` folder.
+   Example:
+   `C:\Users\<your-user>\Documents\bar_joint_rhino_design_workflow\scripts`
+3. Open **Tools -> Toolbars -> File -> Open Toolbar File...**.
+4. Select `scaffolding_toolbar.rui` from the repository root.
+5. Show and dock the **RSDesign** and **RSSetup** toolbars.
+
+### 3. Run any toolbar command once
+
+**No manual pip install is needed for Rhino usage.** Each Rhino entry-point
+script declares its own virtual environment and requirements using Rhino 8
+ScriptEditor directives:
 
 ```python
 #! python 3
@@ -61,7 +62,7 @@ shared `scaffolding_env` venv and installs the required packages. If the
 install ever fails, reset via **Tools → Advanced → Reset Python 3
 (CPython) Runtime** in the ScriptEditor and re-run.
 
-### Optional (tests only)
+## Setup (Robotic workflows and tests)
 
 ### Submodule dependencies for the IK workflow
 
@@ -102,188 +103,27 @@ python -m pytest -q
 See [docs/coordinate_conventions.md](docs/coordinate_conventions.md) for
 the bar/block frame conventions and
 [docs/rhino_toolbar_entrypoints.md](docs/rhino_toolbar_entrypoints.md)
-for the toolbar mapping.
+for the canonical Rhino entrypoint reference:
 
-### Install the toolbar
+- one complete toolbar button table (toolbar/button/script/primary use)
+- detailed per-entrypoint behavior and prerequisites
+- manual ScriptEditor macro pattern (`! _-ScriptEditor _R "rs_<name>.py"`)
 
-1. **Tools → Options → Files → Search Paths**: add the `scripts/` folder
-   so Rhino can resolve the entry-point scripts by filename.
-2. **Tools → Toolbars → File → Open Toolbar File…**: open
-   `scaffolding_toolbar.rui`.
-3. Show the **RSDesign** and **RSSetup** toolbars and dock them.
+### Typical design loop
 
-### Toolbar entry points
+1. Create or import bars.
+2. Snap/brace bars and assign sequence.
+3. Place and edit joints.
+4. Run IK keyframe tools when needed.
+5. Export debug or prefab artifacts as needed.
 
-| Toolbar | Button | Script | Purpose |
-|---------|--------|--------|---------|
-| **RSDesign** | RSCreateBar | `rs_create_bar.py` | Create a registered bar from two picked points |
-| **RSDesign** | RSBarSnap | `rs_bar_snap.py` | Snap a new bar onto an existing bar at the pair's contact distance |
-| **RSDesign** | RSBarBrace | `rs_bar_brace.py` | Add a brace bar between two bars (interactive solution picker) |
-| **RSDesign** | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly-sequence viewer/editor |
-| **RSDesign** | RSJointPlace | `rs_joint_place.py` | Place connector blocks on a bar pair; click to flip orientation |
-| **RSDesign** | RSGroundPlace | `rs_ground_place.py` | Anchor a ground joint to a bar at a picked point |
-| **RSDesign** | RSJointEdit | `rs_joint_edit.py` | Re-edit a placed joint pair |
-| **RSDesign** | RSBarEdit | `rs_bar_edit.py` | Color bars by length, select-by-length, batch resize about midpoint |
-| **RSSetup** | RSDefineJointHalf | `rs_define_joint_half.py` | Define ONE joint half (Male / Female / Ground) from baked Rhino geometry |
-| **RSSetup** | RSDefineJointMate | `rs_define_joint_mate.py` | Define a mate between two existing joint halves |
-| **RSSetup** | RSMeasureGap | `rs_measure_gap.py` | Measure shortest distance between two bars |
-| **RSSetup** | RSUpdatePreview | `rs_update_preview.py` | Refresh all bar tube previews |
-| **RSSetup** | RSReorderBarID | `rs_reorder_bar_id.py` | Renumber every bar so `B<n>` matches assembly seq `n`; cascades to joint / ground / tool IDs |
-| **RSSetup** | RSExportPrefab | `rs_export_prefab.py` | Export bar prefabrication data as JSON |
+### Blank-canvas quick start
 
-### Defining joint halves and mates
-
-The joint registry (`scripts/core/joint_pairs.json`) is normalized into
-three tables: `halves` (per block_name), `mates` (named female+male
-relationships), and `ground_joints` (single-half anchors to the world).
-
-`RSDefineJointHalf` defines ONE half:
-
-1. Choose `Male`, `Female`, or `Ground`.
-2. Pick the block instance and its representative bar axis line.
-3. (Male/Female only) Pick the screw axis line and screw center point.
-4. Enter the half name. For Male/Female the name MUST equal the block
-   definition name; for Ground it is the ground-joint key.
-5. The script exports `asset/<block_name>.3dm` and a single-mesh collision
-   `asset/<block_name>.obj` (millimetres), then upserts the half into the
-   registry.
-
-`RSDefineJointMate` then defines the relationship:
-
-1. Pick the female block + female bar axis, then the male block + male bar axis.
-2. Enter the mate name.
-3. The script looks up both halves by `block_name` (must already exist),
-   computes `contact_distance_mm` from the two bar lines, prompts
-   Accept/Edit/Cancel, and persists the mate. Half geometry is left
-   untouched.
-
-After this, the new mate name appears as a `Pair` option whenever
-`RSBarSnap`, `RSBarBrace`, or `RSJointPlace` prompt for the first bar.
-Pick a bar directly to use the cached default pair, or click the `Pair`
-option to switch.
-
-### Design loop
-
-- **RSBarSnap** — pick `Le` (with optional `Pair` option), then `Ln`;
-  `Ln` is translated so the line-to-line contact distance matches the
-  selected pair.
-- **RSBarBrace** — pick two bars and two contact points; click one of
-  the colored candidate brace bars in the viewport. Use
-  `SlidePointOn1` / `SlidePointOn2` to re-pick contact points.
-- **RSJointPlace** — pick any two registered bars; the bar with the
-  lower assembly sequence is auto-assigned female (`Le`), the later one
-  male (`Ln`). The optimizer solves 4 assembly variants; click the
-  female or male block to toggle its orientation. Press Enter or type
-  `Accept` to bake. Missing block definitions are auto-imported from
-  `asset/<block_name>.3dm`.
-- **RSJointEdit** — click any previously placed female/male block to
-  re-open the orientation session for that joint pair.
-
-### Test file
-
-- Start from `HalfJointV7_template.3dm` when testing the Rhino 8 workflow.
-- It already contains the frame annotations expected by `rs_export_config.py`.
-- It also contains ready-made `FemaleLinkBlock` and `MaleLinkBlock` definitions authored at the world origin in the OCF convention expected by the joint-placement workflow, so RSJointPlace works out of the box.
-- If you move this workflow into another Rhino file, you only need to bring over block definitions with the same block names.
-- Re-run **RSExportConfig** whenever the joint definition changes, or when adapting the workflow to a new joint family.
-
-### Button list
-
-The RUI file already wires these up. If you prefer manual buttons, each macro is just:
-
-```text
-! _-ScriptEditor _R "rs_<name>.py"
-```
-
-Rhino resolves the filename via Search Paths (set up above).
-
-#### RSBakeFrame (`rs_bake_frame.py`)
-
-- Prompts for a frame name, origin, a point on `+X`, and a point on the `+Y` side.
-- Reconstructs a right-handed orthogonal frame from those picks.
-- Bakes grouped RGB axis lines plus an optional text dot label.
-- Use this to create the six named CAD reference frames that feed the exporter.
-
-#### RSExportConfig (`rs_export_config.py`)
-
-- Reads the baked Rhino frame groups and reconstructs the CAD-backed transforms.
-- Computes `BAR_CONTACT_DISTANCE` from the shortest-distance segment between `le_bar_link` and `ln_bar_link`.
-- Writes `scripts/core/config_generated.py` and `scripts/core/cad_frames_snapshot.json`.
-- Expected frame names: `le_bar_link`, `female_link`, `female_screw_hole_link`, `male_screw_hole_link`, `male_link`, `ln_bar_link`.
-
-#### RSBarSnap (`rs_bar_snap.py`)
-
-- Pick an existing bar `Le` and a new bar `Ln`; the script translates `Ln` so the line-to-line contact distance matches `BAR_CONTACT_DISTANCE`.
-- Deterministic, single result.
-
-#### RSBarBrace (`rs_bar_brace.py`)
-
-- Pick two existing bars and two contact points; the script previews candidate brace bars as colored tubes.
-- Click a tube in the viewport to select that solution, or use `SlidePointOn1` / `SlidePointOn2` to re-pick contact points and re-solve.
-
-#### RSJointPlace (`rs_joint_place.py`)
-
-- Pick any two registered bars; the bar with the lower assembly sequence is automatically assigned female (Le), the later one male (Ln).
-- The optimizer solves 4 assembly variants; the best-residual variant is shown first.
-- **Click the female block** to toggle female orientation; **click the male block** to toggle male orientation.
-- Press Enter or type `Accept` to bake the chosen configuration.
-
-#### RSJointEdit (`rs_joint_edit.py`)
-
-- Click any previously placed female or male joint block to re-open the interactive orientation session for that joint pair.
-- The stored `le_rev` / `ln_rev` state is read from the block's user-text, so the session resumes exactly where it was left.
-- Same click-to-flip interaction as RSJointPlace; Enter or `Accept` writes the updated blocks.
-
-#### RSBarEdit (`rs_bar_edit.py`)
-
-- On entry, scans every registered bar and groups them by rounded length (1 mm bins). Each length group gets a distinct HSV-spaced color; centerline + tube preview are painted together. Temporary text dots at every bar midpoint show `bar_id` and length.
-- `SelectByLength` option lists the available length groups. Picking one selects every matching bar (curve + tube) in the document.
-- `ResizeSelected` prompts for a new length and shortens/elongates each currently-selected bar about its midpoint, then regenerates the tube preview and refreshes the color/label scheme. Only straight-line bars are modified in place; curved bars are skipped with a warning.
-- `Refresh` recomputes groups and dots after manual edits.
-- `Exit` (or Esc) removes the dots, restores by-layer colors, and **preserves the current Rhino selection** so a length-filtered selection can be carried into the next command.
-
-#### RSMeasureGap (`rs_measure_gap.py`)
-
-- Computes the shortest segment between two finite Rhino line objects.
-- Draws that segment (or a point if they intersect) and stores the measured distance in object user text.
-
-#### RSExportCase (`rs_export_case.py`)
-
-- Exports the current T1-S2 selection as a JSON debug case for replay outside Rhino.
-
-#### RSExportGraspTool0TF (`rs_export_grasp_tool0_tf.py`)
-
-- Top-level mode prompt: `Joint` or `Gripper`.
-- **Joint** mode: prompts for a joint type string (default `T20_Male`) and arm side (`left`/`right`), then picks one baked male-joint frame group followed by one baked tool0 frame group. Computes `tf = inverse(male_ocf) @ tool0_frame` and merges into `MALE_JOINT_OCF_TO_TOOL0[joint_type][arm_side]`.
-- **Gripper** mode: prompts for a gripper kind (default `Robotiq`), then picks one baked bar-grasp frame group (origin on bar centerline, Z along bar) followed by one baked tool0 frame group. Computes `tf = inverse(bar_grasp) @ tool0_frame` and merges into `BAR_GRASP_TO_TOOL0[gripper_kind]`.
-- Both dicts live in `scripts/core/config_generated_ik.py`. Re-running either mode preserves the other dict and other entries within the same dict.
-- Needed once per joint type/arm before running the dual-arm IK keyframe workflow, and once per gripper kind before running the support-arm IK keyframe workflow.
-
-#### RSPBStart / RSPBStop (`rs_pb_start.py`, `rs_pb_stop.py`)
-
-- RSPBStart launches a shared PyBullet client (GUI or Direct), loads the dual-arm Husky URDF/SRDF, and caches the client + planner in `scriptcontext.sticky`.
-- Subsequent IK scripts (RSIKKeyframe, RSShowIK) reuse this same client across multiple invocations to avoid reloading geometry.
-- RSPBStop disconnects it.
-- Requires the `external/compas_fab` submodule checked out (see "Submodule dependencies for the IK workflow" above) plus the PyPI extras `compas`, `compas_robots`, `pybullet`, `pybullet_planning` (Rhino auto-installs these via `# r:`).
-
-#### RSIKKeyframe (`rs_ik_keyframe.py`)
-
-- Prerequisite: RSPBStart must have been run, and `MALE_JOINT_OCF_TO_TOOL0` must contain an entry for each picked joint's `joint_type` (populate via RSExportGraspTool0TF in Joint mode).
-- Prerequisite: Rhino document contains at least one Brep on layer `WalkableGround`.
-- Workflow:
-  1. Pick the left arm male joint block, then the right arm male joint block. Both must share `male_parent_bar` (the new Ln bar being assembled).
-  2. A live mesh preview shows the robot + tool at the derived tool0 frames so collisions can be visually inspected (via `core.dynamic_preview`; no blocks are baked).
-  3. Pick a base point snapped to a Brep in `WalkableGround`; the Brep face normal defines the base Z-axis. Pick a second point for the base +X heading.
-  4. Prompt for collision options (self, environment).
-  5. IK solves the final target; if unreachable, samples base positions in a disc of radius `IK_BASE_SAMPLE_RADIUS` around the pick (each re-snapped to the same Brep) up to `IK_BASE_SAMPLE_MAX_ITER` attempts.
-  6. Repeats for the approach target, offset by `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE`.
-  7. On `Accept`, serializes `ik_assembly` (robot id, base frame in world mm, `final` + `approach` per-group configs) as JSON user-text on the shared Ln bar axis line. Preview meshes are always cleared at end of run.
-
-#### RSShowIK (`rs_show_ik.py`)
-
-- Prerequisite: RSPBStart must have been run.
-- Pick any bar carrying an `ik_assembly` user-text record; the script rebuilds the robot cell state and displays it via `core.ik_viz`.
-- Prompt: `final` (default) or `approach` to toggle which sub-record is shown.
+- Start from a new empty Rhino file.
+- Draw one simple line (for example with the `Line` command).
+- Run **RSCreateBar** to register that line as your first bar and generate its preview.
+- Draw a second line and repeat **RSCreateBar** if you want to test **RSBarSnap** and **RSBarBrace** next.
+- Use joint-definition tools only after you author or import matching block definitions for your chosen joint family.
 
 ## Standalone Developer Tools
 
@@ -434,48 +274,74 @@ python -m pytest -q --viz        # with matplotlib visualisations
 
 ## Project Structure
 
+This is a curated map of the files that matter most when learning or extending the project.
+
 ```text
-asset/                          # Block definition .3dm assets (per joint pair)
+scaffolding_toolbar.rui                 # Rhino toolbar buttons/macros
+docs/rhino_toolbar_entrypoints.md       # Canonical table of toolbar -> script mapping + detailed command behavior
+
 scripts/
   core/
-    config.py                  # Public config entry point
-    config_generated.py        # Auto-generated CAD geometry from Rhino
-    config_generated_ik.py     # Auto-generated IK transforms (MALE_JOINT_OCF_TO_TOOL0)
-    geometry.py                # Line-line distance math and S2-T1 solving
-    kinematics.py              # FK and joint placement optimization
-    ik_viz.py                  # Rhino-side cache for the dual-arm robot scene preview
-    rhino_frame_io.py          # Shared helpers to reconstruct baked Rhino frame groups
-    robot_cell.py              # Dual-arm Husky cell load + PyBullet lifecycle + IK helpers
-    t1_s2_case_export.py       # Shared JSON payload builder for T1-S2 debug cases
-    transforms.py              # Shared frame/transform helpers
-  rs_bake_frame.py             # Rhino: bake a named frame from picked points
-  rs_bar_snap.py               # Rhino: snap a new bar onto an existing bar
-  rs_bar_brace.py              # Rhino: add a brace bar between two bars
-  rs_joint_place.py            # Rhino: place connector blocks on a bar pair
-  rs_export_config.py          # Rhino: export CAD-backed fixed transforms
-  rs_export_case.py            # Rhino: export a reproducible T1-S2 solver case as JSON
-  rs_export_grasp_tool0_tf.py  # Rhino: export male-joint OCF -> tool0 and bar-grasp -> tool0 transforms for IK
-  rs_pb_start.py               # Rhino: start the shared PyBullet client (GUI / Direct)
-  rs_pb_stop.py                # Rhino: disconnect the shared PyBullet client
-  rs_ik_keyframe.py            # Rhino: dual-arm IK keyframe workflow (main)
-  rs_show_ik.py                # Rhino: replay a saved IK keyframe
-  rs_measure_gap.py            # Rhino: shortest segment between two finite lines
-  generate_urdf.py             # Standalone: generate URDF from CAD-backed config
-  pb_viz_urdf_static.py        # Standalone: static labeled PyBullet viewer
-  pybullet_viewer.py           # Standalone: interactive PyBullet viewer
+    config.py                           # Runtime config + sanitized access to generated values
+    joint_pair.py                       # Core data model: JointHalfDef, GroundJointDef, JointPairDef, JointRegistry
+    joint_pairs.json                    # Joint registry data authored from Rhino
+    rhino_bar_registry.py               # Bar registry CRUD + bar metadata in Rhino user text
+    geometry.py                         # Core geometry and S2-T1 solver utilities
+    joint_pair_solver.py                # Pair-specific joint solving utilities
+    joint_placement.py                  # Joint placement computation and bake helpers
+    ground_placement.py                 # Ground-joint placement logic
+    robot_cell.py                       # Dual-arm robot cell bootstrap + planner access
+    robot_cell_support.py               # Support-arm robot cell helpers
+    env_collision.py                    # Environment collision geometry collection/registration
+    ik_collision_setup.py               # Allowed-touch and IK collision-state preparation
+    ik_viz.py                           # Rhino visualization cache/session for IK scenes
+    bar_action.py                       # Movement/BarAssemblyAction builders for export workflows
+    robotic_tool.py                     # Robotic tool registry helpers
+    capture_io.py                       # Persist/reload IK captures
+
+  # Main Rhino entry points used most often in workshops
+  rs_create_bar.py
+  rs_bar_snap.py
+  rs_bar_brace.py
+  rs_sequence_edit.py
+  rs_joint_place.py
+  rs_joint_edit.py
+  rs_ground_place.py
+  rs_bar_edit.py
+  rs_define_joint_half.py
+  rs_define_joint_mate.py
+  rs_update_preview.py
+  rs_reorder_bar_id.py
+  rs_export_prefab.py
+  rs_measure_gap.py
+  rs_pb_start.py
+  rs_pb_stop.py
+  rs_ik_keyframe.py
+  rs_ik_support_keyframe.py
+  rs_show_ik.py
+
+  # Planning/export and mocap entry points
+  rs_export_bar_action.py
+  rs_export_all_bar_actions.py
+  rs_export_robotcell.py
+  rs_read_mocap_bar.py
+  rs_align_model_three_bars.py
+
 tests/
   test_geometry.py
   test_s2_t1.py
-  test_t1_s2_case_export.py
-  test_urdf_chain.py
-  viz_helpers.py               # Shared visualization helpers for --viz mode
-support_materials/
-  FrameX/                      # Reference codebase (git submodule)
-  papers/                      # Research papers
-  specs.pdf                    # Design specifications
+  test_joint_pair_roundtrip.py
+  test_three_bar_scene.py
+  test_export_grasp_tool0_tf_writer.py
+
 external/
-  compas_fab/                  # Pinned wip_process branch (git submodule) — loaded via sys.path in core/robot_cell.py
-  rs_data_structure/           # Shared Movement / BarAssemblyAction schema (git submodule) — loaded via sys.path in core/bar_action.py
+  compas_fab/                           # IK/planning dependency (git submodule)
+  rs_data_structure/                    # Shared Movement / BarAssemblyAction schema (git submodule)
+
 asset/
-  husky_urdf/                  # Husky URDF/SRDF/meshes (git submodule)
+  *.3dm                                 # Joint/block assets used by placement workflows
+  husky_urdf/                           # Robot description assets used by IK workflows
 ```
+
+For the full list of Rhino commands and what each one does, see
+[docs/rhino_toolbar_entrypoints.md](docs/rhino_toolbar_entrypoints.md).

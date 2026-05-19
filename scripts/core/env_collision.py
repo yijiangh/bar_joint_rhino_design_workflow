@@ -426,6 +426,21 @@ def collect_active_geometry(active_bar_id, bar_seq_map):
     print(
         f"core.env_collision.collect_active_geometry: {len(out)} bodies for bar {active_bar_id}"
     )
+    if out:
+        active_bar_key = f"{ACTIVE_RB_BAR_PREFIX}{active_bar_id}"
+        if active_bar_key in out:
+            bar_payload = out[active_bar_key]
+            print(
+                f"  > {active_bar_key}: frame_origin={bar_payload['frame_world_mm'][:3,3]} "
+                f"source_oid={bar_payload['source_oid']}"
+            )
+        for key in sorted(out.keys()):
+            if key.startswith(ACTIVE_RB_JOINT_PREFIX):
+                payload = out[key]
+                print(
+                    f"  > {key}: block={payload.get('block_name')} "
+                    f"frame_origin={payload['frame_world_mm'][:3,3]}"
+                )
     return out
 
 

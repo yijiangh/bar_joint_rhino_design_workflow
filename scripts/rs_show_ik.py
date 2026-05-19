@@ -382,12 +382,21 @@ class _PreviewSession:
             payload["base_frame_world_mm"], groups, self.deps
         )
         try:
-            state, _env_geom = ik_collision_setup.prepare_assembly_collision_state(
-                rcell, self.planner, state, self.active_bar_id
+            print(f"RSShowIK._render: calling build_assembly_ik_state for bar {self.active_bar_id}")
+            state, env_geom, _arm_to_male, _allowed = (
+                ik_collision_setup.build_assembly_ik_state(
+                    rcell, self.planner, state, self.active_bar_id
+                )
             )
+            # Debug: verify active bar/joint in env_geom
+            active_keys = [k for k in env_geom.keys() if k.startswith(("active_bar_", "active_joint_"))]
+            print(f"RSShowIK._render: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
+            for ak in sorted(active_keys):
+                payload_info = env_geom[ak]
+                print(f"  > {ak}: source_oid={payload_info.get('source_oid')}")
         except Exception as exc:
             print(
-                f"RSShowIK: prepare_assembly_collision_state failed "
+                f"RSShowIK: build_assembly_ik_state failed "
                 f"({type(exc).__name__}: {exc}); rendering robot only."
             )
 
@@ -489,12 +498,21 @@ class _PreviewSession:
         # which is exactly what was causing IK keyframe to fail while
         # ShowIK reported "no collisions".
         try:
-            state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
-                rcell, self.planner, self._last_assembly_state, self.active_bar_id
+            print(f"RSShowIK.check_collision: calling build_assembly_ik_state for bar {self.active_bar_id}")
+            state, env_geom, _arm_to_male, _allowed = (
+                ik_collision_setup.build_assembly_ik_state(
+                    rcell, self.planner, self._last_assembly_state, self.active_bar_id
+                )
             )
+            # Debug: verify active bar/joint in env_geom
+            active_keys = [k for k in env_geom.keys() if k.startswith(("active_bar_", "active_joint_"))]
+            print(f"RSShowIK.check_collision: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
+            for ak in sorted(active_keys):
+                payload_info = env_geom[ak]
+                print(f"  > {ak}: source_oid={payload_info.get('source_oid')}")
         except Exception as exc:
             print(
-                f"RSShowIK: prepare_assembly_collision_state failed "
+                f"RSShowIK: build_assembly_ik_state failed "
                 f"({type(exc).__name__}: {exc}); aborting."
             )
             return
@@ -508,6 +526,16 @@ class _PreviewSession:
         one-shot ``check_collision`` command and the InteractiveCollisionCheck
         jog dialog (which calls this on every slider tick).
         """
+        # Debug: show active bar's touch_bodies whitelist
+        rb_states = getattr(state, "rigid_body_states", None) or {}
+        active_bar_keys = [k for k in rb_states.keys() if k.startswith("active_bar_")]
+        for ab_key in active_bar_keys:
+            ab_state = rb_states[ab_key]
+            touch_list = getattr(ab_state, "touch_bodies", None) or []
+            print(
+                f"RSShowIK._run_collision_check_on_state: {ab_key} whitelist={sorted(touch_list)}"
+            )
+        
         try:
             robot_cell.set_cell_state(self.planner, state)
         except Exception as exc:
@@ -607,12 +635,21 @@ class _PreviewSession:
 
         rcell = robot_cell.get_or_load_robot_cell()
         try:
-            state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
-                rcell, self.planner, self._last_assembly_state, self.active_bar_id
+            print(f"RSShowIK.interactive_collision_check: calling build_assembly_ik_state for bar {self.active_bar_id}")
+            state, env_geom, _arm_to_male, _allowed = (
+                ik_collision_setup.build_assembly_ik_state(
+                    rcell, self.planner, self._last_assembly_state, self.active_bar_id
+                )
             )
+            # Debug: verify active bar/joint in env_geom
+            active_keys = [k for k in env_geom.keys() if k.startswith(("active_bar_", "active_joint_"))]
+            print(f"RSShowIK.interactive_collision_check: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
+            for ak in sorted(active_keys):
+                payload_info = env_geom[ak]
+                print(f"  > {ak}: source_oid={payload_info.get('source_oid')}")
         except Exception as exc:
             print(
-                f"RSShowIK: prepare_assembly_collision_state failed "
+                f"RSShowIK: build_assembly_ik_state failed "
                 f"({type(exc).__name__}: {exc}); aborting."
             )
             return

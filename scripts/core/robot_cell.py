@@ -42,6 +42,15 @@ _STICKY_PB_CLIENT = "bar_joint:pb_client"
 _STICKY_PB_PLANNER = "bar_joint:pb_planner"
 _STICKY_CURRENT_CELL_KIND = "bar_joint:current_cell_kind"  # "dual_arm" | "support"
 _STICKY_ENV_GEOM = "bar_joint:env_geom"
+# Static-cell snapshot: the full canonical assembly (bars + joints + obstacles)
+# + tool models, built once by `rebuild_assembly_cell` (RSRebuildRobotCell) and
+# reused by every per-command `ensure_assembly_cell`. Plus a cheap fingerprint
+# for the staleness warning. Tied to the PB session -> cleared on stop_pb_client.
+_STICKY_ASSEMBLY_SNAPSHOT = "bar_joint:assembly_cell_snapshot"
+_STICKY_ASSEMBLY_FINGERPRINT = "bar_joint:assembly_cell_fingerprint"
+# Fingerprint the user explicitly chose to "Proceed" with at a staleness prompt,
+# so we don't re-prompt on every command until the geometry changes again.
+_STICKY_ASSEMBLY_STALE_ACK = "bar_joint:assembly_cell_stale_ack"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +141,7 @@ def import_compas_stack():
     from compas_robots.resources import LocalPackageMeshLoader  # noqa: F401
     from compas_fab.robots import RobotCell, RobotSemantics  # noqa: F401
     from compas_fab.robots import RigidBody, RigidBodyState  # noqa: F401
+    from compas_fab.robots import ToolState  # noqa: F401
     from compas_fab.backends import PyBulletClient, PyBulletPlanner  # noqa: F401
     from compas_fab.robots import FrameTarget, TargetMode  # noqa: F401
     import pybullet_planning as pp  # noqa: F401
@@ -150,6 +160,7 @@ def import_compas_stack():
         "RobotSemantics": RobotSemantics,
         "RigidBody": RigidBody,
         "RigidBodyState": RigidBodyState,
+        "ToolState": ToolState,
         "PyBulletClient": PyBulletClient,
         "PyBulletPlanner": PyBulletPlanner,
         "FrameTarget": FrameTarget,
@@ -197,10 +208,9 @@ def _pose_from_frame(frame):
 def get_or_load_robot_cell():
     """Return a cached `RobotCell`, loading URDF/SRDF + geometry on first call.
 
-    Per-tool collision geometry is NOT attached here. Tools are registered
-    on demand by `attach_arm_tool_rigid_bodies` (per-arm RigidBody from
-    `core/robotic_tools.json`); IK still runs self/env collision without
-    them.
+    Per-tool geometry and the assembly bodies are NOT attached here. They are
+    registered by `rebuild_assembly_cell` (RSRebuildRobotCell): arm tools as
+    `ToolModel`s and bars/joints/obstacles as canonical rigid bodies.
     """
     cached = _STICKY.get(_STICKY_ROBOT_CELL)
     if cached is not None:
@@ -269,8 +279,8 @@ def start_pb_client(use_gui: bool = False, verbose: bool = True):
 
     # Defensive: re-run the submodule purge-and-reload every RSPBStart, so
     # edits to this file or a stale sys.modules entry from a sibling repo
-    # cannot cause a silent shadowing. Idempotent when our copy is already
-    # the resolved one.
+    # cannot cause a silent shadowing. Does nothing when our copy is
+    # already the resolved one.
     _ensure_submodule_compas_fab_loaded(verbose=True)
 
     deps = _import_compas_stack()
@@ -310,6 +320,10 @@ def stop_pb_client():
         _STICKY.pop(_STICKY_PB_CLIENT, None)
         _STICKY.pop(_STICKY_PB_PLANNER, None)
         _STICKY.pop(_STICKY_ENV_GEOM, None)
+        # Static-cell snapshot is tied to this PB session's registered bodies.
+        _STICKY.pop(_STICKY_ASSEMBLY_SNAPSHOT, None)
+        _STICKY.pop(_STICKY_ASSEMBLY_FINGERPRINT, None)
+        _STICKY.pop(_STICKY_ASSEMBLY_STALE_ACK, None)
         # Bar/joint mesh + RigidBody caches built by core.env_collision are
         # tied to the PB client lifecycle -- clear them so the next RSPBStart
         # rebuilds against possibly-edited bar curves / re-exported joint OBJs.
@@ -405,8 +419,8 @@ def ensure_env_registered(robot_cell, env_geom, planner):
     the cell to the planner if anything changed.
 
     ``env_geom`` comes from ``core.env_collision.collect_built_geometry``.
-    Idempotent: if the same geometry was registered last call, this is a
-    no-op (does not call ``planner.set_robot_cell``).
+    If the same geometry was registered last call, this does nothing (it
+    does not call ``planner.set_robot_cell``).
     """
     from core import env_collision
 
@@ -536,150 +550,366 @@ def extract_group_config(state, group: str, robot_cell) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Per-arm tool collision rigid bodies
+# Static assembly cell: ToolModels + canonical bar/joint/obstacle registry
 # ---------------------------------------------------------------------------
 #
-# Each placed tool's collision OBJ (declared in `core/robotic_tools.json`
-# as `collision_filename`) is attached to the corresponding arm's
-# `*_ur_arm_tool0` link as a `compas_fab.robots.RigidBody`.
-#
-# Each arm's tool collision OBJ slightly extends back into the wrist
-# (the tool body is mounted on top of the wrist flange, and the proximal
-# end of the OBJ overlaps wrist_2/wrist_3). Whitelist those two wrist
-# links so the unavoidable static overlap is not flagged as a collision;
-# any tool<->wrist_1 (or further back) contact remains a real bad pose
-# that IK should reject.
+# compas_fab model: `rigid_body_models` / `tool_models` are a STATIC geometry
+# registry; per-step facts live in the RobotCellState. The assembly cell is
+# (re)built explicitly by `rebuild_assembly_cell` (the RSRebuildRobotCell
+# button); every per-command entry calls `ensure_assembly_cell`, which reuses
+# the cached snapshot (building once on first use, warning if the document
+# geometry changed since the last rebuild).
 
-ARM_TOOL_RB_NAMES = {
-    "left": "AssemblyLeftArmToolBody",
-    "right": "AssemblyRightArmToolBody",
-}
-_ARM_TOOL_LINKS = {
-    "left": "left_ur_arm_tool0",
-    "right": "right_ur_arm_tool0",
-}
-_ARM_TOOL_TOUCH_LINKS = {
+_ARM_TOOL_WRIST_TOUCH_LINKS = {
     "left": ["left_ur_arm_wrist_2_link", "left_ur_arm_wrist_3_link"],
     "right": ["right_ur_arm_wrist_2_link", "right_ur_arm_wrist_3_link"],
+    # TODO to be safe, we start with only allow tool to touoch wrist 3 link
+    # but indeed the assembly v3 tool is very close to be in collision with wrist 2, only 2 mm gap
+    # "left": ["left_ur_arm_wrist_3_link"],
+    # "right": ["right_ur_arm_wrist_3_link"],
 }
 
 
-def attach_arm_tool_rigid_bodies(robot_cell, planner, *,
-                                 left_collision_path,
-                                 right_collision_path,
-                                 native_scale=1.0):
-    """Register per-arm tool collision OBJs as `RigidBody`s on `robot_cell.rigid_body_models`.
+def _arm_side_from_tool_name(tool_name):
+    """Classify an arm side from a tool name's L/R suffix.
 
-    Idempotent on (rigid-body name, source path): re-runs that point at
-    the same OBJ are no-ops. If anything changed, re-pushes the cell to
-    the planner so the new collision geometry is in PyBullet's world.
+    Rhino-free duplicate of ``ik_collision_setup._arm_side_from_tool_name`` so
+    this module stays headless-importable (that module imports rhinoscriptsyntax
+    at top).
 
-    Parameters
-    ----------
-    robot_cell : compas_fab.robots.RobotCell
-    planner    : compas_fab PyBulletPlanner
-    left_collision_path  : str  -- absolute path to the left-arm tool OBJ;
-                                   pass an empty/missing path to skip.
-    right_collision_path : str  -- as above.
-    native_scale : float -- mesh.scale(native_scale) -> meters. OBJs
-        exported in mm need 0.001; OBJs already in meters use 1.0
-        (default).
+    Args:
+        tool_name (str): e.g. ``"AT3L"`` / ``"AT3R"``.
 
-    Returns
-    -------
-    dict {"left": rb_name | None, "right": rb_name | None}
-        Names actually registered on the cell, ready to be wired into a
-        state via ``configure_arm_tool_rigid_body_states``.
+    Returns:
+        str | None: ``"left"`` for an 'L' suffix, ``"right"`` for 'R', else
+        ``None``.
     """
+    if not tool_name:
+        return None
+    last = str(tool_name).strip()[-1].upper()
+    if last == "L":
+        return "left"
+    if last == "R":
+        return "right"
+    return None
+
+
+def arm_tool_ids():
+    """Map each arm side to its tool id from the registry.
+
+    The tool id is the registry name (e.g. ``AT3L``/``AT3R``); side is the
+    L/R name suffix. Headless-safe (reads ``robotic_tools.json`` only).
+
+    Returns:
+        dict: ``{"left": tool_id | None, "right": tool_id | None}``.
+    """
+    from core.robotic_tool import load_robotic_tools
+
+    out = {"left": None, "right": None}
+    for name in load_robotic_tools():
+        side = _arm_side_from_tool_name(name)
+        if side in out and out[side] is None:
+            out[side] = name
+    return out
+
+
+def build_arm_tool_models():
+    """Build the two arm-tool ``ToolModel``s straight from ``robotic_tools.json``.
+
+    Picks the registry tool whose name ends in 'L' and the one ending in 'R'
+    (exactly one of each is required), loads each tool's collision OBJ as the
+    tool geometry, and sets ``tool_model.frame`` from the registry's
+    ``M_tcp_from_block`` (which, despite its name, holds ``tool0_from_tcp`` --
+    the TCP expressed in the flange/block frame; see `core.robotic_tool`).
+
+    Headless-safe (no Rhino).
+
+    Returns:
+        dict: ``{tool_id: ToolModel}`` keyed by the registry tool name
+        (e.g. ``AT3L`` / ``AT3R``).
+
+    Raises:
+        RuntimeError: if there isn't exactly one left + one right tool, or a
+            tool's collision OBJ is missing.
+    """
+    from core.robotic_tool import load_robotic_tools
+
     deps = _import_compas_stack()
     Mesh = deps["Mesh"]
-    RigidBody = deps["RigidBody"]
-    side_paths = (("left", left_collision_path), ("right", right_collision_path))
-    registered = {"left": None, "right": None}
-    changed = False
-    for side, path in side_paths:
-        name = ARM_TOOL_RB_NAMES[side]
-        if not path or not os.path.isfile(path):
-            print(
-                f"core.robot_cell.attach_arm_tool_rigid_bodies: {side}-arm "
-                f"collision OBJ missing -> {path!r}; skipping (IK will run "
-                "without tool-vs-anything collision for this arm)."
+    ToolModel = deps["ToolModel"]
+    Frame = deps["Frame"]
+    Transformation = deps["Transformation"]
+
+    tools = load_robotic_tools()
+    by_side = {"left": [], "right": []}
+    for name, tdef in tools.items():
+        side = _arm_side_from_tool_name(name)
+        if side in by_side:
+            by_side[side].append(tdef)
+
+    out = {}
+    for side in ("left", "right"):
+        defs = by_side[side]
+        if len(defs) != 1:
+            raise RuntimeError(
+                f"build_arm_tool_models: expected exactly one {side}-arm tool "
+                f"(name ending {side[0].upper()!r}); found {[d.name for d in defs]}. "
+                "Define tools with RSDefineRoboticTool."
             )
-            continue
-        existing = robot_cell.rigid_body_models.get(name)
-        if existing is not None and getattr(existing, "_loaded_from", None) == path:
-            registered[side] = name
-            v_count = sum(m.number_of_vertices() for m in (existing.visual_meshes or []))
-            c_count = sum(m.number_of_vertices() for m in (existing.collision_meshes or []))
-            print(
-                f"core.robot_cell.attach_arm_tool_rigid_bodies: reusing '{name}' "
-                f"(visual verts={v_count}, collision verts={c_count})"
+        tdef = defs[0]
+        col_path = tdef.collision_path()
+        if not col_path or not os.path.isfile(col_path):
+            raise RuntimeError(
+                f"build_arm_tool_models: collision OBJ missing for tool "
+                f"{tdef.name!r}: {col_path!r}."
             )
-            continue
-        print(
-            f"core.robot_cell.attach_arm_tool_rigid_bodies: Mesh.from_obj({path!r}) "
-            f"(native_scale={native_scale})"
+        mesh = Mesh.from_obj(col_path)
+        mesh.scale(0.001)  # OBJ exported in mm -> meters
+        # M_tcp_from_block == tool0_from_tcp (block baked at the flange). Use as-is.
+        tcp_frame = _mm_matrix_to_m_frame(Frame, np.asarray(tdef.M_tcp_from_block, dtype=float))
+        tool_model = ToolModel(None, tcp_frame, None, tdef.name)
+        tool_model.add_link(
+            "attached_tool_link", visual_meshes=[mesh], collision_meshes=[mesh]
         )
-        mesh = Mesh.from_obj(path)
-        rb = RigidBody(visual_meshes=[mesh], collision_meshes=[mesh],
-                       native_scale=native_scale)
+        tool_model._rebuild_tree()
+        tool_model._create(tool_model.root, Transformation())
         print(
-            f"core.robot_cell.attach_arm_tool_rigid_bodies: built '{name}' "
-            f"({mesh.number_of_vertices()}v/{mesh.number_of_faces()}f), "
-            f"visual_meshes={len(rb.visual_meshes or [])}, "
-            f"collision_meshes={len(rb.collision_meshes or [])}"
+            f"core.robot_cell.build_arm_tool_models: built ToolModel {tdef.name!r} "
+            f"({mesh.number_of_vertices()}v) for {side} arm"
         )
-        try:
-            rb._loaded_from = path
-        except AttributeError:
-            pass
-        robot_cell.rigid_body_models[name] = rb
-        registered[side] = name
-        changed = True
-    if changed:
-        print(
-            "core.robot_cell.attach_arm_tool_rigid_bodies: arm-tool RBs changed "
-            "-> planner.set_robot_cell(<dual-arm>)"
-        )
-        planner.set_robot_cell(robot_cell)
-    return registered
+        out[tdef.name] = tool_model
+    return out
 
 
-def configure_arm_tool_rigid_body_states(state, registered):
-    """Attach the arm-tool rigid bodies to their tool0 links on `state`.
+def base_assembly_cell_state():
+    """Default cell state with the arm ToolModels attached to their arm groups.
 
-    `registered` is the dict returned by ``attach_arm_tool_rigid_bodies``.
-    Skipped entries (None) are left alone. Mutates `state` in place.
+    Must be called after the tools are registered (i.e. after
+    ``ensure_assembly_cell``). Every assembly state derives from this so the
+    ``tool_states`` key-set matches ``tool_models`` (assert_cell_state_match).
+
+    Returns:
+        RobotCellState: the cell's default state with ``AT3L``/``AT3R``
+        ``tool_states`` attached to the LEFT/RIGHT arm groups (wrist touch-links,
+        identity attachment frame).
     """
     deps = _import_compas_stack()
-    RigidBodyState = deps["RigidBodyState"]
     Frame = deps["Frame"]
-    for side, rb_name in registered.items():
-        if rb_name is None:
+    ToolState = deps["ToolState"]
+    robot_cell = get_or_load_robot_cell()
+    state = robot_cell.default_cell_state()
+
+    arm_group = {"left": config.LEFT_GROUP, "right": config.RIGHT_GROUP}
+    for tid in robot_cell.tool_models:
+        side = _arm_side_from_tool_name(tid)
+        if side is None:
             continue
-        link_name = _ARM_TOOL_LINKS[side]
-        touch_links = list(_ARM_TOOL_TOUCH_LINKS[side])
-        rb_state = state.rigid_body_states.get(rb_name)
-        if rb_state is None:
-            state.rigid_body_states[rb_name] = RigidBodyState(
-                frame=None,
-                attached_to_link=link_name,
-                attached_to_tool=None,
-                touch_links=touch_links,
-                touch_bodies=[],
-                attachment_frame=Frame.worldXY(),
-                is_hidden=False,
-            )
-        else:
-            rb_state.attached_to_link = link_name
-            rb_state.attached_to_tool = None
-            rb_state.touch_links = touch_links
-            rb_state.touch_bodies = []
-            rb_state.attachment_frame = Frame.worldXY()
-            rb_state.frame = None
-            rb_state.is_hidden = False
-        print(
-            f"core.robot_cell.configure_arm_tool_rigid_body_states: "
-            f"{rb_name} attached_to_link={link_name} attachment=identity"
-        )
+        ts = state.tool_states.get(tid)
+        if ts is None:
+            ts = ToolState(frame=None)
+            state.tool_states[tid] = ts
+        ts.attached_to_group = arm_group[side]
+        ts.touch_links = list(_ARM_TOOL_WRIST_TOUCH_LINKS[side])
+        ts.attachment_frame = Frame.worldXY()
+        ts.frame = None
+        ts.is_hidden = False
     return state
+
+
+def _live_assembly_fingerprint():
+    """Cheap Rhino-side signal of assembly geometry identity (no RB/mesh build).
+
+    Counts bars / joint instances / environment meshes and sums bar endpoint
+    coordinates, so add/remove (counts) and move/resize (coord sum) both change
+    it. Used only for the staleness warning. Rhino-only -> lazy imports.
+
+    Returns:
+        tuple: ``(n_bars, n_joint_instances, n_env_meshes, rounded_endpoint_sum)``.
+    """
+    import rhinoscriptsyntax as rs
+    from core.rhino_bar_registry import get_bar_seq_map
+
+    seq_map = get_bar_seq_map()
+    coord_sum = 0.0
+    for _bid, (oid, _seq) in seq_map.items():
+        try:
+            s = rs.CurveStartPoint(oid)
+            e = rs.CurveEndPoint(oid)
+            coord_sum += float(s.X + s.Y + s.Z + e.X + e.Y + e.Z)
+        except Exception:
+            pass
+    n_joints = 0
+    for layer in (
+        config.LAYER_JOINT_FEMALE_INSTANCES,
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    ):
+        if rs.IsLayer(layer):
+            n_joints += len(rs.ObjectsByLayer(layer) or [])
+    n_env = (
+        len(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or [])
+        if rs.IsLayer(config.LAYER_ENVIRONMENT)
+        else 0
+    )
+    return (len(seq_map), n_joints, n_env, round(coord_sum, 3))
+
+
+def rebuild_assembly_cell(robot_cell, planner):
+    """Manual rebuild of the static assembly cell (the RSRebuildRobotCell button).
+
+    Collects every bar + joint (canonical names) + environment obstacle, builds
+    + registers the arm ToolModels, pushes one ``set_robot_cell``, and caches the
+    full snapshot (bodies + world poses) + a cheap fingerprint in sticky.
+
+    Args:
+        robot_cell (RobotCell): the cached cell to populate (mutated in place).
+        planner (PyBulletPlanner): active planner; receives one ``set_robot_cell``.
+
+    Returns:
+        dict: ``collision_bodies`` (``{name: body_info}``) for the full assembly
+        + environment obstacles.
+    """
+    from core import env_collision
+    from core.rhino_bar_registry import get_bar_seq_map
+
+    seq_map = get_bar_seq_map()
+    collision_bodies = dict(env_collision.collect_assembly_geometry(seq_map))
+    collision_bodies.update(env_collision.collect_environment_geometry())
+
+    # Tool models (geometry-only, per-arm).
+    for tid, tm in build_arm_tool_models().items():
+        robot_cell.tool_models[tid] = tm
+
+    # Canonical bar/joint/obstacle rigid-body registry: replace the managed set.
+    managed_prefixes = (
+        env_collision.CANONICAL_BAR_PREFIX,
+        env_collision.CANONICAL_JOINT_PREFIX,
+        env_collision.OBSTACLE_PREFIX,
+    )
+    desired = {name: bi["rigid_body"] for name, bi in collision_bodies.items()}
+    existing_managed = {
+        n for n in list(robot_cell.rigid_body_models.keys())
+        if n.startswith(managed_prefixes)
+    }
+    for stale in existing_managed - set(desired):
+        robot_cell.rigid_body_models.pop(stale, None)
+    for name, rb in desired.items():
+        robot_cell.rigid_body_models[name] = rb
+
+    print(
+        f"core.robot_cell.rebuild_assembly_cell: {len(desired)} rigid bodies + "
+        f"{len(robot_cell.tool_models)} tools -> planner.set_robot_cell(<dual-arm>)"
+    )
+    planner.set_robot_cell(robot_cell)
+
+    _STICKY[_STICKY_ASSEMBLY_SNAPSHOT] = {
+        "collision_bodies": collision_bodies,
+        "tool_ids": sorted(robot_cell.tool_models.keys()),
+    }
+    try:
+        _STICKY[_STICKY_ASSEMBLY_FINGERPRINT] = _live_assembly_fingerprint()
+    except Exception as exc:
+        print(f"core.robot_cell.rebuild_assembly_cell: fingerprint skipped ({exc}).")
+        _STICKY[_STICKY_ASSEMBLY_FINGERPRINT] = None
+    # Cell is fresh again -> clear any prior "proceed with stale cell" ack.
+    _STICKY.pop(_STICKY_ASSEMBLY_STALE_ACK, None)
+    return collision_bodies
+
+
+def prompt_if_cell_stale(robot_cell, planner) -> bool:
+    """Command-line prompt when the assembly geometry changed since the last
+    ``RSRebuildRobotCell``. Call once at a command's entry point.
+
+    On a stale cell, asks (on the Rhino command line, no popup) to **Rebuild**
+    now / **Proceed** with the old cell / **Abort**. "Proceed" is remembered for
+    this fingerprint so later commands don't re-prompt until geometry changes
+    again.
+
+    Args:
+        robot_cell (RobotCell): the cached cell.
+        planner (PyBulletPlanner): active planner (used if the user picks Rebuild).
+
+    Returns:
+        bool: ``True`` to proceed (in-sync, rebuilt, or user chose Proceed),
+        ``False`` if the user aborted. Always ``True`` headless / when no cell is
+        cached yet (``ensure_assembly_cell`` will build it fresh).
+    """
+    if _STICKY.get(_STICKY_ASSEMBLY_SNAPSHOT) is None:
+        return True  # nothing cached yet; it will be built fresh on first use
+    try:
+        live_fp = _live_assembly_fingerprint()
+    except Exception:
+        return True  # can't read the document (headless) -> can't prompt
+    if live_fp == _STICKY.get(_STICKY_ASSEMBLY_FINGERPRINT):
+        return True  # in sync
+    if live_fp == _STICKY.get(_STICKY_ASSEMBLY_STALE_ACK):
+        return True  # user already chose to proceed with this exact stale state
+
+    try:
+        import rhinoscriptsyntax as rs
+    except ImportError:
+        print(
+            "core.robot_cell.prompt_if_cell_stale: geometry changed since last "
+            "RSRebuildRobotCell (proceeding with OLD cell; no Rhino to prompt)."
+        )
+        return True
+
+    choice = rs.GetString(
+        "Assembly geometry changed since the last RSRebuildRobotCell",
+        "Rebuild",
+        ["Rebuild", "Proceed", "Abort"],
+    )
+    if choice is None:
+        print("Aborted -- run RSRebuildRobotCell, then re-run the command.")
+        return False
+    c = choice.strip().lower()
+    if c.startswith("r"):
+        rebuild_assembly_cell(robot_cell, planner)
+        print("core.robot_cell.prompt_if_cell_stale: rebuilt the collision cell.")
+        return True
+    if c.startswith("p"):
+        _STICKY[_STICKY_ASSEMBLY_STALE_ACK] = live_fp
+        print("Proceeding with the OLD collision cell -- geometry edits are NOT reflected.")
+        return True
+    print("Aborted -- run RSRebuildRobotCell, then re-run the command.")
+    return False
+
+
+def ensure_assembly_cell(robot_cell, planner):
+    """Return the cached assembly ``collision_bodies``; build once if absent.
+
+    Per-command entry point. Does NOT re-scan geometry when a snapshot exists --
+    it only compares a cheap fingerprint and prints a staleness warning if the
+    document changed since the last ``RSRebuildRobotCell`` (warn only; never
+    auto-rebuilds).
+
+    Args:
+        robot_cell (RobotCell): the cached cell.
+        planner (PyBulletPlanner): active planner (used only if a build is needed).
+
+    Returns:
+        dict: the cached ``collision_bodies`` (``{name: body_info}``); built
+        fresh via ``rebuild_assembly_cell`` if no snapshot exists yet.
+    """
+    snapshot = _STICKY.get(_STICKY_ASSEMBLY_SNAPSHOT)
+    if snapshot is None:
+        print(
+            "core.robot_cell.ensure_assembly_cell: no cached cell; building once "
+            "(run RSRebuildRobotCell after geometry edits to refresh)."
+        )
+        return rebuild_assembly_cell(robot_cell, planner)
+    try:
+        live_fp = _live_assembly_fingerprint()
+        stale = live_fp != _STICKY.get(_STICKY_ASSEMBLY_FINGERPRINT)
+        acked = live_fp == _STICKY.get(_STICKY_ASSEMBLY_STALE_ACK)
+        # `prompt_if_cell_stale` (command entry) handles the interactive case;
+        # only warn here if it wasn't run / acknowledged (e.g. direct API use).
+        if stale and not acked:
+            print(
+                "core.robot_cell.ensure_assembly_cell: WARNING -- assembly geometry "
+                "changed since the last RSRebuildRobotCell. Collision results use the "
+                "OLD cell until you click RSRebuildRobotCell."
+            )
+    except Exception as exc:
+        print(f"core.robot_cell.ensure_assembly_cell: staleness check skipped ({exc}).")
+    return snapshot["collision_bodies"]

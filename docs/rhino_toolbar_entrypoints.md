@@ -32,8 +32,9 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector config and frame snapshot | Joint-library authors |
 | RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
 | RSSetup | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint/bar-grasp to tool0 transforms | Advanced IK users |
-| RSSetup | RSPBStart | `rs_pb_start.py` | Start shared PyBullet client and planner | Advanced IK users |
+| RSSetup | RSPBStart | `rs_pb_start.py` | Left-click: start shared PyBullet client/planner in Direct mode. Right-click (`rs_pb_start_gui.py`): start in GUI mode | Advanced IK users |
 | RSSetup | RSPBStop | `rs_pb_stop.py` | Disconnect shared PyBullet client | Advanced IK users |
+| RSSetup | RSRebuildRobotCell | `rs_rebuild_robot_cell.py` | (Re)build the static assembly collision cell (bars + joints + env obstacles + arm ToolModels). Run after adding/moving/resizing geometry. | Planning/export users |
 | RSSetup | RSExportBarAction | `rs_export_bar_action.py` | Export one bar assembly action JSON | Planning/export users |
 | RSSetup | RSExportAllBarActions | `rs_export_all_bar_actions.py` | Export all bar assembly action JSONs | Planning/export users |
 | RSSetup | RSExportRobotCell | `rs_export_robotcell.py` | Export robot cell configuration JSON | Planning/export users |
@@ -135,6 +136,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 ### RSPBStart (`rs_pb_start.py`) and RSPBStop (`rs_pb_stop.py`)
 
 - Start/stop shared PyBullet planner state used by IK workflows.
+- Left-click starts a Direct (headless) connection; right-click (`rs_pb_start_gui.py`) starts a GUI connection. Neither prompts for the mode.
 - IK scripts reuse the same client between runs.
 
 ### RSIKKeyframe (`rs_ik_keyframe.py`)

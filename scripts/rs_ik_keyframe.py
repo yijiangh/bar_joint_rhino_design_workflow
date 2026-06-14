@@ -1044,9 +1044,16 @@ def main():
         return
     _client, planner = robot_cell.get_planner()
     rcell = robot_cell.get_or_load_robot_cell()
-    # Use the module-level wrapper so tool_states[AssemblyLeftTool/AssemblyRightTool] get attached_to_group
-    # + touch_links wired up. `rcell.default_cell_state()` alone returns a
-    # state with tools un-attached, defeating the IK collision check on tools.
+
+    if not robot_cell.prompt_if_cell_stale(rcell, planner):
+        print("RSIKKeyframe: aborted (stale collision cell).")
+        return
+
+    # Neutral seed state (zero config, worldXY base, nothing attached). It is
+    # superseded by `_prepare_collision_template_state` ->
+    # `ik_collision_setup.prepare_assembly_collision_state`, which rebuilds the
+    # real state from `robot_cell.base_assembly_cell_state()` (arm ToolModels
+    # AT3L/AT3R attached) and only carries over this seed's base frame + config.
     template_state = robot_cell.default_cell_state()
 
     rs.UnselectAllObjects()

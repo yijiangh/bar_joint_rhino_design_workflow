@@ -38,18 +38,19 @@ import numpy as np
 from core import config
 
 
+# env_* prefixes for the single-arm SUPPORT cell path (collect_built_geometry /
+# register_env_in_robot_cell / build_env_state). The dual-arm assembly cell uses
+# the canonical names below instead.
 ENV_RB_BAR_PREFIX = "env_bar_"
 ENV_RB_JOINT_PREFIX = "env_joint_"
-# Active = the bar currently being assembled + its joints. Treated as static
-# obstacles in world coords like env_*, but kept under separate prefixes so
-# (a) downstream code can show/hide / re-attach them independently,
-# (b) ShowIK / IK keyframe can decide to attach them to a tool link later.
-ACTIVE_RB_BAR_PREFIX = "active_bar_"
-ACTIVE_RB_JOINT_PREFIX = "active_joint_"
-# Tool side the active bar will be attached to (left tool0). Currently the
-# active bar is registered as a static world-frame RB; tool-following
-# attachment is a follow-up (needs FK on the IK-solved state).
-ACTIVE_BAR_ATTACH_LINK = "left_ur_arm_tool0"
+
+# State-independent ("canonical") names used by the static-cell pipeline.
+# `collect_assembly_geometry` emits these directly (no active_/env_ prefixes).
+CANONICAL_BAR_PREFIX = "bar_"
+CANONICAL_JOINT_PREFIX = "joint_"
+# Static environment obstacle meshes (LAYER_ENVIRONMENT). Distinct namespace
+# so it never collides with bar_/joint_ names.
+OBSTACLE_PREFIX = "obstacle_"
 
 # Sticky cache keys for the lightweight RigidBody pipeline.
 _STICKY_JOINT_RB_CACHE = "bar_joint:env_joint_rb_cache"  # block_name -> RigidBody
@@ -359,103 +360,24 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
     return out
 
 
-def collect_active_geometry(active_bar_id, bar_seq_map):
-    """Build active-bar + active-joint payloads for the bar currently being assembled.
 
-    Same payload format as :func:`collect_built_geometry` but with
-    ``active_bar_`` / ``active_joint_`` name prefixes so downstream visualization
-    and collision-state code can treat them differently from already-built env.
-    Returns ``{}`` if ``active_bar_id`` is unknown or the bar curve is degenerate.
+def collect_assembly_geometry(bar_seq_map):
+    """Collect canonical-keyed collision bodies for ALL bars + joints.
+
+    Canonical-keyed collector used by the static-cell pipeline (via
+    ``robot_cell.rebuild_assembly_cell``). Keys are canonical (``bar_<bid>`` /
+    ``joint_<jid>_<subtype>``) -- no active_/env_ prefixes -- and each
+    ``body_info`` carries ``parent_bar_id`` so the state builder can classify
+    built / active / future by assembly sequence.
+
+    Args:
+        bar_seq_map (dict): ``{bar_id: (oid, seq)}`` for every registered bar.
+
+    Returns:
+        dict: ``{name: body_info}`` where ``body_info`` is
+        ``{rigid_body, frame_world_mm, kind, source_oid, parent_bar_id, ...}``.
     """
     import rhinoscriptsyntax as rs
-
-    deps = _import_deps_for_rb()
-    if active_bar_id not in bar_seq_map:
-        return {}
-    active_oid, _active_seq = bar_seq_map[active_bar_id]
-
-    out = {}
-    length_mm, frame_mm = _bar_world_frame_mm(active_oid)
-    if length_mm <= 0.0:
-        return {}
-    rb, _hit = _get_or_build_bar_rigid_body(
-        active_oid, length_mm, float(config.BAR_RADIUS), deps
-    )
-    if rb is not None:
-        out[f"{ACTIVE_RB_BAR_PREFIX}{active_bar_id}"] = {
-            "rigid_body": rb,
-            "frame_world_mm": frame_mm,
-            "kind": "bar",
-            "source_oid": active_oid,
-        }
-
-    joint_layers = (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    )
-    for layer in joint_layers:
-        if not rs.IsLayer(layer):
-            continue
-        for joint_oid in rs.ObjectsByLayer(layer) or []:
-            if rs.GetUserText(joint_oid, "parent_bar_id") != active_bar_id:
-                continue
-            joint_id = rs.GetUserText(joint_oid, "joint_id")
-            # See collect_built_geometry: ground joints have no joint_subtype.
-            subtype = (
-                rs.GetUserText(joint_oid, "joint_subtype")
-                or rs.GetUserText(joint_oid, "joint_type")
-                or "Joint"
-            )
-            block_name = rs.BlockInstanceName(joint_oid)
-            if not block_name:
-                continue
-            rb, _hit = _get_or_load_joint_rigid_body(block_name, deps)
-            if rb is None:
-                continue
-            xform_mm = _block_instance_xform_mm(joint_oid)
-            tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-            out[f"{ACTIVE_RB_JOINT_PREFIX}{tag}"] = {
-                "rigid_body": rb,
-                "frame_world_mm": xform_mm,
-                "kind": "joint",
-                "source_oid": joint_oid,
-                "block_name": block_name,
-                "subtype": subtype,
-            }
-    print(
-        f"core.env_collision.collect_active_geometry: {len(out)} bodies for bar {active_bar_id}"
-    )
-    if out:
-        active_bar_key = f"{ACTIVE_RB_BAR_PREFIX}{active_bar_id}"
-        if active_bar_key in out:
-            bar_payload = out[active_bar_key]
-            print(
-                f"  > {active_bar_key}: frame_origin={bar_payload['frame_world_mm'][:3,3]} "
-                f"source_oid={bar_payload['source_oid']}"
-            )
-        for key in sorted(out.keys()):
-            if key.startswith(ACTIVE_RB_JOINT_PREFIX):
-                payload = out[key]
-                print(
-                    f"  > {key}: block={payload.get('block_name')} "
-                    f"frame_origin={payload['frame_world_mm'][:3,3]}"
-                )
-    return out
-
-
-def collect_all_geometry(bar_seq_map):
-    """Collect env-collision payloads for ALL bars and joints in the assembly.
-
-    Same payload format as :func:`collect_built_geometry` but covers every bar
-    regardless of assembly sequence. All keys use the ``env_bar_`` /
-    ``env_joint_`` prefix so downstream canonicalization strips them uniformly.
-
-    Use this when you need the full scene (e.g. export) rather than a
-    per-step IK collision context.
-    """
-    import rhinoscriptsyntax as rs
-    import time
 
     deps = _import_deps_for_rb()
     t_total = time.perf_counter()
@@ -469,11 +391,12 @@ def collect_all_geometry(bar_seq_map):
         if rb is None:
             continue
         bar_hits += int(hit); bar_misses += int(not hit)
-        out[f"{ENV_RB_BAR_PREFIX}{bid}"] = {
+        out[f"{CANONICAL_BAR_PREFIX}{bid}"] = {
             "rigid_body": rb,
             "frame_world_mm": frame_mm,
             "kind": "bar",
             "source_oid": oid,
+            "parent_bar_id": bid,
         }
 
     joint_layers = (
@@ -504,18 +427,101 @@ def collect_all_geometry(bar_seq_map):
             j_hits += int(hit); j_misses += int(not hit)
             xform_mm = _block_instance_xform_mm(joint_oid)
             tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-            out[f"{ENV_RB_JOINT_PREFIX}{tag}"] = {
+            out[f"{CANONICAL_JOINT_PREFIX}{tag}"] = {
                 "rigid_body": rb,
                 "frame_world_mm": xform_mm,
                 "kind": "joint",
                 "source_oid": joint_oid,
                 "block_name": block_name,
                 "subtype": subtype,
+                "parent_bar_id": parent_bar,
             }
     print(
-        f"core.env_collision.collect_all_geometry: {len(out)} bodies "
+        f"core.env_collision.collect_assembly_geometry: {len(out)} bodies "
         f"(bars hit/miss={bar_hits}/{bar_misses}, joints hit/miss={j_hits}/{j_misses}) "
         f"in {(time.perf_counter()-t_total)*1000:.1f} ms"
+    )
+    return out
+
+
+def _sanitize_obstacle_name(name) -> str:
+    """Make a Rhino object name safe to use as a rigid-body key suffix.
+
+    Args:
+        name: the raw object name (any type; coerced to str).
+
+    Returns:
+        str: ``name`` with non-alphanumeric chars (except ``-``/``_``) replaced
+        by ``_``; ``"env"`` if the result is empty.
+    """
+    cleaned = "".join(
+        ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(name).strip()
+    )
+    return cleaned or "env"
+
+
+def collect_environment_geometry():
+    """Collect static obstacle bodies from ``config.LAYER_ENVIRONMENT``.
+
+    Every mesh on that layer becomes a static ``obstacle_<name>`` rigid body.
+    Mesh vertices are already in world coordinates (scaled doc-units -> m), so
+    ``frame_world_mm`` is identity. Non-mesh objects on the layer are skipped
+    with a warning.
+
+    Returns:
+        dict: ``{name: body_info}`` with ``kind:"environment"`` -- the same
+        shape as :func:`collect_assembly_geometry`, so the two dicts merge
+        directly.
+    """
+    import rhinoscriptsyntax as rs
+    from core.rhino_frame_io import doc_unit_scale_to_mm
+
+    deps = _import_deps_for_rb()
+    Mesh = deps["Mesh"]
+    RigidBody = deps["RigidBody"]
+
+    if not rs.IsLayer(config.LAYER_ENVIRONMENT):
+        return {}
+    scale_to_m = doc_unit_scale_to_mm() / 1000.0
+
+    out = {}
+    used = set()
+    for i, oid in enumerate(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or []):
+        if not rs.IsMesh(oid):
+            print(
+                f"core.env_collision.collect_environment_geometry: object {oid} on "
+                f"{config.LAYER_ENVIRONMENT!r} is not a mesh; skipping."
+            )
+            continue
+        verts = rs.MeshVertices(oid)
+        faces = rs.MeshFaceVertices(oid)
+        if not verts or not faces:
+            continue
+        cverts = [
+            (float(p[0]) * scale_to_m, float(p[1]) * scale_to_m, float(p[2]) * scale_to_m)
+            for p in verts
+        ]
+        cfaces = []
+        for f in faces:
+            a, b, c, d = f
+            cfaces.append([a, b, c] if c == d else [a, b, c, d])
+        mesh = Mesh.from_vertices_and_faces(cverts, cfaces)
+        rb = RigidBody(visual_meshes=[mesh], collision_meshes=[mesh], native_scale=1.0)
+        name = _sanitize_obstacle_name(rs.ObjectName(oid) or f"env{i}")
+        base, k = name, 1
+        while name in used:
+            name = f"{base}_{k}"
+            k += 1
+        used.add(name)
+        out[f"{OBSTACLE_PREFIX}{name}"] = {
+            "rigid_body": rb,
+            "frame_world_mm": np.eye(4, dtype=float),
+            "kind": "environment",
+            "source_oid": oid,
+        }
+    print(
+        f"core.env_collision.collect_environment_geometry: {len(out)} obstacle(s) "
+        f"from {config.LAYER_ENVIRONMENT!r}"
     )
     return out
 
@@ -535,10 +541,20 @@ def _import_deps_for_rb():
 def register_env_in_robot_cell(robot_cell, env_geom, *, deps):
     """Mirror cached env ``RigidBody`` instances into ``robot_cell.rigid_body_models``.
 
-    Idempotent on object identity: if the cell already holds the exact same
-    ``RigidBody`` instance under ``name``, we skip. New names get added; env
-    names no longer present get removed. Returns ``True`` if anything changed
-    (caller may need to re-push the cell).
+    Safe to call repeatedly on object identity: if the cell already holds the
+    exact same ``RigidBody`` instance under ``name``, we skip. New names get
+    added; ``env_*`` names no longer present get removed. (Support-cell path.)
+
+    Args:
+        robot_cell (RobotCell): cell whose ``rigid_body_models`` are updated
+            in place.
+        env_geom (dict): ``{name: payload}`` where ``payload["rigid_body"]`` is
+            the cached ``RigidBody`` (``env_bar_*`` / ``env_joint_*`` names).
+        deps (dict): the lazily-imported compas stack (unused here; kept for
+            call-site symmetry).
+
+    Returns:
+        bool: ``True`` if anything changed (caller may need to re-push the cell).
     """
     t0 = time.perf_counter()
     changed = False
@@ -547,7 +563,6 @@ def register_env_in_robot_cell(robot_cell, env_geom, *, deps):
     existing_env_names = {
         name for name in robot_cell.rigid_body_models.keys()
         if name.startswith(ENV_RB_BAR_PREFIX) or name.startswith(ENV_RB_JOINT_PREFIX)
-        or name.startswith(ACTIVE_RB_BAR_PREFIX) or name.startswith(ACTIVE_RB_JOINT_PREFIX)
     }
     n_removed = n_added = n_kept = 0
     for stale in existing_env_names - desired_names:
@@ -577,7 +592,16 @@ def build_env_state(template_state, env_geom):
 
     Each env body is a static obstacle: ``frame`` (METERS) set from the
     mm-based ``frame_world_mm`` payload, ``attached_to_tool=None``,
-    ``attached_to_link=None``, ``is_hidden=False``.
+    ``attached_to_link=None``, ``is_hidden=False``. (Support-cell path.)
+
+    Args:
+        template_state (RobotCellState): base state to copy.
+        env_geom (dict): ``{name: payload}`` with ``payload["frame_world_mm"]``
+            world poses (``env_bar_*`` / ``env_joint_*`` names).
+
+    Returns:
+        RobotCellState: a copy of ``template_state`` with the ``env_*`` bodies
+        re-populated as static obstacles.
     """
     from compas_fab.robots import RigidBodyState
     from compas.geometry import Frame
@@ -588,7 +612,6 @@ def build_env_state(template_state, env_geom):
     stale_env_names = [
         name for name in state.rigid_body_states
         if name.startswith(ENV_RB_BAR_PREFIX) or name.startswith(ENV_RB_JOINT_PREFIX)
-        or name.startswith(ACTIVE_RB_BAR_PREFIX) or name.startswith(ACTIVE_RB_JOINT_PREFIX)
     ]
     for name in stale_env_names:
         state.rigid_body_states.pop(name, None)

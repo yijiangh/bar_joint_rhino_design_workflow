@@ -9,8 +9,9 @@
 # r: pybullet_planning==0.6.1
 """RSPBStart - Start the shared PyBullet client for IK / FK workflows.
 
-Prompts for GUI vs Direct connection, then loads the dual-arm Husky robot
-cell into a cached PyBullet planner. Subsequent IK scripts (RSIKKeyframe,
+Left-click starts a Direct (headless) connection; the RSPBStartGUI right-click
+entry starts a GUI connection. Either way the dual-arm Husky robot cell is
+loaded into a cached PyBullet planner. Subsequent IK scripts (RSIKKeyframe,
 RSShowIK) reuse this same client via `sc.sticky`.
 """
 
@@ -18,8 +19,6 @@ from __future__ import annotations
 
 import os
 import sys
-
-import rhinoscriptsyntax as rs
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,24 +28,10 @@ if SCRIPT_DIR not in sys.path:
 from core.robot_cell import is_pb_running, start_pb_client
 
 
-def _prompt_use_gui() -> bool | None:
-    return rs.GetBoolean(
-        "PyBullet connection mode",
-        (("UseGUI", "Direct", "GUI"),),
-        (False,),
-    )
-
-
-def main() -> None:
+def main(use_gui: bool = False) -> None:
     if is_pb_running():
         print("RSPBStart: PyBullet client already running. Run RSPBStop first if you want to restart.")
         return
-
-    answer = _prompt_use_gui()
-    if answer is None:
-        print("RSPBStart: Cancelled.")
-        return
-    use_gui = bool(answer[0])
 
     print(f"RSPBStart: Starting PyBullet ({'GUI' if use_gui else 'Direct'}) and loading robot cell...")
     client, _planner = start_pb_client(use_gui=use_gui)
@@ -54,4 +39,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(use_gui=False)

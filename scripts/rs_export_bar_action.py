@@ -10,19 +10,15 @@
 """RSExportBarAction - Save the per-bar `BarAssemblyAction` to JSON.
 
 Pick a bar; the script reads its IK keyframe data (`KEY_ASSEMBLY_*` user-text
-written by ``rs_ik_keyframe.py``), reuses
-``core.ik_collision_setup.prepare_assembly_collision_state`` to seed the
-per-bar collision context (tool RBs + env_*/active_* RBs), then builds the
-four movements via ``core.bar_action.build_bar_assembly_action`` and writes
-them to ``<root>/BarActions/<bar_id>.json`` using ``compas.json_dump``.
+written by ``rs_ik_keyframe.py``), builds the four movements via
+``core.bar_action.build_bar_assembly_action`` (which reuses the cached static
+cell -- the full canonical assembly + env obstacles + arm ToolModels built by
+RSRebuildRobotCell) and writes them to ``<root>/BarActions/<bar_id>.json``
+using ``compas.json_dump``. Names are already canonical (``bar_<bid>`` /
+``joint_<jid>_<sub>``); no canonicalization or snapshot/restore.
 
-Side effect: ``prepare_assembly_collision_state`` registers env bars +
-arm-tool RBs into ``rcell.rigid_body_models`` (cached). A subsequent
-``RSExportRobotCell`` will therefore save a cell that carries those RBs
-(with names canonicalized via ``core.bar_action.dump_cell_canonical``).
-
-Root folder is shared with RSExportRobotCell via
-``sc.sticky[EXPORT_ROOT_STICKY_KEY]``.
+Run RSRebuildRobotCell after any geometry edit so the export reflects it. Root
+folder is shared with RSExportRobotCell via ``sc.sticky[EXPORT_ROOT_STICKY_KEY]``.
 """
 
 from __future__ import annotations
@@ -83,6 +79,10 @@ def main() -> None:
 
     repair_on_entry(float(config.BAR_RADIUS), "RSExportBarAction")
 
+    if not robot_cell.prompt_if_cell_stale(rcell, planner):
+        print("RSExportBarAction: aborted (stale collision cell).")
+        return
+
     rs.UnselectAllObjects()
     bar_oid = pick_bar(
         "Pick a bar to export its BarAssemblyAction (Esc to cancel)"
@@ -98,66 +98,58 @@ def main() -> None:
         )
         return
 
-    # B11: build_bar_assembly_action pollutes the cached cell with future-bar
-    # + arm-tool RBs (needed to make the per-bar M states reference a stable
-    # superset cell). Snapshot BEFORE the build call and restore at the end so
-    # subsequent ShowIK / IK keyframe in this Rhino session see the cell as
-    # it was before the export.
-    rb_snapshot = bar_action.snapshot_cell_rigid_bodies(rcell)
+    # The robot cell is now a persistent static registry (the full canonical
+    # assembly + env obstacles + arm ToolModels), built by RSRebuildRobotCell
+    # and reused by every command. Building the BarAction just reads that cached
+    # cell -- no snapshot/restore needed. If you edited geometry since the last
+    # RSRebuildRobotCell, rebuild first so the export reflects it.
     try:
-        try:
-            action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
-        except RuntimeError as exc:
-            rs.MessageBox(str(exc), 0, "RSExportBarAction")
+        action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSExportBarAction")
+        return
+
+    n_seq = len(action.assembly_seq)
+    try:
+        idx = action.assembly_seq.index(action.active_bar_id)
+    except ValueError:
+        idx = -1
+    print(
+        f"RSExportBarAction: built {len(action.movements)} movement(s) for bar "
+        f"'{action.active_bar_id}' (assembly index {idx}/{n_seq})."
+    )
+    for mv in action.movements:
+        n_rbs = len(mv.start_state.rigid_body_states) if mv.start_state else 0
+        cfg_status = "None" if (mv.start_state is None or mv.start_state.robot_configuration is None) else "set"
+        print(
+            f"  - {mv.movement_id}: {type(mv).__name__}, "
+            f"start_state.config={cfg_status}, rb_states={n_rbs}, "
+            f"target_ee_frames={'yes' if mv.target_ee_frames else 'no'}, "
+            f"target_configuration={'yes' if mv.target_configuration is not None else 'no'}"
+        )
+
+    root = _prompt_export_root()
+    if not root:
+        print("RSExportBarAction: cancelled.")
+        return
+
+    out_dir = os.path.join(root, "BarActions")
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, f"{bar_id}.json")
+
+    if os.path.exists(out):
+        ans = rs.MessageBox(
+            f"'{out}' exists. Overwrite?",
+            4 | 32,  # YesNo | Question
+            "RSExportBarAction",
+        )
+        if ans != 6:  # 6 == Yes
+            print("RSExportBarAction: cancelled (kept existing file).")
             return
 
-        n_seq = len(action.assembly_seq)
-        try:
-            idx = action.assembly_seq.index(action.active_bar_id)
-        except ValueError:
-            idx = -1
-        print(
-            f"RSExportBarAction: built {len(action.movements)} movement(s) for bar "
-            f"'{action.active_bar_id}' (assembly index {idx}/{n_seq})."
-        )
-        for mv in action.movements:
-            n_rbs = len(mv.start_state.rigid_body_states) if mv.start_state else 0
-            cfg_status = "None" if (mv.start_state is None or mv.start_state.robot_configuration is None) else "set"
-            print(
-                f"  - {mv.movement_id}: {type(mv).__name__}, "
-                f"start_state.config={cfg_status}, rb_states={n_rbs}, "
-                f"target_ee_frames={'yes' if mv.target_ee_frames else 'no'}, "
-                f"target_configuration={'yes' if mv.target_configuration is not None else 'no'}"
-            )
-
-        root = _prompt_export_root()
-        if not root:
-            print("RSExportBarAction: cancelled.")
-            return
-
-        out_dir = os.path.join(root, "BarActions")
-        os.makedirs(out_dir, exist_ok=True)
-        out = os.path.join(out_dir, f"{bar_id}.json")
-
-        if os.path.exists(out):
-            ans = rs.MessageBox(
-                f"'{out}' exists. Overwrite?",
-                4 | 32,  # YesNo | Question
-                "RSExportBarAction",
-            )
-            if ans != 6:  # 6 == Yes
-                print("RSExportBarAction: cancelled (kept existing file).")
-                return
-
-        with open(out, "w") as f:
-            json_dump(action, f, pretty=True)
-        print(f"RSExportBarAction: saved {out} for bar '{bar_id}'.")
-    finally:
-        bar_action.restore_cell_rigid_bodies(rcell, rb_snapshot, planner)
-        print(
-            f"RSExportBarAction: restored cached cell to pre-export state "
-            f"({len(rcell.rigid_body_models)} rigid_body_models)."
-        )
+    with open(out, "w") as f:
+        json_dump(action, f, pretty=True)
+    print(f"RSExportBarAction: saved {out} for bar '{bar_id}'.")
 
 
 if __name__ == "__main__":

@@ -22,16 +22,13 @@ to walk diffs to reconstruct intermediate states.
 
 State-independent rigid-body naming
 -----------------------------------
-Upstream (`env_collision`) labels rigid bodies with state-dependent prefixes
-(`active_bar_<bid>` for the bar being assembled now, `env_bar_<bid>` for
-already-built bars; same for joints). The downstream artifact saves these
-under canonical, state-independent names (`bar_<bid>`, `joint_<jid>_<sub>`)
-so a single `RobotCell.json` can be reused across every per-bar state.
-The renaming happens here, only on the export-bound copies; the in-Rhino
-cached `RobotCell` keeps the active_*/env_* prefixes so upstream
-collision setup keeps working unchanged. Use
-`canonicalize_state` / `dump_cell_canonical` to apply the same renaming
-to any state or cell being saved.
+The cell is now a static registry with canonical, state-independent names
+throughout (`bar_<bid>`, `joint_<jid>_<sub>`, `obstacle_<name>`; tools under
+`tool_models` as `AT3L`/`AT3R`), built by `robot_cell.rebuild_assembly_cell`.
+There is no active_*/env_* prefixing and no canonicalization step -- the
+grasped bar for this action is identified by `bar_id` + the assembly sequence,
+and every per-movement state re-classes only those bodies (attach to tool0 in
+M1/M2, detach to world in M3/M4).
 
 Module is importable without Rhino; the `build_*` helpers import
 `rhinoscriptsyntax` lazily.
@@ -178,16 +175,8 @@ def _set_robot_base_frame(state, base_frame_world_mm) -> None:
 # Attachment helpers
 # ---------------------------------------------------------------------------
 
-# Local mirrors of env_collision prefix constants. Duplicated to keep this
-# module importable without mutating upstream. After canonicalization (see
-# `canonicalize_state` / `canonical_rb_name`), the bodies are keyed by the
-# CANONICAL_*_PREFIX values below. The active_*/env_* prefixes only appear
-# transiently between `prepare_assembly_collision_state` and canonicalization.
-ACTIVE_RB_BAR_PREFIX = "active_bar_"
-ACTIVE_RB_JOINT_PREFIX = "active_joint_"
-ENV_RB_BAR_PREFIX = "env_bar_"
-ENV_RB_JOINT_PREFIX = "env_joint_"
-
+# State-independent canonical rigid-body name prefixes (the only naming the
+# static-cell pipeline uses). Mirror of env_collision.CANONICAL_*.
 CANONICAL_BAR_PREFIX = "bar_"
 CANONICAL_JOINT_PREFIX = "joint_"
 
@@ -198,130 +187,25 @@ _ARM_TOOL_LINKS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# State-independent ("canonical") rigid-body naming
-# ---------------------------------------------------------------------------
+def _attach_body_to_arm_tool0(state, body_world_mm, tool0_arm_assembled_mm, arm_side: str, rb_key: str) -> None:
+    """Attach any grasped body (bar or joint half) to an arm's tool0 link.
 
+    Sets ``rb_state`` attached to ``<arm>_ur_arm_tool0`` with
+    ``attachment_frame = inv(tool0) @ body_world`` (i.e. ``tool0_from_body``).
 
-def canonical_rb_name(name: str) -> str:
-    """Strip the upstream `active_`/`env_` prefix to produce a state-independent name.
+    Args:
+        state (RobotCellState): state whose ``rigid_body_states[rb_key]`` is
+            mutated in place.
+        body_world_mm (ndarray): 4x4 mm world pose of the body at the assembled
+            keyframe.
+        tool0_arm_assembled_mm (ndarray): 4x4 mm world pose of that arm's flange
+            at the assembled keyframe.
+        arm_side (str): ``"left"`` / ``"right"`` -- which arm's tool0 to attach to.
+        rb_key (str): canonical rigid-body name to attach.
 
-    ``active_bar_B6`` / ``env_bar_B6`` -> ``bar_B6``
-    ``active_joint_J3-6_male`` / ``env_joint_J3-6_male`` -> ``joint_J3-6_male``
-
-    Anything else (e.g. ``AssemblyLeftArmToolBody``) is returned unchanged.
-    Idempotent.
+    Returns:
+        None: mutates ``state``.
     """
-    for p in (ACTIVE_RB_BAR_PREFIX, ENV_RB_BAR_PREFIX):
-        if name.startswith(p):
-            return CANONICAL_BAR_PREFIX + name[len(p):]
-    for p in (ACTIVE_RB_JOINT_PREFIX, ENV_RB_JOINT_PREFIX):
-        if name.startswith(p):
-            return CANONICAL_JOINT_PREFIX + name[len(p):]
-    return name
-
-
-def canonical_rigid_body_models(rcell) -> dict:
-    """Return a NEW dict mapping canonical names to the same RigidBody instances.
-
-    Does not mutate ``rcell``. Collisions (two upstream prefixes mapping to
-    the same canonical name) are detected and reported via RuntimeError --
-    in practice this cannot happen because each joint half lives on exactly
-    one bar (either active or env, never both).
-    """
-    out = {}
-    for name, rb in rcell.rigid_body_models.items():
-        cname = canonical_rb_name(name)
-        if cname in out:
-            raise RuntimeError(
-                f"canonical_rigid_body_models: collision on '{cname}' "
-                f"(both '{name}' and a previous entry map to it)"
-            )
-        out[cname] = rb
-    return out
-
-
-def canonicalize_state(state) -> None:
-    """In-place mutation of ``state.rigid_body_states`` and ACM cross-refs to
-    canonical names.
-
-    - Renames every key in ``state.rigid_body_states``.
-    - Rewrites every ``touch_bodies`` entry on every RigidBodyState
-      (including ones whose key did not change, e.g. ``AssemblyLeftArmToolBody``)
-      via ``canonical_rb_name``, so cross-references to active_*/env_*
-      bodies all land on canonical names.
-
-    Idempotent.
-    """
-    rename = {k: canonical_rb_name(k) for k in state.rigid_body_states.keys()}
-    new_states = {}
-    for old, new in rename.items():
-        if new in new_states:
-            raise RuntimeError(
-                f"canonicalize_state: collision on '{new}' (mapped from '{old}')"
-            )
-        new_states[new] = state.rigid_body_states[old]
-    # Apply canonical_rb_name to every touch_body string regardless of rename-dict
-    # membership, so cross-refs from tool / non-active RBs also get canonicalized.
-    for rb in new_states.values():
-        if rb.touch_bodies:
-            rb.touch_bodies = sorted({canonical_rb_name(t) for t in rb.touch_bodies})
-    state.rigid_body_states = new_states
-
-
-def canonicalize_env_geom(env_geom: dict) -> dict:
-    """Return a new ``env_geom`` dict with canonical keys (same payloads)."""
-    out = {}
-    for k, v in env_geom.items():
-        cname = canonical_rb_name(k)
-        if cname in out:
-            raise RuntimeError(f"canonicalize_env_geom: collision on '{cname}'")
-        out[cname] = v
-    return out
-
-
-def dump_cell_canonical(rcell, fileobj, *, pretty: bool = True) -> None:
-    """Write ``rcell`` to ``fileobj`` using canonical rigid-body names.
-
-    Temporarily swaps the cell's ``rigid_body_models`` attribute with a
-    canonical-keyed shallow copy, dumps, then restores the original. No
-    deep copy of the RobotCell is performed (URDF + meshes stay shared).
-    """
-    from compas import json_dump
-
-    canonical = canonical_rigid_body_models(rcell)
-    original = rcell.rigid_body_models
-    rcell.rigid_body_models = canonical
-    try:
-        json_dump(rcell, fileobj, pretty=pretty)
-    finally:
-        rcell.rigid_body_models = original
-
-
-def snapshot_cell_rigid_bodies(rcell) -> dict:
-    """Shallow snapshot of ``rcell.rigid_body_models`` (key -> RigidBody)
-    for use by ``restore_cell_rigid_bodies`` in an export try/finally.
-
-    The export flow registers every bar + joint + arm-tool RB onto the cached
-    cell singleton so the dumped ``RobotCell.json`` is the full superset.
-    Without restoration, that polluted cell leaks into subsequent ShowIK /
-    IK keyframe runs in the same Rhino session -- those workflows rely on
-    ``prepare_assembly_collision_state`` registering only the currently-built
-    + active bodies, and a polluted cell holding extra ``env_bar_<future>``
-    RBs will produce state<->cell key-set mismatches in the planner.
-    """
-    return dict(rcell.rigid_body_models)
-
-
-def restore_cell_rigid_bodies(rcell, snapshot: dict, planner) -> None:
-    """Restore ``rcell.rigid_body_models`` from ``snapshot`` and re-push the
-    cell to ``planner`` so the PyBullet world matches the restored cell."""
-    rcell.rigid_body_models = dict(snapshot)
-    planner.set_robot_cell(rcell)
-
-
-def _attach_active_bar_to_arm(state, body_world_mm, tool0_arm_assembled_mm, arm_side: str, rb_key: str) -> None:
-    """Set rb_state to be attached to <arm>_ur_arm_tool0 with grasp = inv(tool0) @ body_world."""
     rb = state.rigid_body_states[rb_key]
     rb.attached_to_link = _ARM_TOOL_LINKS[arm_side]
     rb.attached_to_tool = None
@@ -380,8 +264,17 @@ def _classify_male_joints_per_arm(bar_id: str) -> dict:
     return out
 
 
-def _read_bar_payload(bar_oid):
-    """Return ``{"base_frame_world_mm": np.ndarray(4,4), "approach": {...}, "assembled": {...}}`` or None."""
+def _read_bar_keyframe(bar_oid):
+    """Read the bar's saved IK keyframe data from its Rhino user-text.
+
+    Args:
+        bar_oid: Rhino object id of the bar curve.
+
+    Returns:
+        dict | None: ``{"base_frame_world_mm": np.ndarray(4, 4), "approach":
+        {...}, "assembled": {...}}``, or ``None`` if any of the three
+        ``KEY_ASSEMBLY_*`` records are missing/malformed.
+    """
     import rhinoscriptsyntax as rs
     from core import config
 
@@ -415,22 +308,36 @@ def _set_active_attachments(
     tool0_right_assembled_mm,
     bar_arm_side: str = "left",
 ) -> None:
-    """Set attached_to_link/_tool/_frame on every canonical key in ``active_keys``.
+    """Attach every grasped body in ``active_keys`` to its arm's tool0 link.
 
-    - Canonical bar (``bar_<bid>``) attaches to bar_arm_side's tool0.
+    - Canonical bar (``bar_<bid>``) attaches to ``bar_arm_side``'s tool0.
     - Canonical male joint (``joint_<jid>_male``) attaches to its classified arm.
-    - Canonical female joint (``joint_<jid>_female``) attaches to bar_arm_side
+    - Canonical female joint (``joint_<jid>_female``) attaches to ``bar_arm_side``
       (rigidly bonded to the bar).
 
-    ``attachment_frame`` = inv(tool0_<arm>_assembled_world) @ body_world_at_assembled.
+    Each ``attachment_frame`` = ``inv(tool0_<arm>_assembled_world) @
+    body_world_at_assembled`` (i.e. ``tool0_from_body``).
+
+    Args:
+        state (RobotCellState): movement start_state, mutated in place.
+        active_keys (set): canonical names of the grasped bar + its joint halves.
+        env_geom (dict): ``{name: body_info}`` with ``frame_world_mm`` world poses.
+        arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm flange
+            poses at the assembled keyframe.
+        bar_arm_side (str): arm the bar + carried females attach to (default
+            ``"left"``).
+
+    Returns:
+        None: mutates ``state``.
     """
     bar_tool0 = tool0_left_assembled_mm if bar_arm_side == "left" else tool0_right_assembled_mm
     for key in active_keys:
-        payload = env_geom.get(key)
-        if payload is None:
+        body_info = env_geom.get(key)
+        if body_info is None:
             continue
         if key.startswith(CANONICAL_BAR_PREFIX):
-            _attach_active_bar_to_arm(state, payload["frame_world_mm"], bar_tool0, bar_arm_side, key)
+            _attach_body_to_arm_tool0(state, body_info["frame_world_mm"], bar_tool0, bar_arm_side, key)
             continue
         if not key.startswith(CANONICAL_JOINT_PREFIX):
             continue
@@ -443,38 +350,91 @@ def _set_active_attachments(
         else:
             arm = bar_arm_side  # females rigidly bonded to bar -> bar's gripper
         tool0_arm = tool0_left_assembled_mm if arm == "left" else tool0_right_assembled_mm
-        _attach_active_bar_to_arm(state, payload["frame_world_mm"], tool0_arm, arm, key)
+        _attach_body_to_arm_tool0(state, body_info["frame_world_mm"], tool0_arm, arm, key)
 
 
 def _detach_active_to_assembled_world(state, active_keys, env_geom: dict) -> None:
-    """Detach every canonical key in ``active_keys`` and place at its assembled world frame."""
-    for key in active_keys:
-        payload = env_geom.get(key)
-        if payload is None:
-            continue
-        _detach_to_world(state, payload["frame_world_mm"], key)
+    """Detach every grasped body in ``active_keys`` and place it at its world frame.
 
+    Used by M3/M4, where the bar is released: each body becomes a static
+    obstacle at its assembled world pose (``attached_to_link=None``).
 
-def _strip_mate_pair_touch_bodies(state, arm_to_male: dict) -> None:
-    """Remove male<->female mate-pair entries from ``state.rigid_body_states``.
+    Args:
+        state (RobotCellState): movement start_state, mutated in place.
+        active_keys (set): canonical names of the (now-released) bar + joints.
+        env_geom (dict): ``{name: body_info}`` with ``frame_world_mm`` world poses.
 
-    `compute_assembly_allowed_touches` whitelists each male/female pair (and
-    the bar<->female pair) so the IK solver and M2 (linear mate -> assembled)
-    tolerate contact at the mated pose. M1 (home -> approach) ends with the
-    joint halves still apart, so those pairs should not be advertised as
-    allowed touches on M1's state copy. Bar<->male is kept (always-bonded
-    rigid pair), bar<->female and male<->female are stripped.
+    Returns:
+        None: mutates ``state``.
     """
-    for jid in arm_to_male:
-        male_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
-        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
-        male_rb = state.rigid_body_states.get(male_key)
-        if male_rb is not None and male_rb.touch_bodies:
-            male_rb.touch_bodies = [t for t in male_rb.touch_bodies if t != female_key]
-        # Also drop bar<->female (only legitimate once joint halves are mated).
-        for k, rb in state.rigid_body_states.items():
-            if k.startswith(CANONICAL_BAR_PREFIX) and rb.touch_bodies:
-                rb.touch_bodies = [t for t in rb.touch_bodies if t != female_key]
+    for key in active_keys:
+        body_info = env_geom.get(key)
+        if body_info is None:
+            continue
+        _detach_to_world(state, body_info["frame_world_mm"], key)
+
+
+def _apply_movement_touch_policy(
+    state, movement: str, active_keys, env_geom: dict, arm_to_male: dict,
+    bar_key: str, tool_ids: dict,
+) -> None:
+    """Set per-movement allowed contacts (``touch_bodies``) on the grasped bodies.
+
+    Built directly per movement (no build-full-then-strip):
+
+    - **M1** (grasped, halves apart): ``male<->its arm tool``, ``male<->bar``,
+      ``carried_female<->bar``.
+    - **M2** (grasped, mating): M1 + ``male<->built_female`` (same joint_id, the
+      mate on the already-built bar).
+    - **M3** (released, tool peeling off): ``male<->tool`` only -- everything else
+      is detached/static, so compas_fab auto-skips it.
+    - **M4** (gone): nothing.
+
+    The whitelist is recorded on the male / carried-female side (one side is
+    enough); the bar tube carries none (the tool grips the male, not the tube).
+
+    Args:
+        state (RobotCellState): movement start_state, mutated in place.
+        movement (str): one of ``"M1"`` / ``"M2"`` / ``"M3"`` / ``"M4"``.
+        active_keys (set): canonical names of the grasped bar + its joint halves.
+        env_geom (dict): ``{name: body_info}`` (used to confirm the mate
+            ``joint_<jid>_female`` exists for M2).
+        arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        bar_key (str): canonical name of the grasped bar (``bar_<id>``).
+        tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
+
+    Returns:
+        None: mutates ``state``.
+    """
+    for jid, arm in arm_to_male.items():
+        male_rb = state.rigid_body_states.get(f"{CANONICAL_JOINT_PREFIX}{jid}_male")
+        if male_rb is None:
+            continue
+        tool = tool_ids.get(arm)
+        partners = []
+        if movement in ("M1", "M2"):
+            if tool:
+                partners.append(tool)
+            partners.append(bar_key)
+            if movement == "M2":
+                female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+                if female_key in env_geom:
+                    partners.append(female_key)
+        elif movement == "M3":
+            if tool:
+                partners.append(tool)
+        male_rb.touch_bodies = sorted(set(partners))
+
+    for key in active_keys:
+        if not (key.startswith(CANONICAL_JOINT_PREFIX) and key.endswith("_female")):
+            continue
+        frb = state.rigid_body_states.get(key)
+        if frb is not None:
+            frb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
+
+    bar_rb = state.rigid_body_states.get(bar_key)
+    if bar_rb is not None:
+        bar_rb.touch_bodies = []
 
 
 def _build_m1(
@@ -484,6 +444,8 @@ def _build_m1(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    bar_key: str,
+    tool_ids: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -494,6 +456,29 @@ def _build_m1(
     lm_distance_mm: float,
     bar_arm_side: str = "left",
 ) -> RoboticDualArmConstrainedMovement:
+    """Build M1: home -> approach, gripping the bar (constrained dual-arm).
+
+    Args:
+        template_state (RobotCellState): full static-cell template to clone.
+        bar_id (str): the bar being assembled.
+        rcell (RobotCell): cached cell (for HOME configuration joint names).
+        env_geom (dict): ``{name: body_info}`` with world frames.
+        active_keys (set): canonical names of the grasped bar + its joint halves.
+        arm_to_male (dict): ``{joint_id: 'left' | 'right'}``.
+        bar_key (str): canonical grasped-bar name (``bar_<id>``).
+        tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
+        tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm
+            flange poses at the assembled keyframe.
+        base_frame_world_mm (ndarray): 4x4 mm robot base frame.
+        home_left, home_right (list): HOME joint values per arm.
+        left_group, right_group (str): planning-group names.
+        lm_distance_mm (float): approach offset distance.
+        bar_arm_side (str): arm the bar attaches to (default ``"left"``).
+
+    Returns:
+        RoboticDualArmConstrainedMovement: the M1 movement (start_state at HOME,
+        gripping the bar; target = approach EE frames).
+    """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
     state.robot_configuration = _build_home_configuration(
@@ -504,10 +489,9 @@ def _build_m1(
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
     )
-    # M1 ends at the approach pose: joint halves are still apart, so the
-    # male<->female and bar<->female mate-pair allowances inherited from the
-    # template state must not be advertised on this movement.
-    _strip_mate_pair_touch_bodies(state, arm_to_male)
+    _apply_movement_touch_policy(
+        state, "M1", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+    )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
         tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
     )
@@ -534,6 +518,8 @@ def _build_m2(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    bar_key: str,
+    tool_ids: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -541,6 +527,19 @@ def _build_m2(
     lm_distance_mm: float,
     bar_arm_side: str = "left",
 ) -> RoboticLinearMovement:
+    """Build M2: approach -> assembled (linear mate), still gripping the bar.
+
+    Shared args are as in :func:`_build_m1`.
+
+    Args:
+        approach_groups (dict): per-arm approach-keyframe joint config
+            (``{side: {"joint_names": [...], "joint_values": [...]}}``) written
+            onto the start_state.
+
+    Returns:
+        RoboticLinearMovement: the M2 movement (start_state at the approach
+        config; target = assembled EE frames; mate touch whitelisted).
+    """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
     _apply_groups_to_config(state, approach_groups)
@@ -548,6 +547,9 @@ def _build_m2(
         state, active_keys, env_geom, arm_to_male,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
+    )
+    _apply_movement_touch_policy(
+        state, "M2", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
     )
     return RoboticLinearMovement(
         movement_id=f"{bar_id}_M2_LM_mate",
@@ -572,16 +574,37 @@ def _build_m3(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    bar_key: str,
+    tool_ids: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
     assembled_groups: dict,
     lm_distance_mm: float,
 ) -> RoboticLinearMovement:
+    """Build M3: assembled -> retreated (per-arm linear), bar released.
+
+    Shared args are as in :func:`_build_m1`.
+
+    Args:
+        assembled_groups (dict): per-arm assembled-keyframe joint config written
+            onto the start_state.
+
+    Returns:
+        RoboticLinearMovement: the M3 movement (start_state at the assembled
+        config with the bar/joints detached to their world poses; target =
+        per-arm retreated EE frames; only male<->tool whitelisted).
+    """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
     _apply_groups_to_config(state, assembled_groups)
     _detach_active_to_assembled_world(state, active_keys, env_geom)
+    # Released: bar + joints are static at the assembled world pose. Only the
+    # tool is still peeling off the male, so allow male<->tool; everything else
+    # is static<->static (compas_fab auto-skips).
+    _apply_movement_touch_policy(
+        state, "M3", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+    )
 
     retreat_axes_world = {}
     target_left_mm = tool0_left_assembled_mm
@@ -592,11 +615,11 @@ def _build_m3(
         if jid is None:
             continue
         joint_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
-        joint_payload = env_geom.get(joint_key)
-        if joint_payload is None:
+        joint_body_info = env_geom.get(joint_key)
+        if joint_body_info is None:
             continue
         target_mm, axis_world = _retreat_tool0_target_mm(
-            tool0_assembled, joint_payload["frame_world_mm"], lm_distance_mm,
+            tool0_assembled, joint_body_info["frame_world_mm"], lm_distance_mm,
         )
         if arm == "left":
             target_left_mm = target_mm
@@ -627,17 +650,33 @@ def _build_m4(
     rcell,
     env_geom: dict,
     active_keys,
+    arm_to_male: dict,
+    bar_key: str,
+    tool_ids: dict,
     base_frame_world_mm,
     home_left,
     home_right,
     left_group: str,
     right_group: str,
 ) -> RoboticFreeMovement:
+    """Build M4: retreated -> home (free joint-space motion), bar released.
+
+    Shared args are as in :func:`_build_m1`.
+
+    Returns:
+        RoboticFreeMovement: the M4 movement. ``start_state.robot_configuration``
+        is ``None`` (the planner fills it from M3's end); the bar/joints are
+        detached at their world poses; target = HOME configuration.
+    """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
     # Per plan: M4.start.robot_configuration is None (planner fills from M3.end).
     state.robot_configuration = None
     _detach_active_to_assembled_world(state, active_keys, env_geom)
+    # Fully released, tools retreated: no special allowed contacts.
+    _apply_movement_touch_policy(
+        state, "M4", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+    )
 
     home_cfg = _build_home_configuration(
         template_state, rcell, home_left, home_right, left_group, right_group,
@@ -656,80 +695,6 @@ def _build_m4(
 
 
 # ---------------------------------------------------------------------------
-# Full-assembly registration (state-independent RobotCell)
-# ---------------------------------------------------------------------------
-
-
-def _attach_arm_tools_to_cell(rcell, planner) -> bool:
-    """Ensure ``AssemblyLeftArmToolBody`` / ``AssemblyRightArmToolBody`` are
-    registered on ``rcell.rigid_body_models``.
-
-    Scans the document for ANY bar that has both a left- and right-arm tool
-    placed (via ``ik_collision_setup.resolve_arm_tools_on_bar``), reads each
-    tool's collision OBJ path from ``robotic_tools.json`` and calls
-    ``robot_cell.attach_arm_tool_rigid_bodies``. The arm-tool RBs are global
-    (per-arm, geometry-only) -- the same bodies any BarAction state expects --
-    so it doesn't matter which bar provides the tool config.
-
-    Returns True if both RBs end up registered; False if no bar with both
-    tools could be found (cell will lack the arm-tool RBs and any BarAction
-    state will mismatch on ``AssemblyLeftArmToolBody`` / ``AssemblyRightArmToolBody``).
-    Idempotent: re-runs that point at the same OBJ are no-ops.
-    """
-    from core import ik_collision_setup
-    from core import robot_cell
-    from core.rhino_bar_registry import get_bar_seq_map
-
-    seq_map = get_bar_seq_map()
-    arm_tools = None
-    for bar_id in seq_map:
-        result, err = ik_collision_setup.resolve_arm_tools_on_bar(bar_id)
-        if err is None:
-            arm_tools = result
-            break
-    if arm_tools is None:
-        print(
-            "core.bar_action._attach_arm_tools_to_cell: no bar in the document "
-            "carries both left+right arm tools; skipping arm-tool RB attach."
-        )
-        return False
-    left_path, right_path = ik_collision_setup.resolve_tool_collision_paths(
-        arm_tools["left"], arm_tools["right"],
-    )
-    registered = robot_cell.attach_arm_tool_rigid_bodies(
-        rcell, planner,
-        left_collision_path=left_path,
-        right_collision_path=right_path,
-        native_scale=0.001,
-    )
-    return bool(registered.get("left")) and bool(registered.get("right"))
-
-
-def _register_full_assembly_geom(rcell, planner) -> dict:
-    """Register EVERY bar + EVERY joint of the assembly into ``rcell.rigid_body_models``.
-
-    Pushed via ``robot_cell.ensure_env_registered`` so the in-Rhino cached cell
-    and the planner's collision world both carry the full set. (Subsequent
-    upstream IK calls re-sync the cell to whatever bar is active then -- this
-    full set is transient, only meaningful for the export that follows.)
-
-    Returns the full geom dict (``env_bar_*`` / ``env_joint_*`` keys), or ``{}``
-    if no bars are registered.
-    """
-    from core import env_collision
-    from core import robot_cell
-    from core.rhino_bar_registry import get_bar_seq_map
-
-    seq_map = get_bar_seq_map()
-    if not seq_map:
-        return {}
-    full_geom = env_collision.collect_all_geometry(seq_map)
-    if full_geom:
-        robot_cell.ensure_env_registered(rcell, full_geom, planner)
-    return full_geom
-
-
-# ---------------------------------------------------------------------------
 # Top-level factory
 # ---------------------------------------------------------------------------
 
@@ -737,16 +702,27 @@ def _register_full_assembly_geom(rcell, planner) -> dict:
 def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     """Build a `BarAssemblyAction` for `bar_id`. Rhino-only call.
 
-    Side effects:
-    - `prepare_assembly_collision_state` registers env+arm-tool RBs onto
-      `rcell.rigid_body_models`. We treat the returned state as the
-      collision template and clone+mutate it for each of the four
-      movements.
-    - `_register_full_assembly_geom` then registers EVERY bar + joint onto
-      `rcell.rigid_body_models` so a subsequent `RSExportRobotCell` writes a
-      state-independent cell. To keep the per-movement states' workpiece
-      key-set equal to the (full) cell's, the not-yet-built bars/joints are
-      added to every movement's start_state as `is_hidden=True` rigid bodies.
+    `prepare_assembly_collision_state` reuses the cached static cell (the full
+    canonical assembly + env obstacles + arm ToolModels, built by
+    RSRebuildRobotCell) and returns a full-key-set template state: built bars
+    visible static, the grasped bar a static obstacle, not-yet-built bars
+    `is_hidden=True`, tools attached. Each of the four movements clones that
+    template and re-classes only the grasped (active-bar) bodies + sets its own
+    allowed-touch policy. No canonicalization, no snapshot/restore.
+
+    Args:
+        rcell (RobotCell): the cached static cell.
+        planner (PyBulletPlanner): active planner.
+        bar_id (str): id of the bar to assemble.
+        bar_oid: Rhino object id of the bar curve (its ``KEY_ASSEMBLY_*``
+            user-text supplies the base frame + approach/assembled keyframes).
+
+    Returns:
+        BarAssemblyAction: the four-movement (M1-M4) action for ``bar_id``.
+
+    Raises:
+        RuntimeError: if the bar is missing IK keyframe user-text or its two
+            arm tools can't be resolved.
     """
     import rhinoscriptsyntax as rs  # noqa: F401  (kept; surrounding helpers import lazily)
     from core import config
@@ -758,15 +734,16 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     print(f"core.bar_action.build_bar_assembly_action: building bar '{bar_id}' ...")
 
     # 1) Read keyframe + base from the bar curve.
-    payload = _read_bar_payload(bar_oid)
-    if payload is None:
+    bar_keyframe = _read_bar_keyframe(bar_oid)
+    if bar_keyframe is None:
         raise RuntimeError(
             f"Bar '{bar_id}' is missing one of "
             f"'{config.KEY_ASSEMBLY_BASE_FRAME}'/'{config.KEY_ASSEMBLY_IK_APPROACH}'/"
             f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}'. Run RSIKKeyframe first."
         )
-    base_frame_world_mm = payload["base_frame_world_mm"]
+    base_frame_world_mm = bar_keyframe["base_frame_world_mm"]
 
+    # TODO the tools should not be separately resolved as objects per bar, but rather there should only be two ToolModel attached to the robot's tool0 links in the RobotCell, and in robot_cell_state we simply attach the bar in action to the left arm of the dual arm. (since in consrained dual arm planning, and the insertion dual arm linear motion, the constraints on two arms'EE is enf)
     # 2) Resolve per-arm tools on the bar.
     arm_tools, err = ik_collision_setup.resolve_arm_tools_on_bar(bar_id)
     if err is not None:
@@ -776,61 +753,35 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
     tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
 
-    # 4) Build slim base state, then run upstream collision-state prep.
-    # NOTE: do NOT seed slim_state.robot_configuration from payload["assembled"]
-    # here — every Mi builder writes its own robot_configuration (HOME for M1,
-    # approach for M2, assembled for M3, None for M4), so seeding is dead.
+    # 4) Build the full static-cell template state. `prepare_assembly_collision_state`
+    # calls `ensure_assembly_cell` (registers the full canonical assembly + env
+    # obstacles + arm ToolModels onto the cached cell) and returns a full-key-set
+    # state: built bars/joints visible static, the active bar a static obstacle,
+    # not-yet-built bars/joints `is_hidden=True`, the two arm tools attached. No
+    # canonicalization, no snapshot/restore -- the cell IS the persistent static
+    # cell now. Every Mi re-classes only the active (grasped) bodies.
     slim_state = robot_cell.default_cell_state()
     _set_robot_base_frame(slim_state, base_frame_world_mm)
-    template_state, env_geom, arm_to_male, _allowed = ik_collision_setup.build_assembly_ik_state(
+    template_state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
         rcell, planner, slim_state, bar_id,
     )
+    arm_to_male = _classify_male_joints_per_arm(bar_id)
 
-    # 5b) Canonicalize names: identify which canonical keys belong to the
-    # active bar (= came from active_* upstream) and which are present at
-    # this bar's stage (built or active), then strip the prefixes off
-    # template_state.rigid_body_states / env_geom for the export path.
+    # The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
     active_keys = {
-        canonical_rb_name(k) for k in env_geom
-        if k.startswith(ACTIVE_RB_BAR_PREFIX) or k.startswith(ACTIVE_RB_JOINT_PREFIX)
+        name for name, body_info in env_geom.items()
+        if body_info.get("parent_bar_id") == bar_id
     }
-    present_keys = {canonical_rb_name(k) for k in env_geom}
+    bar_key = f"{CANONICAL_BAR_PREFIX}{bar_id}"
+    tool_ids = robot_cell.arm_tool_ids()
 
-    # 5c) Register the FULL assembly (every bar + joint) onto the cached cell
-    # so RSExportRobotCell writes a state-independent RobotCell.json. Then the
-    # not-yet-built bodies (future bars/joints) are added to template_state as
-    # hidden, so the state's workpiece key-set matches the full cell.
-    full_geom_raw = _register_full_assembly_geom(rcell, planner)
-    full_geom_canonical = {canonical_rb_name(k): v for k, v in full_geom_raw.items()}
-    future_keys = set(full_geom_canonical.keys()) - present_keys
-
-    canonicalize_state(template_state)
-    env_geom = canonicalize_env_geom(env_geom)
-
-    # 5e) Per design: the template_state's active bar/joint rigid bodies have
-    # NO meaningful frame. Every Mi rewrites it via `_attach_active_bar_to_arm`
-    # (M1/M2 - attached, frame=None) or `_detach_to_world` (M3/M4 - placed at
-    # assembled world). Clear template frames so debugging is unambiguous.
+    # The active bar/joint frames in the template are the assembled-pose world
+    # frames; every Mi rewrites them (M1/M2 attach to tool0, M3/M4 detach to
+    # world). Clear them so a missed re-class surfaces as a None-frame error.
     for k in active_keys:
         rb = template_state.rigid_body_states.get(k)
         if rb is not None:
             rb.frame = None
-
-    if future_keys:
-        from compas_fab.robots import RigidBodyState
-        # NB: use a distinct name here -- `payload` is the bar-keyframe dict
-        # read above and is still needed below for M2/M3 (approach/assembled).
-        for fk in sorted(future_keys):
-            fk_geom = full_geom_canonical[fk]
-            template_state.rigid_body_states[fk] = RigidBodyState(
-                frame=_mm4_to_frame(fk_geom["frame_world_mm"]),
-                attached_to_link=None,
-                attached_to_tool=None,
-                touch_links=[],
-                touch_bodies=[],
-                attachment_frame=None,
-                is_hidden=True,
-            )
 
     # 6) Build movements.
     seq_map = get_bar_seq_map()
@@ -842,6 +793,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
 
     m1 = _build_m1(
         template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
@@ -850,20 +802,23 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     )
     m2 = _build_m2(
         template_state, bar_id, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
-        payload["approach"],
+        bar_keyframe["approach"],
         config.LM_DISTANCE,
     )
     m3 = _build_m3(
         template_state, bar_id, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
-        payload["assembled"],
+        bar_keyframe["assembled"],
         config.LM_DISTANCE,
     )
     m4 = _build_m4(
-        template_state, bar_id, rcell, env_geom, active_keys,
+        template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
         base_frame_world_mm,
         config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
         config.LEFT_GROUP, config.RIGHT_GROUP,

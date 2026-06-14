@@ -389,7 +389,7 @@ class _PreviewSession:
                 )
             )
             # Debug: verify active bar/joint in env_geom
-            active_keys = [k for k in env_geom.keys() if k.startswith(("active_bar_", "active_joint_"))]
+            active_keys = [k for k, bi in env_geom.items() if bi.get("parent_bar_id") == self.active_bar_id]
             print(f"RSShowIK._render: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
             for ak in sorted(active_keys):
                 payload_info = env_geom[ak]
@@ -505,7 +505,7 @@ class _PreviewSession:
                 )
             )
             # Debug: verify active bar/joint in env_geom
-            active_keys = [k for k in env_geom.keys() if k.startswith(("active_bar_", "active_joint_"))]
+            active_keys = [k for k, bi in env_geom.items() if bi.get("parent_bar_id") == self.active_bar_id]
             print(f"RSShowIK.check_collision: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
             for ak in sorted(active_keys):
                 payload_info = env_geom[ak]
@@ -526,15 +526,14 @@ class _PreviewSession:
         one-shot ``check_collision`` command and the InteractiveCollisionCheck
         jog dialog (which calls this on every slider tick).
         """
-        # Debug: show active bar's touch_bodies whitelist
+        # Debug: show every body's touch_bodies whitelist (canonical names).
         rb_states = getattr(state, "rigid_body_states", None) or {}
-        active_bar_keys = [k for k in rb_states.keys() if k.startswith("active_bar_")]
-        for ab_key in active_bar_keys:
-            ab_state = rb_states[ab_key]
-            touch_list = getattr(ab_state, "touch_bodies", None) or []
-            print(
-                f"RSShowIK._run_collision_check_on_state: {ab_key} whitelist={sorted(touch_list)}"
-            )
+        for key in sorted(rb_states.keys()):
+            touch_list = getattr(rb_states[key], "touch_bodies", None) or []
+            if touch_list:
+                print(
+                    f"RSShowIK._run_collision_check_on_state: {key} whitelist={sorted(touch_list)}"
+                )
         
         try:
             robot_cell.set_cell_state(self.planner, state)
@@ -642,7 +641,7 @@ class _PreviewSession:
                 )
             )
             # Debug: verify active bar/joint in env_geom
-            active_keys = [k for k in env_geom.keys() if k.startswith(("active_bar_", "active_joint_"))]
+            active_keys = [k for k, bi in env_geom.items() if bi.get("parent_bar_id") == self.active_bar_id]
             print(f"RSShowIK.interactive_collision_check: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
             for ak in sorted(active_keys):
                 payload_info = env_geom[ak]
@@ -970,6 +969,11 @@ def main() -> None:
         rs.MessageBox("PyBullet is not running. Click RSPBStart first.", 0, "RSShowIK")
         return
     _client, planner = robot_cell.get_planner()
+
+    rcell = robot_cell.get_or_load_robot_cell()
+    if not robot_cell.prompt_if_cell_stale(rcell, planner):
+        print("RSShowIK: aborted (stale collision cell).")
+        return
 
     rs.UnselectAllObjects()
     initial_oid = pick_bar("Pick a bar to view its IK keyframe (Esc to cancel)")

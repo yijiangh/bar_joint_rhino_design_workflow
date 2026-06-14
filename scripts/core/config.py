@@ -221,6 +221,11 @@ LAYER_JOINT_GROUND_INSTANCES = (
 )
 LAYER_TOOL_INSTANCES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Robotic Tool Instances"
 LAYER_WALKABLE_GROUND = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Walkable Ground"
+# Static environment obstacle meshes (tables, walls, scaffolding, etc.). Any
+# mesh placed on this layer is registered as a static `obstacle_<name>` rigid
+# body by `core.env_collision.collect_environment_geometry` and checked for
+# collision against the robot, tools, and grasped workpieces.
+LAYER_ENVIRONMENT = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Environment Obstacles"
 # Cached IK preview meshes (robot links + tool models). Baked once on first
 # `ik_viz.update_state(...)`; toggled visible only inside an IK preview session.
 LAYER_IK_CACHE = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "IK Cache"
@@ -236,6 +241,7 @@ MANAGED_LAYERS = (
     LAYER_JOINT_GROUND_INSTANCES,
     LAYER_TOOL_INSTANCES,
     LAYER_WALKABLE_GROUND,
+    LAYER_ENVIRONMENT,
 )
 # NOTE: ``LAYER_IK_CACHE`` is intentionally NOT in ``MANAGED_LAYERS``: the
 # managed-layer enforcer makes every listed layer visible on every entry-point

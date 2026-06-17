@@ -48,12 +48,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import bar_action as _bar_action_module
 from core import capture_io as _capture_io_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
-from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
-from core import ik_collision_setup as _ik_collision_setup_module
+from core import ik_keyframe as _ik_keyframe_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core.rhino_bar_pick import pick_bar
@@ -85,14 +85,17 @@ IK_ASSEMBLY_KEY = "ik_assembly"
 
 
 def _reload_runtime_modules():
-    global capture_io, config, dynamic_preview, env_collision, highlight_env, ik_collision_setup, ik_viz, robot_cell
+    global bar_action, capture_io, config, dynamic_preview, highlight_env, ik_keyframe, ik_viz, robot_cell
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
-    env_collision = importlib.reload(_env_collision_module)
     highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
-    ik_collision_setup = importlib.reload(_ik_collision_setup_module)
+    # bar_action builds the M1-M4 movements (collision context + EE targets);
+    # ik_keyframe solves the chained IK against them. Reload both so edits to the
+    # shared solve path take effect without restarting Rhino.
+    bar_action = importlib.reload(_bar_action_module)
+    ik_keyframe = importlib.reload(_ik_keyframe_module)
     capture_io = importlib.reload(_capture_io_module)
 
 
@@ -646,19 +649,41 @@ def _snap_to_brep(brep, origin_mm):
     return _point_to_mm(close_pt), np.array([normal.X, normal.Y, normal.Z], dtype=float)
 
 
-def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
-                         tool0_left_mm, tool0_right_mm,
-                         brep_id, heading_mm, include_self, include_env):
-    """Try seed first; on failure, sample base frames around seed until success.
+def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
+                               brep_id, heading_mm, include_self, include_env):
+    """Solve the M1->M2->M3 IK chain; sample base frames around the seed on failure.
 
-    If `brep_id` is None (reuse-saved-base path), the sampling fallback is
-    disabled and only the seed base frame is attempted. The caller is
-    expected to handle the no-solution case by re-prompting for a fresh
-    base frame on the next run.
+    A base frame is accepted only when the WHOLE chain solves (approach ->
+    assembled -> retreat). The chain itself is solved by
+    ``core.ik_keyframe.solve_keyframe_chain`` -- one place, shared with the
+    headless test. This wrapper only adds the Rhino-specific base search: try the
+    seed base, then sample offsets on the WalkableGround brep and re-snap each.
+
+    If ``brep_id`` is None (reuse-saved-base path) the sampling fallback is
+    disabled and only the seed base is tried; the caller re-prompts for a fresh
+    base on the next run.
+
+    Args:
+        planner: the dual-arm planner.
+        movements (dict): ``{"M1": .., "M2": .., "M3": ..}`` from
+            ``bar_action.build_assembly_movements``.
+        seed_base_frame_mm (np.ndarray): 4x4 mm base frame to try first.
+        brep_id: WalkableGround brep oid the samples snap to, or None to disable
+            sampling.
+        heading_mm (np.ndarray): heading point (mm) the sampled frames keep their
+            +X toward.
+        include_self, include_env (bool): collision toggles; their OR drives
+            ``check_collision``.
+
+    Returns:
+        tuple: ``(solved_states, used_base_frame_mm)`` on success where
+        ``solved_states`` is ``{"M1": state, "M2": state, "M3": state}``, or
+        ``(None, None)`` if no sampled base solves the whole chain.
     """
     check_collision = bool(include_self or include_env)
-    # Environment collision is only meaningful when env geometry is registered in
-    # the robot cell; first-pass workflow has none, so include_env alone is a hint.
+    ordered = [("M1", movements["M1"]), ("M2", movements["M2"]), ("M3", movements["M3"])]
+
+    # Candidate base frames: the seed first, then samples snapped to the brep.
     attempts = [seed_base_frame_mm]
     if brep_id is not None:
         brep = _as_brep(brep_id)
@@ -686,23 +711,21 @@ def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
             f"RSIKKeyframe: trying base frame ({label}) "
             f"at ({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
         )
-        state = robot_cell.solve_dual_arm_ik(
+        solved = ik_keyframe.solve_keyframe_chain(
             planner,
-            template_state,
+            ordered,
             base_frame,
-            tool0_left_mm,
-            tool0_right_mm,
             check_collision=check_collision,
             verbose_pairs=check_collision,
         )
-        if state is not None:
+        if solved is not None:
             print(
-                f"RSIKKeyframe: [OK] IK solution FOUND on attempt {idx + 1}/{total} ({label})."
+                f"RSIKKeyframe: [OK] M1->M2->M3 IK chain solved on attempt {idx + 1}/{total} ({label})."
             )
-            return state, base_frame
-        print(f"RSIKKeyframe: [x] IK failed on attempt {idx + 1}/{total} ({label}).")
+            return solved, base_frame
+        print(f"RSIKKeyframe: [x] chain IK failed on attempt {idx + 1}/{total} ({label}).")
     print(
-        f"RSIKKeyframe: [X] IK failed for all {total} attempt(s). "
+        f"RSIKKeyframe: [X] chain IK failed for all {total} attempt(s). "
         f"Consider increasing IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER in config.py."
     )
     return None, None
@@ -711,12 +734,6 @@ def _solve_with_sampling(planner, template_state, seed_base_frame_mm,
 # ---------------------------------------------------------------------------
 # Payload
 # ---------------------------------------------------------------------------
-
-
-def _translate_frame(frame_mm, offset_mm):
-    out = np.array(frame_mm, dtype=float, copy=True)
-    out[:3, 3] = out[:3, 3] + np.asarray(offset_mm, dtype=float)
-    return out
 
 
 def _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell):
@@ -752,14 +769,31 @@ def _write_assembly_base_frame(bar_oid, base_frame_mm):
     print(f"RSIKKeyframe: saved '{config.KEY_ASSEMBLY_BASE_FRAME}' on bar.")
 
 
-def _write_assembly_keyframes(bar_oid, final_state, approach_state, rcell):
-    final_payload = _build_group_pair(final_state, rcell)
-    approach_payload = _build_group_pair(approach_state, rcell)
-    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED, json.dumps(final_payload))
-    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH, json.dumps(approach_payload))
+def _write_assembly_keyframes(bar_oid, approach_state, assembled_state, retreat_state, rcell):
+    """Write the three solved keyframes (approach / assembled / retreat) on the bar.
+
+    Each is the per-arm joint config extracted from the corresponding solved
+    movement state: ``approach`` = M1's solution, ``assembled`` = M2's, ``retreat``
+    = M3's. They feed ``core.bar_action`` when the bar action is exported.
+
+    Args:
+        bar_oid: Rhino object id of the bar curve.
+        approach_state, assembled_state, retreat_state (RobotCellState): the
+            solved M1 / M2 / M3 states from ``ik_keyframe.solve_keyframe_chain``.
+        rcell (RobotCell): used to name the per-group joints.
+
+    Returns:
+        None.
+    """
+    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH,
+                   json.dumps(_build_group_pair(approach_state, rcell)))
+    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED,
+                   json.dumps(_build_group_pair(assembled_state, rcell)))
+    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_RETREAT,
+                   json.dumps(_build_group_pair(retreat_state, rcell)))
     print(
-        f"RSIKKeyframe: saved '{config.KEY_ASSEMBLY_IK_ASSEMBLED}' + "
-        f"'{config.KEY_ASSEMBLY_IK_APPROACH}' on bar."
+        f"RSIKKeyframe: saved '{config.KEY_ASSEMBLY_IK_APPROACH}' + "
+        f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}' + '{config.KEY_ASSEMBLY_IK_RETREAT}' on bar."
     )
 
 
@@ -797,7 +831,7 @@ def _read_saved_assembly_base_frame(bar_oid):
 def _heading_mm_from_base_frame(base_frame_mm):
     """Reconstruct a 'heading point' (origin + 100mm * X-axis) from a saved base frame.
 
-    Used so the sampling code in `_solve_with_sampling` (which derives the
+    Used so the sampling code in `_solve_chain_with_sampling` (which derives the
     base X from `heading - origin`) keeps the same X direction across reuse.
     """
     origin = np.asarray(base_frame_mm[:3, 3], dtype=float)
@@ -844,6 +878,25 @@ def _ask_save_debug_capture() -> bool:
     if answer is None:
         return False
     return str(answer).strip().lower().startswith("y")
+
+
+def _capture_seed_state(movements, base_frame_mm):
+    """Seed ``initial_state`` for a debug capture.
+
+    Uses M2's start_state (the assembled-pose collision context: bar gripped,
+    full rigid-body set) posed at ``base_frame_mm``. The capture is an opt-in
+    headless-replay artefact; production data lives on the bar user-text.
+
+    Args:
+        movements (dict): ``{"M1": .., "M2": .., "M3": ..}`` from the builder.
+        base_frame_mm (np.ndarray): 4x4 mm base frame to stamp onto the state.
+
+    Returns:
+        RobotCellState: a copy of M2's start_state at ``base_frame_mm``.
+    """
+    state = movements["M2"].start_state.copy()
+    robot_cell._apply_base_frame_mm(state, base_frame_mm)
+    return state
 
 
 def _save_capture(
@@ -951,42 +1004,6 @@ def _collect_target_context(
     return extra_hidden_tools, tool0_left_final, tool0_right_final, ocf_left, ocf_right
 
 
-def _prepare_collision_template_state(
-    rcell,
-    planner,
-    template_state,
-    target_bar_id,
-    left_tool_oid,  # noqa: ARG001 -- kept for caller-side logging; resolved internally via target_bar_id
-    right_tool_oid,  # noqa: ARG001
-):
-    # Delegate to the shared assembly IK state builder. This matches the
-    # collision context used by `core.bar_action.build_bar_assembly_action`
-    # for M2/M3 planner-export states, including the 5 allowed-touch pairs
-    # for legitimate physical contacts (tool<->held workpiece, mating
-    # joint halves). See `core.ik_collision_setup.build_assembly_ik_state`.
-    template_state, env_geom, _arm_to_male, allowed = ik_collision_setup.build_assembly_ik_state(
-        rcell, planner, template_state, target_bar_id,
-    )
-    print(f"RSIKKeyframe: env collision -- {env_collision.list_env_summary(env_geom)}")
-    print(f"RSIKKeyframe: allowed-touch pairs applied = {sum(len(v) for v in allowed.values())}")
-    return template_state, env_geom
-
-
-def _compute_approach_targets(tool0_left_final, tool0_right_final):
-    # Approach target: translate tool0 frames along -avg(tool z) * LM_DISTANCE.
-    # Tool block local +Z points OUT of the flange toward the joint, so -Z is
-    # the retreat direction. (Sign convention: validate visually on first run.)
-    z_avg_pre = (tool0_left_final[:3, 2] + tool0_right_final[:3, 2]) / 2.0
-    try:
-        approach_dir_pre = -_unit(z_avg_pre)
-    except ValueError as exc:
-        raise RuntimeError("Tool z-axes sum to zero; cannot derive approach direction.") from exc
-    offset_pre = approach_dir_pre * float(config.LM_DISTANCE)
-    tool0_left_approach = _translate_frame(tool0_left_final, offset_pre)
-    tool0_right_approach = _translate_frame(tool0_right_final, offset_pre)
-    return tool0_left_approach, tool0_right_approach
-
-
 def _resolve_seed_base_frame(
     planner,
     template_state,
@@ -996,6 +1013,33 @@ def _resolve_seed_base_frame(
     heading_mm,
     allow_saved_base_prompt,
 ):
+    """Decide which robot base frame to seed the IK solve with.
+
+    Called once per loop turn in ``main``. If a base frame is already in
+    hand it is passed straight back. Otherwise this offers to reuse a base
+    frame saved on the bar (with a cheap robot preview at that frame), and
+    failing that, walks the user through picking a fresh base origin and
+    heading on the WalkableGround brep.
+
+    Args:
+        planner: The dual-arm planner, used only to pose the preview robot.
+        template_state: Neutral cell state copied for the reuse-base preview.
+        saved_base: Base frame previously stored on the bar as a 4x4 numpy
+            matrix (mm), or None if the bar has no saved frame.
+        seed_base_frame: Base frame already chosen this run as a 4x4 numpy
+            matrix (mm), or None to resolve a new one.
+        brep_id: WalkableGround brep object id that base sampling snaps to,
+            or None when sampling should stay disabled (reuse path).
+        heading_mm: Heading point (mm) defining the base +X direction, or
+            None to derive it during this call.
+        allow_saved_base_prompt: When True, offer to reuse ``saved_base``;
+            set False on retries so the prompt does not reappear.
+
+    Returns:
+        The tuple ``(seed_base_frame, brep_id, heading_mm,
+        allow_saved_base_prompt)`` once a base frame is resolved, or None if
+        the user cancelled at the reuse prompt or the walkable-ground pick.
+    """
     if seed_base_frame is not None:
         return seed_base_frame, brep_id, heading_mm, allow_saved_base_prompt
 
@@ -1049,12 +1093,9 @@ def main():
         print("RSIKKeyframe: aborted (stale collision cell).")
         return
 
-    # Neutral seed state (zero config, worldXY base, nothing attached). It is
-    # superseded by `_prepare_collision_template_state` ->
-    # `ik_collision_setup.prepare_assembly_collision_state`, which rebuilds the
-    # real state from `robot_cell.base_assembly_cell_state()` (arm ToolModels
-    # AT3L/AT3R attached) and only carries over this seed's base frame + config.
-    template_state = robot_cell.default_cell_state()
+    # Neutral state, used only to pose the robot for the reuse-saved-base preview
+    # (that preview needs no IK and no per-movement collision context).
+    neutral_seed_state = robot_cell.default_cell_state()
 
     rs.UnselectAllObjects()
     picked = _pick_bar_with_arm_tools()
@@ -1069,14 +1110,26 @@ def main():
         right_male_oid,
         right_tool_oid,
     )
-    template_state, env_geom = _prepare_collision_template_state(
-        rcell,
-        planner,
-        template_state,
-        target_bar_id,
-        left_tool_oid,
-        right_tool_oid,
-    )
+
+    # Build the M1-M4 movements ONCE from the cached cell + the two placed tool
+    # blocks (tool0 at the assembled pose). Configs stay unsolved -- the IK chain
+    # fills them in. The movement EE targets (approach / assembled / retreat) are
+    # world-fixed, so the identity base frame here does not matter: every solve
+    # overrides the base with the sampled frame.
+    try:
+        movements, env_geom = bar_action.build_assembly_movements(
+            rcell, planner, target_bar_id,
+            np.eye(4, dtype=float),
+            tool0_left_final, tool0_right_final,
+        )
+    except (RuntimeError, ValueError) as exc:
+        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        return
+
+    # Approach EE targets are needed only by the optional debug capture; read them
+    # straight off M1's target rather than recomputing the offset.
+    tool0_left_approach = ik_keyframe.frame_to_mm4(movements["M1"].target_ee_frames["left"])
+    tool0_right_approach = ik_keyframe.frame_to_mm4(movements["M1"].target_ee_frames["right"])
 
     env_token = None
     keep_highlight = False
@@ -1089,14 +1142,6 @@ def main():
         if collision_opts is None:
             return
         include_self, include_env, mesh_mode = collision_opts
-        try:
-            tool0_left_approach, tool0_right_approach = _compute_approach_targets(
-                tool0_left_final,
-                tool0_right_final,
-            )
-        except RuntimeError as exc:
-            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
-            return
 
         seed_base_frame = None
         brep_id = None
@@ -1107,7 +1152,7 @@ def main():
         while True:
             base_resolution = _resolve_seed_base_frame(
                 planner,
-                template_state,
+                neutral_seed_state,
                 saved_base,
                 seed_base_frame,
                 brep_id,
@@ -1125,17 +1170,14 @@ def main():
             # ---- IK + viewport-redraw lock around the solve+preview block.
             rs.EnableRedraw(False)
             try:
-                print("RSIKKeyframe: solving final-target IK...")
-                final_state, final_base = _solve_with_sampling(
-                    planner, template_state, seed_base_frame,
-                    tool0_left_final, tool0_right_final,
+                print("RSIKKeyframe: solving M1->M2->M3 IK chain ...")
+                solved, used_base = _solve_chain_with_sampling(
+                    planner, movements, seed_base_frame,
                     brep_id, heading_mm, include_self, include_env,
                 )
-                if final_state is None:
+                if solved is None:
                     rs.EnableRedraw(True)
-                    if _ask_save_failure_capture("Final-target"):
-                        seed_state = template_state.copy()
-                        robot_cell._apply_base_frame_mm(seed_state, seed_base_frame)
+                    if _ask_save_failure_capture("IK chain"):
                         _save_capture(
                             target_bar_id=target_bar_id,
                             left_oid=left_male_oid,
@@ -1146,28 +1188,28 @@ def main():
                             tool0_right_final=tool0_right_final,
                             tool0_left_approach=tool0_left_approach,
                             tool0_right_approach=tool0_right_approach,
-                            initial_state=seed_state,
+                            initial_state=_capture_seed_state(movements, seed_base_frame),
                             include_self=include_self,
                             include_env=include_env,
                             final_state=None,
                             approach_state=None,
                             rcell=rcell,
-                            suffix="_ik_fail_final",
+                            suffix="_ik_fail_chain",
                         )
-                    rs.MessageBox("IK failed for the final target (all samples exhausted).", 0, "RSIKKeyframe")
+                    rs.MessageBox("IK failed for the assembly chain (all samples exhausted).", 0, "RSIKKeyframe")
                     action = _ask_accept(
-                        "Final-target IK failed. Retry the same base, retry a new base, or give up",
+                        "IK chain failed. Retry the same base, retry a new base, or give up",
                         allow_accept=False,
                     )
                     if action == "retry_same_base":
-                        print("RSIKKeyframe: retrying final-target IK with the same robot base frame.")
+                        print("RSIKKeyframe: retrying the IK chain with the same robot base frame.")
                         saved_base = seed_base_frame
                         brep_id = _resolve_sampling_brep_for_base(seed_base_frame, brep_id)
                         allow_saved_base_prompt = False
                         ik_viz.end_session()
                         continue
                     if action == "retry_new_base":
-                        print("RSIKKeyframe: retrying final-target IK with a different robot base frame.")
+                        print("RSIKKeyframe: retrying the IK chain with a different robot base frame.")
                         saved_base = seed_base_frame
                         seed_base_frame = None
                         heading_mm = None
@@ -1175,99 +1217,42 @@ def main():
                         allow_saved_base_prompt = False
                         ik_viz.end_session()
                         continue
-                    print("RSIKKeyframe: gave up after final-target IK failure.")
+                    print("RSIKKeyframe: gave up after IK chain failure.")
                     return
-                # Sync the PyBullet world to the new state, then update the Rhino viz.
-                robot_cell.set_cell_state(planner, final_state)
-                rs.EnableRedraw(True)
-                ik_viz.update_state(final_state, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
-                ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
-                print("RSIKKeyframe: final target reachable. Previewing...")
 
-                rs.EnableRedraw(False)
-                print("RSIKKeyframe: solving approach-target IK...")
-                approach_state, approach_base = _solve_with_sampling(
-                    planner, template_state, final_base,
-                    tool0_left_approach, tool0_right_approach,
-                    brep_id, heading_mm, include_self, include_env,
-                )
-                if approach_state is None:
-                    rs.EnableRedraw(True)
-                    if _ask_save_failure_capture("Approach-target"):
-                        seed_state = template_state.copy()
-                        robot_cell._apply_base_frame_mm(seed_state, final_base)
-                        _save_capture(
-                            target_bar_id=target_bar_id,
-                            left_oid=left_male_oid,
-                            right_oid=right_male_oid,
-                            ocf_left=ocf_left,
-                            ocf_right=ocf_right,
-                            tool0_left_final=tool0_left_final,
-                            tool0_right_final=tool0_right_final,
-                            tool0_left_approach=tool0_left_approach,
-                            tool0_right_approach=tool0_right_approach,
-                            initial_state=seed_state,
-                            include_self=include_self,
-                            include_env=include_env,
-                            final_state=final_state,
-                            approach_state=None,
-                            rcell=rcell,
-                            suffix="_ik_fail_approach",
-                        )
-                    rs.MessageBox("IK failed for the approach target (all samples exhausted).", 0, "RSIKKeyframe")
-                    action = _ask_accept(
-                        "Approach-target IK failed. Retry the same base, retry a new base, or give up",
-                        allow_accept=False,
-                    )
-                    if action == "retry_same_base":
-                        print("RSIKKeyframe: retrying approach-target IK with the same robot base frame.")
-                        _write_assembly_base_frame(target_bar_oid, final_base)
-                        saved_base = final_base
-                        seed_base_frame = final_base
-                        heading_mm = _heading_mm_from_base_frame(final_base)
-                        brep_id = _resolve_sampling_brep_for_base(final_base, brep_id)
-                        allow_saved_base_prompt = False
-                        ik_viz.end_session()
-                        continue
-                    if action == "retry_new_base":
-                        print("RSIKKeyframe: retrying approach-target IK with a different robot base frame.")
-                        _write_assembly_base_frame(target_bar_oid, final_base)
-                        saved_base = final_base
-                        seed_base_frame = None
-                        heading_mm = None
-                        brep_id = None
-                        allow_saved_base_prompt = False
-                        ik_viz.end_session()
-                        continue
-                    print("RSIKKeyframe: gave up after approach-target IK failure.")
-                    return
-                robot_cell.set_cell_state(planner, approach_state)
+                # solved: M1 -> approach, M2 -> assembled, M3 -> retreat.
+                approach_state = solved["M1"]
+                assembled_state = solved["M2"]
+                retreat_state = solved["M3"]
+
+                # Preview the assembled (mated) pose -- the representative keyframe.
+                # Use RSShowIK afterwards to step approach <-> assembled.
+                robot_cell.set_cell_state(planner, assembled_state)
                 rs.EnableRedraw(True)
-                ik_viz.update_state(approach_state, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+                ik_viz.update_state(assembled_state, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
                 ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
-                print("RSIKKeyframe: approach target reachable. Previewing...")
+                print("RSIKKeyframe: full M1->M2->M3 chain reachable. Previewing assembled pose...")
             finally:
                 rs.EnableRedraw(True)
 
-            # Use the same base frame for the stored record (approach_base ~ final_base since we reused).
-            # If sampling drifted, prefer final_base (anchors the assembled pose).
-            stored_base = final_base
+            # used_base may differ from seed_base_frame if the sampling fallback
+            # found a better location; it is the base all three keyframes share.
+            stored_base = used_base
             action = _ask_accept(
                 "IK preview ready. Accept, retry the same base, retry a new base, or give up"
             )
 
             if action == "accept":
-                # Re-write base frame (final_base may differ from seed_base_frame
-                # if sampling fallback found a better location).
                 _write_assembly_base_frame(target_bar_oid, stored_base)
-                _write_assembly_keyframes(target_bar_oid, final_state, approach_state, rcell)
-                _write_legacy_assembly_blob(target_bar_oid, stored_base, final_state, approach_state, rcell)
-                # Capture file is a debug artefact (not production state - production
-                # data lives in the bar user-text above). Opt-in, symmetric with the
-                # failure path. Default No.
+                _write_assembly_keyframes(
+                    target_bar_oid, approach_state, assembled_state, retreat_state, rcell,
+                )
+                _write_legacy_assembly_blob(
+                    target_bar_oid, stored_base, assembled_state, approach_state, rcell,
+                )
+                # Capture file is a debug artefact (production data lives in the
+                # bar user-text above). Opt-in, symmetric with the failure path.
                 if _ask_save_debug_capture():
-                    seed_state = template_state.copy()
-                    robot_cell._apply_base_frame_mm(seed_state, stored_base)
                     _save_capture(
                         target_bar_id=target_bar_id,
                         left_oid=left_male_oid,
@@ -1278,10 +1263,10 @@ def main():
                         tool0_right_final=tool0_right_final,
                         tool0_left_approach=tool0_left_approach,
                         tool0_right_approach=tool0_right_approach,
-                        initial_state=seed_state,
+                        initial_state=_capture_seed_state(movements, stored_base),
                         include_self=include_self,
                         include_env=include_env,
-                        final_state=final_state,
+                        final_state=assembled_state,
                         approach_state=approach_state,
                         rcell=rcell,
                     )

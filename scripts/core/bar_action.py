@@ -126,10 +126,9 @@ def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, lm_distance_mm:
 def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm: float):
     """Approach: both tool0 origins translated by -avg(tool_z) * lm_distance.
 
-    Mirrors `rs_ik_keyframe._compute_approach_targets` (lines 999-1011); the
-    upstream helper is private to that script, so the formula is duplicated
-    here per the plan ("copy 5-15 LOC each, can't import without mutating
-    upstream").
+    This is the single source of the approach offset; ``rs_ik_keyframe`` reads it
+    back off ``M1.target_ee_frames`` rather than recomputing it. Tool block local
+    +Z points out of the flange toward the joint, so -Z is the retreat direction.
     """
     z_avg = (tool0_left_assembled_mm[:3, 2] + tool0_right_assembled_mm[:3, 2]) / 2.0
     approach_dir = _unit(-z_avg)
@@ -147,7 +146,24 @@ def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_
 
 
 def _apply_groups_to_config(state, groups: dict) -> None:
-    """Overwrite per-group joint values onto state.robot_configuration in place."""
+    """Overwrite per-group joint values onto ``state.robot_configuration`` in place.
+
+    A no-op when ``groups`` is falsy. This is what lets the M2/M3 start states be
+    built *before* IK has been solved: ``rs_ik_keyframe`` builds the movements with
+    ``approach_groups``/``assembled_groups`` left as ``None`` and the IK solver fills
+    in the configuration later. The export path (``build_bar_assembly_action``) passes
+    the saved keyframe groups, so the start config is stamped as before.
+
+    Args:
+        state (RobotCellState): start_state whose configuration is patched in place.
+        groups (dict | None): ``{side: {"joint_names": [...], "joint_values": [...]}}``
+            or ``None``/empty to leave the template's seed configuration untouched.
+
+    Returns:
+        None: mutates ``state``.
+    """
+    if not groups:
+        return
     for _side, cfg in groups.items():
         names = cfg["joint_names"]
         values = cfg["joint_values"]
@@ -390,8 +406,15 @@ def _apply_movement_touch_policy(
       is detached/static, so compas_fab auto-skips it.
     - **M4** (gone): nothing.
 
-    The whitelist is recorded on the male / carried-female side (one side is
-    enough); the bar tube carries none (the tool grips the male, not the tube).
+    The male<->mate whitelist is recorded on the male / carried-female side (one
+    side is enough). The bar tube additionally whitelists BOTH gripper tools while
+    the arms are at the joints (M1-M3); cleared once the bar is released (M4).
+
+    Note: the tool<->tube contact is allowed because the simplified (convex)
+    collision meshes of the tool head and the tube overlap by ~1-3 mm even when
+    the *visual* meshes have clearance -- a pipeline mesh-coarseness artefact, not
+    real interference (confirmed via PyBullet getClosestPoints, see
+    tests/headless_ik_keyframe.py). Whitelisting avoids the false positive.
 
     Args:
         state (RobotCellState): movement start_state, mutated in place.
@@ -432,9 +455,15 @@ def _apply_movement_touch_policy(
         if frb is not None:
             frb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
 
+    # The two gripper tools overlap the grasped tube by a few mm on the coarse
+    # collision meshes (see note above). Whitelist tool<->bar while the arms are
+    # at the joints (M1-M3); clear it once the bar is gone (M4).
     bar_rb = state.rigid_body_states.get(bar_key)
     if bar_rb is not None:
-        bar_rb.touch_bodies = []
+        if movement in ("M1", "M2", "M3"):
+            bar_rb.touch_bodies = sorted({t for t in tool_ids.values() if t})
+        else:
+            bar_rb.touch_bodies = []
 
 
 def _build_m1(
@@ -695,6 +724,129 @@ def _build_m4(
 
 
 # ---------------------------------------------------------------------------
+# Movement builder (shared by the action factory and the IK keyframe tool)
+# ---------------------------------------------------------------------------
+
+
+def build_assembly_movements(
+    rcell,
+    planner,
+    bar_id: str,
+    base_frame_world_mm,
+    tool0_left_assembled_mm,
+    tool0_right_assembled_mm,
+    approach_groups: dict = None,
+    assembled_groups: dict = None,
+    bar_arm_side: str = "left",
+):
+    """Build the four assembly movements (M1-M4) for ``bar_id``.
+
+    This is the single place that turns the cached static cell + the two placed
+    tool blocks into the M1-M4 ``start_state``/``target_ee_frames`` pairs. It is
+    callable **before** IK has been solved: ``approach_groups``/``assembled_groups``
+    are optional, so the start configs default to the template seed and the IK
+    solver fills them in later. ``build_bar_assembly_action`` (export) passes the
+    saved keyframe groups; ``rs_ik_keyframe`` (solver) passes ``None`` and reads the
+    M1/M2/M3 ``start_state``s back out to solve against.
+
+    Everything each movement needs is known here without IK:
+      - tool0 at the assembled pose = the placed tool block world transforms,
+      - the approach EE targets = a pure geometric offset of those (``_build_m1``),
+      - the retreat EE targets = the male-joint OCF offset (``_build_m3``),
+      - attachments / allowed-touch policy = cell geometry + arm classification.
+    Only ``robot_configuration`` is movement-state data that IK supplies.
+
+    Args:
+        rcell (RobotCell): the cached static cell.
+        planner (PyBulletPlanner): active planner (used by ``ensure_assembly_cell``).
+        bar_id (str): id of the bar being assembled.
+        base_frame_world_mm (ndarray): 4x4 mm robot base frame. Cosmetic for the
+            solver (``solve_dual_arm_ik`` overrides it per attempt); authoritative
+            for the export + viewer.
+        tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm flange
+            poses at the assembled keyframe (the placed tool block xforms).
+        approach_groups (dict | None): saved approach per-arm config to stamp onto
+            M2's start_state, or ``None`` (pre-IK) to leave the seed config.
+        assembled_groups (dict | None): saved assembled per-arm config to stamp onto
+            M3's start_state, or ``None`` (pre-IK).
+        bar_arm_side (str): arm the bar + carried females attach to (default "left").
+
+    Returns:
+        tuple: ``(movements, env_geom)`` where ``movements`` is
+        ``{"M1": .., "M2": .., "M3": .., "M4": ..}`` and ``env_geom`` is the cached
+        ``{name: body_info}`` collision-body dict for the active bar's bodies.
+    """
+    from core import config
+    from core import ik_collision_setup
+    from core import robot_cell
+
+    # Build the full static-cell template state. `prepare_assembly_collision_state`
+    # calls `ensure_assembly_cell` (registers the full canonical assembly + env
+    # obstacles + arm ToolModels onto the cached cell) and returns a full-key-set
+    # state: built bars/joints visible static, the active bar a static obstacle,
+    # not-yet-built bars/joints `is_hidden=True`, the two arm tools attached. Every
+    # Mi re-classes only the active (grasped) bodies.
+    slim_state = robot_cell.default_cell_state()
+    _set_robot_base_frame(slim_state, base_frame_world_mm)
+    template_state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
+        rcell, planner, slim_state, bar_id,
+    )
+    arm_to_male = _classify_male_joints_per_arm(bar_id)
+
+    # The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
+    active_keys = {
+        name for name, body_info in env_geom.items()
+        if body_info.get("parent_bar_id") == bar_id
+    }
+    bar_key = f"{CANONICAL_BAR_PREFIX}{bar_id}"
+    tool_ids = robot_cell.arm_tool_ids()
+
+    # The active bar/joint frames in the template are the assembled-pose world
+    # frames; every Mi rewrites them (M1/M2 attach to tool0, M3/M4 detach to
+    # world). Clear them so a missed re-class surfaces as a None-frame error.
+    for k in active_keys:
+        rb = template_state.rigid_body_states.get(k)
+        if rb is not None:
+            rb.frame = None
+
+    m1 = _build_m1(
+        template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
+        tool0_left_assembled_mm, tool0_right_assembled_mm,
+        base_frame_world_mm,
+        config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
+        config.LEFT_GROUP, config.RIGHT_GROUP,
+        config.LM_DISTANCE,
+        bar_arm_side=bar_arm_side,
+    )
+    m2 = _build_m2(
+        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
+        tool0_left_assembled_mm, tool0_right_assembled_mm,
+        base_frame_world_mm,
+        approach_groups,
+        config.LM_DISTANCE,
+        bar_arm_side=bar_arm_side,
+    )
+    m3 = _build_m3(
+        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
+        tool0_left_assembled_mm, tool0_right_assembled_mm,
+        base_frame_world_mm,
+        assembled_groups,
+        config.LM_DISTANCE,
+    )
+    m4 = _build_m4(
+        template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
+        base_frame_world_mm,
+        config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
+        config.LEFT_GROUP, config.RIGHT_GROUP,
+    )
+    return {"M1": m1, "M2": m2, "M3": m3, "M4": m4}, env_geom
+
+
+# ---------------------------------------------------------------------------
 # Top-level factory
 # ---------------------------------------------------------------------------
 
@@ -728,7 +880,6 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     from core import config
     from core import env_collision
     from core import ik_collision_setup
-    from core import robot_cell
     from core.rhino_bar_registry import get_bar_seq_map
 
     print(f"core.bar_action.build_bar_assembly_action: building bar '{bar_id}' ...")
@@ -753,81 +904,27 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
     tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
 
-    # 4) Build the full static-cell template state. `prepare_assembly_collision_state`
-    # calls `ensure_assembly_cell` (registers the full canonical assembly + env
-    # obstacles + arm ToolModels onto the cached cell) and returns a full-key-set
-    # state: built bars/joints visible static, the active bar a static obstacle,
-    # not-yet-built bars/joints `is_hidden=True`, the two arm tools attached. No
-    # canonicalization, no snapshot/restore -- the cell IS the persistent static
-    # cell now. Every Mi re-classes only the active (grasped) bodies.
-    slim_state = robot_cell.default_cell_state()
-    _set_robot_base_frame(slim_state, base_frame_world_mm)
-    template_state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
-        rcell, planner, slim_state, bar_id,
+    # 4) Build M1-M4 from the cell + tool placements + the saved keyframe configs.
+    movements, _env_geom = build_assembly_movements(
+        rcell, planner, bar_id,
+        base_frame_world_mm,
+        tool0_left_assembled_mm, tool0_right_assembled_mm,
+        approach_groups=bar_keyframe["approach"],
+        assembled_groups=bar_keyframe["assembled"],
     )
-    arm_to_male = _classify_male_joints_per_arm(bar_id)
 
-    # The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
-    active_keys = {
-        name for name, body_info in env_geom.items()
-        if body_info.get("parent_bar_id") == bar_id
-    }
-    bar_key = f"{CANONICAL_BAR_PREFIX}{bar_id}"
-    tool_ids = robot_cell.arm_tool_ids()
-
-    # The active bar/joint frames in the template are the assembled-pose world
-    # frames; every Mi rewrites them (M1/M2 attach to tool0, M3/M4 detach to
-    # world). Clear them so a missed re-class surfaces as a None-frame error.
-    for k in active_keys:
-        rb = template_state.rigid_body_states.get(k)
-        if rb is not None:
-            rb.frame = None
-
-    # 6) Build movements.
+    # 5) Assembly-sequence metadata for the action wrapper (the movements
+    # themselves don't need it).
     seq_map = get_bar_seq_map()
-    # Full ordered list of bar ids = assembly sequence (ascending seq number).
     assembly_seq = [
         bid for bid, _oid_seq in sorted(seq_map.items(), key=lambda kv: kv[1][1])
     ]
     active_index = assembly_seq.index(bar_id) if bar_id in assembly_seq else -1
 
-    m1 = _build_m1(
-        template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
-        tool0_left_assembled_mm, tool0_right_assembled_mm,
-        base_frame_world_mm,
-        config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
-        config.LEFT_GROUP, config.RIGHT_GROUP,
-        config.LM_DISTANCE,
-    )
-    m2 = _build_m2(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
-        tool0_left_assembled_mm, tool0_right_assembled_mm,
-        base_frame_world_mm,
-        bar_keyframe["approach"],
-        config.LM_DISTANCE,
-    )
-    m3 = _build_m3(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
-        tool0_left_assembled_mm, tool0_right_assembled_mm,
-        base_frame_world_mm,
-        bar_keyframe["assembled"],
-        config.LM_DISTANCE,
-    )
-    m4 = _build_m4(
-        template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
-        base_frame_world_mm,
-        config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
-        config.LEFT_GROUP, config.RIGHT_GROUP,
-    )
-
     return BarAssemblyAction(
         action_id=f"{bar_id}_A0_assemble",
         tag=f"Assemble bar {bar_id} (index {active_index} of {len(assembly_seq)})",
-        movements=[m1, m2, m3, m4],
+        movements=[movements["M1"], movements["M2"], movements["M3"], movements["M4"]],
         active_bar_id=bar_id,
         assembly_seq=assembly_seq,
     )

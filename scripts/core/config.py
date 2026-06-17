@@ -197,6 +197,10 @@ IK_SUPPORT_KEY = "ik_support"
 KEY_ASSEMBLY_BASE_FRAME = "assembly_robot_base_frame_world_mm"
 KEY_ASSEMBLY_IK_APPROACH = "assembly_ik_approach"
 KEY_ASSEMBLY_IK_ASSEMBLED = "assembly_ik_assembled"
+# Retreat = the M3 target pose (bar released, both arms pull back along the
+# joint -Z by LM_DISTANCE). rs_ik_keyframe now solves this third keyframe and
+# saves its per-arm config here, next to approach/assembled.
+KEY_ASSEMBLY_IK_RETREAT = "assembly_ik_retreat"
 KEY_SUPPORT_BASE_FRAME = "support_robot_base_frame_world_mm"
 KEY_SUPPORT_IK_APPROACH = "support_ik_approach"
 KEY_SUPPORT_IK_HELD = "support_ik_held"

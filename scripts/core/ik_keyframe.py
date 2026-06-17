@@ -86,8 +86,14 @@ def solve_keyframe_chain(
     for role, movement in ordered_movements:
         state = movement.start_state.copy()
         # Chain: each movement begins at the previous movement's solved config.
+        # That warm-start is a good seed, so those solves descend deterministically
+        # (max_restart_iter=1). The FIRST movement has no warm-start, so it uses the
+        # cold default (random restarts) to find the collision-free basin.
         if prev_config is not None:
             state.robot_configuration = prev_config.copy()
+            max_restart_iter = 1
+        else:
+            max_restart_iter = None  # -> config.IK_MAX_RESTART_ITER (cold restarts)
 
         targets = movement.target_ee_frames or {}
         left_frame = targets.get("left")
@@ -107,6 +113,7 @@ def solve_keyframe_chain(
             frame_to_mm4(left_frame),
             frame_to_mm4(right_frame),
             check_collision=check_collision,
+            max_restart_iter=max_restart_iter,
             verbose_pairs=verbose_pairs,
         )
         if solved is None:

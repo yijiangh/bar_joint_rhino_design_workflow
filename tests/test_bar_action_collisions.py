@@ -310,58 +310,43 @@ def test_grasped_vs_environment(cell, grasped):
 
 
 # ---------------------------------------------------------------------------
-# Allowed-touch / latent-bug regression on compute_assembly_allowed_touches
+# build_assembly_movements building blocks: M2 attaches the active bodies to
+# tool0 (bar gripped), M3 detaches them to their static world pose (bar released).
 # ---------------------------------------------------------------------------
 
 
-def test_allowed_touches_canonical_mate_pair(cell):
-    """The grasped male is whitelisted against the BUILT-bar female of the same
-    joint_id (canonical lookup), and against its arm tool + the active bar."""
-    planner, rcell, _ = cell
-    from core import ik_collision_setup as ics
+def test_m2_attaches_active_m3_detaches(cell):
+    """M2 grips the active bar + male onto the left tool0; M3 releases them static.
 
-    collision_bodies = {
-        BAR_ACTIVE: {"frame_world_mm": None, "kind": "bar", "parent_bar_id": "B2"},
-        JOINT_ACTIVE: {"frame_world_mm": None, "kind": "joint", "parent_bar_id": "B2"},
-        JOINT_BUILT: {"frame_world_mm": None, "kind": "joint", "parent_bar_id": "B1"},
+    This is the core per-movement distinction the IK keyframe tool relies on:
+    the approach pose (M2 start) carries the bar with the arm, the assembled pose
+    (M3 start) leaves it placed in the world.
+    """
+    planner, rcell, _ = cell
+    import numpy as np
+    from core import bar_action
+
+    env_geom = {
+        BAR_ACTIVE: {"frame_world_mm": np.eye(4), "parent_bar_id": "B2"},
+        JOINT_ACTIVE: {"frame_world_mm": np.eye(4), "parent_bar_id": "B2"},
     }
-    left_tool, _ = _tool_ids(rcell)
+    active_keys = {BAR_ACTIVE, JOINT_ACTIVE}
     arm_to_male = {"J1-2": "left"}
+    tool0 = np.eye(4)
 
-    allowed = ics.compute_assembly_allowed_touches(collision_bodies, arm_to_male, "B2")
-
-    # The grasped male must be whitelisted against its mate (built-bar female).
-    assert JOINT_BUILT in allowed.get(JOINT_ACTIVE, [])
-    # ... and against its arm tool and the active bar (rigid bond).
-    assert left_tool in allowed.get(JOINT_ACTIVE, [])
-    assert JOINT_ACTIVE in allowed.get(BAR_ACTIVE, [])
-
-
-def test_allowed_touch_skips_mate_collision(cell):
-    """Applying the mate whitelist makes an overlapping grasped-male / built-female
-    pair NOT report as a collision (the contact is allowed)."""
-    planner, rcell, _ = cell
-    from compas.geometry import Frame
-    from core import ik_collision_setup as ics
-
-    af = Frame([0.0, 0.0, 0.5], [1, 0, 0], [0, 1, 0])
+    # M2: both active bodies attach to the left arm's tool0.
     state = _fresh_state(planner, rcell)
-    _attach(state, JOINT_ACTIVE, LEFT_TOOL0, af)
-    male_world = _compose(_link_frame(planner, LEFT_TOOL0), af)
-    _place(state, JOINT_BUILT, male_world)
+    bar_action._set_active_attachments(
+        state, active_keys, env_geom, arm_to_male, tool0, tool0, bar_arm_side="left",
+    )
+    assert state.rigid_body_states[BAR_ACTIVE].attached_to_link == LEFT_TOOL0
+    assert state.rigid_body_states[JOINT_ACTIVE].attached_to_link == LEFT_TOOL0
 
-    # Baseline: overlapping, no whitelist -> flagged.
-    assert _has_pair(_report(planner, state), JOINT_ACTIVE, JOINT_BUILT)
-
-    # Apply the canonical mate whitelist -> the pair is now skipped.
-    collision_bodies = {
-        BAR_ACTIVE: {"parent_bar_id": "B2"},
-        JOINT_ACTIVE: {"parent_bar_id": "B2"},
-        JOINT_BUILT: {"parent_bar_id": "B1"},
-    }
-    allowed = ics.compute_assembly_allowed_touches(collision_bodies, {"J1-2": "left"}, "B2")
-    ics.apply_allowed_touches(state, allowed)
-    assert not _has_pair(_report(planner, state), JOINT_ACTIVE, JOINT_BUILT)
+    # M3: the same bodies detach to a static world pose (no link).
+    state = _fresh_state(planner, rcell)
+    bar_action._detach_active_to_assembled_world(state, active_keys, env_geom)
+    assert state.rigid_body_states[BAR_ACTIVE].attached_to_link is None
+    assert state.rigid_body_states[JOINT_ACTIVE].attached_to_link is None
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +488,27 @@ def test_m3_detached_tool_allowed_and_static_skip(cell):
     assert not _has_pair(report, JOINT_ACTIVE, JOINT_BUILT)     # static<->static auto-skipped
 
 
+def test_bar_tool_whitelisted_m1_m3_not_m4(cell):
+    """The grasped tube whitelists BOTH gripper tools in M1-M3, none in M4.
+
+    Covers the tool<->tube coarse-mesh overlap (a pipeline artefact): allowed
+    while gripped, cleared once released.
+    """
+    planner, rcell, _ = cell
+    from core import bar_action
+
+    left_tool, right_tool = _tool_ids(rcell)
+    env_geom, arm_to_male, bar_key, tool_ids = _touch_inputs(rcell)
+
+    for movement, expect_tools in (("M1", True), ("M2", True), ("M3", True), ("M4", False)):
+        state = _fresh_state(planner, rcell)
+        bar_action._apply_movement_touch_policy(
+            state, movement, {BAR_ACTIVE, JOINT_ACTIVE}, env_geom, arm_to_male, bar_key, tool_ids,
+        )
+        touch = set(state.rigid_body_states[BAR_ACTIVE].touch_bodies or [])
+        assert touch == ({left_tool, right_tool} if expect_tools else set()), (movement, touch)
+
+
 # ---------------------------------------------------------------------------
 # Standalone runner (avoids the pytest/cryptography-PyO3 conflict in the Rhino
 # site-env; mirrors tests/test_robot_cell_support_smoke.py). Run:
@@ -531,13 +537,13 @@ def _main() -> int:
         ("grasped_bar_vs_robot_link", test_grasped_bar_vs_robot_link),
         ("robot_link_vs_environment", test_robot_link_vs_environment),
         ("tool_vs_environment", test_tool_vs_environment),
-        ("allowed_touches_canonical_mate_pair", test_allowed_touches_canonical_mate_pair),
-        ("allowed_touch_skips_mate_collision", test_allowed_touch_skips_mate_collision),
+        ("m2_attaches_active_m3_detaches", test_m2_attaches_active_m3_detaches),
         ("build_full_assembly_state_hides_future", test_build_full_assembly_state_hides_future),
         ("m1_male_tool_allowed", test_m1_male_tool_allowed),
         ("m1_mate_not_yet_allowed_but_m2_is", test_m1_mate_not_yet_allowed_but_m2_is),
         ("m2_bar_vs_built_female_flagged", test_m2_bar_vs_built_female_flagged),
         ("m3_detached_tool_allowed_and_static_skip", test_m3_detached_tool_allowed_and_static_skip),
+        ("bar_tool_whitelisted_m1_m3_not_m4", test_bar_tool_whitelisted_m1_m3_not_m4),
     ]
 
     try:

@@ -14,8 +14,10 @@ The user picks a bar to start; the script enters an interactive loop
 that runs until Esc. Inside the loop the user can:
 
   * click any other bar to switch the active bar;
-  * press Enter (or `TogglePose`) to cycle through saved poses
-    (currently `assembled` <-> `approach`);
+  * press Enter (or `TogglePose`) to cycle through the four assembly
+    movements' start states (M1 home -> M2 approach -> M3 assembled ->
+    M4 retreat), each with its solved IK config + per-movement collision
+    context;
   * use ShowUnbuilt / HideUnbuilt to toggle the visibility of unbuilt bars.
 
 The active bar is highlighted via the same sequence-color overlay used
@@ -49,6 +51,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import bar_action as _bar_action_module
 from core import config as _config_module
 from core import env_collision as _env_collision_module
 from core import ik_collision_setup as _ik_collision_setup_module
@@ -77,15 +80,22 @@ IK_SUPPORT_KEY = "ik_support"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 
-# Pose cycle order. Future poses can be appended; cycling is index-modulo.
-POSES = ("assembled", "approach")
+# Cycle order -- the four assembly movements. TogglePose steps through each
+# movement's START state with its solved config + per-movement collision context:
+#   M1 = home/gripped, M2 = approach/gripped, M3 = assembled/released,
+#   M4 = retreat (bar released; M4's own start config is None, so the saved
+#        retreat keyframe is applied to view it).
+POSES = ("M1", "M2", "M3", "M4")
 
 
 def _reload():
-    global config, env_collision, ik_collision_setup, ik_viz, robot_cell, robot_cell_support
+    global bar_action, config, env_collision, ik_collision_setup, ik_viz, robot_cell, robot_cell_support
     config = importlib.reload(_config_module)
     env_collision = importlib.reload(_env_collision_module)
     ik_collision_setup = importlib.reload(_ik_collision_setup_module)
+    # bar_action.build_assembly_movements is the single source of the per-pose
+    # collision state (M2 start = approach, M3 start = assembled).
+    bar_action = importlib.reload(_bar_action_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
@@ -214,22 +224,24 @@ def _tool0_world_mm(planner, link_name: str) -> np.ndarray:
 
 
 def _load_assembly_payload(bar_oid):
-    """Read the new split assembly keys off ``bar_oid``.
+    """Read the split assembly keys off ``bar_oid``.
 
-    Returns ``{"base_frame_world_mm", "assembled", "approach"}`` (any of
-    "assembled" / "approach" may be ``None`` if missing) or ``None`` if
-    the bar has no assembled keyframe at all.
+    Returns ``{"base_frame_world_mm", "approach", "assembled", "retreat"}`` (any of
+    "approach" / "retreat" may be ``None`` if missing -- e.g. bars keyframed before
+    the three-movement IK) or ``None`` if the bar has no assembled keyframe at all.
     """
     base_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME)
     assembled_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED)
     if not base_raw or not assembled_raw:
         return None
     approach_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH)
+    retreat_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_RETREAT)
     try:
         return {
             "base_frame_world_mm": np.asarray(json.loads(base_raw), dtype=float),
-            "assembled": json.loads(assembled_raw),
             "approach": json.loads(approach_raw) if approach_raw else None,
+            "assembled": json.loads(assembled_raw),
+            "retreat": json.loads(retreat_raw) if retreat_raw else None,
         }
     except json.JSONDecodeError as exc:
         print(f"RSShowIK: malformed user-text on bar ({exc}); skipping IK preview.")
@@ -282,8 +294,8 @@ class _PreviewSession:
         self._session_started = False
         # State produced by the most recent _render(); reused by check_collision.
         self._last_assembly_state = None
+        self._last_env_geom = {}
         self._last_assembly_payload = None
-        self._last_assembly_groups = None
         self._last_support_payload = None
         # Highlight bookkeeping: {oid: prev_color_source_or_None}
         self._highlight_oids = []
@@ -301,11 +313,12 @@ class _PreviewSession:
             self._session_started = False
         self.active_bar_id = bar_id
         self.active_bar_oid = bar_oid
-        # Reset pose on bar switch so users always start from "assembled".
+        # Start from the first movement (M1) on a bar switch.
         self.pose = POSES[0]
         self.refresh()
 
     def cycle_pose(self):
+        """Advance to the next movement's start state (M1 -> M2 -> M3 -> M1)."""
         if self.active_bar_id is None:
             return
         idx = POSES.index(self.pose) if self.pose in POSES else -1
@@ -337,8 +350,8 @@ class _PreviewSession:
         self._revert_highlight()
         self._clear_preview()
         self._last_assembly_state = None
+        self._last_env_geom = {}
         self._last_assembly_payload = None
-        self._last_assembly_groups = None
         self._last_support_payload = None
         if self.active_bar_id is None:
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
@@ -357,48 +370,77 @@ class _PreviewSession:
             ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
             return
 
-        groups = payload.get(self.pose)
-        if groups is None:
-            # Requested pose missing -> fall back to assembled.
-            print(
-                f"RSShowIK: bar {self.active_bar_id} has no '{self.pose}' pose; "
-                f"showing 'assembled' instead."
-            )
-            self.pose = "assembled"
-            groups = payload["assembled"]
+        self._render(payload)
 
-        self._render(payload, groups)
+    def _build_movements(self, payload):
+        """Build the M1-M4 assembly movements for the active bar from its keyframes.
 
-    def _render(self, payload, groups):
+        The single source of the viewer's collision context, shared with
+        RSIKKeyframe (both call ``bar_action.build_assembly_movements``). Each
+        movement's ``start_state`` carries that movement's solved config +
+        per-movement attachments: M1 = home/gripped, M2 = approach/gripped,
+        M3 = assembled/released.
+
+        Args:
+            payload (dict): the bar's keyframe record -- ``base_frame_world_mm``
+                plus the ``approach`` / ``assembled`` per-arm configs.
+
+        Returns:
+            tuple: ``(movements, env_geom)`` -- ``{"M1".."M4": Movement}`` and the
+            collision-body dict.
+
+        Raises:
+            RuntimeError: if the bar's two arm tools can't be resolved.
+        """
+        rcell = robot_cell.get_or_load_robot_cell()
+        arm_tools, err = ik_collision_setup.resolve_arm_tools_on_bar(self.active_bar_id)
+        if err is not None:
+            raise RuntimeError(err)
+        tool0_left = env_collision._block_instance_xform_mm(arm_tools["left"])
+        tool0_right = env_collision._block_instance_xform_mm(arm_tools["right"])
+        movements, env_geom = bar_action.build_assembly_movements(
+            rcell, self.planner, self.active_bar_id,
+            payload["base_frame_world_mm"],
+            tool0_left, tool0_right,
+            approach_groups=payload.get("approach"),
+            assembled_groups=payload.get("assembled"),
+        )
+        return movements, env_geom
+
+    def _render(self, payload):
         modes = (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION)
         ik_viz.set_mesh_mode(self.mesh_mode)
 
         rcell = robot_cell.get_or_load_robot_cell()
-        # Build the IK-pose state, then mirror IK keyframe's collision setup
-        # (per-arm tool RBs + env_* bars/joints) so the cached scene object
-        # has the FULL set of rigid bodies to draw -- robot, tools, arm-tool
-        # collision meshes, AND every built bar / joint earlier in sequence.
-        state = _build_assembly_state(
-            payload["base_frame_world_mm"], groups, self.deps
-        )
+        # Build the movements and show the CURRENT movement's start state (its solved
+        # config + per-movement collision context -- exactly what RSIKKeyframe used).
+        # On failure (e.g. the bar's tools can't be resolved), hide the IK preview.
+        env_geom = {}
         try:
-            print(f"RSShowIK._render: calling build_assembly_ik_state for bar {self.active_bar_id}")
-            state, env_geom, _arm_to_male, _allowed = (
-                ik_collision_setup.build_assembly_ik_state(
-                    rcell, self.planner, state, self.active_bar_id
-                )
+            movements, env_geom = self._build_movements(payload)
+            movement = movements[self.pose]
+            state = movement.start_state
+            if self.pose == "M4":
+                # M4 (free home) has start_state.robot_configuration = None -- the
+                # planner fills it from M3's end (the retreat keyframe). Apply the
+                # saved retreat config so M4 shows the retreat pose (bar released).
+                retreat = payload.get("retreat")
+                if retreat is None:
+                    raise RuntimeError("bar has no saved retreat keyframe (M4)")
+                state = movement.start_state.copy()
+                if state.robot_configuration is None:
+                    state.robot_configuration = movements["M3"].start_state.robot_configuration.copy()
+                _apply_groups(state, retreat)
+            print(
+                f"RSShowIK: {self.pose} start state -- {movement.movement_id} | {movement.tag}"
             )
-            # Debug: verify active bar/joint in env_geom
-            active_keys = [k for k, bi in env_geom.items() if bi.get("parent_bar_id") == self.active_bar_id]
-            print(f"RSShowIK._render: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
-            for ak in sorted(active_keys):
-                payload_info = env_geom[ak]
-                print(f"  > {ak}: source_oid={payload_info.get('source_oid')}")
         except Exception as exc:
             print(
-                f"RSShowIK: build_assembly_ik_state failed "
-                f"({type(exc).__name__}: {exc}); rendering robot only."
+                f"RSShowIK: movement build failed "
+                f"({type(exc).__name__}: {exc}); hiding IK preview."
             )
+            ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            return
 
         rs.EnableRedraw(False)
         try:
@@ -423,8 +465,8 @@ class _PreviewSession:
             ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
 
             self._last_assembly_state = state
+            self._last_env_geom = env_geom
             self._last_assembly_payload = payload
-            self._last_assembly_groups = groups
 
             support_payload = _load_support_payload(self.active_bar_oid)
             self._last_support_payload = support_payload
@@ -465,7 +507,7 @@ class _PreviewSession:
                 ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
 
             print(
-                f"RSShowIK: showing '{self.pose}' keyframe for bar "
+                f"RSShowIK: showing {self.pose} start state for bar "
                 f"{self.active_bar_id} (mesh_mode={self.mesh_mode})"
             )
         finally:
@@ -490,33 +532,12 @@ class _PreviewSession:
             return
         self._revert_highlight()
 
-        rcell = robot_cell.get_or_load_robot_cell()
-        # Mirror IK keyframe's full collision setup: per-arm tool RBs
-        # (AssemblyLeftArmToolBody/RightArmToolBody, attached_to_link=tool0)
-        # AND env_* bars/joints. Without the arm-tool RBs the check would
-        # silently drop CC.2 / CC.3 / CC.5 pairs involving tool meshes,
-        # which is exactly what was causing IK keyframe to fail while
-        # ShowIK reported "no collisions".
-        try:
-            print(f"RSShowIK.check_collision: calling build_assembly_ik_state for bar {self.active_bar_id}")
-            state, env_geom, _arm_to_male, _allowed = (
-                ik_collision_setup.build_assembly_ik_state(
-                    rcell, self.planner, self._last_assembly_state, self.active_bar_id
-                )
-            )
-            # Debug: verify active bar/joint in env_geom
-            active_keys = [k for k, bi in env_geom.items() if bi.get("parent_bar_id") == self.active_bar_id]
-            print(f"RSShowIK.check_collision: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
-            for ak in sorted(active_keys):
-                payload_info = env_geom[ak]
-                print(f"  > {ak}: source_oid={payload_info.get('source_oid')}")
-        except Exception as exc:
-            print(
-                f"RSShowIK: build_assembly_ik_state failed "
-                f"({type(exc).__name__}: {exc}); aborting."
-            )
-            return
-        self._run_collision_check_on_state(state, env_geom, verbose=True)
+        # The rendered state is already the movement start state from
+        # `_build_movements` (per-arm tool RBs attached at tool0 + every built
+        # bar/joint), so check exactly what is on screen -- no rebuild.
+        self._run_collision_check_on_state(
+            self._last_assembly_state, self._last_env_geom, verbose=True,
+        )
 
     def _run_collision_check_on_state(self, state, env_geom, *, verbose: bool) -> int:
         """Push ``state`` to the planner, run a full-report collision check,
@@ -633,25 +654,11 @@ class _PreviewSession:
         self._revert_highlight()
 
         rcell = robot_cell.get_or_load_robot_cell()
-        try:
-            print(f"RSShowIK.interactive_collision_check: calling build_assembly_ik_state for bar {self.active_bar_id}")
-            state, env_geom, _arm_to_male, _allowed = (
-                ik_collision_setup.build_assembly_ik_state(
-                    rcell, self.planner, self._last_assembly_state, self.active_bar_id
-                )
-            )
-            # Debug: verify active bar/joint in env_geom
-            active_keys = [k for k, bi in env_geom.items() if bi.get("parent_bar_id") == self.active_bar_id]
-            print(f"RSShowIK.interactive_collision_check: env_geom has {len(env_geom)} total bodies, {len(active_keys)} active_*")
-            for ak in sorted(active_keys):
-                payload_info = env_geom[ak]
-                print(f"  > {ak}: source_oid={payload_info.get('source_oid')}")
-        except Exception as exc:
-            print(
-                f"RSShowIK: build_assembly_ik_state failed "
-                f"({type(exc).__name__}: {exc}); aborting."
-            )
-            return
+        # Jog on top of the rendered movement start state (already built by
+        # `_build_movements`); only the configuration changes as the user drags
+        # the sliders.
+        state = self._last_assembly_state
+        env_geom = self._last_env_geom
 
         joint_specs = []  # list of (group, name, lower_rad, upper_rad)
         for group in (config.LEFT_GROUP, config.RIGHT_GROUP):

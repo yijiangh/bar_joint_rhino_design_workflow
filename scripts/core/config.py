@@ -109,6 +109,13 @@ IK_BASE_SAMPLE_MAX_ITER = 10
 # IK solver tuning (compas_fab PyBullet planner)
 IK_MAX_RESULTS = 20
 IK_MAX_DESCEND_ITERATIONS = 200
+# Dual-arm IK random-restart budget for a COLD solve (no good warm-start, e.g. the
+# first movement M1). Each restart resamples a random dual-arm config to descend
+# from. Warm-started solves (M2/M3, seeded from the previous keyframe) force this to 1.
+# It is an early-exit CEILING -- easy poses solve in a few restarts; only a tight pose
+# (or a genuinely unreachable one) spends the whole budget. Measured M1 success on the
+# tight double-kissing-jig B6 at base (0,0,0): 50 -> ~1/8, 150 -> ~4/8, 400 -> 8/8.
+IK_MAX_RESTART_ITER = 300
 IK_TOLERANCE_POSITION = 1e-3  # m (compas_fab uses SI; values converted at the call site if needed)
 IK_TOLERANCE_ORIENTATION = 1e-3  # rad
 

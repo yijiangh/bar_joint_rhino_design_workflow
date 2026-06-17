@@ -448,6 +448,25 @@ def ensure_env_registered(robot_cell, env_geom, planner):
     )
 
 
+def _set_random_dual_arm_config(planner, state):
+    """Warm-start both arms from a fresh random configuration (for IK restarts).
+
+    Mutates ``state.robot_configuration`` in place with random joint values for the
+    left and right arm groups, using the planner's robot-cell sampler (the same one
+    compas_fab's IK uses for its internal random restarts).
+
+    Args:
+        planner (PyBulletPlanner): active planner (its ``client.robot_cell`` samples).
+        state (RobotCellState): state whose configuration is randomized in place.
+
+    Returns:
+        None.
+    """
+    rcell = planner.client.robot_cell
+    for group in (config.LEFT_GROUP, config.RIGHT_GROUP):
+        state.robot_configuration.merge(rcell.random_configuration(group))
+
+
 def solve_dual_arm_ik(
     planner,
     template_state,
@@ -456,20 +475,45 @@ def solve_dual_arm_ik(
     tool0_right_world_mm: np.ndarray,
     *,
     check_collision: bool = True,
-    max_results: int = None,
+    max_restart_iter: int = None,
     max_descend_iterations: int = None,
     tolerance_position: float = None,
     tolerance_orientation: float = None,
     verbose_pairs: bool = False,
 ):
-    """Solve IK for the left and right groups in order.
+    """Solve IK for the left then right group, warm-started from ``template_state``.
 
-    All 4x4 inputs are mm (consistent with `core.config`). Converted to
-    meters for compas_fab internally.
+    Each attempt descends DETERMINISTICALLY (the underlying pybullet solver is run
+    with ``max_results=1``) from a warm-start configuration. The outer loop here
+    owns the random restarts: attempt 0 uses the caller's seed (``template_state``'s
+    configuration), and every subsequent attempt resamples a random dual-arm config
+    to descend from (see ``_set_random_dual_arm_config``).
 
-    Returns the mutated copy of `template_state` on success, or None on
-    any-group failure. The caller can call `set_cell_state(planner, state)`
-    to view the result.
+    This split lets a chained caller warm-start ``M2``/``M3`` from the previous
+    keyframe with ``max_restart_iter=1`` (only the given seed, no randomization),
+    while a cold solve with no good seed (``M1``) uses the full restart budget --
+    random restarts are the only reliable way into a narrow collision-free basin
+    (pybullet's per-group internal restarts do not couple the two arms and fail to
+    find tight dual-arm poses).
+
+    Args:
+        planner (PyBulletPlanner): active planner with the dual-arm cell loaded.
+        template_state (RobotCellState): seed state; its ``robot_configuration`` is
+            the warm-start for attempt 0.
+        base_frame_world_mm (np.ndarray): 4x4 mm robot base frame (overrides the
+            state's stored base).
+        tool0_left_world_mm, tool0_right_world_mm (np.ndarray): 4x4 mm tool0 targets.
+        check_collision (bool): collision-check each candidate.
+        max_restart_iter (int): number of warm-start attempts; ``None`` ->
+            ``config.IK_MAX_RESTART_ITER`` (cold default). Pass ``1`` to use only the
+            given seed with no random restarts.
+        max_descend_iterations, tolerance_position, tolerance_orientation: solver
+            tuning; ``None`` -> the ``config.IK_*`` defaults.
+        verbose_pairs (bool): print the collision-pair summary on success.
+
+    Returns:
+        RobotCellState | None: the solved state copy on success, or ``None`` if every
+        restart fails.
     """
     _ensure_dual_arm_cell_loaded(planner)
     deps = _import_compas_stack()
@@ -477,7 +521,9 @@ def solve_dual_arm_ik(
     FrameTarget = deps["FrameTarget"]
     TargetMode = deps["TargetMode"]
 
-    max_results = max_results if max_results is not None else config.IK_MAX_RESULTS
+    max_restart_iter = (
+        config.IK_MAX_RESTART_ITER if max_restart_iter is None else max(1, int(max_restart_iter))
+    )
     max_descend_iterations = (
         max_descend_iterations
         if max_descend_iterations is not None
@@ -492,8 +538,8 @@ def solve_dual_arm_ik(
         else config.IK_TOLERANCE_ORIENTATION
     )
 
-    state = template_state.copy()
-    _apply_base_frame_mm(state, base_frame_world_mm)
+    seed_state = template_state.copy()
+    _apply_base_frame_mm(seed_state, base_frame_world_mm)
 
     left_target = FrameTarget(
         _mm_matrix_to_m_frame(Frame, tool0_left_world_mm),
@@ -507,37 +553,58 @@ def solve_dual_arm_ik(
         tolerance_position=tolerance_position,
         tolerance_orientation=tolerance_orientation,
     )
+    targets = ((left_target, config.LEFT_GROUP), (right_target, config.RIGHT_GROUP))
 
+    # max_results=1 -> deterministic descent from the warm-start; the outer loop
+    # below supplies the random restarts.
     options = {
-        "max_results": max_results,
+        "max_results": 1,
         "check_collision": check_collision,
         "max_descend_iterations": max_descend_iterations,
         "verbose": False,
     }
 
-    for target, group in (
-        (left_target, config.LEFT_GROUP),
-        (right_target, config.RIGHT_GROUP),
-    ):
-        try:
-            print(
-                f"core.robot_cell.solve_dual_arm_ik: planner.inverse_kinematics(group={group!r}, "
-                f"check_collision={check_collision}, max_results={max_results})"
-            )
-            cfg = planner.inverse_kinematics(target, state, group=group, options=options)
-        except Exception as exc:
-            print(f"IK failed for group '{group}': {exc}")
-            return None
-        if cfg is None:
-            print(f"IK returned no solution for group '{group}'.")
-            return None
-        state.robot_configuration.merge(cfg)
+    print(
+        f"core.robot_cell.solve_dual_arm_ik: check_collision={check_collision}, "
+        f"max_restart_iter={max_restart_iter}"
+    )
+    last_failure = None
+    for attempt in range(max_restart_iter):
+        trial = seed_state.copy()
+        if attempt > 0:
+            # No good seed (or the given one failed): warm-start from a random config.
+            _set_random_dual_arm_config(planner, trial)
 
-    if verbose_pairs:
-        from core import env_collision
-        print(env_collision.summarize_check_collision(planner, state))
+        solved = True
+        for target, group in targets:
+            try:
+                cfg = planner.inverse_kinematics(target, trial, group=group, options=options)
+            except Exception as exc:  # reachability or collision (max_results=1 raises)
+                last_failure = f"group '{group}': {exc}"
+                solved = False
+                break
+            if cfg is None:
+                last_failure = f"group '{group}': no solution"
+                solved = False
+                break
+            trial.robot_configuration.merge(cfg)
 
-    return state
+        if solved:
+            if attempt > 0:
+                print(
+                    f"core.robot_cell.solve_dual_arm_ik: solved on random restart "
+                    f"{attempt}/{max_restart_iter - 1}."
+                )
+            if verbose_pairs:
+                from core import env_collision
+                print(env_collision.summarize_check_collision(planner, trial))
+            return trial
+
+    print(
+        f"core.robot_cell.solve_dual_arm_ik: no solution after {max_restart_iter} "
+        f"attempt(s) (last failure: {last_failure})."
+    )
+    return None
 
 
 def extract_group_config(state, group: str, robot_cell) -> dict:

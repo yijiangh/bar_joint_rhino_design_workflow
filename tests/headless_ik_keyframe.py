@@ -226,20 +226,14 @@ def main() -> int:
     try:
         # All three movements share one base frame; read it off M1's start_state.
         m1 = by_role["M1"]
-        m2 = by_role["M2"]
         fill_missing_config(
             m1.start_state, rcell, _config.HOME_CONFIG_LEFT, _config.HOME_CONFIG_RIGHT,
         )
         base_frame_mm = ik_keyframe.frame_to_mm4(m1.start_state.robot_base_frame)
 
-        # Seed M1 from the action's saved approach config (= M2.start_state) rather
-        # than HOME. This is a replay of an already-accepted bar, so the re-solve
-        # should land on the saved keyframe (faithful for visual inspection) rather
-        # than an arbitrary IK branch. Only M1's seed matters -- the chain
-        # propagates M1 -> M2 -> M3.
-        if m2.start_state.robot_configuration is not None:
-            m1.start_state.robot_configuration = m2.start_state.robot_configuration.copy()
-
+        # M1 starts at HOME -- exactly like rs_ik_keyframe (no warm-start shortcut).
+        # solve_dual_arm_ik's cold random restarts are what make M1 reachable; M2/M3
+        # then warm-start off the chain. This keeps the headless a faithful proxy.
         ordered_movements = [("M1", by_role["M1"]), ("M2", by_role["M2"]), ("M3", by_role["M3"])]
         print("\n[ik] solving M1->M2->M3 chain (same code path as rs_ik_keyframe) ...")
         solved = ik_keyframe.solve_keyframe_chain(

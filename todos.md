@@ -37,3 +37,5 @@ Like in itj, we don't do mp in Rhino, only do mp in python and just load planned
 
 
 # RobotAction class
+- Add M0
+- rename RoboticLinearMovement into two Sync and Indep.

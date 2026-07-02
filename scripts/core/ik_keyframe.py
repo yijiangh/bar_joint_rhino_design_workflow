@@ -59,7 +59,9 @@ def solve_keyframe_chain(
        attachments + allowed-touch policy).
     2. Seed its ``robot_configuration`` with the *previous* movement's solved
        config -- this realizes the chain (M2 starts where M1 ended, M3 where M2
-       ended). The first movement keeps its own start config (HOME for M1).
+       ended). The first movement (M1) has no warm-start -- its start config is
+       ``None`` (planner-filled) -- so ``solve_dual_arm_ik`` falls back to a
+       default seed and finds the approach basin via cold random restarts.
     3. Solve dual-arm IK for the movement's ``target_ee_frames`` at
        ``base_frame_mm``.
 

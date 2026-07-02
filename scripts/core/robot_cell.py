@@ -541,6 +541,15 @@ def solve_dual_arm_ik(
     seed_state = template_state.copy()
     _apply_base_frame_mm(seed_state, base_frame_world_mm)
 
+    # A movement can arrive with no start configuration (e.g. M1, whose start
+    # config is left None to be filled by its downstream motion planner). IK still
+    # needs a Configuration object to descend from and to merge each group's result
+    # into, so fall back to the cell's default full configuration. Attempt 0 uses
+    # it as the (arbitrary) seed and the random restarts below overwrite the arm
+    # joints anyway, so this does not bias a cold solve.
+    if seed_state.robot_configuration is None:
+        seed_state.robot_configuration = default_cell_state().robot_configuration
+
     left_target = FrameTarget(
         _mm_matrix_to_m_frame(Frame, tool0_left_world_mm),
         TargetMode.ROBOT,

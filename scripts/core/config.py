@@ -95,13 +95,6 @@ HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
 # Approach distance: tool0 translated by -avg(male z) * LM_DISTANCE before final
 LM_DISTANCE = 15.0  # mm
 
-# Home configurations for each arm (UR5e, 6 DOF). Used by RSExportBarAction
-# as the start config of M1 (CDFM home->approach) and the target config of
-# M4 (free motion home).
-# TODO(yh): replace zero-config placeholders with safe-pose values.
-HOME_CONFIG_LEFT = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-HOME_CONFIG_RIGHT = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
 # Fixed dual-arm "home" configuration used by Plan M4 (return-to-home after
 # bar placement). Order matches the canonical left-then-right arm joint order
 # (HUSKY_DUAL_UR5e_JOINT_NAMES[0] + [1]): 6 left arm joints, then 6 right.

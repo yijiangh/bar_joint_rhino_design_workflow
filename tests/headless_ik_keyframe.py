@@ -227,7 +227,7 @@ def main() -> int:
         # All three movements share one base frame; read it off M1's start_state.
         m1 = by_role["M1"]
         fill_missing_config(
-            m1.start_state, rcell, _config.HOME_CONFIG_LEFT, _config.HOME_CONFIG_RIGHT,
+            m1.start_state, rcell, _config.HOME_CONF_LEFT_6, _config.HOME_CONF_RIGHT_6,
         )
         base_frame_mm = ik_keyframe.frame_to_mm4(m1.start_state.robot_base_frame)
 

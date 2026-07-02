@@ -1,12 +1,13 @@
 """BarAssemblyAction schema + builder.
 
 A `BarAssemblyAction` is a downstream artifact describing one bar's full
-dual-arm assembly cycle as four `Movement` records:
+dual-arm assembly cycle as five `Movement` records:
 
-    M1  RoboticDualArmConstrainedMovement   home -> approach (gripped bar)
-    M2  RoboticLinearMovement               linear mate (gripped bar -> mated)
-    M3  RoboticLinearMovement               linear retreat (released, per-arm)
-    M4  RoboticFreeMovement                 free home (no grasp)
+    M0  IndependentDualArmFreeMovement               free move to M1 start (live-planned)
+    M1  EndEffectorConstrainedDualArmFreeMovement    bar loading -> approach (gripped bar)
+    M2  EndEffectorConstrainedDualArmLinearMovement  linear mate (gripped bar -> mated)
+    M3  IndependentDualArmLinearMovement             linear retreat (released, per-arm)
+    M4  IndependentDualArmFreeMovement               free home (no grasp)
 
 The `build_bar_assembly_action` factory reads the IK keyframe data already
 written on the bar curve user-text by `rs_ik_keyframe.py`
@@ -28,7 +29,7 @@ throughout (`bar_<bid>`, `joint_<jid>_<sub>`, `obstacle_<name>`; tools under
 There is no active_*/env_* prefixing and no canonicalization step -- the
 grasped bar for this action is identified by `bar_id` + the assembly sequence,
 and every per-movement state re-classes only those bodies (attach to tool0 in
-M1/M2, detach to world in M3/M4).
+M1/M2, detach to world in M0/M3/M4).
 
 Module is importable without Rhino; the `build_*` helpers import
 `rhinoscriptsyntax` lazily.
@@ -75,9 +76,10 @@ if _RS_DS_SRC not in sys.path:
 
 from rs_data_structure.bar_action import (  # noqa: E402  (path-prepend gate above)
     Movement,
-    RoboticFreeMovement,
-    RoboticLinearMovement,
-    RoboticDualArmConstrainedMovement,
+    IndependentDualArmFreeMovement,
+    EndEffectorConstrainedDualArmFreeMovement,
+    EndEffectorConstrainedDualArmLinearMovement,
+    IndependentDualArmLinearMovement,
     Action,
     BarAssemblyAction,
 )
@@ -347,24 +349,34 @@ def _set_active_attachments(
     Returns:
         None: mutates ``state``.
     """
+    # The bar tube rides on one arm's flange (bar_arm_side); the other arm grips a
+    # male joint half. Resolve the tube's flange xform up front.
     bar_tool0 = tool0_left_assembled_mm if bar_arm_side == "left" else tool0_right_assembled_mm
     for key in active_keys:
         body_info = env_geom.get(key)
         if body_info is None:
-            continue
+            continue  # no cached geometry for this key -> nothing to attach
+        # * The bar tube attaches to bar_arm_side's tool0.
         if key.startswith(CANONICAL_BAR_PREFIX):
             _attach_body_to_arm_tool0(state, body_info["frame_world_mm"], bar_tool0, bar_arm_side, key)
             continue
+        # * Only the bar + its joint halves are grasped; skip anything else.
         if not key.startswith(CANONICAL_JOINT_PREFIX):
             continue
+        # Parse the canonical joint key "joint_<jid>_<sub>" (sub = male|female);
+        # skip anything that doesn't split cleanly.
         tag = key[len(CANONICAL_JOINT_PREFIX):]
         if "_" not in tag:
             continue
         jid, sub = tag.rsplit("_", 1)
+        # A male half goes to the arm whose tool grips it (its classified arm,
+        # falling back to bar_arm_side); a female half is rigidly bonded to the
+        # bar, so it rides the bar's arm.
         if sub == "male":
             arm = arm_to_male.get(jid, bar_arm_side)
         else:
             arm = bar_arm_side  # females rigidly bonded to bar -> bar's gripper
+        # Attach to that arm's assembled flange pose (stores tool0_from_body).
         tool0_arm = tool0_left_assembled_mm if arm == "left" else tool0_right_assembled_mm
         _attach_body_to_arm_tool0(state, body_info["frame_world_mm"], tool0_arm, arm, key)
 
@@ -398,6 +410,8 @@ def _apply_movement_touch_policy(
 
     Built directly per movement (no build-full-then-strip):
 
+    - **M0** (bar not yet grasped): nothing -- same no-whitelist policy as M4.
+      Every ``"M0"`` branch below falls through to the "else" cases.
     - **M1** (grasped, halves apart): ``male<->its arm tool``, ``male<->bar``,
       ``carried_female<->bar``.
     - **M2** (grasped, mating): M1 + ``male<->built_female`` (same joint_id, the
@@ -418,7 +432,7 @@ def _apply_movement_touch_policy(
 
     Args:
         state (RobotCellState): movement start_state, mutated in place.
-        movement (str): one of ``"M1"`` / ``"M2"`` / ``"M3"`` / ``"M4"``.
+        movement (str): one of ``"M0"`` / ``"M1"`` / ``"M2"`` / ``"M3"`` / ``"M4"``.
         active_keys (set): canonical names of the grasped bar + its joint halves.
         env_geom (dict): ``{name: body_info}`` (used to confirm the mate
             ``joint_<jid>_female`` exists for M2).
@@ -429,6 +443,14 @@ def _apply_movement_touch_policy(
     Returns:
         None: mutates ``state``.
     """
+    # The three blocks below write per-body ``touch_bodies`` allow-lists -- the
+    # only ACM this pipeline authors. compas_fab consumes them ONLY in its CC4
+    # (attached body vs other rigid body) and CC5 (tool vs rigid body) checks.
+    # They do NOT affect arm<->arm self-collision (that is CC1, driven by the
+    # robot SRDF's disabled-collision pairs, and is untouched here).
+
+    # (1) Each grasped MALE joint half: allow the bodies it is meant to be in
+    # contact with for this movement (empty list => no allowed contact).
     for jid, arm in arm_to_male.items():
         male_rb = state.rigid_body_states.get(f"{CANONICAL_JOINT_PREFIX}{jid}_male")
         if male_rb is None:
@@ -436,18 +458,27 @@ def _apply_movement_touch_policy(
         tool = tool_ids.get(arm)
         partners = []
         if movement in ("M1", "M2"):
+            # Gripped: the male sits inside its arm's gripper (tool) and rides on
+            # the bar tube, so both are expected contacts.
             if tool:
                 partners.append(tool)
             partners.append(bar_key)
             if movement == "M2":
+                # M2 is the mate: the male seats into the already-built female of
+                # the SAME joint_id, so allow that contact too (when it exists).
                 female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
                 if female_key in env_geom:
                     partners.append(female_key)
         elif movement == "M3":
+            # Released, tool peeling off the male: only male<->tool can still
+            # touch; the bar/female are now static, so compas_fab auto-skips them.
             if tool:
                 partners.append(tool)
+        # M0/M4 (bar not / no longer held): partners stays empty -> no allow-list.
         male_rb.touch_bodies = sorted(set(partners))
 
+    # (2) Each carried FEMALE joint half is rigidly bonded to the bar while it is
+    # gripped, so allow female<->bar contact during M1/M2; clear once released.
     for key in active_keys:
         if not (key.startswith(CANONICAL_JOINT_PREFIX) and key.endswith("_female")):
             continue
@@ -455,9 +486,9 @@ def _apply_movement_touch_policy(
         if frb is not None:
             frb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
 
-    # The two gripper tools overlap the grasped tube by a few mm on the coarse
+    # (3) The two gripper tools overlap the grasped tube by a few mm on the coarse
     # collision meshes (see note above). Whitelist tool<->bar while the arms are
-    # at the joints (M1-M3); clear it once the bar is gone (M4).
+    # at the joints (M1-M3); clear it once the bar is gone (M0/M4).
     bar_rb = state.rigid_body_states.get(bar_key)
     if bar_rb is not None:
         if movement in ("M1", "M2", "M3"):
@@ -469,7 +500,6 @@ def _apply_movement_touch_policy(
 def _build_m1(
     template_state,
     bar_id: str,
-    rcell,
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
@@ -478,19 +508,20 @@ def _build_m1(
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
-    home_left,
-    home_right,
-    left_group: str,
-    right_group: str,
     lm_distance_mm: float,
     bar_arm_side: str = "left",
-) -> RoboticDualArmConstrainedMovement:
-    """Build M1: home -> approach, gripping the bar (constrained dual-arm).
+) -> EndEffectorConstrainedDualArmFreeMovement:
+    """Build M1: bar loading position -> approach, gripping the bar (constrained dual-arm).
+
+    ``start_state.robot_configuration`` is left ``None`` on purpose: M1's start
+    configuration is computed by its own downstream free-motion planner (seeded
+    from M0's end at deploy time), not fixed here. Only the approach EE target is
+    known at build time; the IK keyframe solver reaches it via random restarts,
+    so it never depends on this (absent) start config.
 
     Args:
         template_state (RobotCellState): full static-cell template to clone.
         bar_id (str): the bar being assembled.
-        rcell (RobotCell): cached cell (for HOME configuration joint names).
         env_geom (dict): ``{name: body_info}`` with world frames.
         active_keys (set): canonical names of the grasped bar + its joint halves.
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}``.
@@ -499,20 +530,17 @@ def _build_m1(
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm
             flange poses at the assembled keyframe.
         base_frame_world_mm (ndarray): 4x4 mm robot base frame.
-        home_left, home_right (list): HOME joint values per arm.
-        left_group, right_group (str): planning-group names.
         lm_distance_mm (float): approach offset distance.
         bar_arm_side (str): arm the bar attaches to (default ``"left"``).
 
     Returns:
-        RoboticDualArmConstrainedMovement: the M1 movement (start_state at HOME,
-        gripping the bar; target = approach EE frames).
+        EndEffectorConstrainedDualArmFreeMovement: the M1 movement (start config
+        ``None`` -- planner-filled -- gripping the bar; target = approach EE frames).
     """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
-    state.robot_configuration = _build_home_configuration(
-        template_state, rcell, home_left, home_right, left_group, right_group,
-    )
+    # Start config is planner-computed (see docstring); leave it unset here.
+    state.robot_configuration = None
     _set_active_attachments(
         state, active_keys, env_geom, arm_to_male,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
@@ -524,9 +552,9 @@ def _build_m1(
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
         tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
     )
-    return RoboticDualArmConstrainedMovement(
-        movement_id=f"{bar_id}_M1_CDFM_home_to_approach",
-        tag="Home -> Approach (gripped bar, fixed relative EE)",
+    return EndEffectorConstrainedDualArmFreeMovement(
+        movement_id=f"{bar_id}_M1_CDFM_bar_loading_to_approach",
+        tag="Bar loading position -> Approach (gripped bar, fixed relative EE)",
         start_state=state,
         target_ee_frames={
             "left": _mm4_to_frame(tool0_left_approach_mm),
@@ -537,6 +565,8 @@ def _build_m1(
             "constraint": "fixed_relative_ee_transform",
             "approach_offset_mm": float(lm_distance_mm),
             "bar_arm_side": bar_arm_side,
+            "start_config_is_none": True,
+            "planner_fills": "start_state.robot_configuration",
         },
     )
 
@@ -555,7 +585,7 @@ def _build_m2(
     approach_groups: dict,
     lm_distance_mm: float,
     bar_arm_side: str = "left",
-) -> RoboticLinearMovement:
+) -> EndEffectorConstrainedDualArmLinearMovement:
     """Build M2: approach -> assembled (linear mate), still gripping the bar.
 
     Shared args are as in :func:`_build_m1`.
@@ -566,8 +596,9 @@ def _build_m2(
             onto the start_state.
 
     Returns:
-        RoboticLinearMovement: the M2 movement (start_state at the approach
-        config; target = assembled EE frames; mate touch whitelisted).
+        EndEffectorConstrainedDualArmLinearMovement: the M2 movement (start_state
+        at the approach config; target = assembled EE frames; mate touch
+        whitelisted).
     """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
@@ -580,7 +611,7 @@ def _build_m2(
     _apply_movement_touch_policy(
         state, "M2", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
     )
-    return RoboticLinearMovement(
+    return EndEffectorConstrainedDualArmLinearMovement(
         movement_id=f"{bar_id}_M2_LM_mate",
         tag="Approach -> Assembled (linear mate)",
         start_state=state,
@@ -610,7 +641,7 @@ def _build_m3(
     base_frame_world_mm,
     assembled_groups: dict,
     lm_distance_mm: float,
-) -> RoboticLinearMovement:
+) -> IndependentDualArmLinearMovement:
     """Build M3: assembled -> retreated (per-arm linear), bar released.
 
     Shared args are as in :func:`_build_m1`.
@@ -620,9 +651,9 @@ def _build_m3(
             onto the start_state.
 
     Returns:
-        RoboticLinearMovement: the M3 movement (start_state at the assembled
-        config with the bar/joints detached to their world poses; target =
-        per-arm retreated EE frames; only male<->tool whitelisted).
+        IndependentDualArmLinearMovement: the M3 movement (start_state at the
+        assembled config with the bar/joints detached to their world poses;
+        target = per-arm retreated EE frames; only male<->tool whitelisted).
     """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
@@ -656,7 +687,7 @@ def _build_m3(
             target_right_mm = target_mm
         retreat_axes_world[arm] = [float(x) for x in axis_world]
 
-    return RoboticLinearMovement(
+    return IndependentDualArmLinearMovement(
         movement_id=f"{bar_id}_M3_LM_retreat",
         tag="Assembled -> Retreated (per-arm linear)",
         start_state=state,
@@ -687,15 +718,16 @@ def _build_m4(
     home_right,
     left_group: str,
     right_group: str,
-) -> RoboticFreeMovement:
+) -> IndependentDualArmFreeMovement:
     """Build M4: retreated -> home (free joint-space motion), bar released.
 
     Shared args are as in :func:`_build_m1`.
 
     Returns:
-        RoboticFreeMovement: the M4 movement. ``start_state.robot_configuration``
-        is ``None`` (the planner fills it from M3's end); the bar/joints are
-        detached at their world poses; target = HOME configuration.
+        IndependentDualArmFreeMovement: the M4 movement.
+        ``start_state.robot_configuration`` is ``None`` (the planner fills it
+        from M3's end); the bar/joints are detached at their world poses;
+        target = HOME configuration.
     """
     state = template_state.copy()
     _set_robot_base_frame(state, base_frame_world_mm)
@@ -710,7 +742,7 @@ def _build_m4(
     home_cfg = _build_home_configuration(
         template_state, rcell, home_left, home_right, left_group, right_group,
     )
-    return RoboticFreeMovement(
+    return IndependentDualArmFreeMovement(
         movement_id=f"{bar_id}_M4_free_home",
         tag="Retreated -> Home (free motion)",
         start_state=state,
@@ -719,6 +751,74 @@ def _build_m4(
         notes={
             "start_config_is_none": True,
             "planner_fills": "start_state.robot_configuration",
+        },
+    )
+
+
+def _build_m0(
+    template_state,
+    bar_id: str,
+    env_geom: dict,
+    active_keys,
+    arm_to_male: dict,
+    bar_key: str,
+    tool_ids: dict,
+    base_frame_world_mm,
+) -> IndependentDualArmFreeMovement:
+    """Build M0: current pose -> M1 start (free joint-space motion, live-planned).
+
+    M0 is the leading movement for live deployment: at runtime the robot's real
+    starting configuration is unknown, so this movement carries the arms from
+    wherever they are to the configuration M1 begins at. It is deliberately left
+    UNPLANNED in the offline export -- the live monitor plans it and fills its
+    ``trajectory`` -- so:
+
+    - ``start_state.robot_configuration`` is ``None`` (the live monitor supplies
+      the real current configuration).
+    - ``target_ee_frames`` is ``None`` (no Cartesian goal, and the two arms move
+      independently -- the bar is not yet gripped, so there is no fixed
+      relative-flange constraint).
+    - ``target_configuration`` is ``None`` here; it is filled in later with M1's
+      start configuration once M1 has been planned (forward-propagation done by
+      the planner / live monitor, mirroring how M4's start config is filled from
+      M3's end).
+
+    The collision context mirrors M4 (the "bar released" classification): the arm
+    tools stay attached, the active bar + its joint halves are detached to their
+    assembled world pose, and no allowed-touch pairs are whitelisted. The
+    assembled world pose is only a placeholder for the bar's true pre-grasp pose;
+    the live monitor overrides it when it plans this movement.
+
+    Shared args are as in :func:`_build_m1` (M0 needs no ``rcell``/home values --
+    it has no goal configuration at build time).
+
+    Returns:
+        IndependentDualArmFreeMovement: the M0 movement (unplanned placeholder;
+        start config ``None``, goal config ``None`` until M1 is planned).
+    """
+    state = template_state.copy()
+    _set_robot_base_frame(state, base_frame_world_mm)
+    # Live monitor supplies the real current configuration at runtime.
+    state.robot_configuration = None
+    # Bar not yet grasped: same "released" classification as M4 (bodies detached
+    # at their assembled world pose, which is a placeholder for the pre-grasp pose).
+    _detach_active_to_assembled_world(state, active_keys, env_geom)
+    # No grasp, arms independent -> no allowed-touch whitelist (falls through the
+    # M1/M2/M3 branches, same as M4).
+    _apply_movement_touch_policy(
+        state, "M0", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+    )
+    return IndependentDualArmFreeMovement(
+        movement_id=f"{bar_id}_M0_free_to_M1_start",
+        tag="Current -> M1 start (free, live-planned)",
+        start_state=state,
+        target_ee_frames=None,
+        target_configuration=None,
+        notes={
+            "unplanned_offline": True,
+            "planner_fills": "trajectory",
+            "goal_backfilled_from": "M1.start_state.robot_configuration",
+            "bar_pose_is_placeholder": True,
         },
     )
 
@@ -739,10 +839,10 @@ def build_assembly_movements(
     assembled_groups: dict = None,
     bar_arm_side: str = "left",
 ):
-    """Build the four assembly movements (M1-M4) for ``bar_id``.
+    """Build the five assembly movements (M0-M4) for ``bar_id``.
 
     This is the single place that turns the cached static cell + the two placed
-    tool blocks into the M1-M4 ``start_state``/``target_ee_frames`` pairs. It is
+    tool blocks into the M0-M4 ``start_state``/``target_ee_frames`` pairs. It is
     callable **before** IK has been solved: ``approach_groups``/``assembled_groups``
     are optional, so the start configs default to the template seed and the IK
     solver fills them in later. ``build_bar_assembly_action`` (export) passes the
@@ -773,8 +873,10 @@ def build_assembly_movements(
 
     Returns:
         tuple: ``(movements, env_geom)`` where ``movements`` is
-        ``{"M1": .., "M2": .., "M3": .., "M4": ..}`` and ``env_geom`` is the cached
-        ``{name: body_info}`` collision-body dict for the active bar's bodies.
+        ``{"M0": .., "M1": .., "M2": .., "M3": .., "M4": ..}`` and ``env_geom`` is
+        the cached ``{name: body_info}`` collision-body dict for the active bar's
+        bodies. ``M0`` is the unplanned live-deployment lead-in (see
+        :func:`_build_m0`).
     """
     from core import config
     from core import ik_collision_setup
@@ -793,7 +895,7 @@ def build_assembly_movements(
     )
     arm_to_male = _classify_male_joints_per_arm(bar_id)
 
-    # The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
+    # * The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
     active_keys = {
         name for name, body_info in env_geom.items()
         if body_info.get("parent_bar_id") == bar_id
@@ -809,13 +911,21 @@ def build_assembly_movements(
         if rb is not None:
             rb.frame = None
 
+    # M0 is the live-deployment lead-in (current pose -> M1 start). Built first so
+    # the code reads in movement order; it forks the same template independently,
+    # so the build order among M0-M4 does not matter (see module docstring).
+    m0 = _build_m0(
+        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        bar_key, tool_ids,
+        base_frame_world_mm,
+    )
+    # M1's start config is planner-computed (left None); it needs no HOME values
+    # or planning-group names, unlike M4 which targets the fixed home pose.
     m1 = _build_m1(
-        template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        template_state, bar_id, env_geom, active_keys, arm_to_male,
         bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
-        config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
-        config.LEFT_GROUP, config.RIGHT_GROUP,
         config.LM_DISTANCE,
         bar_arm_side=bar_arm_side,
     )
@@ -836,14 +946,18 @@ def build_assembly_movements(
         assembled_groups,
         config.LM_DISTANCE,
     )
+    # M4 returns the arms to the fixed dual-arm home pose. Use the real saved
+    # home split (HUSKY_DUAL_ARM_HOME_CONF_12) rather than the zero
+    # HOME_CONFIG_* placeholders, so the exported action + RSShowIK preview show
+    # the actual home the user authored.
     m4 = _build_m4(
         template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
         bar_key, tool_ids,
         base_frame_world_mm,
-        config.HOME_CONFIG_LEFT, config.HOME_CONFIG_RIGHT,
+        config.HOME_CONF_LEFT_6, config.HOME_CONF_RIGHT_6,
         config.LEFT_GROUP, config.RIGHT_GROUP,
     )
-    return {"M1": m1, "M2": m2, "M3": m3, "M4": m4}, env_geom
+    return {"M0": m0, "M1": m1, "M2": m2, "M3": m3, "M4": m4}, env_geom
 
 
 # ---------------------------------------------------------------------------
@@ -858,7 +972,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     canonical assembly + env obstacles + arm ToolModels, built by
     RSRebuildRobotCell) and returns a full-key-set template state: built bars
     visible static, the grasped bar a static obstacle, not-yet-built bars
-    `is_hidden=True`, tools attached. Each of the four movements clones that
+    `is_hidden=True`, tools attached. Each of the five movements clones that
     template and re-classes only the grasped (active-bar) bodies + sets its own
     allowed-touch policy. No canonicalization, no snapshot/restore.
 
@@ -870,7 +984,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
             user-text supplies the base frame + approach/assembled keyframes).
 
     Returns:
-        BarAssemblyAction: the four-movement (M1-M4) action for ``bar_id``.
+        BarAssemblyAction: the five-movement (M0-M4) action for ``bar_id``.
 
     Raises:
         RuntimeError: if the bar is missing IK keyframe user-text or its two
@@ -904,7 +1018,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
     tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
 
-    # 4) Build M1-M4 from the cell + tool placements + the saved keyframe configs.
+    # 4) Build M0-M4 from the cell + tool placements + the saved keyframe configs.
     movements, _env_geom = build_assembly_movements(
         rcell, planner, bar_id,
         base_frame_world_mm,
@@ -924,7 +1038,10 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     return BarAssemblyAction(
         action_id=f"{bar_id}_A0_assemble",
         tag=f"Assemble bar {bar_id} (index {active_index} of {len(assembly_seq)})",
-        movements=[movements["M1"], movements["M2"], movements["M3"], movements["M4"]],
+        movements=[
+            movements["M0"], movements["M1"], movements["M2"],
+            movements["M3"], movements["M4"],
+        ],
         active_bar_id=bar_id,
         assembly_seq=assembly_seq,
     )

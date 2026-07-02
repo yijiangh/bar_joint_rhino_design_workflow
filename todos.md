@@ -33,15 +33,17 @@ Like in itj, we don't do mp in Rhino, only do mp in python and just load planned
 
 
 # RobotAction class
--[x] Add M0
--[x] RoboticLinearMovement into two Sync and Indep.
+- [x] Add M0 (IndependentDualArmFreeMovement; unplanned lead-in, goal backfilled from M1 start).
+- [x] rename RoboticLinearMovement into two: EndEffectorConstrainedDualArmLinearMovement (M2)
+      and IndependentDualArmLinearMovement (M3). (M1 -> EndEffectorConstrainedDualArmFreeMovement,
+      M4 -> IndependentDualArmFreeMovement.)
 
 Debatable
 - After Rhino IK, save confs into a BarAction json file already, and when clicking show IK, load from file directly.
 - Or we still save things in Rhino, but needs to include all key info for all movements, not just approach and end.
 
 
- what if we try a new planning sequence, we plan M2->M1->M3->M4?
+ what if we try a new planning sequence, we plan M2->M1->M3->M4?
   so M2 's start conf will be propagated to be M1's start conf, and then M1's planning
   logic will need to change -> It doesn't need to solve for goal conf, and the start
   conf's

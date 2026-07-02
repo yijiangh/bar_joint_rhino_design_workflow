@@ -56,9 +56,10 @@ from core import config as _config  # noqa: E402
 # than inside functions: they are cheap and carry no import-order risk of
 # their own now that ``core`` has already loaded.
 from rs_data_structure.bar_action import (  # noqa: E402
-    RoboticDualArmConstrainedMovement,
-    RoboticFreeMovement,
-    RoboticLinearMovement,
+    IndependentDualArmFreeMovement,
+    EndEffectorConstrainedDualArmFreeMovement,
+    EndEffectorConstrainedDualArmLinearMovement,
+    IndependentDualArmLinearMovement,
 )
 
 # PyBullet + compas_fab backends and the planner API. Heavier than the imports
@@ -126,22 +127,23 @@ def match_role(mv) -> Optional[str]:
             ``Robotic*Movement`` dataclasses).
 
     Returns:
-        Optional[str]: The role string ``'M1'``..``'M4'``, or ``None`` when the
-        role cannot be decided (for example an untagged linear movement, which
-        is ambiguous between M2 and M3).
+        Optional[str]: The role string ``'M0'``..``'M4'``, or ``None`` when the
+        role cannot be decided (for example an untagged
+        ``IndependentDualArmFreeMovement``, which is shared by M0 and M4).
     """
     mid = getattr(mv, "movement_id", None) or ""
     m = _ROLE_RE.search(mid)
     if m:
         return f"M{m.group(1)}"
-    # TODO should also add a FreeMovement at the beginning to bring whatever robot current state to the start of M1, which should be computed after M1 is planned
-    if isinstance(mv, RoboticDualArmConstrainedMovement):
+    if isinstance(mv, EndEffectorConstrainedDualArmFreeMovement):
         return "M1"
-    if isinstance(mv, RoboticFreeMovement):
-        return "M4"
-    if isinstance(mv, RoboticLinearMovement):
-        # TODO we will need to split RoboticConstrainedDualArmLinearMovement and RoboticLinearMovement
-        return None  # ambiguous between M2 and M3 without the id
+    if isinstance(mv, EndEffectorConstrainedDualArmLinearMovement):
+        return "M2"
+    if isinstance(mv, IndependentDualArmLinearMovement):
+        return "M3"
+    if isinstance(mv, IndependentDualArmFreeMovement):
+        # Shared by M0 and M4 -- needs the '_M<n>_' id tag to disambiguate.
+        return None
     return None
 
 
@@ -370,12 +372,14 @@ def select_movement(action, role: str):
     """Pick the Movement that plays a given role from an action.
 
     The primary signal is ``match_role`` (the ``_M<n>_`` id tag). When ids are
-    untagged, fall back to movement type plus order to resolve the M2/M3
-    ambiguity (first linear movement is M2, second is M3).
+    untagged, fall back to the movement class: the two constrained classes and
+    the independent-linear class each map to exactly one role. M0 and M4 share
+    ``IndependentDualArmFreeMovement``, so untagged they are told apart by order
+    (first = M0, second = M4).
 
     Args:
         action: The BarAssemblyAction holding the list of movements.
-        role (str): The role to find, ``'M1'``..``'M4'``.
+        role (str): The role to find, ``'M0'``..``'M4'``.
 
     Returns:
         The matching Movement, or ``None`` when no movement fits the role.
@@ -383,12 +387,20 @@ def select_movement(action, role: str):
     for mv in action.movements:
         if match_role(mv) == role:
             return mv
-    linear = [mv for mv in action.movements
-              if isinstance(mv, RoboticLinearMovement)]
-    if role == "M2" and linear:
-        return linear[0]
-    if role == "M3" and len(linear) > 1:
-        return linear[1]
+    _role_by_type = {
+        EndEffectorConstrainedDualArmFreeMovement: "M1",
+        EndEffectorConstrainedDualArmLinearMovement: "M2",
+        IndependentDualArmLinearMovement: "M3",
+    }
+    for mv in action.movements:
+        if _role_by_type.get(type(mv)) == role:
+            return mv
+    free = [mv for mv in action.movements
+            if isinstance(mv, IndependentDualArmFreeMovement)]
+    if role == "M0" and free:
+        return free[0]
+    if role == "M4" and len(free) > 1:
+        return free[1]
     return None
 
 
@@ -760,7 +772,19 @@ def plan_movement(planner, state, role: str, selected, *, active_bar_id: str,
         print(f"[diagnosis] tree drawing is M4-only; {role} planned normally "
               "(renderer still unlocked).")
 
-    if role == "M1" and isinstance(selected, RoboticDualArmConstrainedMovement):
+    if role == "M0" and isinstance(selected, IndependentDualArmFreeMovement):
+        # M0 (current pose -> M1 start) is normally left unplanned offline (the
+        # live monitor plans it). This branch supports on-demand testing: plan a
+        # free dual-arm motion to M0's goal, which is M1's start config filled in
+        # by the M1 backfill step in main() after M1 has been planned.
+        if goal_conf is None:
+            return None, {"failure_reason": (
+                "M0 has no target_configuration yet; plan M1 first so its start "
+                "config is backfilled into M0.target_configuration."
+            )}
+        print("[plan] plan_free_dual_arm (M0 -> M1 start config)")
+        return plan_free_dual_arm(planner, state, goal_conf, max_time=max_time)
+    if role == "M1" and isinstance(selected, EndEffectorConstrainedDualArmFreeMovement):
         if not active_bar_id:
             return None, {"failure_reason": "M1 needs active_bar_id on the action."}
         if not goal_ee_frames:
@@ -774,7 +798,7 @@ def plan_movement(planner, state, role: str, selected, *, active_bar_id: str,
             max_time=max_time,
             derive_start=derive_start,
         )
-    if role == "M2" and isinstance(selected, RoboticLinearMovement):
+    if role == "M2" and isinstance(selected, EndEffectorConstrainedDualArmLinearMovement):
         if not active_bar_id:
             return None, {"failure_reason": "M2 needs active_bar_id on the action."}
         print(f"[plan] plan_constrained_dual_arm_linear (active_bar_id={active_bar_id})")
@@ -786,7 +810,7 @@ def plan_movement(planner, state, role: str, selected, *, active_bar_id: str,
         )
         path = _path_from_jt(jt, joint_names_12)
         return path, {"failure_reason": None if jt is not None else "linear-ik failed"}
-    if role == "M3" and isinstance(selected, RoboticLinearMovement):
+    if role == "M3" and isinstance(selected, IndependentDualArmLinearMovement):
         print("[plan] plan_dual_arm_linear_independent")
         jt = plan_dual_arm_linear_independent(
             planner, state,
@@ -795,7 +819,7 @@ def plan_movement(planner, state, role: str, selected, *, active_bar_id: str,
         )
         path = _path_from_jt(jt, joint_names_12)
         return path, {"failure_reason": None if jt is not None else "linear-ik failed"}
-    if role == "M4" and isinstance(selected, RoboticFreeMovement):
+    if role == "M4" and isinstance(selected, IndependentDualArmFreeMovement):
         # M4 returns to a fixed dual-arm home. Override the (placeholder) target
         # from the action with the known-good home config (left 6 then right 6,
         # matching joint_names_12).
@@ -904,7 +928,7 @@ def probe_endpoints(planner, rcell, action, active_bar_rb_name: Optional[str],
         int: 0 when both endpoints are feasible, otherwise 2.
     """
     selected = select_movement(action, "M1")
-    if selected is None or not isinstance(selected, RoboticDualArmConstrainedMovement):
+    if selected is None or not isinstance(selected, EndEffectorConstrainedDualArmFreeMovement):
         print("[probe] no M1 constrained dual-arm movement found; endpoint probe is M1-only.")
         return 2
     state = selected.start_state
@@ -916,7 +940,7 @@ def probe_endpoints(planner, rcell, action, active_bar_rb_name: Optional[str],
         print("[probe] M1 has no target_ee_frames.")
         return 2
     if state.robot_configuration is None:
-        fill_missing_config(state, rcell, _config.HOME_CONFIG_LEFT, _config.HOME_CONFIG_RIGHT)
+        fill_missing_config(state, rcell, _config.HOME_CONF_LEFT_6, _config.HOME_CONF_RIGHT_6)
     planner.set_robot_cell_state(state)
 
     robot_puid = planner.client.robot_puid
@@ -1040,8 +1064,10 @@ def main() -> int:
         help="BarAction filename inside <data_root>/<problem>/BarActions/.",
     )
     parser.add_argument(
-        "--movement", required=True, choices=("M1", "M2", "M3", "M4", "all"),
-        help="Which movement role to plan. 'all' chains M1->M2->M3->M4.",
+        "--movement", required=True, choices=("M0", "M1", "M2", "M3", "M4", "all"),
+        help="Which movement role to plan. 'all' chains M1->M2->M3->M4 (M0 is "
+             "left unplanned offline -- the live monitor plans it). 'M0' only "
+             "works after M1 has been planned so its goal config is backfilled.",
     )
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--max-time", type=float, default=60.0)
@@ -1216,7 +1242,7 @@ def main() -> int:
             # non-M1 movement run in isolation, or M1 before it derives).
             if state.robot_configuration is None:
                 fill_missing_config(
-                    state, rcell, _config.HOME_CONFIG_LEFT, _config.HOME_CONFIG_RIGHT,
+                    state, rcell, _config.HOME_CONF_LEFT_6, _config.HOME_CONF_RIGHT_6,
                 )
 
             # Apply start_state to the live scene.
@@ -1284,6 +1310,17 @@ def main() -> int:
             if not accepted:
                 results.append((role, False, "chain rejected (start mismatch)"))
                 break
+
+            # M0 (live-deployment lead-in) is left unplanned offline; its goal is
+            # M1's start config. Now that M1 is planned and owns its start config,
+            # copy it into M0.target_configuration (backward fill). Mirrors the
+            # live monitor's synthetic-M0 backfill.
+            if role == "M1":
+                m0 = select_movement(action, "M0")
+                m1_start = getattr(selected.start_state, "robot_configuration", None)
+                if m0 is not None and m1_start is not None:
+                    m0.target_configuration = m1_start
+                    print("[Plan] backfilled M0.target_configuration <- M1 start config.")
 
             segments.append((role, selected.start_state, path))
             results.append((role, True, f"{len(path)} waypoint(s)"))

@@ -4,9 +4,10 @@ Loads every `BarAssemblyAction` under `<data_root>/BarActions/*.json`, walks
 each movement, pushes its `start_state` through `planner.set_robot_cell_state`
 (+ collision check) and reports.
 
-For M4 (`RoboticFreeMovement`), `start_state.robot_configuration is None`
-by design (the planner fills it from M3's solved retreat). The verifier
-substitutes `HOME_CONFIG_LEFT/RIGHT` from `core.config` for the test only.
+For M1/M4 (`start_state.robot_configuration is None` by design -- the planner
+fills M1's start from M0's end and M4's from M3's solved retreat), the verifier
+substitutes the home split `HOME_CONF_LEFT_6/RIGHT_6` from `core.config` for the
+test only.
 
 CLI:
     python tests/debug_load_bar_action.py [<data_root>] [--action <name> ...] [--cell <path>] [--gui] [--no-collision]
@@ -229,7 +230,7 @@ def main() -> int:
                     continue
                 _fill_missing_config(
                     state, rcell,
-                    _config.HOME_CONFIG_LEFT, _config.HOME_CONFIG_RIGHT,
+                    _config.HOME_CONF_LEFT_6, _config.HOME_CONF_RIGHT_6,
                     _config.LEFT_GROUP, _config.RIGHT_GROUP,
                 )
                 ok = _verify_state(

@@ -458,6 +458,21 @@ class _PreviewSession:
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
             return
 
+        # Some movements carry no start configuration (e.g. M1, whose start config
+        # is planner-computed and left None). There is no robot pose to draw, so
+        # warn and hide the robot preview -- but keep the movement in the cycle so
+        # the user can still step past it. `refresh()` already reset the
+        # _last_* fields, so leave them None (check_collision then reports "no
+        # active IK pose" instead of acting on a config-less state).
+        if getattr(state, "robot_configuration", None) is None:
+            print(
+                f"RSShowIK: {self.pose} has no start configuration "
+                f"(planner-computed); showing geometry only, no robot preview."
+            )
+            ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
+            return
+
         rs.EnableRedraw(False)
         try:
             # Open the IK preview session on first render of this _PreviewSession.

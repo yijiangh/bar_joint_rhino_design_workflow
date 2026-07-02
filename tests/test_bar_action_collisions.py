@@ -489,10 +489,11 @@ def test_m3_detached_tool_allowed_and_static_skip(cell):
 
 
 def test_bar_tool_whitelisted_m1_m3_not_m4(cell):
-    """The grasped tube whitelists BOTH gripper tools in M1-M3, none in M4.
+    """The grasped tube whitelists BOTH gripper tools in M1-M3, none in M0/M4.
 
     Covers the tool<->tube coarse-mesh overlap (a pipeline artefact): allowed
-    while gripped, cleared once released.
+    while gripped (M1-M3), cleared once released. M0 (bar not yet grasped) and
+    M4 (bar released) carry no whitelist.
     """
     planner, rcell, _ = cell
     from core import bar_action
@@ -500,7 +501,9 @@ def test_bar_tool_whitelisted_m1_m3_not_m4(cell):
     left_tool, right_tool = _tool_ids(rcell)
     env_geom, arm_to_male, bar_key, tool_ids = _touch_inputs(rcell)
 
-    for movement, expect_tools in (("M1", True), ("M2", True), ("M3", True), ("M4", False)):
+    for movement, expect_tools in (
+        ("M0", False), ("M1", True), ("M2", True), ("M3", True), ("M4", False),
+    ):
         state = _fresh_state(planner, rcell)
         bar_action._apply_movement_touch_policy(
             state, movement, {BAR_ACTIVE, JOINT_ACTIVE}, env_geom, arm_to_male, bar_key, tool_ids,

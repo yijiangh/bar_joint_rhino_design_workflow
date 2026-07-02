@@ -318,7 +318,7 @@ def main() -> int:
     rc = 0
     try:
         state = selected.start_state
-        fill_missing_config(state, rcell, _config.HOME_CONFIG_LEFT, _config.HOME_CONFIG_RIGHT)
+        fill_missing_config(state, rcell, _config.HOME_CONF_LEFT_6, _config.HOME_CONF_RIGHT_6)
         with pp.LockRenderer(False):
             planner.set_robot_cell_state(state)
         # Tint the active bar vivid blue so it's easy to track across samples.

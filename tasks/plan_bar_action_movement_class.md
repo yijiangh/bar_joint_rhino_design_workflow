@@ -8,14 +8,15 @@
 
 The Rhino IK pipeline (`RSIKKeyframe`) already produces and persists per-bar approach + assembled joint configurations on the bar curve user-text (`KEY_ASSEMBLY_BASE_FRAME`, `KEY_ASSEMBLY_IK_APPROACH`, `KEY_ASSEMBLY_IK_ASSEMBLED`). Downstream we feed a dual-arm motion planner that has no access to Rhino.
 
-`RSExportBarAction` (button in `scaffolding_toolbar.rui`, macro GUID suffix `00000000001d`, script `scripts/rs_export_bar_action.py`) produces one JSON per bar at `<root>/BarActions/<bar_id>.json` describing the four robot movements of one bar's assembly:
+`RSExportBarAction` (button in `scaffolding_toolbar.rui`, macro GUID suffix `00000000001d`, script `scripts/rs_export_bar_action.py`) produces one JSON per bar at `<root>/BarActions/<bar_id>.json` describing the five robot movements of one bar's assembly. The concrete movement class names two axes: coordination (`Independent` vs `EndEffectorConstrained`, i.e. both arms rigidly holding one bar) × motion type (`Free`/joint-space vs `Linear`/Cartesian):
 
 | # | Motion class | Description |
 |---|---|---|
-| M1 | `RoboticDualArmConstrainedMovement` | Both arms gripping bar, home → approach. Relative `tool0_left↔tool0_right` transform fixed. |
-| M2 | `RoboticLinearMovement` | Both arms drive grasped male joints into mating env females (linear in tool0). |
-| M3 | `RoboticLinearMovement` | Robot releases bar; each arm independently retreats `LM_DISTANCE` along its joint's local −Z. |
-| M4 | `RoboticFreeMovement` | Both arms unconstrained, no grasp, return to `HOME_CONFIG`. |
+| M0 | `IndependentDualArmFreeMovement` | Current (unknown) pose → M1 start. Left unplanned offline; the live monitor plans it. No ee-targets; goal config backfilled from M1's start once M1 is planned. |
+| M1 | `EndEffectorConstrainedDualArmFreeMovement` | Both arms gripping bar, home → approach. Relative `tool0_left↔tool0_right` transform fixed. |
+| M2 | `EndEffectorConstrainedDualArmLinearMovement` | Both arms drive grasped male joints into mating env females (linear in tool0). |
+| M3 | `IndependentDualArmLinearMovement` | Robot releases bar; each arm independently retreats `LM_DISTANCE` along its joint's local −Z. |
+| M4 | `IndependentDualArmFreeMovement` | Both arms unconstrained, no grasp, return to `HOME_CONFIG`. |
 
 Companion exports:
 - `RSExportBarAction` left-click = single picked bar (above). **Right-click** = batch: `RSExportAllBarActions` (`scripts/rs_export_all_bar_actions.py`, macro suffix `1f`) iterates every bar with IK results in assembly-sequence order, writes `<root>/BarActions/<bar_id>.json` for each, then also dumps `<root>/RobotCell.json` (canonical names) so the whole bundle is self-consistent. Bars without IK results are skipped with a note.
@@ -34,7 +35,8 @@ Companion exports:
 
 ## 3. Schema
 
-Implemented in `scripts/core/bar_action.py`. All classes subclass `compas.data.Data`; the class type IS the discriminator (no `motion_kind` string field). compas's JSON encoder stamps each record with `dtype = "core.bar_action/<ClassName>"`. On `compas.data.json_load`, `cls_from_dtype` does `__import__("core.bar_action", fromlist=[...])` and instantiates via `cls(**data)` (default `__from_data__`).
+Data classes now live in the shared `rs_data_structure` submodule
+(`external/rs_data_structure/rs_data_structure/bar_action.py`); `scripts/core/bar_action.py` imports them and holds only the builder. All classes subclass `compas.data.Data`; the class type IS the discriminator (no `motion_kind` string field). compas's JSON encoder stamps each record with `dtype = "rs_data_structure.bar_action/<ClassName>"`. On `compas.data.json_load`, `cls_from_dtype` imports `rs_data_structure.bar_action` and instantiates via `cls(**data)` (default `__from_data__`). (Older JSON with `dtype = "core.bar_action/<ClassName>"` and the pre-rename class names will no longer load — re-export.)
 
 ```python
 class Movement(Data):
@@ -46,9 +48,10 @@ class Movement(Data):
     trajectory: JointTrajectory | None     # reserved for the consumer's planner output
     notes: dict                            # free-form metadata (motion-class specifics)
 
-class RoboticFreeMovement(Movement):                ...
-class RoboticLinearMovement(Movement):              ...
-class RoboticDualArmConstrainedMovement(Movement):  ...   # M1's class
+class IndependentDualArmFreeMovement(Movement):              ...   # M0 and M4
+class EndEffectorConstrainedDualArmFreeMovement(Movement):   ...   # M1
+class EndEffectorConstrainedDualArmLinearMovement(Movement): ...   # M2
+class IndependentDualArmLinearMovement(Movement):            ...   # M3
 
 class Action(Data):
     action_id: str
@@ -92,13 +95,13 @@ Consumer note: a `RigidBodyState` with `is_hidden=True` is a not-yet-built workp
 
 ## 5. Per-movement details
 
-All four movements share the same `RobotCellState`-bearing `start_state` shape:
+All five movements share the same `RobotCellState`-bearing `start_state` shape:
 - `state.robot_base_frame` — saved base frame in meters (Frame).
-- `state.robot_configuration` — left + right arm joint values (or `None` for M4 only).
+- `state.robot_configuration` — left + right arm joint values (`None` for M0 and M4).
 - `state.tool_states` — wired by `robot_cell.configure_arm_tool_rigid_body_states`. The left/right arm tools have `attached_to_group` set to their planning group; `touch_links` is empty (see banner).
 - `state.rigid_body_states` — canonical-keyed (see §4); contains the FULL assembly key-set in every movement. Per-stage classification:
   - **built env** (`seq < active_seq`): `frame` = final assembled world pose (Frame, meters), `attached_to_*` = None, `is_hidden` = False. Real static obstacle.
-  - **active** (the bar being assembled now + its joints): M1/M2 → `attached_to_link` set; M3/M4 → detached at final pose. See per-movement below.
+  - **active** (the bar being assembled now + its joints): M1/M2 → `attached_to_link` set; M0/M3/M4 → detached at final pose. See per-movement below.
   - **not-yet-built** (`seq > active_seq`, or a joint half mounted on such a bar): `frame` = final assembled world pose, `attached_to_*` = None, `is_hidden` = True. Ignore for planning.
   - arm-tool RBs (`AssemblyLeftArmToolBody`, `AssemblyRightArmToolBody`): `attached_to_link` = the matching `*_ur_arm_tool0`; `touch_links` empty.
 
@@ -108,7 +111,16 @@ Geometry references:
 - Retreat EE targets = per-arm `tool0_<arm>_assembled` translated along that arm's male-joint local `-Z` axis by `LM_DISTANCE`.
 - `LM_DISTANCE = 15 mm` (`core.config.LM_DISTANCE`).
 
-### M1 — `RoboticDualArmConstrainedMovement` (home → approach, gripped)
+### M0 — `IndependentDualArmFreeMovement` (current pose → M1 start, live-planned)
+
+- The live-deployment lead-in: at runtime the robot's real starting configuration is unknown, so M0 carries both arms from wherever they are to M1's start config. **Left unplanned in the offline export** — the live monitor plans it and fills its `trajectory`.
+- `start_state.robot_configuration = None` — the live monitor supplies the real current configuration.
+- `start_state.rigid_body_states` — same "bar released" classification as M4: arm tools attached; the active bar + its joint halves detached to their assembled world pose (a *placeholder* for the true pre-grasp pose, which the monitor overrides). No allowed-touch whitelist.
+- `target_ee_frames = None` (no Cartesian goal; the two arms move independently — the bar is not yet gripped, so there is no fixed relative-flange constraint).
+- `target_configuration = None` at export; **filled with M1's start config once M1 is planned** (backward-propagation — the mirror of M4's start being filled from M3's end).
+- `notes = {"unplanned_offline": True, "planner_fills": "trajectory", "goal_backfilled_from": "M1.start_state.robot_configuration", "bar_pose_is_placeholder": True}`.
+
+### M1 — `EndEffectorConstrainedDualArmFreeMovement` (home → approach, gripped)
 
 - `start_state.robot_configuration` = HOME (joined from `core.config.HOME_CONFIG_LEFT` + `HOME_CONFIG_RIGHT`). **TODO(yh)**: replace zero-config placeholders with real safe-pose values.
 - `start_state.rigid_body_states`:
@@ -120,7 +132,7 @@ Geometry references:
 - `target_configuration = None`.
 - `notes = {"constraint": "fixed_relative_ee_transform", "approach_offset_mm": 15.0, "bar_arm_side": "left"}`.
 
-### M2 — `RoboticLinearMovement` (mate)
+### M2 — `EndEffectorConstrainedDualArmLinearMovement` (mate)
 
 - `start_state` = copy of M1's start_state with `robot_configuration` overwritten by `KEY_ASSEMBLY_IK_APPROACH` (deserialized from bar user-text).
 - Bar/joint attachments unchanged from M1 (same `attachment_frame`s — invariant w.r.t. tool0).
@@ -129,7 +141,7 @@ Geometry references:
 - `target_configuration = None`.
 - `notes = {"lm_axis": "per_tool0_z_avg", "lm_distance_mm": 15.0, "bar_arm_side": "left"}`.
 
-### M3 — `RoboticLinearMovement` (retreat)
+### M3 — `IndependentDualArmLinearMovement` (retreat)
 
 - `start_state.robot_configuration` = `KEY_ASSEMBLY_IK_ASSEMBLED`.
 - Bar/joints are **detached**: every `bar_<…>` / `joint_<…>` RB on the active bar has `attached_to_link = None`, `attached_to_tool = None`, `attachment_frame = None`, `frame = world_frame_at_assembled` (Frame, meters).
@@ -139,7 +151,7 @@ Geometry references:
 - `target_configuration = None`.
 - `notes = {"lm_axis": "per_joint_neg_z", "lm_distance_mm": 15.0, "retreat_axes_world": {"left": [x,y,z], "right": [x,y,z]}}`.
 
-### M4 — `RoboticFreeMovement` (home)
+### M4 — `IndependentDualArmFreeMovement` (home)
 
 - `start_state.robot_configuration = None`. **Consumer contract: this is the "planner fills it" slot** — the consumer must derive M4.start config from M3's solved retreat trajectory's final waypoint (after the planner runs).
 - `start_state.rigid_body_states` — same body classification as M3 (bar/joints detached at assembled pose). ACM: M4 has NO whitelist — every `touch_bodies` is empty (see banner).
@@ -184,7 +196,7 @@ from compas.data import json_load
 rcell  = json_load("<root>/RobotCell.json")            # compas_fab.RobotCell
 action = json_load("<root>/BarActions/B5.json")        # bar_action.BarAssemblyAction
 for mv in action.movements:
-    type(mv).__name__   # "RoboticDualArmConstrainedMovement" | "RoboticLinearMovement" | "RoboticFreeMovement"
+    type(mv).__name__   # "IndependentDualArmFreeMovement" (M0/M4) | "EndEffectorConstrainedDualArmFreeMovement" (M1) | "EndEffectorConstrainedDualArmLinearMovement" (M2) | "IndependentDualArmLinearMovement" (M3)
     mv.start_state      # compas_fab.RobotCellState   (or None for explicit gap movements)
     mv.target_ee_frames # {"left": Frame, "right": Frame}  in meters, or None
     mv.target_configuration  # compas_robots.Configuration in radians, or None
@@ -206,7 +218,7 @@ These are recorded in `tasks/cc_lessons.md` and replicated here so the planner a
 
 2. **Canonical names on export only.** The cached `rcell.rigid_body_models` keeps prefixed names because `register_env_in_robot_cell` keys its "stale env to remove" pass on prefixes. The canonical rename happens on the *export-bound* copies. See `dump_cell_canonical` (swap-dump-restore) and `canonicalize_state` (in-place mutation of per-movement state copies).
 
-3. **compas Data dtype = first 2 module-path components.** `core.bar_action.RoboticFreeMovement` serializes as `dtype = "core.bar_action/RoboticFreeMovement"`. Headless loader works as long as `scripts/` is on `sys.path` (mirroring the in-Rhino path injection). Don't put Data subclasses any deeper than one level under `core/` or `cls_from_dtype` will fail to resolve.
+3. **compas Data dtype = first 2 module-path components.** The data classes now live in the `rs_data_structure` submodule, so e.g. `rs_data_structure.bar_action.IndependentDualArmFreeMovement` serializes as `dtype = "rs_data_structure.bar_action/IndependentDualArmFreeMovement"`. The loader works as long as `external/rs_data_structure` is on `sys.path` (the builder prepends it; the Rhino env and the headless tests both do the same). Keep the concrete classes at the top level of `rs_data_structure/bar_action.py` or `cls_from_dtype` will fail to resolve. (Historically these lived at `core.bar_action/<Class>`; that path no longer resolves.)
 
 4. **Grasp frame is tool0-invariant.** `attachment_frame = inv(tool0_world_at_some_config) @ body_world_at_some_config` is the same value regardless of which config you sample, as long as the bar is rigidly grasped at that config. We use the assembled-pose tool0 to compute it (already known); we do NOT need to push HOME_CONFIG into PyBullet first.
 

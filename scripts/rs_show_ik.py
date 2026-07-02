@@ -15,9 +15,10 @@ that runs until Esc. Inside the loop the user can:
 
   * click any other bar to switch the active bar;
   * press Enter (or `TogglePose`) to cycle through the four assembly
-    movements' start states (M1 home -> M2 approach -> M3 assembled ->
-    M4 retreat), each with its solved IK config + per-movement collision
-    context;
+    movements (M1 home -> M2 approach -> M3 assembled -> M4 home), each
+    shown with its solved IK config + per-movement collision context.
+    M1-M3 show each movement's start state; M4 shows its target (the
+    fixed dual-arm home pose the arms return to);
   * use ShowUnbuilt / HideUnbuilt to toggle the visibility of unbuilt bars.
 
 The active bar is highlighted via the same sequence-color overlay used
@@ -80,11 +81,11 @@ IK_SUPPORT_KEY = "ik_support"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 
-# Cycle order -- the four assembly movements. TogglePose steps through each
-# movement's START state with its solved config + per-movement collision context:
-#   M1 = home/gripped, M2 = approach/gripped, M3 = assembled/released,
-#   M4 = retreat (bar released; M4's own start config is None, so the saved
-#        retreat keyframe is applied to view it).
+# Cycle order -- the four assembly movements. TogglePose steps through:
+#   M1 = home/gripped (start), M2 = approach/gripped (start),
+#   M3 = assembled/released (start),
+#   M4 = home (bar released; M4's start config is None, so its
+#        target_configuration -- the fixed dual-arm home pose -- is shown).
 POSES = ("M1", "M2", "M3", "M4")
 
 
@@ -421,16 +422,16 @@ class _PreviewSession:
             movement = movements[self.pose]
             state = movement.start_state
             if self.pose == "M4":
-                # M4 (free home) has start_state.robot_configuration = None -- the
-                # planner fills it from M3's end (the retreat keyframe). Apply the
-                # saved retreat config so M4 shows the retreat pose (bar released).
-                retreat = payload.get("retreat")
-                if retreat is None:
-                    raise RuntimeError("bar has no saved retreat keyframe (M4)")
+                # M4 (return home) has start_state.robot_configuration = None --
+                # the planner fills it from M3's end. Show the robot at M4's
+                # target_configuration instead: the fixed dual-arm home pose
+                # (config.HUSKY_DUAL_ARM_HOME_CONF_12), which is the endpoint of
+                # the return-home move (bar already released).
+                home_cfg = movement.target_configuration
+                if home_cfg is None:
+                    raise RuntimeError("M4 movement has no target_configuration (home) to show")
                 state = movement.start_state.copy()
-                if state.robot_configuration is None:
-                    state.robot_configuration = movements["M3"].start_state.robot_configuration.copy()
-                _apply_groups(state, retreat)
+                state.robot_configuration = home_cfg.copy()
             print(
                 f"RSShowIK: {self.pose} start state -- {movement.movement_id} | {movement.tag}"
             )
@@ -440,6 +441,21 @@ class _PreviewSession:
                 f"({type(exc).__name__}: {exc}); hiding IK preview."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            return
+
+        # Some movements carry no start configuration (e.g. M1, whose start config
+        # is planner-computed and left None). There is no robot pose to draw, so
+        # warn and hide the robot preview -- but keep the movement in the cycle so
+        # the user can still step past it. `refresh()` already reset the
+        # _last_* fields, so leave them None (check_collision then reports "no
+        # active IK pose" instead of acting on a config-less state).
+        if getattr(state, "robot_configuration", None) is None:
+            print(
+                f"RSShowIK: {self.pose} has no start configuration "
+                f"(planner-computed); showing geometry only, no robot preview."
+            )
+            ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
             return
 
         rs.EnableRedraw(False)

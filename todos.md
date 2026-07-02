@@ -37,5 +37,7 @@ Like in itj, we don't do mp in Rhino, only do mp in python and just load planned
 
 
 # RobotAction class
-- Add M0
-- rename RoboticLinearMovement into two Sync and Indep.
+- [x] Add M0 (IndependentDualArmFreeMovement; unplanned lead-in, goal backfilled from M1 start).
+- [x] rename RoboticLinearMovement into two: EndEffectorConstrainedDualArmLinearMovement (M2)
+      and IndependentDualArmLinearMovement (M3). (M1 -> EndEffectorConstrainedDualArmFreeMovement,
+      M4 -> IndependentDualArmFreeMovement.)

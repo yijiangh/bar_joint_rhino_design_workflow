@@ -80,12 +80,16 @@ IK_SUPPORT_KEY = "ik_support"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 
-# Cycle order -- the four assembly movements. TogglePose steps through each
-# movement's START state with its solved config + per-movement collision context:
+# Cycle order -- the four assembly movements plus a final "M4 target" preview.
+# TogglePose steps through each movement's START state with its solved config +
+# per-movement collision context:
 #   M1 = home/gripped, M2 = approach/gripped, M3 = assembled/released,
 #   M4 = retreat (bar released; M4's own start config is None, so the saved
 #        retreat keyframe is applied to view it).
-POSES = ("M1", "M2", "M3", "M4")
+# The extra final step "M4-home" is not a movement start -- it shows M4's TARGET
+# configuration (the home pose the arms return to at the end of the free motion).
+M4_TARGET_POSE = "M4-home"
+POSES = ("M1", "M2", "M3", "M4", M4_TARGET_POSE)
 
 
 def _reload():
@@ -318,7 +322,7 @@ class _PreviewSession:
         self.refresh()
 
     def cycle_pose(self):
-        """Advance to the next movement's start state (M1 -> M2 -> M3 -> M1)."""
+        """Advance to the next preview step (M1 -> M2 -> M3 -> M4 -> M4-home -> M1)."""
         if self.active_bar_id is None:
             return
         idx = POSES.index(self.pose) if self.pose in POSES else -1
@@ -418,7 +422,10 @@ class _PreviewSession:
         env_geom = {}
         try:
             movements, env_geom = self._build_movements(payload)
-            movement = movements[self.pose]
+            # The final "M4-home" step is not a movement start; it reuses the M4
+            # movement but renders its TARGET configuration instead of the start.
+            movement_key = "M4" if self.pose == M4_TARGET_POSE else self.pose
+            movement = movements[movement_key]
             state = movement.start_state
             if self.pose == "M4":
                 # M4 (free home) has start_state.robot_configuration = None -- the
@@ -431,8 +438,17 @@ class _PreviewSession:
                 if state.robot_configuration is None:
                     state.robot_configuration = movements["M3"].start_state.robot_configuration.copy()
                 _apply_groups(state, retreat)
+            elif self.pose == M4_TARGET_POSE:
+                # M4's target is the HOME configuration the arms return to at the
+                # end of the free motion. The rigid bodies are already the released
+                # (bar-detached) M4 layout, so only swap in the target config.
+                target_cfg = movement.target_configuration
+                if target_cfg is None:
+                    raise RuntimeError("M4 has no target configuration (home)")
+                state = movement.start_state.copy()
+                state.robot_configuration = target_cfg.copy()
             print(
-                f"RSShowIK: {self.pose} start state -- {movement.movement_id} | {movement.tag}"
+                f"RSShowIK: {self.pose} state -- {movement.movement_id} | {movement.tag}"
             )
         except Exception as exc:
             print(
@@ -507,7 +523,7 @@ class _PreviewSession:
                 ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
 
             print(
-                f"RSShowIK: showing {self.pose} start state for bar "
+                f"RSShowIK: showing {self.pose} state for bar "
                 f"{self.active_bar_id} (mesh_mode={self.mesh_mode})"
             )
         finally:

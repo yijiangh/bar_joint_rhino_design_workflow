@@ -19,10 +19,6 @@
     - don't have an auto hook atm, needs manual management
     - can do a FK to check consistency
 
-### CC modeling
-
-- Tool should be modeled as a ToolModel not a rigid body.
-
 ### MP workflow
 Decision:
 Like in itj, we don't do mp in Rhino, only do mp in python and just load planned traj json back to Rhino for viz.
@@ -37,5 +33,15 @@ Like in itj, we don't do mp in Rhino, only do mp in python and just load planned
 
 
 # RobotAction class
-- Add M0
-- rename RoboticLinearMovement into two Sync and Indep.
+-[x] Add M0
+-[x] RoboticLinearMovement into two Sync and Indep.
+
+Debatable
+- After Rhino IK, save confs into a BarAction json file already, and when clicking show IK, load from file directly.
+- Or we still save things in Rhino, but needs to include all key info for all movements, not just approach and end.
+
+
+ what if we try a new planning sequence, we plan M2->M1->M3->M4?
+  so M2 's start conf will be propagated to be M1's start conf, and then M1's planning
+  logic will need to change -> It doesn't need to solve for goal conf, and the start
+  conf's

@@ -82,6 +82,8 @@ The IK scripts still declare the remaining transitive dependencies (`compas`, `c
 
 The BarAction export workflow (RSExportBarAction, RSExportAllBarActions, RSExportRobotCell) shares its `Movement` / `BarAssemblyAction` schema with the monitor repo and the planner repos via [rs_data_structure](https://github.com/yijiangh/rs_data_structure), vendored as a git submodule at `external/rs_data_structure`. The package is loaded by prepending the submodule onto `sys.path` from `scripts/core/bar_action.py` (mirroring how `core.robot_cell` loads `compas_fab`) — **do not** add `# r: rs_data_structure` to any Rhino script; that would silently shadow the submodule. The same `git submodule update --init --recursive` invocation above pulls this submodule too. To switch to a different upstream commit, `cd external/rs_data_structure && git fetch && git checkout <sha>`.
 
+> **Tip for developers:** The exported JSON files can be large and deeply nested. [Janice](https://github.com/ErikKalkoken/janice) is a handy desktop viewer for browsing and searching big JSON files without loading everything into a text editor.
+
 ### Optional developer install
 
 Use `requirements-dev.txt` when you want the optional tooling:

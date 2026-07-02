@@ -112,6 +112,14 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
     -1.727003294848389, -0.40561451816348215, -1.2402309664671707,
 ])
 
+# The 12-DOF home split into its two 6-DOF arm halves, keeping the authored
+# left-then-right order (first 6 -> left arm, last 6 -> right arm). These feed
+# Plan M4's return-to-home `target_configuration` in
+# `core.bar_action._build_m4`, so the exported action and the RSShowIK preview
+# both show the same home pose.
+HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
+HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
+
 # IK base sampling fallback
 IK_BASE_SAMPLE_RADIUS = 200.0  # mm
 IK_BASE_SAMPLE_MAX_ITER = 10

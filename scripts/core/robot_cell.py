@@ -825,16 +825,35 @@ def rebuild_assembly_cell(robot_cell, planner):
     """Manual rebuild of the static assembly cell (the RSRebuildRobotCell button).
 
     Collects every bar + joint (canonical names) + environment obstacle, builds
-    + registers the arm ToolModels, pushes one ``set_robot_cell``, and caches the
-    full snapshot (bodies + world poses) + a cheap fingerprint in sticky.
+    + registers the arm ToolModels, then calls ``planner.set_robot_cell`` once 
+    to load the fully-populated cell into PyBullet in a single call (that
+    call rebuilds the whole PyBullet scene, so we register everything first and
+    load once rather than re-loading per body), and caches the full snapshot
+    (bodies + world poses) + a cheap geometry fingerprint in sticky.
+
+    The fingerprint (bar/joint/env counts + a sum of bar endpoints, from
+    ``_live_assembly_fingerprint``) is a lightweight signal of the document's
+    geometry. Later commands recompute it and compare against this stored value
+    to detect that the cached cell is stale (geometry edited since the rebuild)
+    without paying for a full rebuild -- see ``prompt_if_cell_stale`` /
+    ``ensure_assembly_cell``.
 
     Args:
         robot_cell (RobotCell): the cached cell to populate (mutated in place).
-        planner (PyBulletPlanner): active planner; receives one ``set_robot_cell``.
+        planner (PyBulletPlanner): active planner; its ``set_robot_cell`` is
+            called exactly once, after all rigid bodies + tools are registered.
 
     Returns:
-        dict: ``collision_bodies`` (``{name: body_info}``) for the full assembly
-        + environment obstacles.
+        dict: ``collision_bodies`` -- ``{name: body_info}`` for the full assembly
+        + environment obstacles. Each ``body_info`` carries the world pose +
+        metadata the RobotCell itself does NOT store: ``frame_world_mm`` (4x4 mm
+        world pose), ``kind`` (``"bar"`` / ``"joint"`` / ``"environment"``),
+        ``parent_bar_id`` (bars/joints only), and ``rigid_body`` (the RigidBody
+        geometry -- the only field mirrored into ``robot_cell.rigid_body_models``).
+        ``core.ik_collision_setup.build_full_assembly_state`` consumes this to
+        stamp one ``RigidBodyState`` (world frame + ``is_hidden``) per body into
+        each per-step ``RobotCellState`` -- placement info that cannot be
+        recovered from the cell alone.
     """
     from core import env_collision
     from core.rhino_bar_registry import get_bar_seq_map
@@ -955,8 +974,12 @@ def ensure_assembly_cell(robot_cell, planner):
         planner (PyBulletPlanner): active planner (used only if a build is needed).
 
     Returns:
-        dict: the cached ``collision_bodies`` (``{name: body_info}``); built
-        fresh via ``rebuild_assembly_cell`` if no snapshot exists yet.
+        dict: the cached ``collision_bodies`` -- ``{name: body_info}`` with a
+        world pose + ``kind`` + ``parent_bar_id`` + ``rigid_body`` per body (see
+        ``rebuild_assembly_cell``). Fed to
+        ``ik_collision_setup.build_full_assembly_state`` to build each per-step
+        ``RobotCellState``. Built fresh via ``rebuild_assembly_cell`` if no
+        snapshot exists yet.
     """
     snapshot = _STICKY.get(_STICKY_ASSEMBLY_SNAPSHOT)
     if snapshot is None:

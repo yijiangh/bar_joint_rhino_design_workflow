@@ -1,0 +1,117 @@
+diff --git a/scripts/core/ik_viz.py b/scripts/core/ik_viz.py
+index 86cb0bd..375459b 100644
+--- a/scripts/core/ik_viz.py
++++ b/scripts/core/ik_viz.py
+@@ -422,11 +422,32 @@ def _iter_mode_guids(bundle: dict, mesh_mode: str):
+ def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
+     """Show ``mesh_mode`` GUIDs, hide the OTHER mode's GUIDs.
+ 
++    Rigid bodies whose id is in ``bundle["hidden_rb_ids"]`` (state ``is_hidden``)
++    are hidden in BOTH modes -- the compas ``RigidBodyObject`` does not itself
++    honor ``is_hidden``, so we enforce it here (e.g. not-yet-built future bars).
++
+     Per-GUID visibility flip via ``rs.HideObjects`` / ``rs.ShowObjects``.
++
++    Args:
++        bundle (dict): the per-(cell, layer) preview bundle; reads ``rb_sos``
++            and the optional ``hidden_rb_ids`` set (populated by ``update_state``).
++        mesh_mode (str): which mode to show (``MESH_MODE_VISUAL`` /
++            ``MESH_MODE_COLLISION``).
++
++    Returns:
++        None: flips Rhino object visibility and records ``active_mesh_mode``.
+     """
+     other = MESH_MODE_COLLISION if mesh_mode == MESH_MODE_VISUAL else MESH_MODE_VISUAL
+-    show = list(_iter_mode_guids(bundle, mesh_mode))
+-    hide = list(_iter_mode_guids(bundle, other))
++    hidden_rb_ids = bundle.get("hidden_rb_ids") or set()
++    hidden_guids = []
++    for rb_id in hidden_rb_ids:
++        rb_so = (bundle["rb_sos"] or {}).get(rb_id)
++        if rb_so is not None:
++            hidden_guids.extend(_rb_so_guids(rb_so))
++    hidden_set = set(hidden_guids)
++
++    show = [g for g in _iter_mode_guids(bundle, mesh_mode) if g not in hidden_set]
++    hide = list(_iter_mode_guids(bundle, other)) + hidden_guids
+     was = sc.doc.Views.RedrawEnabled
+     try:
+         sc.doc.Views.RedrawEnabled = False
+@@ -560,7 +581,20 @@ def update_state(
+ 
+     ``mesh_mode`` / ``mesh_modes`` are accepted for back-compat; the bundle
+     always holds both modes, so this only controls which one is currently
+-    visible.
++    visible. Rigid bodies whose ``RigidBodyState.is_hidden`` is True (e.g.
++    not-yet-built future bars) are hidden from the preview.
++
++    Args:
++        state (RobotCellState): the cell state to render (poses, attachments,
++            hidden flags).
++        robot_cell (RobotCell, optional): cell whose geometry is baked; defaults
++            to the cached cell.
++        mesh_mode (str, optional): which mesh mode to show this call.
++        layer_key (str, optional): which IK sub-layer/bundle to update.
++        mesh_modes (Iterable[str], optional): back-compat alias for ``mesh_mode``.
++
++    Returns:
++        None: mutates the Rhino preview in place.
+     """
+     if robot_cell is None:
+         robot_cell = get_or_load_robot_cell()
+@@ -593,11 +627,17 @@ def update_state(
+             if ts is None:
+                 continue
+             tool_so.update(ts.configuration, ts.frame)
++        hidden_rb_ids = set()
+         for rb_id, rb_so in bundle["rb_sos"].items():
+             rbs = state.rigid_body_states.get(rb_id)
+             if rbs is None:
+                 continue
+             rb_so.update(rbs)
++            if getattr(rbs, "is_hidden", False):
++                hidden_rb_ids.add(rb_id)
++        # Hidden (e.g. not-yet-built future bars) must not render -- the compas
++        # RigidBodyObject ignores is_hidden, so enforce it in the visibility pass.
++        bundle["hidden_rb_ids"] = hidden_rb_ids
+         # Re-apply visibility for the active mode (any newly-baked geometry
+         # from sync_rb_keyset starts visible by default).
+         active = mesh_mode if mesh_mode in _VALID_MESH_MODES else bundle["active_mesh_mode"]
+diff --git a/scripts/rs_show_ik.py b/scripts/rs_show_ik.py
+index ad31bac..f39159a 100644
+--- a/scripts/rs_show_ik.py
++++ b/scripts/rs_show_ik.py
+@@ -315,7 +315,11 @@ class _PreviewSession:
+     def toggle_unbuilt(self):
+         self.show_unbuilt = not self.show_unbuilt
+         if self.active_bar_id is not None:
+-            show_sequence_colors(self.active_bar_id, self.show_unbuilt)
++            # Re-render: the document tube-preview layer is hidden during the IK
++            # session, so not-yet-built bars are only visible via their preview
++            # meshes. refresh() rebuilds the preview (which reveals/hides those
++            # future-bar meshes per show_unbuilt) and re-applies show_sequence_colors.
++            self.refresh()
+ 
+     def cycle_mesh_mode(self):
+         """Flip visual<->collision (cheap layer-visibility toggle, no rebake)."""
+@@ -400,6 +404,20 @@ class _PreviewSession:
+                 f"({type(exc).__name__}: {exc}); rendering robot only."
+             )
+ 
++        # ShowUnbuilt: the document tube-preview layer is hidden during the IK
++        # session, so not-yet-built (is_hidden) bars can only be shown via their
++        # preview meshes. Un-hide them for DISPLAY only -- the collision check
++        # (_run_collision_check_on_state) builds its own state, so this does not
++        # change collision behaviour.
++        if self.show_unbuilt:
++            n_revealed = 0
++            for rb in (getattr(state, "rigid_body_states", None) or {}).values():
++                if getattr(rb, "is_hidden", False):
++                    rb.is_hidden = False
++                    n_revealed += 1
++            if n_revealed:
++                print(f"RSShowIK._render: ShowUnbuilt -> revealing {n_revealed} unbuilt body/bodies in preview.")
++
+         rs.EnableRedraw(False)
+         try:
+             # Open the IK preview session on first render of this _PreviewSession.

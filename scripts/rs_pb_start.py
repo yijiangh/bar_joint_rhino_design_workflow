@@ -7,6 +7,7 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
+# r: txaio
 """RSPBStart - Start the shared PyBullet client for IK / FK workflows.
 
 Left-click starts a Direct (headless) connection; the RSPBStartGUI right-click

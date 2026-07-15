@@ -9,6 +9,10 @@
 
 ### Assembly IK
 
+- [] disable arm-arm collision when first solving for left (since right is at whatever warm start position at that moment), but when solving for the right arm enable everything.
+
+#### Longer term
+
 - [] the ik workflow should allow user to pick male and female joint to grasp. this will require an additional male-joint_from_tool0 transformation.
 
 - [] need to also support the DeckMale

@@ -171,6 +171,52 @@ def get_all_bars():
     return bars
 
 
+# Legacy bundled IK blob key (written by older RSIKKeyframe builds before the
+# solution was split into the KEY_ASSEMBLY_* keys in core.config). Cleared for
+# back-compat so an old bar can't keep a stale IK record.
+LEGACY_IK_ASSEMBLY_KEY = "ik_assembly"
+
+
+def clear_assembly_ik_keyframe(bar_oid, clear_base_frame=True):
+    """Delete a bar's computed dual-arm IK solution (M1-M3 arm configs).
+
+    Always removes the approach / assembled / retreat per-arm configs (the IK
+    results for movements M1-M3). The robot BASE frame (the mobile base position)
+    is removed only when ``clear_base_frame`` is True; pass False to KEEP the base
+    so the bar can be re-solved at the same base (the RSIKKeyframe "reuse saved
+    base" path). M4 returns the arms to the fixed dual-arm HOME configuration, a
+    module constant (``config.HOME_CONF_*``) not stored per bar, so it is
+    untouched.
+
+    The legacy ``ik_assembly`` blob bundles base + configs in a single string that
+    cannot be split, so it is ALWAYS removed (otherwise its configs would linger
+    for legacy readers like RSShowIK). When the base is kept it survives in the
+    split base-frame key, which is the authoritative one for re-solve / export.
+
+    Args:
+        bar_oid: Rhino object id of the bar curve.
+        clear_base_frame (bool): also remove the robot base frame (default True).
+
+    Returns:
+        list[str]: the user-text keys that were present and removed (empty if the
+        bar had nothing to clear).
+    """
+    keys = [
+        config.KEY_ASSEMBLY_IK_APPROACH,
+        config.KEY_ASSEMBLY_IK_ASSEMBLED,
+        config.KEY_ASSEMBLY_IK_RETREAT,
+        LEGACY_IK_ASSEMBLY_KEY,
+    ]
+    if clear_base_frame:
+        keys.insert(0, config.KEY_ASSEMBLY_BASE_FRAME)
+    removed = []
+    for key in keys:
+        if rs.GetUserText(bar_oid, key):
+            rs.SetUserText(bar_oid, key)  # 2-arg form deletes the key/value pair
+            removed.append(key)
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # Assembly sequence helpers
 # ---------------------------------------------------------------------------

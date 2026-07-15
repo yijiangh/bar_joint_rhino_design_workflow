@@ -13,7 +13,6 @@ Writes the canonical layout under a user-chosen root folder:
 
     <root>/RobotCell.json
     <root>/BarActions/           (created empty; populated by RSExportBarAction)
-    <root>/Trajectories/         (created empty for future use)
 
 Rigid-body names in the JSON are already state-independent (``bar_<bid>`` /
 ``joint_<jid>_<sub>`` / ``obstacle_<name>``) and tools live under
@@ -110,7 +109,6 @@ def main() -> None:
 
     os.makedirs(root, exist_ok=True)
     os.makedirs(os.path.join(root, "BarActions"), exist_ok=True)
-    os.makedirs(os.path.join(root, "Trajectories"), exist_ok=True)
 
     out = os.path.join(root, "RobotCell.json")
     if os.path.exists(out):

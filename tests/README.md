@@ -5,6 +5,10 @@ Two layers:
 - **Existing pytest suites** (`test_geometry.py`, `test_kinematics.py`, `test_s2_t1.py`, `test_urdf_chain.py`) — pure-numpy / scipy / PyBullet checks. Run with `python -m pytest tests/ -v`.
 - **Capture / replay** for the IK keyframe workflow — see below.
 
+> **Headless BarAction solving + replay** (`headless_bar_action_planner.py`,
+> `replay_bar_action_plan.py`) has its own guide:
+> [README_headless_bar_action.md](README_headless_bar_action.md).
+
 ## Capture / replay (no Rhino clicking required)
 
 The full `RSIKKeyframe` workflow saves a JSON snapshot whenever the user clicks Accept (or opts in on failure). The capture is a v2 schema flattening a serialized `compas_fab.RobotCell` (cell geometry, content-hashed under `tests/captures/robot_cells/<sha8>.json`) plus a `RobotCellState` (poses + tool/RB attachments) plus IK target frames.

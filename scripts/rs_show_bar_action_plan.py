@@ -7,30 +7,24 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSShowIK - Interactive viewer for saved `assembly_ik_*` keyframes
-(and optional legacy `ik_support` keyframe on the same bar).
+"""RSShowBarActionPlan - View a bar's solved assembly plan (IK keyframes or motion).
 
-The user picks a bar to start; the script enters an interactive loop
-that runs until Esc. Inside the loop the user can:
+Left-click (``main``): the IK KEYFRAME viewer. Pick a bar, then Enter (or
+``TogglePose``) cycles the four assembly movements' start states (M1 home -> M2
+approach -> M3 assembled -> M4 retreat), each with its solved IK config + per-
+movement collision context, plus the M4-home target. The active bar's base frame
+is drawn (axis triad + footprint). When ``RSLoadSolvedBarAction`` has loaded solved
+bars, it auto-starts on them, draws every base frame, and offers NextBar/PrevBar.
 
-  * click any other bar to switch the active bar;
-  * press Enter (or `TogglePose`) to cycle through the four assembly
-    movements' start states (M1 home -> M2 approach -> M3 assembled ->
-    M4 retreat), each with its solved IK config + per-movement collision
-    context;
-  * use ShowUnbuilt / HideUnbuilt to toggle the visibility of unbuilt bars.
+Right-click (``main_motion``): the MOTION viewer. Pick a bar; if its planned
+trajectory isn't cached yet it loads ``<bar>.solved_motion.json`` from the export
+root, then steps through the concatenated M1..M4 trajectory from the COMMAND LINE
+(Enter/Next/Prev/Jump) -- a prompt, not a modal dialog, so the viewport stays free
+to zoom/orbit. The held bar follows the arm through M1/M2; FK-only rendering.
 
-The active bar is highlighted via the same sequence-color overlay used
-by RSIKKeyframe / RSSequenceEdit. Bars with no saved IK data still
-become active (handy as a navigation aid) but show no robot preview.
-The robot is always rendered with the visual mesh.
-
-If the active bar ALSO carries an `ik_support` legacy user-text record,
-the support arm + Robotiq gripper preview is baked alongside the dual-
-arm, using the saved `assembled` assembly pose as collision context.
-
-The preview is non-baked: on Esc all robot meshes, tool previews, and the
-Robotiq block are cleaned up and the sequence display is restored.
+Both run until Esc / close. Legacy `ik_support` records are still shown alongside
+the dual-arm when present. The preview is non-baked: everything is cleaned up on
+exit and the sequence display is restored.
 """
 
 from __future__ import annotations
@@ -52,12 +46,15 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import bar_action as _bar_action_module
+from core import base_frame_viz as _base_frame_viz_module
 from core import config as _config_module
 from core import env_collision as _env_collision_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
+from core import rhino_walkable_ground as _walkable_ground_module
+from core import solved_action_cache as _solved_action_cache_module
 from core.rhino_bar_pick import (
     bar_or_tube_filter as _bar_or_tube_filter,
     pick_bar,
@@ -80,6 +77,12 @@ IK_SUPPORT_KEY = "ik_support"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 
+# Temporary color painted on the active bar's assigned WalkableGround brep(s) so
+# the user can see which ground surface the robot base is allowed to stand on.
+# Reverted to ByLayer on bar switch / session cleanup (green, distinct from the
+# blue bar-selection color and the red collision highlight).
+WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
+
 # Cycle order -- the four assembly movements plus a final "M4 target" preview.
 # TogglePose steps through each movement's START state with its solved config +
 # per-movement collision context:
@@ -93,7 +96,8 @@ POSES = ("M1", "M2", "M3", "M4", M4_TARGET_POSE)
 
 
 def _reload():
-    global bar_action, config, env_collision, ik_collision_setup, ik_viz, robot_cell, robot_cell_support
+    global bar_action, base_frame_viz, config, env_collision, ik_collision_setup
+    global ik_viz, robot_cell, robot_cell_support, solved_action_cache, walkable_ground
     config = importlib.reload(_config_module)
     env_collision = importlib.reload(_env_collision_module)
     ik_collision_setup = importlib.reload(_ik_collision_setup_module)
@@ -103,6 +107,9 @@ def _reload():
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
+    base_frame_viz = importlib.reload(_base_frame_viz_module)
+    solved_action_cache = importlib.reload(_solved_action_cache_module)
+    walkable_ground = importlib.reload(_walkable_ground_module)
 
 
 _reload()
@@ -248,7 +255,7 @@ def _load_assembly_payload(bar_oid):
             "retreat": json.loads(retreat_raw) if retreat_raw else None,
         }
     except json.JSONDecodeError as exc:
-        print(f"RSShowIK: malformed user-text on bar ({exc}); skipping IK preview.")
+        print(f"RSShowBarActionPlan: malformed user-text on bar ({exc}); skipping IK preview.")
         return None
 
 
@@ -259,7 +266,7 @@ def _load_support_payload(bar_oid):
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        print(f"RSShowIK: malformed '{IK_SUPPORT_KEY}' on bar ({exc}); skipping support preview.")
+        print(f"RSShowBarActionPlan: malformed '{IK_SUPPORT_KEY}' on bar ({exc}); skipping support preview.")
         return None
 
 
@@ -283,7 +290,7 @@ def _build_assembly_state(base_mm, groups, deps):
 
 
 class _PreviewSession:
-    """Holds mutable UI state for one RSShowIK run."""
+    """Holds mutable UI state for one RSShowBarActionPlan run."""
 
     def __init__(self, planner):
         self.planner = planner
@@ -303,6 +310,20 @@ class _PreviewSession:
         self._last_support_payload = None
         # Highlight bookkeeping: {oid: prev_color_source_or_None}
         self._highlight_oids = []
+        # WalkableGround brep(s) temporarily colored to show the active bar's
+        # assigned ground(s). Tracked separately from the collision-red
+        # `_highlight_oids` so it survives pose cycling and is only cleared on a
+        # bar switch / session cleanup.
+        self._wg_highlight_oids = []
+        # Bars available to step through (NextBar/PrevBar). Populated by main()
+        # from the loaded-solved cache; empty in the classic single-pick flow.
+        self.bar_ids = []
+        # Motion view: when a `solved_motion` action is loaded, step through the
+        # active bar's trajectory waypoints instead of the discrete keyframes.
+        self.motion_mode = False
+        self.motion_wps = []     # [(role, movement, np.array(wp12)), ...]
+        self.motion_idx = 0
+        self._jn12 = None        # cached 12 arm-joint names (left 6 + right 6)
 
     # ---- mutations -----------------------------------------------------
 
@@ -317,9 +338,14 @@ class _PreviewSession:
             self._session_started = False
         self.active_bar_id = bar_id
         self.active_bar_oid = bar_oid
-        # Start from the first movement (M1) on a bar switch.
+        # Start from the first movement (M1) on a bar switch, back in keyframe view.
         self.pose = POSES[0]
+        self.motion_mode = False
+        self.motion_wps = []
+        self.motion_idx = 0
         self.refresh()
+        # Show which WalkableGround brep(s) this bar's robot base stands on.
+        self._show_walkable_grounds()
 
     def cycle_pose(self):
         """Advance to the next preview step (M1 -> M2 -> M3 -> M4 -> M4-home -> M1)."""
@@ -346,7 +372,90 @@ class _PreviewSession:
         if self._session_started:
             ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
             ik_viz.set_active_mesh_mode(IK_LAYER_KEY_SUPPORT, self.mesh_mode)
-        print(f"RSShowIK: mesh_mode={self.mesh_mode}")
+        print(f"RSShowBarActionPlan: mesh_mode={self.mesh_mode}")
+
+    # ---- motion view ---------------------------------------------------
+
+    def _joint_names_12(self, rcell):
+        """Return the 12 arm-joint names (left 6 then right 6) a trajectory maps onto.
+
+        Matches the order the headless planner writes ``movement.trajectory`` in
+        (``left_names + right_names``). Cached on the session.
+        """
+        if self._jn12 is None:
+            self._jn12 = (
+                list(rcell.get_configurable_joint_names(config.LEFT_GROUP))
+                + list(rcell.get_configurable_joint_names(config.RIGHT_GROUP))
+            )
+        return self._jn12
+
+    def _active_motion_action(self):
+        """Return the cached loaded action for the active bar IF it is a motion load."""
+        loaded, kind = solved_action_cache.get_loaded()
+        if kind != "motion":
+            return None
+        return loaded.get(self.active_bar_id)
+
+    def _build_motion_waypoints(self):
+        """Flatten the active bar's per-movement trajectories into one waypoint list.
+
+        Each entry is ``(role, movement, wp12)`` -- the movement supplies that
+        phase's attachments (bar held in M1/M2, released in M3/M4) so the held bar
+        follows the arm as it scrubs. M0 (unplanned) and movements with no
+        trajectory are skipped.
+        """
+        self.motion_wps = []
+        self.motion_idx = 0
+        action = self._active_motion_action()
+        if action is None:
+            return
+        for role in ("M1", "M2", "M3", "M4"):
+            mv = bar_action._movement_by_role(action, role)
+            traj = getattr(mv, "trajectory", None) if mv is not None else None
+            if not traj:
+                continue
+            for wp in traj:
+                self.motion_wps.append((role, mv, np.asarray(wp, dtype=float)))
+
+    def render_motion_index(self, idx):
+        """Set the scrub position to waypoint ``idx`` and render it (for the slider)."""
+        if not self.motion_wps:
+            return
+        self.motion_idx = max(0, min(int(idx), len(self.motion_wps) - 1))
+        self._render_motion_waypoint()
+
+    def _render_motion_waypoint(self):
+        """Render the current trajectory waypoint on the active bar."""
+        if not self.motion_wps:
+            return
+        role, movement, wp12 = self.motion_wps[self.motion_idx]
+        rcell = robot_cell.get_or_load_robot_cell()
+        modes = (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION)
+
+        # Clone the movement's start_state (carries this phase's attachments +
+        # base frame) and stamp the waypoint's arm config onto it.
+        state = movement.start_state.copy()
+        if state.robot_configuration is None:
+            state.robot_configuration = rcell.zero_full_configuration()
+        for name, val in zip(self._joint_names_12(rcell), wp12):
+            state.robot_configuration[name] = float(val)
+
+        rs.EnableRedraw(False)
+        try:
+            if not self._session_started:
+                ik_viz.begin_session(
+                    robot_cell=rcell, mesh_modes=modes,
+                    active_mesh_mode=self.mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY,
+                )
+                self._session_started = True
+            # Visualization only (FK) -- no set_cell_state, so scrubbing stays fast.
+            ik_viz.update_state(state, mesh_modes=modes, layer_key=IK_LAYER_KEY_ASSEMBLY)
+            ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
+            self._last_assembly_state = state
+        finally:
+            rs.EnableRedraw(True)
+        print(f"RSShowBarActionPlan[motion]: {role} waypoint "
+              f"{self.motion_idx + 1}/{len(self.motion_wps)} ({movement.movement_id})")
 
     # ---- rendering -----------------------------------------------------
 
@@ -367,7 +476,7 @@ class _PreviewSession:
         payload = _load_assembly_payload(self.active_bar_oid)
         if payload is None:
             print(
-                f"RSShowIK: bar {self.active_bar_id} has no "
+                f"RSShowBarActionPlan: bar {self.active_bar_id} has no "
                 f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}' record; showing geometry only."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
@@ -448,11 +557,11 @@ class _PreviewSession:
                 state = movement.start_state.copy()
                 state.robot_configuration = target_cfg.copy()
             print(
-                f"RSShowIK: {self.pose} state -- {movement.movement_id} | {movement.tag}"
+                f"RSShowBarActionPlan: {self.pose} state -- {movement.movement_id} | {movement.tag}"
             )
         except Exception as exc:
             print(
-                f"RSShowIK: movement build failed "
+                f"RSShowBarActionPlan: movement build failed "
                 f"({type(exc).__name__}: {exc}); hiding IK preview."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
@@ -466,7 +575,7 @@ class _PreviewSession:
         # active IK pose" instead of acting on a config-less state).
         if getattr(state, "robot_configuration", None) is None:
             print(
-                f"RSShowIK: {self.pose} has no start configuration "
+                f"RSShowBarActionPlan: {self.pose} has no start configuration "
                 f"(planner-computed); showing geometry only, no robot preview."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
@@ -519,17 +628,17 @@ class _PreviewSession:
                         self._support_block_ids = _insert_support_gripper(tool0_support_mm)
                     except Exception as exc:
                         print(
-                            f"RSShowIK: SupportGripper preview skipped "
+                            f"RSShowBarActionPlan: SupportGripper preview skipped "
                             f"({type(exc).__name__}: {exc})."
                         )
                     stored_support = support_payload.get("robot_id", "<unknown>")
                     print(
-                        f"RSShowIK: also showing 'ik_support' for bar "
+                        f"RSShowBarActionPlan: also showing 'ik_support' for bar "
                         f"{self.active_bar_id} (robot_id={stored_support})."
                     )
                 except Exception as exc:
                     print(
-                        f"RSShowIK: ik_support display failed "
+                        f"RSShowBarActionPlan: ik_support display failed "
                         f"({type(exc).__name__}: {exc})."
                     )
             else:
@@ -538,7 +647,7 @@ class _PreviewSession:
                 ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
 
             print(
-                f"RSShowIK: showing {self.pose} state for bar "
+                f"RSShowBarActionPlan: showing {self.pose} state for bar "
                 f"{self.active_bar_id} (mesh_mode={self.mesh_mode})"
             )
         finally:
@@ -559,7 +668,7 @@ class _PreviewSession:
     def check_collision(self):
         """Run a full-report collision check on the current pose; red-highlight offenders."""
         if self._last_assembly_state is None or self.active_bar_id is None:
-            print("RSShowIK: no active IK pose to check; pick a bar with an IK record first.")
+            print("RSShowBarActionPlan: no active IK pose to check; pick a bar with an IK record first.")
             return
         self._revert_highlight()
 
@@ -584,13 +693,13 @@ class _PreviewSession:
             touch_list = getattr(rb_states[key], "touch_bodies", None) or []
             if touch_list:
                 print(
-                    f"RSShowIK._run_collision_check_on_state: {key} whitelist={sorted(touch_list)}"
+                    f"RSShowBarActionPlan._run_collision_check_on_state: {key} whitelist={sorted(touch_list)}"
                 )
         
         try:
             robot_cell.set_cell_state(self.planner, state)
         except Exception as exc:
-            print(f"RSShowIK: set_cell_state failed ({exc}); aborting.")
+            print(f"RSShowBarActionPlan: set_cell_state failed ({exc}); aborting.")
             return 0
 
         from compas_fab.backends import CollisionCheckError
@@ -601,15 +710,15 @@ class _PreviewSession:
                 state, options={"full_report": True, "verbose": False}
             )
             if verbose:
-                print("RSShowIK: CheckCollision -- no collisions detected.")
+                print("RSShowBarActionPlan: CheckCollision -- no collisions detected.")
             return 0
         except CollisionCheckError as exc:
             collision_pairs = list(getattr(exc, "collision_pairs", []) or [])
             if verbose:
                 for line in str(exc).splitlines():
-                    print(f"RSShowIK: COLLISION -- {line}")
+                    print(f"RSShowBarActionPlan: COLLISION -- {line}")
         except Exception as exc:
-            print(f"RSShowIK: check_collision raised {type(exc).__name__}: {exc}")
+            print(f"RSShowBarActionPlan: check_collision raised {type(exc).__name__}: {exc}")
             return 0
 
         # Resolve names from the (Link/Tool/RigidBody) pairs.
@@ -656,7 +765,7 @@ class _PreviewSession:
         self._apply_highlight(oids_to_highlight, red)
         if verbose:
             print(
-                f"RSShowIK: CheckCollision -- {len(collision_pairs)} colliding pair(s); "
+                f"RSShowBarActionPlan: CheckCollision -- {len(collision_pairs)} colliding pair(s); "
                 f"highlighted {len(self._highlight_oids)} object(s)."
             )
         return len(collision_pairs)
@@ -678,7 +787,7 @@ class _PreviewSession:
         """
         if self._last_assembly_state is None or self.active_bar_id is None:
             print(
-                "RSShowIK: pick a bar with an IK record and let it render first "
+                "RSShowBarActionPlan: pick a bar with an IK record and let it render first "
                 "(no _last_assembly_state); InteractiveCollisionCheck aborted."
             )
             return
@@ -696,7 +805,7 @@ class _PreviewSession:
             try:
                 names = list(rcell.get_configurable_joint_names(group))
             except Exception as exc:
-                print(f"RSShowIK: get_configurable_joint_names({group!r}) failed ({exc}); skipping group.")
+                print(f"RSShowBarActionPlan: get_configurable_joint_names({group!r}) failed ({exc}); skipping group.")
                 continue
             for name in names:
                 joint = None
@@ -712,13 +821,13 @@ class _PreviewSession:
                 joint_specs.append((group, name, lo, hi))
 
         if not joint_specs:
-            print("RSShowIK: no configurable joints found; aborting InteractiveCollisionCheck.")
+            print("RSShowBarActionPlan: no configurable joints found; aborting InteractiveCollisionCheck.")
             return
 
         _run_collision_jog_dialog(self, state, env_geom, joint_specs)
         # Dialog closed: drop highlights, leave the jogged configuration as-is.
         self._revert_highlight()
-        print("RSShowIK: InteractiveCollisionCheck closed.")
+        print("RSShowBarActionPlan: InteractiveCollisionCheck closed.")
 
     def _apply_highlight(self, oids, rgb):
         if not oids:
@@ -743,8 +852,70 @@ class _PreviewSession:
                     continue
         self._highlight_oids = []
 
+    # ---- walkable-ground highlight -------------------------------------
+
+    def _show_walkable_grounds(self):
+        """Temporarily color the active bar's assigned WalkableGround brep(s).
+
+        Reads the bar's saved ground-id list (``KEY_BAR_WALKABLE_GROUND_IDS``),
+        paints each matching brep green, and prints the ground id + Rhino object
+        id on the command line so the user can see (and check) which ground
+        surface the robot base is allowed to stand on. Called on every bar
+        switch (both the left-click keyframe view and the right-click motion
+        view route through ``set_active_bar``).
+
+        Returns:
+            None: mutates the document's object colors and ``_wg_highlight_oids``.
+        """
+        self._revert_walkable_grounds()
+        if self.active_bar_oid is None:
+            return
+        ground_ids = walkable_ground.get_bar_ground_ids(self.active_bar_oid)
+        if not ground_ids:
+            print(
+                f"RSShowBarActionPlan: bar {self.active_bar_id} has no assigned "
+                "WalkableGround (run RSAssignAndShowWalkableGround or RSRebuildRobotCell)."
+            )
+            return
+        # {ground_id: oid} for every WalkableGround brep, so we can map the bar's
+        # saved id list back to the actual Rhino objects.
+        all_grounds = walkable_ground.get_all_walkable_grounds()
+        with suspend_redraw():
+            for gid in ground_ids:
+                oid = all_grounds.get(gid)
+                if oid is None:
+                    print(
+                        f"RSShowBarActionPlan: bar {self.active_bar_id} references "
+                        f"WalkableGround '{gid}' but no such brep is in the document."
+                    )
+                    continue
+                try:
+                    rs.ObjectColor(oid, WALKABLE_GROUND_HIGHLIGHT_COLOR)
+                except Exception:
+                    continue
+                self._wg_highlight_oids.append(oid)
+                print(f"RSShowBarActionPlan: WalkableGround {gid} -> object {oid}")
+        print(
+            f"RSShowBarActionPlan: bar {self.active_bar_id} stands on "
+            f"{ground_ids} (highlighted green)."
+        )
+
+    def _revert_walkable_grounds(self):
+        """Restore the highlighted WalkableGround brep(s) to their ByLayer color."""
+        if not self._wg_highlight_oids:
+            return
+        with suspend_redraw():
+            for oid in self._wg_highlight_oids:
+                try:
+                    # ColorSource 0 = ByLayer (restore default)
+                    rs.ObjectColorSource(oid, 0)
+                except Exception:
+                    continue
+        self._wg_highlight_oids = []
+
     def cleanup(self):
         self._revert_highlight()
+        self._revert_walkable_grounds()
         self._clear_preview()
         if self._session_started:
             ik_viz.end_session()
@@ -752,7 +923,7 @@ class _PreviewSession:
         try:
             reset_sequence_colors()
         except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome
-            print(f"RSShowIK: failed to restore sequence colors ({exc}); continuing.")
+            print(f"RSShowBarActionPlan: failed to restore sequence colors ({exc}); continuing.")
 
 
 # ---------------------------------------------------------------------------
@@ -921,7 +1092,7 @@ def _run_collision_jog_dialog(session, state, env_geom, joint_specs):
         # AssemblyLeftArmToolBody / AssemblyRightArmToolBody actually get
         # paired against env_bar_* / env_joint_* in CC.4.
         print("=" * 78)
-        print("RSShowIK: InteractiveCollisionCheck -- VERBOSE DUMP")
+        print("RSShowBarActionPlan: InteractiveCollisionCheck -- VERBOSE DUMP")
         print("Look for CC.4 lines mentioning 'AssemblyLeftArmToolBody' / "
               "'AssemblyRightArmToolBody'.")
         print("=" * 78)
@@ -981,10 +1152,10 @@ def _resolve_pick_to_bar(picked_obj_id):
 
 def _build_get_option(session):
     go = Rhino.Input.Custom.GetObject()
-    pose_label = session.pose if session.active_bar_id else "-"
-    mesh_label = session.mesh_mode
+    now_label = session.pose if session.active_bar_id else "-"
     go.SetCommandPrompt(
-        f"Pick a bar to view, Enter to cycle pose [now: {pose_label}, mesh: {mesh_label}], Esc to exit"
+        f"Pick a bar, Enter=cycle pose [now: {now_label}, mesh: {session.mesh_mode}], "
+        "Esc to exit (right-click the button for the motion scrub)"
     )
     go.EnablePreSelect(False, False)
     go.AcceptNothing(True)
@@ -997,36 +1168,98 @@ def _build_get_option(session):
         go.AddOption("HideUnbuilt")
     else:
         go.AddOption("ShowUnbuilt")
+    # Step through the loaded bars (all-bars map) without having to click each one.
+    if len(session.bar_ids) > 1:
+        go.AddOption("NextBar")
+        go.AddOption("PrevBar")
     return go
+
+
+def _draw_loaded_base_frames(bar_oids_by_id):
+    """Bake a base-frame marker for every loaded bar that has a saved base.
+
+    Reads each bar's base frame from its (just-synced) user-text and draws the
+    axis triad + footprint via ``core.base_frame_viz``.
+
+    Args:
+        bar_oids_by_id (dict): ``{bar_id: bar_oid}`` for the bars to draw.
+
+    Returns:
+        None.
+    """
+    frames = {}
+    for bar_id, oid in bar_oids_by_id.items():
+        payload = _load_assembly_payload(oid)
+        if payload is not None:
+            frames[bar_id] = payload["base_frame_world_mm"]
+    if frames:
+        base_frame_viz.draw_base_frames(frames)
+
+
+def _step_bar(session, seq_map, delta):
+    """Activate the next/previous bar in ``session.bar_ids`` (the all-bars map)."""
+    if len(session.bar_ids) < 2 or session.active_bar_id not in session.bar_ids:
+        return
+    idx = session.bar_ids.index(session.active_bar_id)
+    nxt = session.bar_ids[(idx + delta) % len(session.bar_ids)]
+    oid_seq = seq_map.get(nxt)
+    if oid_seq is not None:
+        session.set_active_bar(nxt, oid_seq[0])
 
 
 def main() -> None:
     _reload()
 
     if not robot_cell.is_pb_running():
-        rs.MessageBox("PyBullet is not running. Click RSPBStart first.", 0, "RSShowIK")
+        rs.MessageBox("PyBullet is not running. Click RSPBStart first.", 0, "RSShowBarActionPlan")
         return
     _client, planner = robot_cell.get_planner()
 
     rcell = robot_cell.get_or_load_robot_cell()
     if not robot_cell.prompt_if_cell_stale(rcell, planner):
-        print("RSShowIK: aborted (stale collision cell).")
+        print("RSShowBarActionPlan: aborted (stale collision cell).")
         return
 
-    rs.UnselectAllObjects()
-    initial_oid = pick_bar("Pick a bar to view its IK keyframe (Esc to cancel)")
-    if initial_oid is None:
-        return
-    initial_bar_id = rs.GetUserText(initial_oid, BAR_ID_KEY)
-    if not initial_bar_id:
+    seq_map = get_bar_seq_map()  # {bar_id: (oid, seq)}
+
+    # If RSLoadSolvedBarAction just loaded solved BarAction(s), start on those bars
+    # (no pick) and draw every loaded bar's base frame. Otherwise, classic flow:
+    # pick a bar and read its live user-text.
+    loaded_actions, _loaded_kind = solved_action_cache.get_loaded()
+    loaded_here = {
+        bid: seq_map[bid][0] for bid in loaded_actions if bid in seq_map
+    }
+    if loaded_actions and not loaded_here:
         rs.MessageBox(
-            "Picked curve is not a registered bar (no 'bar_id' user-text).",
-            0,
-            "RSShowIK",
+            "The loaded solved BarAction(s) are not bars in this document.",
+            0, "RSShowBarActionPlan",
         )
         return
 
+    if loaded_here:
+        # Assembly-sequence order so NextBar/PrevBar steps in build order.
+        bar_ids = sorted(loaded_here, key=lambda b: seq_map[b][1])
+        initial_bar_id = bar_ids[0]
+        initial_oid = loaded_here[initial_bar_id]
+        _draw_loaded_base_frames(loaded_here)
+    else:
+        rs.UnselectAllObjects()
+        initial_oid = pick_bar("Pick a bar to view its IK keyframe (Esc to cancel)")
+        if initial_oid is None:
+            return
+        initial_bar_id = rs.GetUserText(initial_oid, BAR_ID_KEY)
+        if not initial_bar_id:
+            rs.MessageBox(
+                "Picked curve is not a registered bar (no 'bar_id' user-text).",
+                0,
+                "RSShowBarActionPlan",
+            )
+            return
+        bar_ids = []
+        _draw_loaded_base_frames({initial_bar_id: initial_oid})
+
     session = _PreviewSession(planner)
+    session.bar_ids = bar_ids
     try:
         session.set_active_bar(initial_bar_id, initial_oid)
 
@@ -1040,7 +1273,7 @@ def main() -> None:
             if result == Rhino.Input.GetResult.Object:
                 bar_id, bar_oid = _resolve_pick_to_bar(go.Object(0).ObjectId)
                 if bar_id is None:
-                    print("RSShowIK: picked object is not a registered bar; ignoring.")
+                    print("RSShowBarActionPlan: picked object is not a registered bar; ignoring.")
                     continue
                 if bar_id == session.active_bar_id:
                     # Click on already-active bar = cheap refresh (no pose reset).
@@ -1065,9 +1298,147 @@ def main() -> None:
                     session.interactive_collision_check()
                 elif name in ("ShowUnbuilt", "HideUnbuilt"):
                     session.toggle_unbuilt()
+                elif name == "NextBar":
+                    _step_bar(session, seq_map, +1)
+                elif name == "PrevBar":
+                    _step_bar(session, seq_map, -1)
                 continue
     finally:
         session.cleanup()
+        base_frame_viz.clear_base_frames()
+        solved_action_cache.clear_loaded()
+
+
+EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
+
+
+def _run_motion_command_loop(session):
+    """Step through the active bar's trajectory from the Rhino COMMAND LINE.
+
+    Uses a GetOption prompt rather than a modal dialog, so the viewport stays free
+    to zoom / orbit / pan while scrubbing. Enter or ``Next`` advances a waypoint,
+    ``Prev`` goes back (both wrap around), ``Jump`` asks for a 1-based index, and
+    ``Close`` / Esc exits. Each step renders that waypoint (FK only).
+
+    Args:
+        session (_PreviewSession): a session whose ``motion_wps`` is already built.
+
+    Returns:
+        None.
+    """
+    n = len(session.motion_wps)
+    session.render_motion_index(0)  # show the first waypoint immediately
+    while True:
+        role, movement, _wp = session.motion_wps[session.motion_idx]
+        go = Rhino.Input.Custom.GetOption()
+        go.SetCommandPrompt(
+            f"Motion scrub [{role} {session.motion_idx + 1}/{n}: {movement.movement_id}] "
+            "-- Enter/Next=forward, Prev=back, Jump=index, Esc to exit"
+        )
+        go.AcceptNothing(True)
+        go.AddOption("Next")
+        go.AddOption("Prev")
+        go.AddOption("Jump")
+        go.AddOption("Close")
+        res = go.Get()
+
+        if res == Rhino.Input.GetResult.Cancel:
+            break
+        if res == Rhino.Input.GetResult.Nothing:
+            session.render_motion_index((session.motion_idx + 1) % n)
+            continue
+        if res == Rhino.Input.GetResult.Option:
+            name = go.Option().EnglishName
+            if name == "Next":
+                session.render_motion_index((session.motion_idx + 1) % n)
+            elif name == "Prev":
+                session.render_motion_index((session.motion_idx - 1) % n)
+            elif name == "Jump":
+                gi = Rhino.Input.Custom.GetInteger()
+                gi.SetCommandPrompt(f"Waypoint index (1..{n})")
+                gi.SetLowerLimit(1, False)
+                gi.SetUpperLimit(n, False)
+                gi.SetDefaultInteger(session.motion_idx + 1)
+                if gi.Get() == Rhino.Input.GetResult.Number:
+                    session.render_motion_index(gi.Number() - 1)
+            elif name == "Close":
+                break
+            continue
+
+
+def main_motion() -> None:
+    """Right-click entry: pick a bar, ensure its motion is loaded, scrub it.
+
+    Loads ``<bar>.solved_motion.json`` from the export root when this bar's motion
+    isn't cached yet (RSLoadSolvedBarAction may have loaded it already), syncs the
+    condensed IK to user-text, draws the base frame, and steps through the
+    trajectory from the command line (viewport stays free to zoom/orbit).
+    """
+    _reload()
+
+    if not robot_cell.is_pb_running():
+        rs.MessageBox("PyBullet is not running. Click RSPBStart first.", 0, "RSShowBarActionPlan")
+        return
+    _client, planner = robot_cell.get_planner()
+    rcell = robot_cell.get_or_load_robot_cell()
+    if not robot_cell.prompt_if_cell_stale(rcell, planner):
+        print("RSShowBarActionPlan: aborted (stale collision cell).")
+        return
+
+    rs.UnselectAllObjects()
+    oid = pick_bar("Pick a bar to scrub its planned motion (Esc to cancel)")
+    if oid is None:
+        return
+    bar_id = rs.GetUserText(oid, BAR_ID_KEY)
+    if not bar_id:
+        rs.MessageBox("Picked curve is not a registered bar.", 0, "RSShowBarActionPlan")
+        return
+
+    # Ensure this bar's MOTION action is cached; else load it from disk now.
+    loaded, kind = solved_action_cache.get_loaded()
+    action = loaded.get(bar_id) if kind == "motion" else None
+    if action is None:
+        root = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
+        if not root or not os.path.isdir(os.path.join(root, "BarActions")):
+            root = rs.BrowseForFolder(
+                folder=root if root and os.path.isdir(root) else None,
+                message="Select export root (folder that contains BarActions/)",
+                title="RSShowBarActionPlan",
+            )
+            if not root:
+                return
+            sc.sticky[EXPORT_ROOT_STICKY_KEY] = root
+        actions_dir = os.path.join(root, "BarActions")
+        action = solved_action_cache.load_solved_action_file(actions_dir, bar_id, "motion")
+        if action is None:
+            rs.MessageBox(
+                f"No {solved_action_cache.solved_action_filename(bar_id, 'motion')} "
+                f"under:\n{actions_dir}\n\nRun the headless motion planner first.",
+                0, "RSShowBarActionPlan",
+            )
+            return
+        # Merge into the (motion) cache + sync the condensed IK to user-text.
+        loaded = loaded if kind == "motion" else {}
+        loaded[bar_id] = action
+        solved_action_cache.set_loaded(loaded, "motion")
+        bar_action.write_bar_keyframe_from_action(oid, action, rcell)
+
+    session = _PreviewSession(planner)
+    try:
+        session.set_active_bar(bar_id, oid)
+        _draw_loaded_base_frames({bar_id: oid})
+        session._build_motion_waypoints()
+        if not session.motion_wps:
+            rs.MessageBox(
+                f"Bar {bar_id} has no planned trajectory in its solved_motion "
+                "(run the headless planner with --movement all).",
+                0, "RSShowBarActionPlan",
+            )
+            return
+        _run_motion_command_loop(session)
+    finally:
+        session.cleanup()
+        base_frame_viz.clear_base_frames()
 
 
 if __name__ == "__main__":

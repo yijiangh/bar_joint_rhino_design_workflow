@@ -161,53 +161,66 @@ def main():
     # -------------------------------------------------------------------
     mx = 52.5
     mw = 22.5
-    def movement_box(y, h, title, lines, colors):
-        box(ax, mx, y, mw, h, title, lines, colors, title_size=9.5, body_size=8,
-            file="core/bar_action.py")
+    def movement_box(y, h, title, cls, lines, colors):
+        # `cls` (the compas_fab movement class) is shown in the small italic slot
+        # the box() helper normally uses for a source file. All five live in
+        # core/bar_action.py (see the "where each function lives" box below).
+        box(ax, mx, y, mw, h, title, lines, colors, title_size=9.5, body_size=7.8,
+            file=cls)
 
-    movement_box(73.5, 13.5,
-        "M1  DualArmConstrained · home->approach",
-        ["config = HOME (both arms)",
-         "ATTACH to tool0 (frame = inv(tool0)@body):",
-         "  bar tube + females -> LEFT arm",
-         "     (left_ur_arm_tool0)",
-         "  each male -> ITS arm (L-tool->left,",
-         "     R-tool->right ur_arm_tool0)",
-         "ACM: male<->its-own-arm tool, male<->bar,",
-         "  female<->bar, bar<->BOTH tools (AT3L+AT3R)",
-         "target_ee = approach frames (geom offset)"],
+    movement_box(80.5, 7.0,
+        "M0  free move -> M1 start",
+        "IndependentDualArmFreeMovement",
+        ["config = None (live current)",
+         "DETACH bar+joints -> static @ world",
+         "ACM: none; target = None (back-filled)"],
+        C_RELEASE)
+
+    movement_box(67.5, 12.0,
+        "M1  bar-load -> approach (gripped)",
+        "EndEffectorConstrainedDualArmFreeMovement",
+        ["config = None (planner-fills;",
+         "  seeded from M0 end)",
+         "ATTACH tool0 (inv(tool0)@body):",
+         "  bar+females->LEFT, male->its arm (L/R)",
+         "ACM: male<->tool, male<->bar,",
+         "  female<->bar, bar<->BOTH tools",
+         "target_ee = approach (-avg z, LM=15)"],
         C_GRIP)
 
-    movement_box(59.0, 12.0,
-        "M2  Linear · approach->assembled  (mate)",
-        ["config = approach_groups  (None pre-IK)",
-         "ATTACH: same as M1 (bar+females->LEFT,",
-         "  each male->its own arm; still gripped)",
-         "ACM: M1 + male<->its built mate female",
-         "target_ee = assembled frames"],
+    movement_box(55.5, 11.0,
+        "M2  approach -> assembled (mate)",
+        "EndEffectorConstrainedDualArmLinearMovement",
+        ["config = approach_groups (None pre-IK)",
+         "ATTACH: same as M1 (still gripped)",
+         "ACM: M1 + male<->built mate female",
+         "  (same joint_id)",
+         "target_ee = assembled tool0 frames"],
         C_GRIP)
 
-    movement_box(44.0, 12.0,
-        "M3  Linear · assembled->retreat",
-        ["config = assembled_groups",
-         "DETACH: bar+joints -> static @ world",
-         "  (no arm attachment)",
-         "ACM: male<->its-own-arm tool; bar<->both tools",
+    movement_box(43.5, 11.0,
+        "M3  assembled -> retreat",
+        "IndependentDualArmLinearMovement",
+        ["config = assembled_groups (None pre-IK)",
+         "DETACH bar+joints -> static @ world",
+         "ACM: male<->its arm tool;",
+         "  bar<->both tools (still)",
          "target_ee = per-arm retreat (joint -Z)"],
         C_RELEASE)
 
-    movement_box(30.5, 11.0,
-        "M4  Free · retreat->home",
-        ["config = None (planner fills from M3 end)",
-         "DETACH: bar+joints static @ world",
-         "ACM: none  (bar<->tools cleared)",
+    movement_box(31.5, 11.0,
+        "M4  retreat -> home (free)",
+        "IndependentDualArmFreeMovement",
+        ["config = None -> retreat cfg (planner)",
+         "DETACH bar+joints -> static @ world",
+         "ACM: none (bar<->tools cleared)",
          "target_configuration = HOME"],
         C_RELEASE)
 
-    # template -> each movement (copy + re-class).
-    for yc in (80.6, 65.5, 50.5, 36.5):
-        arrow(ax, (48, 65), (52.5, yc), C_TEMPLATE[1], style="--", rad=0.12, lw=1.4)
-    ax.text(50.2, 71.0, "template_state\n.copy()  per Mi", ha="center",
+    # template -> each movement (copy + re-class).  yc = each box's vertical center.
+    for yc in (84.0, 73.5, 61.0, 49.0, 37.0):
+        arrow(ax, (48, 64), (52.5, yc), C_TEMPLATE[1], style="--", rad=0.12, lw=1.3)
+    ax.text(50.3, 68.0, "template_state\n.copy()  per Mi", ha="center",
             va="center", fontsize=7.5, style="italic", color=C_TEMPLATE[1])
 
     # -------------------------------------------------------------------
@@ -215,22 +228,23 @@ def main():
     # -------------------------------------------------------------------
     box(ax, 76, 66.5, 22.5, 20,
         "rs_ik_keyframe.py   (SOLVER)",
-        ["build_assembly_movements(groups=None)  [bar_action.py]",
-         "   -> configs left UNSOLVED",
+        ["build_assembly_movements(groups=None)",
+         "   -> M0..M4; M1/M2/M3 configs UNSOLVED",
          "",
-         "_solve_chain_with_sampling()",
+         "_solve_chain_with_sampling()  (only M1-M3)",
          " -> ik_keyframe.solve_keyframe_chain(",
          "        [M1, M2, M3], base_frame)",
-         "    each: start_state.copy(); chain seed",
-         "    prev config; solve_dual_arm_ik on",
-         "    movement.target_ee_frames",
+         "    each: start_state.copy(); seed prev",
+         "    config; solve_dual_arm_ik on target_ee",
+         "    solve_dual_arm_ik -> ssik sidecar",
+         "      (config.IK_BACKEND = 'ssik')",
          "",
          "M1->approach  M2->assembled  M3->retreat",
          "preview: set_cell_state + ik_viz.update",
          "accept -> write bar user-text:",
          "  KEY_ASSEMBLY_BASE_FRAME / IK_APPROACH",
          "  / IK_ASSEMBLED / IK_RETREAT"],
-        C_CONSUMER, title_size=10, body_size=8)
+        C_CONSUMER, title_size=10, body_size=7.7)
 
     box(ax, 76, 40.5, 22.5, 22,
         "rs_show_ik.py   (VIEWER)",
@@ -292,23 +306,25 @@ def main():
     ax.text(35.2, 20.6,
             "core/robot_cell.py     get_or_load_robot_cell · default_cell_state · rebuild_assembly_cell ·\n"
             "                       ensure_assembly_cell · build_arm_tool_models · base_assembly_cell_state ·\n"
-            "                       solve_dual_arm_ik · set_cell_state · extract_group_config\n"
+            "                       solve_dual_arm_ik · solve_dual_arm_ik_ssik · set_cell_state · extract_group_config\n"
             "core/env_collision.py  collect_assembly_geometry · collect_environment_geometry\n"
             "core/ik_collision_setup.py  prepare_assembly_collision_state · build_full_assembly_state\n"
-            "core/bar_action.py     build_assembly_movements · _set_active_attachments ·\n"
-            "                       _apply_movement_touch_policy · _build_m1 … _build_m4\n"
+            "core/bar_action.py     build_assembly_movements · _classify_male_joints_per_arm ·\n"
+            "                       _set_active_attachments · _apply_movement_touch_policy · _build_m0 … _build_m4\n"
             "core/ik_keyframe.py    solve_keyframe_chain          core/ik_viz.py  update_state · begin_session\n"
             "scripts/rs_ik_keyframe.py · scripts/rs_show_ik.py   the two consumer commands (column 4)",
             ha="left", va="top", fontsize=8.2, family="monospace",
             color=INK, zorder=3, linespacing=1.4)
 
-    ax.text(63, 5.6,
+    ax.text(63, 5.2,
             "Solid arrow = builds / produces.   Dashed = supplies data (no new object).   "
             "Each Mi = template_state.copy() with only the grasped bar + its joints re-classed;\n"
             "attachment_frame + touch_bodies (allowed-collision whitelist) stamped per movement inside "
             "bar_action._set_active_attachments / _apply_movement_touch_policy.   "
             "Bar + females attach to the LEFT arm (bar_arm_side='left', the default; parameterizable);\n"
-            "each male attaches to the arm whose L/R-suffixed tool sits on it.",
+            "each male attaches to the arm whose L/R-suffixed tool sits on it.   "
+            "Class = {Independent | EndEffectorConstrained}DualArm{Free | Linear}Movement.   "
+            "Only M1/M2/M3 are IK-solved; M0 (lead-in) + M4 (home) are free moves.",
             ha="center", va="center", fontsize=8.3, style="italic", color="#444")
 
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)),

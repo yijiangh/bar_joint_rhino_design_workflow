@@ -9,12 +9,12 @@ core math stack (`numpy` + `scipy`) and is split into two stages:
 - **T2 – Joint placement**: place connector blocks on a bar pair using a
   4-DOF optimizer that aligns the female and male screw holes.
 
-Each connector family is described by a **joint pair**: a female + male
-block definition with the geometry needed to drive the optimizer. Joint
-pairs are authored interactively in Rhino with `RSDefineJointHalf` /
-`RSDefineJointMate` and
-stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
-assets in `asset/`.
+  Each connector family is described by a **joint pair**: a female + male
+  block definition with the geometry needed to drive the optimizer. Joint
+  pairs are authored interactively in Rhino with `RSDefineJointHalf` /
+  `RSDefineJointMate` and
+  stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
+  assets in `asset/`.
 
 ## Rhino 8 Workshop Install (Start Here)
 
@@ -76,13 +76,31 @@ git submodule update --init --recursive
 
 `scripts/core/robot_cell.py` prepends `external/compas_fab/src` onto `sys.path` before any `import compas_fab`, so Rhino scripts see the submodule version automatically. To switch to a different upstream commit, `cd external/compas_fab && git fetch && git checkout <sha>` — the next Rhino script run loads that SHA with no venv state to reset.
 
+The same submodule mechanism also vendors [rs_data_structure](https://github.com/yijiangh/rs_data_structure) at `external/rs_data_structure`, which defines the shared `Movement` / `BarAssemblyAction` schema. This is a hard dependency of the IK keyframe workflow, not just of export: `core.bar_action` builds the M0-M4 assembly movements out of these classes, and both `RSIKKeyframe` and `RSShowIK` import `core.bar_action` and solve the IK chain against those movements — so a missing submodule makes those commands fail to import. That same schema is what the BarAction export workflow (RSExportBarAction, RSExportAllBarActions, RSExportRobotCell) shares with the monitor and planner repos. `scripts/core/bar_action.py` prepends the submodule onto `sys.path` (the same trick `core.robot_cell` uses for compas_fab), so **do not** add `# r: rs_data_structure` to any Rhino script — that would silently shadow the submodule. The `git submodule update --init --recursive` command above pulls it too; to switch to a different upstream commit, `cd external/rs_data_structure && git fetch && git checkout <sha>`.
+
 The IK scripts still declare the remaining transitive dependencies (`compas`, `compas_robots`, `pybullet`, `pybullet_planning`, plus `numpy` / `scipy`) via `# r:` so Rhino's ScriptEditor installs them into `scaffolding_env` on first run. Do **not** add `# r: compas_fab` — that would bypass the submodule and silently shadow it.
 
-### Submodule dependency for BarAction export
+### Analytical IK solver (ssik) — one-time venv
 
-The BarAction export workflow (RSExportBarAction, RSExportAllBarActions, RSExportRobotCell) shares its `Movement` / `BarAssemblyAction` schema with the monitor repo and the planner repos via [rs_data_structure](https://github.com/yijiangh/rs_data_structure), vendored as a git submodule at `external/rs_data_structure`. The package is loaded by prepending the submodule onto `sys.path` from `scripts/core/bar_action.py` (mirroring how `core.robot_cell` loads `compas_fab`) — **do not** add `# r: rs_data_structure` to any Rhino script; that would silently shadow the submodule. The same `git submodule update --init --recursive` invocation above pulls this submodule too. To switch to a different upstream commit, `cd external/rs_data_structure && git fetch && git checkout <sha>`.
+[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` / `RSShowIK` — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env` (that path is wired into `core.config`) which the Rhino scripts start and talk to automatically.
 
-> **Tip for developers:** The exported JSON files can be large and deeply nested. [Janice](https://github.com/ErikKalkoken/janice) is a handy desktop viewer for browsing and searching big JSON files without loading everything into a text editor.
+**The per-arm solver modules are already built and committed** (`asset/ssik/left_ur_arm_ik.py`, `asset/ssik/right_ur_arm_ik.py`), so you never run `ssik build` — you only create the venv once.
+
+You do **not** need Python 3.11 to be your system/default interpreter — your everyday `python` can stay 3.8–3.10. The easiest way is [uv](https://docs.astral.sh/uv/), a standalone tool (not run "through" your Python). Install it once (needs no Python):
+
+- **Windows** (PowerShell): `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- **macOS / Linux**: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+(Or `pip install uv` to use your existing Python instead.) Then create the venv and install ssik:
+
+```bash
+uv venv --python 3.11 external/ssik_env
+uv pip install --python external/ssik_env ssik
+```
+
+That's the whole setup. Run `RSPBStart`, then `RSIKKeyframe` / `RSShowIK` — the sidecar spawns on the first solve and is shut down by `RSPBStop`.
+
+`core.config` also carries a pure-PyBullet `gradient` backend (`IK_BACKEND = "gradient"`) that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. To regenerate the solver modules after a URDF change, see [scripts/ssik_sidecar/README.md](scripts/ssik_sidecar/README.md).
 
 ### Optional developer install
 
@@ -99,6 +117,8 @@ Recommended from a normal local Python environment or virtualenv:
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+> **Tip for developers:** The BarAction JSON files exported by RSExportBarAction / RSExportAllBarActions can be large and deeply nested. [Janice](https://github.com/ErikKalkoken/janice) is a handy desktop viewer for browsing and searching big JSON files without loading everything into a text editor.
 
 ## Rhino 8 Workflow
 
@@ -149,7 +169,7 @@ What it does:
   - Rhino document path and model units
   - the live `solve_s2_t1_all(...)` result count and solution data, or the solver error if one is raised
 
-Typical workflow:
+  Typical workflow:
 
 1. Run `RSBarBrace` until you hit an `S2` case you want to inspect more closely, such as fewer preview candidates than expected or a suspicious candidate layout.
 2. Run `rs_export_case.py` from Rhino (or click the `RSExportCase` toolbar button in `scaffolding_toolbar.rui`).
@@ -200,7 +220,7 @@ What it does:
 - Encodes the chain:
   - `Le bar -> FJP -> FJR -> female link -> female screw hole -> JJR -> male screw hole -> male link -> MJR -> MJP -> Ln bar`
 
-When to use it:
+  When to use it:
 
 - Run it after `Export CAD Config` whenever the Rhino-authored reference frames change.
 - Use it when you want the URDF file on disk for inspection, testing, or other downstream tooling.

@@ -17,6 +17,12 @@ Scans the document and registers the FULL canonical assembly into the cached
 caches a snapshot (+ a cheap fingerprint) so every later IK / ShowIK / export
 command reuses it without re-scanning.
 
+It also AUTO-ASSIGNS WalkableGround surfaces to bars: every WalkableGround brep
+gets a stable id (``WG0``, ``WG1``, ...) and every bar that has no association
+yet is linked to its nearest ground(s) by distance. Bars you already edited with
+RSAssignAndShowWalkableGround are left untouched, so manual picks survive a rebuild;
+run RSAssignAndShowWalkableGround to override an auto-assignment.
+
 Run this after you ADD / DELETE / MOVE / RESIZE bars, joints, or environment
 meshes. The collision cell is a manual snapshot -- edits made after the last
 rebuild are NOT reflected until you click this again (IK / ShowIK warn when
@@ -41,6 +47,7 @@ if SCRIPT_DIR not in sys.path:
 from core import config as _config_module
 from core import env_collision as _env_collision_module
 from core import robot_cell as _robot_cell_module
+from core import rhino_walkable_ground as _walkable_module
 from core.rhino_bar_registry import repair_on_entry
 
 
@@ -48,6 +55,7 @@ def main() -> None:
     robot_cell = importlib.reload(_robot_cell_module)
     config = importlib.reload(_config_module)
     importlib.reload(_env_collision_module)
+    walkable = importlib.reload(_walkable_module)
 
     if not robot_cell.is_pb_running():
         rs.MessageBox(
@@ -71,18 +79,36 @@ def main() -> None:
         )
         return
 
+    # Auto-assign WalkableGround surfaces to bars (non-destructive; keeps manual
+    # picks). Shared with RSExportAllBarActions so both do the same thing.
+    n_grounds, n_assigned, n_kept, n_noground = walkable.auto_assign_walkable_ground_ids_all_bars()
+
     n_bar = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "bar")
     n_joint = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "joint")
     n_env = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "environment")
     n_tools = len(rcell.tool_models)
+    # WalkableGround summary line: only surface a warning about un-grounded bars
+    # when there are grounds to assign but some bar still got none.
+    if n_grounds == 0:
+        ground_line = "  WalkableGround: none on layer (skipped auto-assign)"
+    else:
+        ground_line = (
+            f"  WalkableGround: {n_grounds} surface(s); "
+            f"{n_assigned} bar(s) auto-assigned, {n_kept} kept, {n_noground} still none"
+        )
     msg = (
         f"Rebuilt the robot cell:\n"
         f"  {n_bar} bar(s)\n"
         f"  {n_joint} joint half/halves\n"
         f"  {n_env} environment obstacle(s)\n"
-        f"  {n_tools} arm tool(s): {', '.join(sorted(rcell.tool_models.keys())) or '-'}"
+        f"  {n_tools} arm tool(s): {', '.join(sorted(rcell.tool_models.keys())) or '-'}\n"
+        f"{ground_line}"
     )
-    print(f"RSRebuildRobotCell: {n_bar} bars, {n_joint} joints, {n_env} obstacles, {n_tools} tools.")
+    print(
+        f"RSRebuildRobotCell: {n_bar} bars, {n_joint} joints, {n_env} obstacles, "
+        f"{n_tools} tools; WalkableGround {n_grounds} surf / {n_assigned} assigned / "
+        f"{n_kept} kept / {n_noground} none."
+    )
     rs.MessageBox(msg, 0, "RSRebuildRobotCell")
 
 

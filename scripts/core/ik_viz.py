@@ -689,35 +689,39 @@ def get_tool_native_geometry(
     return out
 
 
-def get_robot_link_meshes_at_zero(robot_cell=None, layer_key: Optional[str] = None):
-    """Return a flat list of Rhino meshes for every robot link at zero config.
+def get_robot_link_meshes_at_state(state, robot_cell=None, layer_key: Optional[str] = None):
+    """Return a flat list of Rhino meshes for every robot link posed at ``state``.
 
-    Reads the cached :class:`RobotModelObject`'s baked GUIDs and duplicates them
-    as standalone meshes (so the caller can feed them to a DisplayConduit
-    without owning the cached doc objects). Triggers initial-bake if needed.
+    Poses the cached :class:`RobotModelObject` at ``state``'s configuration +
+    base frame, then duplicates each visual link mesh as a standalone mesh (so a
+    caller can feed them to a translucent DisplayConduit -- see
+    ``core.dynamic_preview.mesh_preview`` -- without owning the cached doc
+    objects). Triggers the initial bake if needed.
 
-    Leaves the cache layer HIDDEN on exit so the caller's ghost preview is
-    not competing with the baked robot at world origin. The next
-    :func:`begin_session` / :func:`update_state` call will show it again.
+    Leaves the cache layer HIDDEN on exit so the caller's ghost preview (the
+    conduit) is the only robot on screen; the next :func:`begin_session` /
+    :func:`update_state` call shows the baked copy again.
 
-    Replaces the legacy ``_bake_robot_meshes_at_zero`` hack which queried
-    ``rs.ObjectsByLayer`` (broken when meshes are nested under sub-layers).
+    Args:
+        state (RobotCellState): the pose to harvest -- its ``robot_configuration``
+            and ``robot_base_frame`` are pushed onto the robot before duplicating.
+        robot_cell (RobotCell | None): the cell to bake from; ``None`` -> the
+            cached dual-arm cell.
+        layer_key (str | None): the sub-layer bundle key.
+
+    Returns:
+        list: duplicated ``Rhino.Geometry.Mesh`` objects at the posed positions.
     """
     if robot_cell is None:
         robot_cell = get_or_load_robot_cell()
     bundle = _get_or_create_bundle(robot_cell, layer_key)
     rmo = bundle["robot_so"]
-    # Bug C: the cached SO holds meshes at whatever pose the LAST update_state
-    # left them. For the ghost-preview-at-zero use case, we must re-pose the
-    # robot at zero-config + worldXY base BEFORE harvesting, otherwise the
-    # ghost appears at the previous pose and the click<->ghost offset is wrong.
-    Frame = import_compas_stack()["Frame"]
-    zero_state = default_cell_state()
-    zero_state.robot_base_frame = Frame.worldXY()
+    # The cached SO holds meshes at whatever pose the LAST update_state left them,
+    # so re-pose to `state` BEFORE harvesting (else the ghost shows a stale pose).
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        rmo.update(zero_state.robot_configuration, zero_state.robot_base_frame)
+        rmo.update(state.robot_configuration, state.robot_base_frame)
     finally:
         sc.doc.Views.RedrawEnabled = was
     meshes = []
@@ -730,6 +734,26 @@ def get_robot_link_meshes_at_zero(robot_cell=None, layer_key: Optional[str] = No
     if rs.IsLayer(config.LAYER_IK_CACHE):
         rs.LayerVisible(config.LAYER_IK_CACHE, False)
     return meshes
+
+
+def get_robot_link_meshes_at_zero(robot_cell=None, layer_key: Optional[str] = None):
+    """Return a flat list of Rhino meshes for every robot link at zero config.
+
+    Thin wrapper over :func:`get_robot_link_meshes_at_state` that poses the robot
+    at the zero configuration and a worldXY base -- the fixed pose the IK
+    base-frame sampling ghost uses (it then applies the candidate base as a rigid
+    conduit transform on top). See that function for the harvest + cleanup
+    details.
+
+    Replaces the legacy ``_bake_robot_meshes_at_zero`` hack which queried
+    ``rs.ObjectsByLayer`` (broken when meshes are nested under sub-layers).
+    """
+    if robot_cell is None:
+        robot_cell = get_or_load_robot_cell()
+    Frame = import_compas_stack()["Frame"]
+    zero_state = default_cell_state()
+    zero_state.robot_base_frame = Frame.worldXY()
+    return get_robot_link_meshes_at_state(zero_state, robot_cell, layer_key)
 
 
 def end_session() -> None:

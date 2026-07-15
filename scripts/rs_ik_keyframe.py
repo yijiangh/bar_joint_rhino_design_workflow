@@ -1701,7 +1701,20 @@ def main():
             # freshly-decided base (not RetrySameBase); Enter = Continue keeps the
             # normal in-Rhino solve for the default path.
             if base_freshly_decided:
-                decision = _ask_save_base_or_continue()
+                # Keep a translucent ghost of the robot at the chosen base visible
+                # while the user decides Continue vs SaveBaseAndExit -- it used to
+                # vanish the moment the base pick finished (the pick's own
+                # mesh_preview conduit closed on return).
+                base_ghost = dynamic_preview.MeshPreviewConduit(
+                    _bake_robot_meshes_at_zero(), alpha=0.4
+                )
+                base_ghost.Enabled = True
+                base_ghost.update_xform(_np_mm_to_rhino_xform(seed_base_frame))
+                try:
+                    decision = _ask_save_base_or_continue()
+                finally:
+                    base_ghost.Enabled = False
+                    sc.doc.Views.Redraw()
                 if decision == "cancel":
                     print("RSIKKeyframe: cancelled at the base save/continue "
                           "prompt (base frame still saved on the bar).")

@@ -177,38 +177,44 @@ def get_all_bars():
 LEGACY_IK_ASSEMBLY_KEY = "ik_assembly"
 
 
-def clear_assembly_ik_keyframe(bar_oid, clear_base_frame=True):
-    """Delete a bar's computed dual-arm IK solution (M1-M3 arm configs).
+def clear_assembly_ik_keyframe(bar_oid, clear_keyframe=True, clear_base_frame=True):
+    """Delete a bar's saved dual-arm IK data (arm configs and/or base frame).
 
-    Always removes the approach / assembled / retreat per-arm configs (the IK
-    results for movements M1-M3). The robot BASE frame (the mobile base position)
-    is removed only when ``clear_base_frame`` is True; pass False to KEEP the base
-    so the bar can be re-solved at the same base (the RSIKKeyframe "reuse saved
-    base" path). M4 returns the arms to the fixed dual-arm HOME configuration, a
-    module constant (``config.HOME_CONF_*``) not stored per bar, so it is
-    untouched.
+    Two INDEPENDENT switches:
+
+    - ``clear_keyframe`` removes the M1-M3 arm IK configs (approach / assembled /
+      retreat).
+    - ``clear_base_frame`` removes the robot BASE frame (the mobile base position).
+      Keeping the base (``clear_base_frame=False``) lets the bar be re-solved at the
+      same base via RSIKKeyframe's "reuse saved base" path.
 
     The legacy ``ik_assembly`` blob bundles base + configs in a single string that
-    cannot be split, so it is ALWAYS removed (otherwise its configs would linger
-    for legacy readers like RSShowIK). When the base is kept it survives in the
-    split base-frame key, which is the authoritative one for re-solve / export.
+    cannot be split, so it is removed whenever EITHER switch is on (the split keys
+    are the authoritative ones; leaving a half-stale blob for legacy readers like
+    RSShowIK would be worse than dropping it). M4 returns the arms to the fixed
+    dual-arm HOME configuration, a module constant (``config.HOME_CONF_*``) not
+    stored per bar, so it is untouched.
 
     Args:
         bar_oid: Rhino object id of the bar curve.
-        clear_base_frame (bool): also remove the robot base frame (default True).
+        clear_keyframe (bool): remove the M1-M3 arm IK configs (default True).
+        clear_base_frame (bool): remove the robot base frame (default True).
 
     Returns:
         list[str]: the user-text keys that were present and removed (empty if the
-        bar had nothing to clear).
+        bar had nothing matching the switches to clear).
     """
-    keys = [
-        config.KEY_ASSEMBLY_IK_APPROACH,
-        config.KEY_ASSEMBLY_IK_ASSEMBLED,
-        config.KEY_ASSEMBLY_IK_RETREAT,
-        LEGACY_IK_ASSEMBLY_KEY,
-    ]
+    keys = []
+    if clear_keyframe:
+        keys += [
+            config.KEY_ASSEMBLY_IK_APPROACH,
+            config.KEY_ASSEMBLY_IK_ASSEMBLED,
+            config.KEY_ASSEMBLY_IK_RETREAT,
+        ]
     if clear_base_frame:
-        keys.insert(0, config.KEY_ASSEMBLY_BASE_FRAME)
+        keys.append(config.KEY_ASSEMBLY_BASE_FRAME)
+    if clear_keyframe or clear_base_frame:
+        keys.append(LEGACY_IK_ASSEMBLY_KEY)
     removed = []
     for key in keys:
         if rs.GetUserText(bar_oid, key):

@@ -18,14 +18,17 @@ export time and by ``rs_assign_and_show_walkable_ground`` (the interactive edito
 
 from __future__ import annotations
 
-from typing import Dict, List
+import json
+from typing import Dict, List, Optional
 
+import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
 
 from compas.datastructures import Mesh
 
 from core import config
+from core import walkable_ground as _walkable_np
 from core.rhino_frame_io import doc_unit_scale_to_mm
 
 
@@ -329,3 +332,157 @@ def auto_assign_walkable_ground_ids_all_bars(grounds: Dict[str, object] = None):
         else:
             n_noground += 1
     return len(grounds), n_assigned, n_kept, n_noground
+
+
+# ---------------------------------------------------------------------------
+# Default mobile-base placement (shared heuristic seed)
+# ---------------------------------------------------------------------------
+#
+# The base-placement heuristic itself is Rhino-free (``core.walkable_ground``).
+# These wrappers gather its Rhino-side inputs for one bar -- the assigned ground
+# soups, the bar center, and the average male-joint insertion direction -- so
+# BOTH RSAssignAndShowWalkableGround (the interactive preview) and
+# RSRebuildRobotCell (the batch populate) produce the exact same base frame.
+
+
+def _bar_center_mm(bar_oid):
+    """Return the bar centerline midpoint (mm), or ``None`` if unreadable."""
+    start = rs.CurveStartPoint(bar_oid)
+    end = rs.CurveEndPoint(bar_oid)
+    if start is None or end is None:
+        return None
+    scale = doc_unit_scale_to_mm()
+    start_mm = np.array([start.X, start.Y, start.Z], dtype=float) * scale
+    end_mm = np.array([end.X, end.Y, end.Z], dtype=float) * scale
+    return 0.5 * (start_mm + end_mm)
+
+
+def _avg_male_insertion_dir_mm(bar_id):
+    """Average world insertion direction (+Z) over the bar's male joint blocks.
+
+    Each male joint block's local +Z is its insertion axis (retreat is -Z, see
+    ``core.bar_action._retreat_tool0_target_mm``). Returns the (unnormalized)
+    average, or ``None`` if the bar has no readable male joints.
+
+    Args:
+        bar_id (str): the bar whose male joints to average.
+
+    Returns:
+        np.ndarray | None: the average insertion direction, or ``None``.
+    """
+    # Lazy import: keep this Rhino module import-light and avoid import cycles.
+    from core import env_collision
+
+    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
+        return None
+    directions = []
+    for moid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []:
+        if rs.GetUserText(moid, "parent_bar_id") != bar_id:
+            continue
+        try:
+            frame_mm = np.asarray(env_collision._block_instance_xform_mm(moid), dtype=float)
+        except Exception:
+            continue
+        z_axis = frame_mm[:3, 2]
+        norm = float(np.linalg.norm(z_axis))
+        if norm > 1e-9:
+            directions.append(z_axis / norm)
+    if not directions:
+        return None
+    avg = np.sum(directions, axis=0)
+    return avg if float(np.linalg.norm(avg)) > 1e-9 else None
+
+
+def _bar_ground_soups(bar_oid, grounds_map):
+    """Triangle soups for the bar's assigned WalkableGround(s) (may be empty)."""
+    soups = []
+    for gid in get_bar_ground_ids(bar_oid):
+        oid = grounds_map.get(gid)
+        if oid is None:
+            continue
+        try:
+            soups.append(_walkable_np._mesh_to_soup(brep_to_compas_mesh(oid)))
+        except Exception:
+            continue
+    return soups
+
+
+def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] = None) -> Optional[np.ndarray]:
+    """Compute the heuristic seed mobile-base frame (4x4 mm) for a bar, or ``None``.
+
+    Stands a standoff behind the bar and faces along the average male-joint
+    insertion direction, on the bar's assigned WalkableGround(s) -- the shared
+    ``core.walkable_ground.derive_seed_base`` heuristic. Returns ``None`` when the
+    bar has no assigned / meshable ground or its curve is unreadable.
+
+    Args:
+        bar_oid: the bar centerline curve id.
+        bar_id (str): the bar id (used to find its male joints).
+        grounds_map (dict | None): ``{ground_id: oid}``; scanned via
+            :func:`get_all_walkable_grounds` when ``None``.
+
+    Returns:
+        np.ndarray | None: the 4x4 mm base frame, or ``None``.
+    """
+    if grounds_map is None:
+        grounds_map = get_all_walkable_grounds()
+    soups = _bar_ground_soups(bar_oid, grounds_map)
+    if not soups:
+        return None
+    center_mm = _bar_center_mm(bar_oid)
+    if center_mm is None:
+        return None
+    insertion_dir = _avg_male_insertion_dir_mm(bar_id)
+    try:
+        origin, normal, heading_dir = _walkable_np.derive_seed_base(
+            soups, center_mm, heading_dir_mm=insertion_dir
+        )
+        return _walkable_np.frame_from_origin_normal_heading(
+            origin, normal, origin + heading_dir * 1000.0
+        )
+    except Exception:
+        return None
+
+
+def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
+                                       overwrite: bool = False):
+    """Write a heuristic seed base frame on bars that lack one (non-destructive).
+
+    For every bar without a saved ``KEY_ASSEMBLY_BASE_FRAME`` (unless
+    ``overwrite``), compute the default base via :func:`default_base_frame_for_bar`
+    and store it as JSON user-text, so the exported BarAction + every movement's
+    start_state (and a headless ``--base saved`` solve) start from a real base
+    instead of a placeholder. Bars that ALREADY carry a base -- a hand-picked one
+    (RSIKKeyframe / RSAssignAndShowWalkableGround) or one the IK solve wrote -- are
+    KEPT as-is: a human-chosen base always takes priority over the auto seed. This
+    mirrors the non-destructive WalkableGround auto-assign. Called by
+    RSRebuildRobotCell.
+
+    Args:
+        grounds (dict | None): ``{ground_id: oid}``; scanned when ``None``.
+        overwrite (bool): when True, recompute even bars that already have a base.
+
+    Returns:
+        tuple: ``(n_populated, n_kept, n_failed)`` -- bars newly given a base,
+        bars whose existing base was kept, and bars skipped (no meshable ground /
+        unreadable curve).
+    """
+    from core.rhino_bar_registry import get_bar_seq_map
+
+    if grounds is None:
+        grounds = get_all_walkable_grounds()
+    n_populated = n_kept = n_failed = 0
+    for bar_id, (oid, _seq) in get_bar_seq_map().items():
+        if not overwrite and rs.GetUserText(oid, config.KEY_ASSEMBLY_BASE_FRAME):
+            n_kept += 1
+            continue
+        frame_mm = default_base_frame_for_bar(oid, bar_id, grounds)
+        if frame_mm is None:
+            n_failed += 1
+            continue
+        rs.SetUserText(
+            oid, config.KEY_ASSEMBLY_BASE_FRAME,
+            json.dumps(np.asarray(frame_mm, dtype=float).tolist()),
+        )
+        n_populated += 1
+    return n_populated, n_kept, n_failed

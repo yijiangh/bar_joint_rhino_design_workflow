@@ -1,19 +1,21 @@
 #! python 3
 # venv: scaffolding_env
 # r: numpy==1.24.4
-"""RSClearIKKeyframe - Remove a bar's computed dual-arm IK solution.
+"""RSClearIKKeyframe - Erase a bar's saved dual-arm IK data.
 
-Left-click (this script): delete only the arm IK configs (approach / assembled /
-retreat, i.e. the M1-M3 solution) and KEEP the mobile base position, so the bar
-can be re-solved at the same base.
+Left-click (this script): pick ONE bar. Right-click
+(``rs_clear_ik_keyframe_all.py``): every registered bar.
 
-Right-click (``rs_clear_ik_keyframe_and_base.py``): delete the arm IK configs AND
-the mobile base position, so the bar reverts to fully "no IK".
+Either way it then asks WHAT to erase via two toggles, both defaulting to Erase:
 
-Either way M4's home config is a constant (not stored per bar) and is untouched,
-and the legacy bundled ``ik_assembly`` blob is removed (its configs would
-otherwise linger for legacy readers). No PyBullet needed -- this only edits
-user-text on the picked bar curve.
+  - ``Keyframe``     -- the M1-M3 arm IK configs (approach / assembled / retreat,
+                        plus the legacy bundled blob).
+  - ``BasePosition`` -- the mobile base frame (so the bar reverts toward "no IK").
+
+Untick a toggle to KEEP that part (e.g. keep the base to re-solve at the same
+spot, or keep the keyframe and only drop the base). M4's home config is a
+constant, not stored per bar, so it is always left untouched. No PyBullet needed
+-- this only edits user-text on the bar curves.
 """
 
 from __future__ import annotations
@@ -35,12 +37,39 @@ from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 
 
-def clear_ik(clear_base_frame: bool) -> None:
-    """Pick a bar and clear its IK solution; keep or drop the base per the flag.
+def _ask_what_to_erase(scope_label: str):
+    """Two-toggle prompt: erase the Keyframe and/or the Base position?
+
+    Both toggles default to Erase (True), matching the common "wipe it all" case.
 
     Args:
-        clear_base_frame (bool): False = keep the mobile base position (left-click);
-            True = also delete the base position (right-click).
+        scope_label (str): describes what the clear applies to, e.g.
+            ``"bar 'B6'"`` or ``"all 12 bar(s)"`` (shown in the prompt).
+
+    Returns:
+        tuple[bool, bool] | None: ``(erase_keyframe, erase_base)``, or ``None`` if
+        the user cancelled (Esc).
+    """
+    choices = rs.GetBoolean(
+        f"Choose what to erase on {scope_label}, then press Enter (Esc to cancel)",
+        (("Keyframe", "Keep", "Erase"), ("BasePosition", "Keep", "Erase")),
+        (True, True),
+    )
+    if choices is None:
+        return None
+    return bool(choices[0]), bool(choices[1])
+
+
+def clear_ik(all_bars: bool) -> None:
+    """Erase IK data on one picked bar (left-click) or every bar (right-click).
+
+    Picks the scope, then prompts a two-toggle choice of WHAT to erase
+    (``Keyframe`` / ``BasePosition``, both default Erase) and applies it to every
+    target bar.
+
+    Args:
+        all_bars (bool): False = pick one bar (left-click); True = every registered
+            bar (right-click).
 
     Returns:
         None.
@@ -48,53 +77,66 @@ def clear_ik(clear_base_frame: bool) -> None:
     config = importlib.reload(_config_module)
     registry = importlib.reload(_registry_module)
 
-    title = "RSClearIKKeyframe" + (" (+base)" if clear_base_frame else "")
+    title = "RSClearIKKeyframe" + (" (all bars)" if all_bars else "")
     repair_on_entry(float(config.BAR_RADIUS), title)
 
-    rs.UnselectAllObjects()
-    what = "IK config + base" if clear_base_frame else "IK config (keep base)"
-    bar_oid = pick_bar(f"Pick a bar to clear its {what} (Esc to cancel)")
-    if bar_oid is None:
+    # 1) Scope: one picked bar, or every registered bar.
+    if all_bars:
+        seq_map = registry.get_bar_seq_map()  # {bar_id: (oid, seq)}
+        if not seq_map:
+            rs.MessageBox("No registered bars in the document.", 0, title)
+            return
+        targets = [(bar_id, oid) for bar_id, (oid, _seq) in seq_map.items()]
+        scope_label = f"all {len(targets)} bar(s)"
+    else:
+        rs.UnselectAllObjects()
+        bar_oid = pick_bar("Pick a bar to clear its IK data (Esc to cancel)")
+        if bar_oid is None:
+            return
+        bar_id = rs.GetUserText(bar_oid, BAR_ID_KEY) or "<unregistered>"
+        targets = [(bar_id, bar_oid)]
+        scope_label = f"bar '{bar_id}'"
+
+    # 2) What to erase -- two toggles, both default Erase.
+    answer = _ask_what_to_erase(scope_label)
+    if answer is None:
+        print(f"{title}: cancelled at the erase prompt.")
         return
-    bar_id = rs.GetUserText(bar_oid, BAR_ID_KEY) or "<unregistered>"
+    clear_keyframe, clear_base = answer
+    if not clear_keyframe and not clear_base:
+        rs.MessageBox("Nothing selected to erase (both toggles set to Keep).", 0, title)
+        return
 
-    removed = registry.clear_assembly_ik_keyframe(bar_oid, clear_base_frame=clear_base_frame)
-    base_kept = (
-        not clear_base_frame
-        and bool(rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME))
-    )
-
-    if not removed:
-        print(f"{title}: bar '{bar_id}' had no arm IK config to clear.")
-        rs.MessageBox(
-            f"Bar '{bar_id}' had no arm IK config to clear."
-            + ("\n(The mobile base position, if any, was kept.)" if not clear_base_frame else ""),
-            0,
-            title,
+    # 3) Clear each target and tally what actually changed.
+    n_changed = 0
+    total_removed = 0
+    for bar_id, oid in targets:
+        removed = registry.clear_assembly_ik_keyframe(
+            oid, clear_keyframe=clear_keyframe, clear_base_frame=clear_base,
         )
-        return
+        if removed:
+            n_changed += 1
+            total_removed += len(removed)
+            print(f"{title}: bar '{bar_id}' cleared {removed}")
+        else:
+            print(f"{title}: bar '{bar_id}' had nothing matching to clear.")
 
-    base_note = (
-        "Mobile base position kept (re-solve at the same base)."
-        if base_kept
-        else ("Mobile base position kept (none was stored)." if not clear_base_frame
-              else "Mobile base position also removed.")
+    what = " + ".join(
+        label for label, on in (("Keyframe", clear_keyframe), ("Base position", clear_base))
+        if on
     )
-    print(f"{title}: cleared {len(removed)} key(s) on bar '{bar_id}': {removed}; {base_note}")
-    rs.MessageBox(
-        f"Cleared the arm IK config on bar '{bar_id}'.\n\n"
-        "Removed user-text keys:\n  " + "\n  ".join(removed) + "\n\n"
-        f"{base_note}\n"
-        "M4 home config is a constant and was left untouched. Re-run RSIKKeyframe "
-        "(or the headless base+IK sampler) to re-solve.",
-        0,
-        title,
+    summary = (
+        f"Erased {what} on {n_changed}/{len(targets)} bar(s) "
+        f"({total_removed} user-text key(s) removed).\n"
+        "M4 home config is a constant and was left untouched."
     )
+    print(f"{title}: {summary}")
+    rs.MessageBox(summary, 0, title)
 
 
 def main() -> None:
-    # Left-click: clear the arm IK config, KEEP the mobile base position.
-    clear_ik(clear_base_frame=False)
+    # Left-click: pick ONE bar, then choose what to erase.
+    clear_ik(all_bars=False)
 
 
 if __name__ == "__main__":

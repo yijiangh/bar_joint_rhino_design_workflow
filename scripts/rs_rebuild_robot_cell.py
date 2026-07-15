@@ -23,6 +23,13 @@ yet is linked to its nearest ground(s) by distance. Bars you already edited with
 RSAssignAndShowWalkableGround are left untouched, so manual picks survive a rebuild;
 run RSAssignAndShowWalkableGround to override an auto-assignment.
 
+Finally it AUTO-POPULATES a heuristic seed base pose on every bar that has no base
+yet (stand a standoff behind the bar, face the average male-joint insertion
+direction, on the bar's assigned ground -- the same heuristic as
+RSAssignAndShowWalkableGround). So the exported BarAction + every movement therein
+already start from a real base instead of a placeholder. Non-destructive: bars
+that already carry a base (e.g. an IK-solved one) are kept.
+
 Run this after you ADD / DELETE / MOVE / RESIZE bars, joints, or environment
 meshes. The collision cell is a manual snapshot -- edits made after the last
 rebuild are NOT reflected until you click this again (IK / ShowIK warn when
@@ -83,6 +90,15 @@ def main() -> None:
     # picks). Shared with RSExportAllBarActions so both do the same thing.
     n_grounds, n_assigned, n_kept, n_noground = walkable.auto_assign_walkable_ground_ids_all_bars()
 
+    # Auto-populate a heuristic seed base pose on every bar that lacks one, using
+    # the shared WalkableGround heuristic (stand behind the bar, face the male-joint
+    # insertion direction). NON-DESTRUCTIVE: any bar that already has a base frame
+    # (hand-picked in RSIKKeyframe / RSAssignAndShowWalkableGround, or IK-solved) is
+    # KEPT -- a human-chosen base always wins over the auto seed. This means the
+    # exported BarAction + every movement therein already start from a real base
+    # instead of a placeholder identity.
+    n_base_pop, n_base_kept, n_base_fail = walkable.auto_populate_base_frames_all_bars()
+
     n_bar = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "bar")
     n_joint = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "joint")
     n_env = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "environment")
@@ -96,18 +112,24 @@ def main() -> None:
             f"  WalkableGround: {n_grounds} surface(s); "
             f"{n_assigned} bar(s) auto-assigned, {n_kept} kept, {n_noground} still none"
         )
+    base_line = (
+        f"  Base pose: {n_base_pop} bar(s) auto-populated, {n_base_kept} kept, "
+        f"{n_base_fail} skipped (no ground)"
+    )
     msg = (
         f"Rebuilt the robot cell:\n"
         f"  {n_bar} bar(s)\n"
         f"  {n_joint} joint half/halves\n"
         f"  {n_env} environment obstacle(s)\n"
         f"  {n_tools} arm tool(s): {', '.join(sorted(rcell.tool_models.keys())) or '-'}\n"
-        f"{ground_line}"
+        f"{ground_line}\n"
+        f"{base_line}"
     )
     print(
         f"RSRebuildRobotCell: {n_bar} bars, {n_joint} joints, {n_env} obstacles, "
         f"{n_tools} tools; WalkableGround {n_grounds} surf / {n_assigned} assigned / "
-        f"{n_kept} kept / {n_noground} none."
+        f"{n_kept} kept / {n_noground} none; Base pose {n_base_pop} populated / "
+        f"{n_base_kept} kept / {n_base_fail} skipped."
     )
     rs.MessageBox(msg, 0, "RSRebuildRobotCell")
 

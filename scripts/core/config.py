@@ -123,7 +123,7 @@ IK_BASE_SAMPLE_MAX_ITER = 10
 # faces along the insertion direction and moving forward carries the bar into the
 # assembly. Only a starting point: the expanding-radius search samples around this
 # seed and IK validates each. Tunable.
-IK_BASE_STANDOFF_MM = 500.0  # mm
+IK_BASE_STANDOFF_MM = 1000.0  # mm
 
 # IK solver tuning (compas_fab PyBullet planner)
 # How many candidate IK solutions the PyBullet planner generates in ONE

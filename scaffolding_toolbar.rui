@@ -44,9 +44,6 @@
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000016</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000044</right_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000017" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000017</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001b" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001b</left_macro_id>
       </tool_bar_item>
@@ -61,6 +58,12 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000042" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000042</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000043</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000050" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000050</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000051" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000051</left_macro_id>
       </tool_bar_item>
     </tool_bar>
     <!-- RSSetup: calibration and utilities -->
@@ -107,9 +110,6 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001e" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001e</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000050" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000050</left_macro_id>
       </tool_bar_item>
     </tool_bar>
     <!-- RSMoCap: motion capture retrieval -->
@@ -247,18 +247,6 @@
       </button_text>
       <script>! _-ScriptEditor _R "rs_show_bar_action_plan_motion.py"</script>
     </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000017">
-      <text>
-        <locale_1033>RSIKSupportKeyframe</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Single-arm support-robot IK keyframe: pick the just-assembled bar (which is also the held bar), pick grasp + base, save ik_support</locale_1033>
-      </tooltip>
-      <button_text>
-        <locale_1033>RSIKSupportKeyframe</locale_1033>
-      </button_text>
-      <script>! _-ScriptEditor _R "rs_ik_support_keyframe.py"</script>
-    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000010">
       <text>
         <locale_1033>RSSequenceEdit</locale_1033>
@@ -319,6 +307,18 @@
       </button_text>
       <script>! _-ScriptEditor _R "rs_assign_and_show_walkable_ground.py"</script>
     </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000051">
+      <text>
+        <locale_1033>RSSelectBar</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Type a bar id like B4 (case-insensitive; a bare number works too) to select and zoom to that bar's centerline + tube preview. Comma-separate ids (B4,B7) to select several; the prompt loops so you can jump between bars. Read-only.</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSSelectBar</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_select_bar.py"</script>
+    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001d">
       <text>
         <locale_1033>RSExportBarAction</locale_1033>
@@ -348,7 +348,7 @@
         <locale_1033>RSClearIKKeyframe</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Left-click: pick a bar; remove only its arm IK config (approach/assembled/retreat for M1-M3) and KEEP the mobile base position, so it can be re-solved at the same base. Right-click: also remove the mobile base position (revert to fully "no IK"). M4 home config is a constant, left untouched.</locale_1033>
+        <locale_1033>Left-click: pick ONE bar, then choose what to erase via two toggles -- Keyframe (M1-M3 arm IK config) and BasePosition (mobile base), both default Erase. Untick one to keep it (e.g. keep the base to re-solve at the same spot). Right-click: same, but applies to EVERY bar. M4 home config is a constant, left untouched.</locale_1033>
       </tooltip>
       <button_text>
         <locale_1033>RSClearIKKeyframe</locale_1033>
@@ -357,15 +357,15 @@
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000041">
       <text>
-        <locale_1033>RSClearIKKeyframeAndBase</locale_1033>
+        <locale_1033>RSClearIKKeyframeAll</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Right-click companion of RSClearIKKeyframe: pick a bar; remove its arm IK config (M1-M3) AND the mobile base position, reverting the bar to fully "no IK".</locale_1033>
+        <locale_1033>Right-click companion of RSClearIKKeyframe: apply the clear to EVERY registered bar, then choose what to erase via the same two toggles (Keyframe / BasePosition, both default Erase).</locale_1033>
       </tooltip>
       <button_text>
-        <locale_1033>RSClearIKKeyframeAndBase</locale_1033>
+        <locale_1033>RSClearIKKeyframeAll</locale_1033>
       </button_text>
-      <script>! _-ScriptEditor _R "rs_clear_ik_keyframe_and_base.py"</script>
+      <script>! _-ScriptEditor _R "rs_clear_ik_keyframe_all.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000042">
       <text>

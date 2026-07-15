@@ -60,11 +60,9 @@ if SCRIPT_DIR not in sys.path:
 from core import base_frame_viz as _base_frame_viz_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
-from core import env_collision as _env_collision_module
 from core import ik_viz as _ik_viz_module
 from core import rhino_walkable_ground as _walkable_rhino_module
 from core import robot_cell as _robot_cell_module
-from core import walkable_ground as _walkable_np_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 from core.rhino_frame_io import doc_unit_scale_to_mm
@@ -95,16 +93,14 @@ def _reload():
     Assigns the reloaded modules to module-level globals used by the rest of the
     file. Mirrors the reload pattern in the other RS* commands.
     """
-    global base_frame_viz, config, dynamic_preview, env_collision, ik_viz
-    global walkable_rhino, walkable_np, robot_cell
+    global base_frame_viz, config, dynamic_preview, ik_viz
+    global walkable_rhino, robot_cell
     config = importlib.reload(_config_module)
-    walkable_np = importlib.reload(_walkable_np_module)
     walkable_rhino = importlib.reload(_walkable_rhino_module)
     robot_cell = importlib.reload(_robot_cell_module)
     ik_viz = importlib.reload(_ik_viz_module)
     base_frame_viz = importlib.reload(_base_frame_viz_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
-    env_collision = importlib.reload(_env_collision_module)
 
 
 _reload()
@@ -115,135 +111,29 @@ _reload()
 # ---------------------------------------------------------------------------
 
 
-def _bar_center_mm(bar_oid):
-    """Return the bar centerline midpoint (mm) -- the bar center.
+def _compute_default_base_frame_mm(bar_id, bar_oid, grounds_map):
+    """Return the default mobile-base frame (4x4 mm) for a bar, or ``None``.
 
-    The base stands behind, and faces, this point's ground projection.
-
-    Args:
-        bar_oid: the bar centerline curve id.
-
-    Returns:
-        np.ndarray | None: the midpoint in mm, or ``None`` if the curve endpoints
-        can't be read.
-    """
-    start = rs.CurveStartPoint(bar_oid)
-    end = rs.CurveEndPoint(bar_oid)
-    if start is None or end is None:
-        return None
-    scale = doc_unit_scale_to_mm()
-    start_mm = np.array([start.X, start.Y, start.Z], dtype=float) * scale
-    end_mm = np.array([end.X, end.Y, end.Z], dtype=float) * scale
-    return 0.5 * (start_mm + end_mm)
-
-
-def _avg_male_insertion_dir_mm(bar_id):
-    """Average world insertion direction over the bar's male joint blocks.
-
-    Each male joint block's local +Z is its insertion axis (the way the male is
-    pushed into its mate female -- retreat is -Z, see
-    ``core.bar_action._retreat_tool0_target_mm``). We average that +Z over every
-    male joint placed on this bar; the base faces along it. Rhino-only.
-
-    Args:
-        bar_id (str): the bar whose male joints to average.
-
-    Returns:
-        np.ndarray | None: the (unnormalized) average insertion direction, or
-        ``None`` if the bar has no readable male joints.
-    """
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
-        return None
-    directions = []
-    for moid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []:
-        if rs.GetUserText(moid, "parent_bar_id") != bar_id:
-            continue
-        try:
-            frame_mm = np.asarray(env_collision._block_instance_xform_mm(moid), dtype=float)
-        except Exception:
-            continue
-        z_axis = frame_mm[:3, 2]
-        norm = float(np.linalg.norm(z_axis))
-        if norm > 1e-9:
-            directions.append(z_axis / norm)
-    if not directions:
-        return None
-    avg = np.sum(directions, axis=0)
-    if float(np.linalg.norm(avg)) < 1e-9:
-        return None
-    return avg
-
-
-def _grounds_to_soups(ground_ids, grounds_map):
-    """Convert the bar's assigned WalkableGround breps into numpy triangle soups.
-
-    Meshes each assigned brep (world mm) and reduces it to the ``(vertices,
-    triangles)`` soup the heuristic's closest-point code consumes.
-
-    Args:
-        ground_ids (list[str]): the bar's assigned ground ids.
-        grounds_map (dict): ``{ground_id: oid}`` from
-            ``rhino_walkable_ground.get_all_walkable_grounds``.
-
-    Returns:
-        list: a ``core.walkable_ground.TriangleSoup`` per meshable assigned ground
-        (empty if none could be meshed).
-    """
-    soups = []
-    for gid in ground_ids:
-        oid = grounds_map.get(gid)
-        if oid is None:
-            continue
-        try:
-            mesh = walkable_rhino.brep_to_compas_mesh(oid)
-            soups.append(walkable_np._mesh_to_soup(mesh))
-        except Exception as exc:
-            print(f"{CMD}: WalkableGround {gid} could not be meshed ({exc}); skipping.")
-    return soups
-
-
-def _compute_default_base_frame_mm(bar_id, bar_oid, ground_ids, grounds_map):
-    """Run the default base-placement heuristic for one bar on its ground(s).
-
-    This is the exact seed the headless ``--base sample`` solver starts from:
-    ``derive_seed_base`` stands the base a standoff BEHIND the bar (opposite the
-    average male-joint insertion direction) and faces it along that insertion
-    direction, and ``frame_from_origin_normal_heading`` turns that into a base
-    frame (Z = ground up, X = heading = insertion direction).
+    Thin wrapper over the SHARED heuristic
+    ``rhino_walkable_ground.default_base_frame_for_bar`` (stand a standoff behind
+    the bar, face the average male-joint insertion direction, on the bar's assigned
+    ground). Using the shared helper keeps this preview identical to what
+    RSRebuildRobotCell writes onto the bar.
 
     Args:
         bar_id (str): the bar id (also used to find its male joints).
         bar_oid: the bar centerline curve id.
-        ground_ids (list[str]): the bar's assigned ground ids.
         grounds_map (dict): ``{ground_id: oid}``.
 
     Returns:
-        np.ndarray | None: the 4x4 mm base frame, or ``None`` if it can't be built
-        (no meshable ground, unreadable bar, or a degenerate heading).
+        np.ndarray | None: the 4x4 mm base frame, or ``None`` (no meshable ground,
+        unreadable bar, or a degenerate heading).
     """
-    soups = _grounds_to_soups(ground_ids, grounds_map)
-    if not soups:
-        print(f"{CMD}: bar '{bar_id}' has no meshable WalkableGround; cannot place a base.")
-        return None
-    center_mm = _bar_center_mm(bar_oid)
-    if center_mm is None:
-        print(f"{CMD}: bar '{bar_id}' curve endpoints unreadable; cannot place a base.")
-        return None
-    insertion_dir = _avg_male_insertion_dir_mm(bar_id)
-    if insertion_dir is None:
-        print(f"{CMD}: bar '{bar_id}' has no readable male joints; base heading falls "
-              "back to a world-horizontal direction.")
-    try:
-        origin, normal, heading_dir = walkable_np.derive_seed_base(
-            soups, center_mm, heading_dir_mm=insertion_dir
-        )
-        # Build the frame facing along the heading direction (base +X).
-        return walkable_np.frame_from_origin_normal_heading(
-            origin, normal, origin + heading_dir * 1000.0
-        )
-    except Exception as exc:
-        print(f"{CMD}: base-placement heuristic failed for bar '{bar_id}' ({exc}).")
-        return None
+    frame = walkable_rhino.default_base_frame_for_bar(bar_oid, bar_id, grounds_map)
+    if frame is None:
+        print(f"{CMD}: could not compute a default mobile base for bar '{bar_id}' "
+              "(no meshable WalkableGround, unreadable bar, or degenerate heading).")
+    return frame
 
 
 def _np_mm_to_rhino_xform(matrix_mm):
@@ -386,7 +276,7 @@ def _show_and_ask_change(bar_id, bar_oid, ground_ids, grounds_map, robot_meshes)
         if oid is not None:
             ground_oids.append(oid)
 
-    base_mm = _compute_default_base_frame_mm(bar_id, bar_oid, ground_ids, grounds_map)
+    base_mm = _compute_default_base_frame_mm(bar_id, bar_oid, grounds_map)
     highlighted = _highlight_grounds(ground_oids)
     base_frame_viz.clear_base_frames()
     baked_base = False

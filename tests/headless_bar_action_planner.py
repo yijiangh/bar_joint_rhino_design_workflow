@@ -1763,7 +1763,7 @@ def main() -> int:
              "--probe-endpoints / --diagnosis are not available with --all.",
     )
     parser.add_argument(
-        "--base", choices=("sample", "saved"), default="saved",
+        "--base", choices=("sample", "saved"), default="sample",
         help="Keyframe-solve mode: 'sample' (default) auto-seeds on the bar's "
              "associated WalkableGround and grows the sample radius until the "
              "chain solves; 'saved' strictly uses the base already stored in the "

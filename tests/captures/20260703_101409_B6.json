@@ -1,0 +1,2443 @@
+{
+  "schema_version": 2,
+  "captured_at": "2026-07-03T10:14:09",
+  "robot_cell_ref": "robot_cells/f32da409.json",
+  "initial_state": {
+    "dtype": "compas_fab.robots/RobotCellState",
+    "data": {
+      "robot_base_frame": {
+        "dtype": "compas.geometry/Frame",
+        "data": {
+          "point": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "xaxis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "yaxis": [
+            0.0,
+            1.0,
+            -0.0
+          ]
+        },
+        "guid": "a09d5399-881e-4737-be54-626721cdc894"
+      },
+      "robot_configuration": {
+        "dtype": "compas_robots/Configuration",
+        "data": {
+          "joint_values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "joint_types": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "joint_names": [
+            "left_ur_arm_shoulder_pan_joint",
+            "left_ur_arm_shoulder_lift_joint",
+            "left_ur_arm_elbow_joint",
+            "left_ur_arm_wrist_1_joint",
+            "left_ur_arm_wrist_2_joint",
+            "left_ur_arm_wrist_3_joint",
+            "right_ur_arm_shoulder_pan_joint",
+            "right_ur_arm_shoulder_lift_joint",
+            "right_ur_arm_elbow_joint",
+            "right_ur_arm_wrist_1_joint",
+            "right_ur_arm_wrist_2_joint",
+            "right_ur_arm_wrist_3_joint"
+          ]
+        },
+        "guid": "c26eec4c-9f0f-48b4-addf-5438fbf5ed65"
+      },
+      "tool_states": {
+        "AT3L": {
+          "dtype": "compas_fab.robots/ToolState",
+          "data": {
+            "frame": null,
+            "attached_to_group": "base_left_arm_manipulator",
+            "touch_links": [
+              "left_ur_arm_wrist_2_link",
+              "left_ur_arm_wrist_3_link"
+            ],
+            "attachment_frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xaxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yaxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ]
+              },
+              "guid": "81cb875c-26cc-42e0-ba6f-4bf745fca0df"
+            },
+            "configuration": null,
+            "is_hidden": false
+          },
+          "guid": "16fad6ac-c0b5-4eac-b8bc-e2809909ac3e"
+        },
+        "AT3R": {
+          "dtype": "compas_fab.robots/ToolState",
+          "data": {
+            "frame": null,
+            "attached_to_group": "base_right_arm_manipulator",
+            "touch_links": [
+              "right_ur_arm_wrist_2_link",
+              "right_ur_arm_wrist_3_link"
+            ],
+            "attachment_frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xaxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yaxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ]
+              },
+              "guid": "4a5853b8-8e14-4337-b6a6-1b591db2e653"
+            },
+            "configuration": null,
+            "is_hidden": false
+          },
+          "guid": "279d953f-4dc2-4fec-9d49-3d6d42e5e63b"
+        }
+      },
+      "rigid_body_states": {
+        "bar_B6": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": null,
+            "attached_to_link": "left_ur_arm_tool0",
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [
+              "AT3L",
+              "AT3R"
+            ],
+            "attachment_frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.02371690464318226,
+                  1.4779288903810083e-15,
+                  0.07999999999999972
+                ],
+                "xaxis": [
+                  1.8977800445563997e-15,
+                  0.2968363760731415,
+                  0.9549283563910774
+                ],
+                "yaxis": [
+                  -4.437680259837496e-15,
+                  0.9549283563910774,
+                  -0.2968363760731415
+                ]
+              },
+              "guid": "5aac5df3-c7bc-49c8-baa2-000fccbaac29"
+            },
+            "is_hidden": false
+          },
+          "guid": "d8c9b36b-ce8c-476a-8a95-71fa6573e234"
+        },
+        "bar_B3": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.5252000000000169,
+                  0.3999870000000002,
+                  1.2176290272749224
+                ],
+                "xaxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yaxis": [
+                  -0.0,
+                  6.661338147750939e-16,
+                  1.0
+                ]
+              },
+              "guid": "ec3586ba-2bc8-4041-b703-8dd0b5418eac"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "0a5a6686-8abc-464d-8383-f833414ead4e"
+        },
+        "bar_B4": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.4532000000000157,
+                  0.3999870000000003,
+                  0.9176290272749222
+                ],
+                "xaxis": [
+                  1.0,
+                  1.4210854715202004e-16,
+                  0.0
+                ],
+                "yaxis": [
+                  -3.1554436208840473e-32,
+                  2.220446049250313e-16,
+                  1.0
+                ]
+              },
+              "guid": "141d5dd0-0367-45f3-9879-f2bd8fb7519c"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "e86c3c81-3080-492f-a133-028535482e43"
+        },
+        "bar_B2": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.48920000000001634,
+                  -0.30001298474140276,
+                  1.3276290272750946
+                ],
+                "xaxis": [
+                  0.0,
+                  1.0,
+                  -5.684341886080802e-17
+                ],
+                "yaxis": [
+                  1.0,
+                  -3.231174267785264e-33,
+                  -5.684341886080802e-17
+                ]
+              },
+              "guid": "3ae65bc1-b436-4208-9986-bc6811c72641"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "745571d4-6dba-40b3-bc56-1a64a9eb09e8"
+        },
+        "bar_B1": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.48920000000001634,
+                  0.29998698474140306,
+                  1.327629027275095
+                ],
+                "xaxis": [
+                  0.0,
+                  1.0,
+                  7.958078640513122e-16
+                ],
+                "yaxis": [
+                  1.0,
+                  9.04728794979874e-32,
+                  -1.1368683772161603e-16
+                ]
+              },
+              "guid": "5ffcd431-2f4c-4756-976e-e01b98138c88"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "ddb5c81b-fe28-407d-935a-74ea7ecc10e8"
+        },
+        "joint_J2-4_female": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.4892000000000163,
+                  -0.30001298474140276,
+                  0.8876290172429814
+                ],
+                "xaxis": [
+                  -6.940226171536779e-15,
+                  -2.9434232828862143e-15,
+                  -1.0
+                ],
+                "yaxis": [
+                  3.445092848397468e-16,
+                  1.0,
+                  -2.9434232828862166e-15
+                ]
+              },
+              "guid": "817f4d5e-139d-4132-bb93-f203075eda8b"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "98320f96-b2ce-4b31-8f13-6f2b9d156c4f"
+        },
+        "joint_J1-4_female": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.48920000000001623,
+                  0.29998698474140334,
+                  0.887629017243153
+                ],
+                "xaxis": [
+                  -6.997069590397587e-15,
+                  -2.090771999974094e-15,
+                  -1.0
+                ],
+                "yaxis": [
+                  3.445092848397466e-16,
+                  1.0,
+                  -2.0907719999740965e-15
+                ]
+              },
+              "guid": "967a26db-cc91-4f5b-9519-fef2a2e7381c"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "d8e2bb42-471e-4d33-9446-bfa8acc135ff"
+        },
+        "joint_J3-6_female": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.5252000000000168,
+                  -0.14797562585197382,
+                  1.2176290272749228
+                ],
+                "xaxis": [
+                  -7.36696365347297e-15,
+                  1.0,
+                  -1.86661203600286e-15
+                ],
+                "yaxis": [
+                  0.23337295626266114,
+                  3.5343199263270662e-15,
+                  0.9723873010715567
+                ]
+              },
+              "guid": "77c8e34e-00e8-4b05-a77e-61028b9e5917"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "aa8d1b59-6770-4eee-bf4e-2bdc7a085322"
+        },
+        "joint_J4-6_female": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.4532000000000157,
+                  0.13242919393010957,
+                  0.9176290272749223
+                ],
+                "xaxis": [
+                  -5.877555785420797e-15,
+                  -1.0,
+                  4.635313546920819e-15
+                ],
+                "yaxis": [
+                  -0.2333729492535248,
+                  -3.1356575092624815e-15,
+                  -0.9723873027537494
+                ]
+              },
+              "guid": "43e03373-6432-40e8-a20b-c3b7ae646e3a"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "1d9618d1-8783-4cd5-82de-89e3a68bdf88"
+        },
+        "joint_J1-3_female": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.48920000000001634,
+                  0.2999869847414033,
+                  1.2476290373390728
+                ],
+                "xaxis": [
+                  6.997069590397587e-15,
+                  -3.68238772807672e-15,
+                  1.0
+                ],
+                "yaxis": [
+                  -9.957992501027593e-17,
+                  1.0,
+                  3.682387728076721e-15
+                ]
+              },
+              "guid": "4203781b-ab87-4b7b-b401-b4e02762b6fd"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "596f533e-3b32-43c4-84d0-768b1743d7f6"
+        },
+        "joint_J2-3_female": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.4892000000000164,
+                  -0.3000129847414028,
+                  1.2476290373519545
+                ],
+                "xaxis": [
+                  6.940226171536779e-15,
+                  -2.8297364451645997e-15,
+                  1.0
+                ],
+                "yaxis": [
+                  -9.95799250102761e-17,
+                  1.0,
+                  2.8297364451646005e-15
+                ]
+              },
+              "guid": "da6df032-f7cd-4b1d-8aab-f21484d0a32a"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "ee74ab1c-e7ad-439f-838d-760ae675434b"
+        },
+        "joint_J2-4_male": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.4532000000000158,
+                  -0.3000129947673426,
+                  0.9176290272749225
+                ],
+                "xaxis": [
+                  2.9665159057810716e-15,
+                  1.0,
+                  -3.996802901841329e-15
+                ],
+                "yaxis": [
+                  4.243280393723126e-09,
+                  3.9968028892535704e-15,
+                  1.0
+                ]
+              },
+              "guid": "0d6a9f43-f5a5-4c9a-b6ec-1c64400f31c7"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "6c656598-bf5f-42f2-96a1-a5e3a5cc37e4"
+        },
+        "joint_J1-4_male": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.4532000000000157,
+                  0.2999869747153163,
+                  0.9176290272749223
+                ],
+                "xaxis": [
+                  2.9665159057673217e-15,
+                  1.0,
+                  -3.9968029018526525e-15
+                ],
+                "yaxis": [
+                  4.246923035466921e-09,
+                  3.996802889254088e-15,
+                  1.0
+                ]
+              },
+              "guid": "23b92acc-7204-4d66-90c5-6c2ed6c28a8d"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "8b486273-978d-465e-996b-e991ea91b98c"
+        },
+        "joint_J3-6_male": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": null,
+            "attached_to_link": "right_ur_arm_tool0",
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [
+              "AT3R",
+              "bar_B6",
+              "joint_J3-6_female"
+            ],
+            "attachment_frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.0699999999998496,
+                  1.3642420526593924e-15,
+                  0.08000000000000004
+                ],
+                "xaxis": [
+                  1.0,
+                  -3.032777226388301e-17,
+                  1.1846804291866115e-17
+                ],
+                "yaxis": [
+                  3.0327772263882996e-17,
+                  1.0,
+                  8.123896571134329e-16
+                ]
+              },
+              "guid": "3aa1691e-7ad2-4ee5-9ff7-6c59d5014c50"
+            },
+            "is_hidden": false
+          },
+          "guid": "72f3f4b6-0392-4c9c-892d-eb0eb49e72b2"
+        },
+        "joint_J4-6_male": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": null,
+            "attached_to_link": "left_ur_arm_tool0",
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [
+              "AT3L",
+              "bar_B6",
+              "joint_J4-6_female"
+            ],
+            "attachment_frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  -0.07000000000015007,
+                  1.1368683772161603e-15,
+                  0.08000000000000002
+                ],
+                "xaxis": [
+                  1.0,
+                  -5.260161153979534e-17,
+                  -2.984873613425105e-18
+                ],
+                "yaxis": [
+                  5.260161153979534e-17,
+                  1.0,
+                  8.794496653919857e-16
+                ]
+              },
+              "guid": "242af8b5-10ae-4af2-b69b-455277adb3a1"
+            },
+            "is_hidden": false
+          },
+          "guid": "9f16a8c4-135f-40a9-9261-f352473a5d8c"
+        },
+        "joint_J1-3_male": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.5252000000000169,
+                  0.29998697478438296,
+                  1.2176290272749224
+                ],
+                "xaxis": [
+                  -3.1086244550344807e-15,
+                  1.0,
+                  3.3306690853356796e-15
+                ],
+                "yaxis": [
+                  -3.686585481332827e-09,
+                  3.3306690738754696e-15,
+                  -1.0
+                ]
+              },
+              "guid": "4afde8fc-256b-4d80-a03d-76d203f98093"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "37bb99a1-73b5-47c9-8619-aaa8f13d5007"
+        },
+        "joint_J2-3_male": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.5252000000000169,
+                  -0.3000129947523092,
+                  1.2176290272749224
+                ],
+                "xaxis": [
+                  -3.1086244531222456e-15,
+                  1.0,
+                  3.3306690869104613e-15
+                ],
+                "yaxis": [
+                  -4.193170255462064e-09,
+                  3.3306690738754696e-15,
+                  -1.0
+                ]
+              },
+              "guid": "d0b49c1e-0fc9-4385-9228-db880dd04e61"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "ba393178-8bec-4b61-b3b7-ccdfd6552b94"
+        },
+        "obstacle_env0": {
+          "dtype": "compas_fab.robots/RigidBodyState",
+          "data": {
+            "frame": {
+              "dtype": "compas.geometry/Frame",
+              "data": {
+                "point": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xaxis": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "yaxis": [
+                  0.0,
+                  1.0,
+                  0.0
+                ]
+              },
+              "guid": "daab2b27-c9ee-4d30-b99d-aa9258e9b303"
+            },
+            "attached_to_link": null,
+            "attached_to_tool": null,
+            "touch_links": [],
+            "touch_bodies": [],
+            "attachment_frame": null,
+            "is_hidden": false
+          },
+          "guid": "05275963-dd15-4de9-ba58-833e7448ff29"
+        }
+      }
+    },
+    "guid": "afd97d54-639b-49ec-a50a-eaac3ac1c036"
+  },
+  "ik_targets": {
+    "final": {
+      "left_tool0_world_mm": [
+        [
+          -0.14831311021061225,
+          0.18018367766853247,
+          0.9723873012547507,
+          335.42666785735156
+        ],
+        [
+          0.7720846475166294,
+          0.6355197062791379,
+          -2.5598287735253047e-09,
+          205.54072070237618
+        ],
+        [
+          -0.6179712925442223,
+          0.7507653063592645,
+          -0.23337295549935255,
+          923.9652684582112
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "right_tool0_world_mm": [
+        [
+          0.14831311021061827,
+          -0.1801836765238769,
+          0.972387301466855,
+          396.61564279602953
+        ],
+        [
+          -0.7720846475166294,
+          -0.6355197062791379,
+          -1.8117154669811e-09,
+          -112.99530151657746
+        ],
+        [
+          0.6179712925442209,
+          -0.7507653066339819,
+          -0.23337295461558535,
+          1178.919330702701
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    "approach": {
+      "left_tool0_world_mm": [
+        [
+          -0.14831311021061225,
+          0.18018367766853244,
+          0.9723873012547506,
+          320.8408583369395
+        ],
+        [
+          0.7720846475166294,
+          0.6355197062791382,
+          -2.5598288627692867e-09,
+          205.54072073516275
+        ],
+        [
+          -0.6179712925442223,
+          0.7507653063592645,
+          -0.23337295549935258,
+          927.4658627840732
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "right_tool0_world_mm": [
+        [
+          0.1483131102106183,
+          -0.18018367652387693,
+          0.9723873014668551,
+          382.0298332756175
+        ],
+        [
+          -0.7720846475166295,
+          -0.6355197062791385,
+          -1.811715610866571e-09,
+          -112.99530148379087
+        ],
+        [
+          0.617971292544221,
+          -0.7507653066339821,
+          -0.23337295461558555,
+          1182.419925028563
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    }
+  },
+  "ik_options": {
+    "check_collision": true,
+    "include_self": true,
+    "include_env": true
+  },
+  "expected": {
+    "final": {
+      "dtype": "compas_fab.robots/RobotCellState",
+      "data": {
+        "robot_base_frame": {
+          "dtype": "compas.geometry/Frame",
+          "data": {
+            "point": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "xaxis": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "yaxis": [
+              0.0,
+              1.0,
+              -0.0
+            ]
+          },
+          "guid": "132df60b-e694-4352-a6a4-70c7fd369d64"
+        },
+        "robot_configuration": {
+          "dtype": "compas_robots/Configuration",
+          "data": {
+            "joint_values": [
+              -2.2982725041261487,
+              -1.3984767515619765,
+              -2.059713679758496,
+              3.205290090832495,
+              3.831249408465896,
+              -0.08144006095005643,
+              -3.7074146078003447,
+              -1.2142107253623338,
+              1.6701500051556242,
+              -3.1607135397358332,
+              -2.705151127554487,
+              -1.082494385839356
+            ],
+            "joint_types": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "joint_names": [
+              "left_ur_arm_shoulder_pan_joint",
+              "left_ur_arm_shoulder_lift_joint",
+              "left_ur_arm_elbow_joint",
+              "left_ur_arm_wrist_1_joint",
+              "left_ur_arm_wrist_2_joint",
+              "left_ur_arm_wrist_3_joint",
+              "right_ur_arm_shoulder_pan_joint",
+              "right_ur_arm_shoulder_lift_joint",
+              "right_ur_arm_elbow_joint",
+              "right_ur_arm_wrist_1_joint",
+              "right_ur_arm_wrist_2_joint",
+              "right_ur_arm_wrist_3_joint"
+            ]
+          },
+          "guid": "96d01982-f56c-459e-850a-2bacfb56850c"
+        },
+        "tool_states": {
+          "AT3L": {
+            "dtype": "compas_fab.robots/ToolState",
+            "data": {
+              "frame": null,
+              "attached_to_group": "base_left_arm_manipulator",
+              "touch_links": [
+                "left_ur_arm_wrist_2_link",
+                "left_ur_arm_wrist_3_link"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    0.0,
+                    1.0,
+                    0.0
+                  ]
+                },
+                "guid": "81cb875c-26cc-42e0-ba6f-4bf745fca0df"
+              },
+              "configuration": null,
+              "is_hidden": false
+            },
+            "guid": "16fad6ac-c0b5-4eac-b8bc-e2809909ac3e"
+          },
+          "AT3R": {
+            "dtype": "compas_fab.robots/ToolState",
+            "data": {
+              "frame": null,
+              "attached_to_group": "base_right_arm_manipulator",
+              "touch_links": [
+                "right_ur_arm_wrist_2_link",
+                "right_ur_arm_wrist_3_link"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    0.0,
+                    1.0,
+                    0.0
+                  ]
+                },
+                "guid": "4a5853b8-8e14-4337-b6a6-1b591db2e653"
+              },
+              "configuration": null,
+              "is_hidden": false
+            },
+            "guid": "279d953f-4dc2-4fec-9d49-3d6d42e5e63b"
+          }
+        },
+        "rigid_body_states": {
+          "bar_B6": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": null,
+              "attached_to_link": "left_ur_arm_tool0",
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [
+                "AT3L",
+                "AT3R"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.02371690464318226,
+                    1.4779288903810083e-15,
+                    0.07999999999999972
+                  ],
+                  "xaxis": [
+                    1.8977800445563997e-15,
+                    0.2968363760731415,
+                    0.9549283563910774
+                  ],
+                  "yaxis": [
+                    -4.437680259837496e-15,
+                    0.9549283563910774,
+                    -0.2968363760731415
+                  ]
+                },
+                "guid": "5aac5df3-c7bc-49c8-baa2-000fccbaac29"
+              },
+              "is_hidden": false
+            },
+            "guid": "d8c9b36b-ce8c-476a-8a95-71fa6573e234"
+          },
+          "bar_B3": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000169,
+                    0.3999870000000002,
+                    1.2176290272749224
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    -0.0,
+                    6.661338147750939e-16,
+                    1.0
+                  ]
+                },
+                "guid": "ec3586ba-2bc8-4041-b703-8dd0b5418eac"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "0a5a6686-8abc-464d-8383-f833414ead4e"
+          },
+          "bar_B4": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000157,
+                    0.3999870000000003,
+                    0.9176290272749222
+                  ],
+                  "xaxis": [
+                    1.0,
+                    1.4210854715202004e-16,
+                    0.0
+                  ],
+                  "yaxis": [
+                    -3.1554436208840473e-32,
+                    2.220446049250313e-16,
+                    1.0
+                  ]
+                },
+                "guid": "141d5dd0-0367-45f3-9879-f2bd8fb7519c"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "e86c3c81-3080-492f-a133-028535482e43"
+          },
+          "bar_B2": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001634,
+                    -0.30001298474140276,
+                    1.3276290272750946
+                  ],
+                  "xaxis": [
+                    0.0,
+                    1.0,
+                    -5.684341886080802e-17
+                  ],
+                  "yaxis": [
+                    1.0,
+                    -3.231174267785264e-33,
+                    -5.684341886080802e-17
+                  ]
+                },
+                "guid": "3ae65bc1-b436-4208-9986-bc6811c72641"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "745571d4-6dba-40b3-bc56-1a64a9eb09e8"
+          },
+          "bar_B1": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001634,
+                    0.29998698474140306,
+                    1.327629027275095
+                  ],
+                  "xaxis": [
+                    0.0,
+                    1.0,
+                    7.958078640513122e-16
+                  ],
+                  "yaxis": [
+                    1.0,
+                    9.04728794979874e-32,
+                    -1.1368683772161603e-16
+                  ]
+                },
+                "guid": "5ffcd431-2f4c-4756-976e-e01b98138c88"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "ddb5c81b-fe28-407d-935a-74ea7ecc10e8"
+          },
+          "joint_J2-4_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4892000000000163,
+                    -0.30001298474140276,
+                    0.8876290172429814
+                  ],
+                  "xaxis": [
+                    -6.940226171536779e-15,
+                    -2.9434232828862143e-15,
+                    -1.0
+                  ],
+                  "yaxis": [
+                    3.445092848397468e-16,
+                    1.0,
+                    -2.9434232828862166e-15
+                  ]
+                },
+                "guid": "817f4d5e-139d-4132-bb93-f203075eda8b"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "98320f96-b2ce-4b31-8f13-6f2b9d156c4f"
+          },
+          "joint_J1-4_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001623,
+                    0.29998698474140334,
+                    0.887629017243153
+                  ],
+                  "xaxis": [
+                    -6.997069590397587e-15,
+                    -2.090771999974094e-15,
+                    -1.0
+                  ],
+                  "yaxis": [
+                    3.445092848397466e-16,
+                    1.0,
+                    -2.0907719999740965e-15
+                  ]
+                },
+                "guid": "967a26db-cc91-4f5b-9519-fef2a2e7381c"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "d8e2bb42-471e-4d33-9446-bfa8acc135ff"
+          },
+          "joint_J3-6_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000168,
+                    -0.14797562585197382,
+                    1.2176290272749228
+                  ],
+                  "xaxis": [
+                    -7.36696365347297e-15,
+                    1.0,
+                    -1.86661203600286e-15
+                  ],
+                  "yaxis": [
+                    0.23337295626266114,
+                    3.5343199263270662e-15,
+                    0.9723873010715567
+                  ]
+                },
+                "guid": "77c8e34e-00e8-4b05-a77e-61028b9e5917"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "aa8d1b59-6770-4eee-bf4e-2bdc7a085322"
+          },
+          "joint_J4-6_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000157,
+                    0.13242919393010957,
+                    0.9176290272749223
+                  ],
+                  "xaxis": [
+                    -5.877555785420797e-15,
+                    -1.0,
+                    4.635313546920819e-15
+                  ],
+                  "yaxis": [
+                    -0.2333729492535248,
+                    -3.1356575092624815e-15,
+                    -0.9723873027537494
+                  ]
+                },
+                "guid": "43e03373-6432-40e8-a20b-c3b7ae646e3a"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "1d9618d1-8783-4cd5-82de-89e3a68bdf88"
+          },
+          "joint_J1-3_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001634,
+                    0.2999869847414033,
+                    1.2476290373390728
+                  ],
+                  "xaxis": [
+                    6.997069590397587e-15,
+                    -3.68238772807672e-15,
+                    1.0
+                  ],
+                  "yaxis": [
+                    -9.957992501027593e-17,
+                    1.0,
+                    3.682387728076721e-15
+                  ]
+                },
+                "guid": "4203781b-ab87-4b7b-b401-b4e02762b6fd"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "596f533e-3b32-43c4-84d0-768b1743d7f6"
+          },
+          "joint_J2-3_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4892000000000164,
+                    -0.3000129847414028,
+                    1.2476290373519545
+                  ],
+                  "xaxis": [
+                    6.940226171536779e-15,
+                    -2.8297364451645997e-15,
+                    1.0
+                  ],
+                  "yaxis": [
+                    -9.95799250102761e-17,
+                    1.0,
+                    2.8297364451646005e-15
+                  ]
+                },
+                "guid": "da6df032-f7cd-4b1d-8aab-f21484d0a32a"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "ee74ab1c-e7ad-439f-838d-760ae675434b"
+          },
+          "joint_J2-4_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000158,
+                    -0.3000129947673426,
+                    0.9176290272749225
+                  ],
+                  "xaxis": [
+                    2.9665159057810716e-15,
+                    1.0,
+                    -3.996802901841329e-15
+                  ],
+                  "yaxis": [
+                    4.243280393723126e-09,
+                    3.9968028892535704e-15,
+                    1.0
+                  ]
+                },
+                "guid": "0d6a9f43-f5a5-4c9a-b6ec-1c64400f31c7"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "6c656598-bf5f-42f2-96a1-a5e3a5cc37e4"
+          },
+          "joint_J1-4_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000157,
+                    0.2999869747153163,
+                    0.9176290272749223
+                  ],
+                  "xaxis": [
+                    2.9665159057673217e-15,
+                    1.0,
+                    -3.9968029018526525e-15
+                  ],
+                  "yaxis": [
+                    4.246923035466921e-09,
+                    3.996802889254088e-15,
+                    1.0
+                  ]
+                },
+                "guid": "23b92acc-7204-4d66-90c5-6c2ed6c28a8d"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "8b486273-978d-465e-996b-e991ea91b98c"
+          },
+          "joint_J3-6_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": null,
+              "attached_to_link": "right_ur_arm_tool0",
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [
+                "AT3R",
+                "bar_B6",
+                "joint_J3-6_female"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0699999999998496,
+                    1.3642420526593924e-15,
+                    0.08000000000000004
+                  ],
+                  "xaxis": [
+                    1.0,
+                    -3.032777226388301e-17,
+                    1.1846804291866115e-17
+                  ],
+                  "yaxis": [
+                    3.0327772263882996e-17,
+                    1.0,
+                    8.123896571134329e-16
+                  ]
+                },
+                "guid": "3aa1691e-7ad2-4ee5-9ff7-6c59d5014c50"
+              },
+              "is_hidden": false
+            },
+            "guid": "72f3f4b6-0392-4c9c-892d-eb0eb49e72b2"
+          },
+          "joint_J4-6_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": null,
+              "attached_to_link": "left_ur_arm_tool0",
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [
+                "AT3L",
+                "bar_B6",
+                "joint_J4-6_female"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    -0.07000000000015007,
+                    1.1368683772161603e-15,
+                    0.08000000000000002
+                  ],
+                  "xaxis": [
+                    1.0,
+                    -5.260161153979534e-17,
+                    -2.984873613425105e-18
+                  ],
+                  "yaxis": [
+                    5.260161153979534e-17,
+                    1.0,
+                    8.794496653919857e-16
+                  ]
+                },
+                "guid": "242af8b5-10ae-4af2-b69b-455277adb3a1"
+              },
+              "is_hidden": false
+            },
+            "guid": "9f16a8c4-135f-40a9-9261-f352473a5d8c"
+          },
+          "joint_J1-3_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000169,
+                    0.29998697478438296,
+                    1.2176290272749224
+                  ],
+                  "xaxis": [
+                    -3.1086244550344807e-15,
+                    1.0,
+                    3.3306690853356796e-15
+                  ],
+                  "yaxis": [
+                    -3.686585481332827e-09,
+                    3.3306690738754696e-15,
+                    -1.0
+                  ]
+                },
+                "guid": "4afde8fc-256b-4d80-a03d-76d203f98093"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "37bb99a1-73b5-47c9-8619-aaa8f13d5007"
+          },
+          "joint_J2-3_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000169,
+                    -0.3000129947523092,
+                    1.2176290272749224
+                  ],
+                  "xaxis": [
+                    -3.1086244531222456e-15,
+                    1.0,
+                    3.3306690869104613e-15
+                  ],
+                  "yaxis": [
+                    -4.193170255462064e-09,
+                    3.3306690738754696e-15,
+                    -1.0
+                  ]
+                },
+                "guid": "d0b49c1e-0fc9-4385-9228-db880dd04e61"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "ba393178-8bec-4b61-b3b7-ccdfd6552b94"
+          },
+          "obstacle_env0": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    0.0,
+                    1.0,
+                    0.0
+                  ]
+                },
+                "guid": "daab2b27-c9ee-4d30-b99d-aa9258e9b303"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "05275963-dd15-4de9-ba58-833e7448ff29"
+          }
+        }
+      },
+      "guid": "ae0cbdbd-83fb-4294-9166-f88ac83cbaaa"
+    },
+    "approach": {
+      "dtype": "compas_fab.robots/RobotCellState",
+      "data": {
+        "robot_base_frame": {
+          "dtype": "compas.geometry/Frame",
+          "data": {
+            "point": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "xaxis": [
+              1.0,
+              0.0,
+              0.0
+            ],
+            "yaxis": [
+              0.0,
+              1.0,
+              -0.0
+            ]
+          },
+          "guid": "3cf563fd-f692-43ad-af8d-557cfd1a700c"
+        },
+        "robot_configuration": {
+          "dtype": "compas_robots/Configuration",
+          "data": {
+            "joint_values": [
+              -2.340979190566567,
+              -1.391741900200932,
+              -2.059429355409314,
+              3.1846988137745598,
+              3.7899405547558582,
+              -0.09914215583550931,
+              -3.6839483466156944,
+              -1.2273152134805319,
+              1.6809481076731339,
+              -3.1380232125866754,
+              -2.726286318913198,
+              -1.0599963919214226
+            ],
+            "joint_types": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "joint_names": [
+              "left_ur_arm_shoulder_pan_joint",
+              "left_ur_arm_shoulder_lift_joint",
+              "left_ur_arm_elbow_joint",
+              "left_ur_arm_wrist_1_joint",
+              "left_ur_arm_wrist_2_joint",
+              "left_ur_arm_wrist_3_joint",
+              "right_ur_arm_shoulder_pan_joint",
+              "right_ur_arm_shoulder_lift_joint",
+              "right_ur_arm_elbow_joint",
+              "right_ur_arm_wrist_1_joint",
+              "right_ur_arm_wrist_2_joint",
+              "right_ur_arm_wrist_3_joint"
+            ]
+          },
+          "guid": "e8c5401b-1903-48f5-94a2-9610e6c54152"
+        },
+        "tool_states": {
+          "AT3L": {
+            "dtype": "compas_fab.robots/ToolState",
+            "data": {
+              "frame": null,
+              "attached_to_group": "base_left_arm_manipulator",
+              "touch_links": [
+                "left_ur_arm_wrist_2_link",
+                "left_ur_arm_wrist_3_link"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    0.0,
+                    1.0,
+                    0.0
+                  ]
+                },
+                "guid": "81cb875c-26cc-42e0-ba6f-4bf745fca0df"
+              },
+              "configuration": null,
+              "is_hidden": false
+            },
+            "guid": "16fad6ac-c0b5-4eac-b8bc-e2809909ac3e"
+          },
+          "AT3R": {
+            "dtype": "compas_fab.robots/ToolState",
+            "data": {
+              "frame": null,
+              "attached_to_group": "base_right_arm_manipulator",
+              "touch_links": [
+                "right_ur_arm_wrist_2_link",
+                "right_ur_arm_wrist_3_link"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    0.0,
+                    1.0,
+                    0.0
+                  ]
+                },
+                "guid": "4a5853b8-8e14-4337-b6a6-1b591db2e653"
+              },
+              "configuration": null,
+              "is_hidden": false
+            },
+            "guid": "279d953f-4dc2-4fec-9d49-3d6d42e5e63b"
+          }
+        },
+        "rigid_body_states": {
+          "bar_B6": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": null,
+              "attached_to_link": "left_ur_arm_tool0",
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [
+                "AT3L",
+                "AT3R"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.02371690464318226,
+                    1.4779288903810083e-15,
+                    0.07999999999999972
+                  ],
+                  "xaxis": [
+                    1.8977800445563997e-15,
+                    0.2968363760731415,
+                    0.9549283563910774
+                  ],
+                  "yaxis": [
+                    -4.437680259837496e-15,
+                    0.9549283563910774,
+                    -0.2968363760731415
+                  ]
+                },
+                "guid": "ce6389ea-a666-4fdf-8dc1-564a8dcc2a43"
+              },
+              "is_hidden": false
+            },
+            "guid": "d8c9b36b-ce8c-476a-8a95-71fa6573e234"
+          },
+          "bar_B3": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000169,
+                    0.3999870000000002,
+                    1.2176290272749224
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    -0.0,
+                    6.661338147750939e-16,
+                    1.0
+                  ]
+                },
+                "guid": "ec3586ba-2bc8-4041-b703-8dd0b5418eac"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "0a5a6686-8abc-464d-8383-f833414ead4e"
+          },
+          "bar_B4": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000157,
+                    0.3999870000000003,
+                    0.9176290272749222
+                  ],
+                  "xaxis": [
+                    1.0,
+                    1.4210854715202004e-16,
+                    0.0
+                  ],
+                  "yaxis": [
+                    -3.1554436208840473e-32,
+                    2.220446049250313e-16,
+                    1.0
+                  ]
+                },
+                "guid": "141d5dd0-0367-45f3-9879-f2bd8fb7519c"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "e86c3c81-3080-492f-a133-028535482e43"
+          },
+          "bar_B2": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001634,
+                    -0.30001298474140276,
+                    1.3276290272750946
+                  ],
+                  "xaxis": [
+                    0.0,
+                    1.0,
+                    -5.684341886080802e-17
+                  ],
+                  "yaxis": [
+                    1.0,
+                    -3.231174267785264e-33,
+                    -5.684341886080802e-17
+                  ]
+                },
+                "guid": "3ae65bc1-b436-4208-9986-bc6811c72641"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "745571d4-6dba-40b3-bc56-1a64a9eb09e8"
+          },
+          "bar_B1": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001634,
+                    0.29998698474140306,
+                    1.327629027275095
+                  ],
+                  "xaxis": [
+                    0.0,
+                    1.0,
+                    7.958078640513122e-16
+                  ],
+                  "yaxis": [
+                    1.0,
+                    9.04728794979874e-32,
+                    -1.1368683772161603e-16
+                  ]
+                },
+                "guid": "5ffcd431-2f4c-4756-976e-e01b98138c88"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "ddb5c81b-fe28-407d-935a-74ea7ecc10e8"
+          },
+          "joint_J2-4_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4892000000000163,
+                    -0.30001298474140276,
+                    0.8876290172429814
+                  ],
+                  "xaxis": [
+                    -6.940226171536779e-15,
+                    -2.9434232828862143e-15,
+                    -1.0
+                  ],
+                  "yaxis": [
+                    3.445092848397468e-16,
+                    1.0,
+                    -2.9434232828862166e-15
+                  ]
+                },
+                "guid": "817f4d5e-139d-4132-bb93-f203075eda8b"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "98320f96-b2ce-4b31-8f13-6f2b9d156c4f"
+          },
+          "joint_J1-4_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001623,
+                    0.29998698474140334,
+                    0.887629017243153
+                  ],
+                  "xaxis": [
+                    -6.997069590397587e-15,
+                    -2.090771999974094e-15,
+                    -1.0
+                  ],
+                  "yaxis": [
+                    3.445092848397466e-16,
+                    1.0,
+                    -2.0907719999740965e-15
+                  ]
+                },
+                "guid": "967a26db-cc91-4f5b-9519-fef2a2e7381c"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "d8e2bb42-471e-4d33-9446-bfa8acc135ff"
+          },
+          "joint_J3-6_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000168,
+                    -0.14797562585197382,
+                    1.2176290272749228
+                  ],
+                  "xaxis": [
+                    -7.36696365347297e-15,
+                    1.0,
+                    -1.86661203600286e-15
+                  ],
+                  "yaxis": [
+                    0.23337295626266114,
+                    3.5343199263270662e-15,
+                    0.9723873010715567
+                  ]
+                },
+                "guid": "77c8e34e-00e8-4b05-a77e-61028b9e5917"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "aa8d1b59-6770-4eee-bf4e-2bdc7a085322"
+          },
+          "joint_J4-6_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000157,
+                    0.13242919393010957,
+                    0.9176290272749223
+                  ],
+                  "xaxis": [
+                    -5.877555785420797e-15,
+                    -1.0,
+                    4.635313546920819e-15
+                  ],
+                  "yaxis": [
+                    -0.2333729492535248,
+                    -3.1356575092624815e-15,
+                    -0.9723873027537494
+                  ]
+                },
+                "guid": "43e03373-6432-40e8-a20b-c3b7ae646e3a"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "1d9618d1-8783-4cd5-82de-89e3a68bdf88"
+          },
+          "joint_J1-3_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.48920000000001634,
+                    0.2999869847414033,
+                    1.2476290373390728
+                  ],
+                  "xaxis": [
+                    6.997069590397587e-15,
+                    -3.68238772807672e-15,
+                    1.0
+                  ],
+                  "yaxis": [
+                    -9.957992501027593e-17,
+                    1.0,
+                    3.682387728076721e-15
+                  ]
+                },
+                "guid": "4203781b-ab87-4b7b-b401-b4e02762b6fd"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "596f533e-3b32-43c4-84d0-768b1743d7f6"
+          },
+          "joint_J2-3_female": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4892000000000164,
+                    -0.3000129847414028,
+                    1.2476290373519545
+                  ],
+                  "xaxis": [
+                    6.940226171536779e-15,
+                    -2.8297364451645997e-15,
+                    1.0
+                  ],
+                  "yaxis": [
+                    -9.95799250102761e-17,
+                    1.0,
+                    2.8297364451646005e-15
+                  ]
+                },
+                "guid": "da6df032-f7cd-4b1d-8aab-f21484d0a32a"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "ee74ab1c-e7ad-439f-838d-760ae675434b"
+          },
+          "joint_J2-4_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000158,
+                    -0.3000129947673426,
+                    0.9176290272749225
+                  ],
+                  "xaxis": [
+                    2.9665159057810716e-15,
+                    1.0,
+                    -3.996802901841329e-15
+                  ],
+                  "yaxis": [
+                    4.243280393723126e-09,
+                    3.9968028892535704e-15,
+                    1.0
+                  ]
+                },
+                "guid": "0d6a9f43-f5a5-4c9a-b6ec-1c64400f31c7"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "6c656598-bf5f-42f2-96a1-a5e3a5cc37e4"
+          },
+          "joint_J1-4_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.4532000000000157,
+                    0.2999869747153163,
+                    0.9176290272749223
+                  ],
+                  "xaxis": [
+                    2.9665159057673217e-15,
+                    1.0,
+                    -3.9968029018526525e-15
+                  ],
+                  "yaxis": [
+                    4.246923035466921e-09,
+                    3.996802889254088e-15,
+                    1.0
+                  ]
+                },
+                "guid": "23b92acc-7204-4d66-90c5-6c2ed6c28a8d"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "8b486273-978d-465e-996b-e991ea91b98c"
+          },
+          "joint_J3-6_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": null,
+              "attached_to_link": "right_ur_arm_tool0",
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [
+                "AT3R",
+                "bar_B6"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0699999999998496,
+                    1.3642420526593924e-15,
+                    0.08000000000000004
+                  ],
+                  "xaxis": [
+                    1.0,
+                    -3.032777226388301e-17,
+                    1.1846804291866115e-17
+                  ],
+                  "yaxis": [
+                    3.0327772263882996e-17,
+                    1.0,
+                    8.123896571134329e-16
+                  ]
+                },
+                "guid": "8d8ff726-fdb0-4f56-b165-f8482e028235"
+              },
+              "is_hidden": false
+            },
+            "guid": "72f3f4b6-0392-4c9c-892d-eb0eb49e72b2"
+          },
+          "joint_J4-6_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": null,
+              "attached_to_link": "left_ur_arm_tool0",
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [
+                "AT3L",
+                "bar_B6"
+              ],
+              "attachment_frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    -0.07000000000015007,
+                    1.1368683772161603e-15,
+                    0.08000000000000002
+                  ],
+                  "xaxis": [
+                    1.0,
+                    -5.260161153979534e-17,
+                    -2.984873613425105e-18
+                  ],
+                  "yaxis": [
+                    5.260161153979534e-17,
+                    1.0,
+                    8.794496653919857e-16
+                  ]
+                },
+                "guid": "8a350583-5303-40a0-ac7a-b6b5aeff3eaf"
+              },
+              "is_hidden": false
+            },
+            "guid": "9f16a8c4-135f-40a9-9261-f352473a5d8c"
+          },
+          "joint_J1-3_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000169,
+                    0.29998697478438296,
+                    1.2176290272749224
+                  ],
+                  "xaxis": [
+                    -3.1086244550344807e-15,
+                    1.0,
+                    3.3306690853356796e-15
+                  ],
+                  "yaxis": [
+                    -3.686585481332827e-09,
+                    3.3306690738754696e-15,
+                    -1.0
+                  ]
+                },
+                "guid": "4afde8fc-256b-4d80-a03d-76d203f98093"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "37bb99a1-73b5-47c9-8619-aaa8f13d5007"
+          },
+          "joint_J2-3_male": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.5252000000000169,
+                    -0.3000129947523092,
+                    1.2176290272749224
+                  ],
+                  "xaxis": [
+                    -3.1086244531222456e-15,
+                    1.0,
+                    3.3306690869104613e-15
+                  ],
+                  "yaxis": [
+                    -4.193170255462064e-09,
+                    3.3306690738754696e-15,
+                    -1.0
+                  ]
+                },
+                "guid": "d0b49c1e-0fc9-4385-9228-db880dd04e61"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "ba393178-8bec-4b61-b3b7-ccdfd6552b94"
+          },
+          "obstacle_env0": {
+            "dtype": "compas_fab.robots/RigidBodyState",
+            "data": {
+              "frame": {
+                "dtype": "compas.geometry/Frame",
+                "data": {
+                  "point": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xaxis": [
+                    1.0,
+                    0.0,
+                    0.0
+                  ],
+                  "yaxis": [
+                    0.0,
+                    1.0,
+                    0.0
+                  ]
+                },
+                "guid": "daab2b27-c9ee-4d30-b99d-aa9258e9b303"
+              },
+              "attached_to_link": null,
+              "attached_to_tool": null,
+              "touch_links": [],
+              "touch_bodies": [],
+              "attachment_frame": null,
+              "is_hidden": false
+            },
+            "guid": "05275963-dd15-4de9-ba58-833e7448ff29"
+          }
+        }
+      },
+      "guid": "d9a90ee3-6818-4849-a848-d452704a85f4"
+    }
+  },
+  "source": {
+    "target_bar_id": "B6",
+    "left_block_name": "T20_Male",
+    "right_block_name": "T20_Male",
+    "left_arm_side": "left",
+    "right_arm_side": "right",
+    "left_ocf_world_mm": [
+      [
+        -0.14831311021061225,
+        0.1801836776685333,
+        0.9723873012547506,
+        423.59956967249695
+      ],
+      [
+        0.7720846475166294,
+        0.6355197062791379,
+        -2.5598293154019976e-09,
+        151.49479517131064
+      ],
+      [
+        -0.6179712925442223,
+        0.7507653063592643,
+        -0.2333729554993532,
+        948.5534224964522
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "right_ocf_world_mm": [
+      [
+        0.14831311021061827,
+        -0.18018367652387607,
+        0.9723873014668551,
+        484.78854462809875
+      ],
+      [
+        -0.7720846475166294,
+        -0.6355197062791379,
+        -1.8117149251044072e-09,
+        -167.04122698756356
+      ],
+      [
+        0.6179712925442209,
+        -0.7507653066339821,
+        -0.23337295461558472,
+        1203.507484811456
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "lm_distance_mm": 15.0,
+    "doc_unit_scale_to_mm": 1.0
+  }
+}

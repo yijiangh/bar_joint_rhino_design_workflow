@@ -2,10 +2,11 @@
 
 This is the one place that implements "load a movement's ``start_state``, solve
 IK for its ``target_ee_frames``", chained across M1 -> M2 -> M3. Both the Rhino
-front-end (``rs_ik_keyframe``) and the headless test
-(``tests/headless_ik_keyframe.py``) call ``solve_keyframe_chain`` so the solve is
-defined exactly once. It lives in its own module (not ``rs_ik_keyframe.py``)
-because that script imports Rhino at the top, which a plain-python test can't.
+front-end (``rs_ik_keyframe``) and the headless keyframe solver
+(``tests/headless_bar_action_planner.py --solve-keyframes``) call
+``solve_keyframe_chain`` so the solve is defined exactly once. It lives in its own
+module (not ``rs_ik_keyframe.py``) because that script imports Rhino at the top,
+which a plain-python test can't.
 
 The movements come from ``core.bar_action.build_assembly_movements`` (Rhino) or
 from a loaded ``BarAssemblyAction`` JSON (headless). Either way each movement
@@ -50,6 +51,7 @@ def solve_keyframe_chain(
     *,
     check_collision: bool = True,
     verbose_pairs: bool = False,
+    after_solve=None,
 ):
     """Solve IK for a sequence of movements, chaining configs forward.
 
@@ -77,6 +79,12 @@ def solve_keyframe_chain(
         base_frame_mm (np.ndarray): 4x4 mm robot base frame shared by all solves.
         check_collision (bool): pass-through to ``solve_dual_arm_ik``.
         verbose_pairs (bool): pass-through; prints the collision-pair summary.
+        after_solve (callable | None): optional debug hook called as
+            ``after_solve(role, solved_state)`` right after each movement solves
+            (before the next one starts). Used by the headless test to show the
+            just-solved keyframe in the GUI, print its joint-vs-limit plot, and
+            pause. It runs between M1 and M2, so it is the place to inspect *why*
+            a later movement fails from an earlier one's pose.
 
     Returns:
         dict | None: ``{role: solved_state}`` once every movement solves, or
@@ -124,4 +132,65 @@ def solve_keyframe_chain(
 
         results[role] = solved
         prev_config = solved.robot_configuration
+        if after_solve is not None:
+            after_solve(role, solved)
     return results
+
+
+def find_first_unsolvable_movement(
+    planner,
+    ordered_movements,
+    base_frame_mm,
+    *,
+    check_collision: bool = True,
+):
+    """Walk the keyframe chain and return the first movement that fails to solve.
+
+    Mirrors :func:`solve_keyframe_chain`'s warm-chaining (each movement seeded from
+    the previous movement's solved config) but, instead of returning the whole
+    solution, stops at the FIRST movement whose IK yields no solution and returns
+    it. A caller can then enumerate that movement's candidate IK pairs to diagnose
+    why the chain failed at this base.
+
+    Args:
+        planner: the dual-arm planner.
+        ordered_movements (list): ``[(role, movement), ...]`` in solve order, e.g.
+            ``[("M1", m1), ("M2", m2), ("M3", m3)]``.
+        base_frame_mm (np.ndarray): 4x4 mm robot base frame shared by all solves.
+        check_collision (bool): pass-through to ``robot_cell.solve_dual_arm_ik``.
+
+    Returns:
+        tuple | None: ``(role, movement)`` of the first movement that fails to
+        solve at ``base_frame_mm``, or ``None`` if every movement solves (nothing
+        to diagnose).
+    """
+    prev_config = None
+    for role, movement in ordered_movements:
+        state = movement.start_state.copy()
+        # Same warm/cold signal solve_keyframe_chain uses (1 == warm-started).
+        if prev_config is not None:
+            state.robot_configuration = prev_config.copy()
+            max_restart_iter = 1
+        else:
+            max_restart_iter = None
+
+        targets = movement.target_ee_frames or {}
+        left_frame = targets.get("left")
+        right_frame = targets.get("right")
+        if left_frame is None or right_frame is None:
+            # No EE goal -> this movement is where the chain can't even be posed.
+            return role, movement
+
+        solved = robot_cell.solve_dual_arm_ik(
+            planner,
+            state,
+            base_frame_mm,
+            frame_to_mm4(left_frame),
+            frame_to_mm4(right_frame),
+            check_collision=check_collision,
+            max_restart_iter=max_restart_iter,
+        )
+        if solved is None:
+            return role, movement
+        prev_config = solved.robot_configuration
+    return None

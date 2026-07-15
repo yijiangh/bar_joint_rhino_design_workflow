@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -150,21 +151,28 @@ def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_
 def _apply_groups_to_config(state, groups: dict) -> None:
     """Overwrite per-group joint values onto ``state.robot_configuration`` in place.
 
-    A no-op when ``groups`` is falsy. This is what lets the M2/M3 start states be
+    When ``groups`` is falsy the start config is set to ``None`` (not left at the
+    template's zero configuration). This is what lets the M2/M3 start states be
     built *before* IK has been solved: ``rs_ik_keyframe`` builds the movements with
-    ``approach_groups``/``assembled_groups`` left as ``None`` and the IK solver fills
-    in the configuration later. The export path (``build_bar_assembly_action``) passes
-    the saved keyframe groups, so the start config is stamped as before.
+    ``approach_groups``/``assembled_groups`` left as ``None``, and a ``None`` start
+    config is the honest "unsolved" marker (matching M0/M1/M4, which also set
+    ``None``) -- the IK / headless solver fills it in later, and any consumer can
+    tell a solved bar from an unsolved one by whether this config is ``None``.
+    Leaving the template's all-zero config here would masquerade as a real IK
+    solution in the exported JSON. The export path (``build_bar_assembly_action``)
+    passes the saved keyframe groups, so a solved bar's start config is stamped
+    as before.
 
     Args:
         state (RobotCellState): start_state whose configuration is patched in place.
         groups (dict | None): ``{side: {"joint_names": [...], "joint_values": [...]}}``
-            or ``None``/empty to leave the template's seed configuration untouched.
+            or ``None``/empty to null the start config (unsolved).
 
     Returns:
         None: mutates ``state``.
     """
     if not groups:
+        state.robot_configuration = None
         return
     for _side, cfg in groups.items():
         names = cfg["joint_names"]
@@ -182,6 +190,32 @@ def _build_home_configuration(template_state, rcell, left_values, right_values, 
         cfg[name] = float(val)
     for name, val in zip(right_names, right_values):
         cfg[name] = float(val)
+    return cfg
+
+
+def _configuration_from_groups(template_state, groups: dict):
+    """Return a Configuration built from per-arm keyframe groups, or None.
+
+    Like :func:`_apply_groups_to_config` but returns a fresh ``Configuration``
+    (does not mutate a movement's start_state), so the same keyframe config can be
+    stored as a movement's ``target_configuration`` and as the next movement's
+    start config. Returns ``None`` when ``groups`` is falsy (an unsolved bar), so
+    those fields stay ``None`` for the solver to fill later.
+
+    Args:
+        template_state (RobotCellState): a state whose ``robot_configuration`` is
+            copied as the base (its arm joints are then overwritten).
+        groups (dict | None): ``{side: {"joint_names": [...], "joint_values": [...]}}``.
+
+    Returns:
+        Configuration | None: the config with the arm joints set, or ``None``.
+    """
+    if not groups:
+        return None
+    cfg = template_state.robot_configuration.copy()
+    for _side, grp in groups.items():
+        for name, value in zip(grp["joint_names"], grp["joint_values"]):
+            cfg[name] = float(value)
     return cfg
 
 
@@ -290,8 +324,10 @@ def _read_bar_keyframe(bar_oid):
 
     Returns:
         dict | None: ``{"base_frame_world_mm": np.ndarray(4, 4), "approach":
-        {...}, "assembled": {...}}``, or ``None`` if any of the three
-        ``KEY_ASSEMBLY_*`` records are missing/malformed.
+        {...}, "assembled": {...}, "retreat": {...} | None}``, or ``None`` if any of
+        the three required ``KEY_ASSEMBLY_*`` records (base/approach/assembled) are
+        missing/malformed. ``retreat`` (``KEY_ASSEMBLY_IK_RETREAT``) is optional --
+        it is ``None`` for bars solved before retreat was saved.
     """
     import rhinoscriptsyntax as rs
     from core import config
@@ -299,6 +335,7 @@ def _read_bar_keyframe(bar_oid):
     base_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME)
     approach_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH)
     assembled_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED)
+    retreat_raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_RETREAT)
     if not base_raw or not approach_raw or not assembled_raw:
         return None
     try:
@@ -307,9 +344,141 @@ def _read_bar_keyframe(bar_oid):
             return None
         approach = json.loads(approach_raw)
         assembled = json.loads(assembled_raw)
+        retreat = json.loads(retreat_raw) if retreat_raw else None
     except (json.JSONDecodeError, ValueError):
         return None
-    return {"base_frame_world_mm": base_mm, "approach": approach, "assembled": assembled}
+    return {
+        "base_frame_world_mm": base_mm,
+        "approach": approach,
+        "assembled": assembled,
+        "retreat": retreat,
+    }
+
+
+def has_ik_keyframe(bar_oid) -> bool:
+    """True if the bar carries a complete, well-formed IK keyframe in user-text.
+
+    This is the single source of truth for "is this bar IK-solved": it is exactly
+    the check ``build_bar_assembly_action`` uses to decide between the real-IK
+    build and the placeholder build. Export summaries should call this (rather
+    than re-reading the user-text keys themselves) so the reported "with IK / no
+    IK" split can never drift from what the export actually did.
+
+    Args:
+        bar_oid: Rhino object id of the bar curve.
+
+    Returns:
+        bool: True when ``_read_bar_keyframe`` returns a usable keyframe (all three
+        ``KEY_ASSEMBLY_*`` records present and parseable), else False.
+    """
+    return _read_bar_keyframe(bar_oid) is not None
+
+
+_MOVEMENT_ROLE_RE = re.compile(r"_M([0-9])_")
+
+
+def _movement_by_role(action, role: str):
+    """Return the Movement in ``action`` whose id carries the ``_M<n>_`` tag.
+
+    Args:
+        action (BarAssemblyAction): the action to search.
+        role (str): the wanted role, ``"M0"``..``"M4"``.
+
+    Returns:
+        Movement | None: the matching movement, or None.
+    """
+    for mv in action.movements:
+        m = _MOVEMENT_ROLE_RE.search(getattr(mv, "movement_id", "") or "")
+        if m and f"M{m.group(1)}" == role:
+            return mv
+    return None
+
+
+def _frame_to_mm4(frame) -> np.ndarray:
+    """Convert a compas ``Frame`` (meters) to a 4x4 numpy transform with mm origin.
+
+    Inverse of :func:`_mm4_to_frame`. Kept local so this module needs no import of
+    ``core.ik_keyframe`` (which pulls the robot stack) just to serialize a base.
+    """
+    matrix = np.eye(4, dtype=float)
+    matrix[:3, 0] = np.asarray(frame.xaxis, dtype=float)
+    matrix[:3, 1] = np.asarray(frame.yaxis, dtype=float)
+    matrix[:3, 2] = np.asarray(frame.zaxis, dtype=float)
+    matrix[:3, 3] = np.asarray(frame.point, dtype=float) * 1000.0  # m -> mm
+    return matrix
+
+
+def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
+    """Sync a loaded BarAssemblyAction's condensed IK info onto the bar user-text.
+
+    Writes the essential IK-related fields -- the robot base frame and the
+    approach / assembled / retreat per-arm configs -- into the same
+    ``KEY_ASSEMBLY_*`` user-text keys that RSIKKeyframe writes and the export reads.
+    This keeps the condensed on-curve record in sync whenever a solved BarAction
+    JSON is loaded (the reverse of the export, which reads user-text -> JSON). The
+    per-keyframe configs come from the movements' start_states, matching the
+    movement model (a movement's start config is the previous movement's goal):
+        approach  = M2.start_state (M1's goal),
+        assembled = M3.start_state (M2's goal),
+        retreat   = M4.start_state (M3's goal).
+    The base frame is taken from whichever movement carries one (M1 first).
+
+    Args:
+        bar_oid: Rhino object id of the bar curve.
+        action (BarAssemblyAction): the loaded (solved) action.
+        rcell (RobotCell): used to name the per-group joints.
+
+    Returns:
+        bool: True when a base frame + at least approach + assembled were written
+        (a usable keyframe); False otherwise (user-text left unchanged).
+    """
+    import rhinoscriptsyntax as rs
+    from core import config
+    from core import robot_cell
+
+    m1 = _movement_by_role(action, "M1")
+    m2 = _movement_by_role(action, "M2")
+    m3 = _movement_by_role(action, "M3")
+    m4 = _movement_by_role(action, "M4")
+
+    def _group_pair(mv):
+        state = getattr(mv, "start_state", None) if mv is not None else None
+        if state is None or state.robot_configuration is None:
+            return None
+        return {
+            "left": robot_cell.extract_group_config(state, config.LEFT_GROUP, rcell),
+            "right": robot_cell.extract_group_config(state, config.RIGHT_GROUP, rcell),
+        }
+
+    base_frame = None
+    for mv in (m1, m2, m3, m4):
+        state = getattr(mv, "start_state", None) if mv is not None else None
+        if state is not None and getattr(state, "robot_base_frame", None) is not None:
+            base_frame = state.robot_base_frame
+            break
+
+    approach = _group_pair(m2)
+    assembled = _group_pair(m3)
+    retreat = _group_pair(m4)
+
+    if base_frame is None or approach is None or assembled is None:
+        print(
+            "core.bar_action.write_bar_keyframe_from_action: action has no usable "
+            "base+approach+assembled; user-text left unchanged."
+        )
+        return False
+
+    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME,
+                   json.dumps(_frame_to_mm4(base_frame).tolist()))
+    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH, json.dumps(approach))
+    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED, json.dumps(assembled))
+    if retreat is not None:
+        rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_RETREAT, json.dumps(retreat))
+    print(
+        "core.bar_action.write_bar_keyframe_from_action: synced base + approach + "
+        f"assembled{' + retreat' if retreat else ''} to user-text."
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +584,9 @@ def _apply_movement_touch_policy(
     - **M1** (grasped, halves apart): ``male<->its arm tool``, ``male<->bar``,
       ``carried_female<->bar``.
     - **M2** (grasped, mating): M1 + ``male<->built_female`` (same joint_id, the
-      mate on the already-built bar).
+      mate on the already-built bar) + ``male<->female_bar`` (the built bar the
+      mate female belongs to -- the male's screw tip stops ~2.5 mm from it, a
+      false-positive collision on the coarse meshes).
     - **M3** (released, tool peeling off): ``male<->tool`` only -- everything else
       is detached/static, so compas_fab auto-skips it.
     - **M4** (gone): nothing.
@@ -427,15 +598,16 @@ def _apply_movement_touch_policy(
     Note: the tool<->tube contact is allowed because the simplified (convex)
     collision meshes of the tool head and the tube overlap by ~1-3 mm even when
     the *visual* meshes have clearance -- a pipeline mesh-coarseness artefact, not
-    real interference (confirmed via PyBullet getClosestPoints, see
-    tests/headless_ik_keyframe.py). Whitelisting avoids the false positive.
+    real interference (confirmed via PyBullet getClosestPoints). Whitelisting
+    avoids the false positive.
 
     Args:
         state (RobotCellState): movement start_state, mutated in place.
         movement (str): one of ``"M0"`` / ``"M1"`` / ``"M2"`` / ``"M3"`` / ``"M4"``.
         active_keys (set): canonical names of the grasped bar + its joint halves.
         env_geom (dict): ``{name: body_info}`` (used to confirm the mate
-            ``joint_<jid>_female`` exists for M2).
+            ``joint_<jid>_female`` exists for M2, and to read that female's
+            ``parent_bar_id`` so the male can whitelist the female's bar).
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
         bar_key (str): canonical name of the grasped bar (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
@@ -469,6 +641,18 @@ def _apply_movement_touch_policy(
                 female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
                 if female_key in env_geom:
                     partners.append(female_key)
+                    # The male's screw tip ends up only ~2.5 mm away from the
+                    # FEMALE BAR (the already-built bar that the mate female is
+                    # part of). On the coarse convex collision meshes PyBullet
+                    # reports that tiny gap as a collision, so also whitelist the
+                    # male against the female's parent bar. Example: inserting
+                    # bar_B9 with male joint_J35-9_male, whose mate
+                    # joint_J35-9_female belongs to bar_B35 -> allow the male to
+                    # touch bar_B35. M2 only (the male is not that close to the
+                    # female bar in any other movement).
+                    female_bar_id = env_geom[female_key].get("parent_bar_id")
+                    if female_bar_id:
+                        partners.append(f"{CANONICAL_BAR_PREFIX}{female_bar_id}")
         elif movement == "M3":
             # Released, tool peeling off the male: only male<->tool can still
             # touch; the bar/female are now static, so compas_fab auto-skips them.
@@ -837,6 +1021,7 @@ def build_assembly_movements(
     tool0_right_assembled_mm,
     approach_groups: dict = None,
     assembled_groups: dict = None,
+    retreat_groups: dict = None,
     bar_arm_side: str = "left",
 ):
     """Build the five assembly movements (M0-M4) for ``bar_id``.
@@ -865,10 +1050,12 @@ def build_assembly_movements(
             for the export + viewer.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm flange
             poses at the assembled keyframe (the placed tool block xforms).
-        approach_groups (dict | None): saved approach per-arm config to stamp onto
-            M2's start_state, or ``None`` (pre-IK) to leave the seed config.
-        assembled_groups (dict | None): saved assembled per-arm config to stamp onto
-            M3's start_state, or ``None`` (pre-IK).
+        approach_groups (dict | None): saved approach per-arm config -> M1.target +
+            M2.start, or ``None`` (pre-IK) to leave them unset.
+        assembled_groups (dict | None): saved assembled per-arm config -> M2.target +
+            M3.start, or ``None`` (pre-IK).
+        retreat_groups (dict | None): saved retreat per-arm config -> M3.target +
+            M4.start, or ``None`` (pre-IK, or a bar solved before retreat was saved).
         bar_arm_side (str): arm the bar + carried females attach to (default "left").
 
     Returns:
@@ -957,6 +1144,27 @@ def build_assembly_movements(
         config.HOME_CONF_LEFT_6, config.HOME_CONF_RIGHT_6,
         config.LEFT_GROUP, config.RIGHT_GROUP,
     )
+
+    # Keyframe-config chain: each Mi.target == Mi+1.start == the config between
+    # them. _build_m2/_build_m3 already stamp approach -> M2.start and assembled ->
+    # M3.start; here we fill the remaining half of every pair so the exported
+    # action carries the full chain and matches the headless keyframe solver's
+    # write-back (see ``accept_solved_movement``):
+    #   approach  -> M1.target
+    #   assembled -> M2.target
+    #   retreat   -> M3.target + M4.start   (M4 then runs retreat -> home)
+    # All are None (unset) for a pre-IK bar whose groups are None.
+    approach_cfg = _configuration_from_groups(template_state, approach_groups)
+    assembled_cfg = _configuration_from_groups(template_state, assembled_groups)
+    retreat_cfg = _configuration_from_groups(template_state, retreat_groups)
+    if approach_cfg is not None:
+        m1.target_configuration = approach_cfg
+    if assembled_cfg is not None:
+        m2.target_configuration = assembled_cfg
+    if retreat_cfg is not None:
+        m3.target_configuration = retreat_cfg
+        m4.start_state.robot_configuration = retreat_cfg.copy()
+
     return {"M0": m0, "M1": m1, "M2": m2, "M3": m3, "M4": m4}, env_geom
 
 
@@ -965,7 +1173,7 @@ def build_assembly_movements(
 # ---------------------------------------------------------------------------
 
 
-def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
+def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missing_ik: bool = False):
     """Build a `BarAssemblyAction` for `bar_id`. Rhino-only call.
 
     `prepare_assembly_collision_state` reuses the cached static cell (the full
@@ -976,37 +1184,62 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     template and re-classes only the grasped (active-bar) bodies + sets its own
     allowed-touch policy. No canonicalization, no snapshot/restore.
 
+    When ``allow_missing_ik`` is True and the bar has no saved IK keyframe, the
+    action is still built for the headless solver: the movement ``target_ee_frames``
+    are pure geometry (from the placed tool blocks) so they are complete, but the
+    robot base is a placeholder identity frame and the per-arm configs are left
+    unset. The headless base sampler fills in a real base + configs later.
+
     Args:
         rcell (RobotCell): the cached static cell.
         planner (PyBulletPlanner): active planner.
         bar_id (str): id of the bar to assemble.
         bar_oid: Rhino object id of the bar curve (its ``KEY_ASSEMBLY_*``
             user-text supplies the base frame + approach/assembled keyframes).
+        allow_missing_ik (bool): when True, build even if the bar has no IK
+            keyframe user-text (placeholder base, no saved configs). When False
+            (default), a missing keyframe raises.
 
     Returns:
         BarAssemblyAction: the five-movement (M0-M4) action for ``bar_id``.
 
     Raises:
-        RuntimeError: if the bar is missing IK keyframe user-text or its two
-            arm tools can't be resolved.
+        RuntimeError: if the bar is missing IK keyframe user-text (and
+            ``allow_missing_ik`` is False) or its two arm tools can't be resolved.
     """
     import rhinoscriptsyntax as rs  # noqa: F401  (kept; surrounding helpers import lazily)
     from core import config
     from core import env_collision
     from core import ik_collision_setup
     from core.rhino_bar_registry import get_bar_seq_map
+    from core.rhino_walkable_ground import get_bar_ground_ids
 
     print(f"core.bar_action.build_bar_assembly_action: building bar '{bar_id}' ...")
 
-    # 1) Read keyframe + base from the bar curve.
+    # 1) Read keyframe + base from the bar curve. Without IK we either raise or
+    #    (for the headless-solve export) fall back to a placeholder identity base
+    #    and no saved configs -- the headless sampler supplies both later.
     bar_keyframe = _read_bar_keyframe(bar_oid)
     if bar_keyframe is None:
-        raise RuntimeError(
-            f"Bar '{bar_id}' is missing one of "
-            f"'{config.KEY_ASSEMBLY_BASE_FRAME}'/'{config.KEY_ASSEMBLY_IK_APPROACH}'/"
-            f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}'. Run RSIKKeyframe first."
+        if not allow_missing_ik:
+            raise RuntimeError(
+                f"Bar '{bar_id}' is missing one of "
+                f"'{config.KEY_ASSEMBLY_BASE_FRAME}'/'{config.KEY_ASSEMBLY_IK_APPROACH}'/"
+                f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}'. Run RSIKKeyframe first."
+            )
+        print(
+            f"core.bar_action.build_bar_assembly_action: bar '{bar_id}' has no IK "
+            "keyframe; building with placeholder base (headless solve will fill it in)."
         )
-    base_frame_world_mm = bar_keyframe["base_frame_world_mm"]
+        base_frame_world_mm = np.eye(4, dtype=float)
+        approach_groups = None
+        assembled_groups = None
+        retreat_groups = None
+    else:
+        base_frame_world_mm = bar_keyframe["base_frame_world_mm"]
+        approach_groups = bar_keyframe["approach"]
+        assembled_groups = bar_keyframe["assembled"]
+        retreat_groups = bar_keyframe.get("retreat")
 
     # TODO the tools should not be separately resolved as objects per bar, but rather there should only be two ToolModel attached to the robot's tool0 links in the RobotCell, and in robot_cell_state we simply attach the bar in action to the left arm of the dual arm. (since in consrained dual arm planning, and the insertion dual arm linear motion, the constraints on two arms'EE is enf)
     # 2) Resolve per-arm tools on the bar.
@@ -1018,13 +1251,15 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
     tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
     tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
 
-    # 4) Build M0-M4 from the cell + tool placements + the saved keyframe configs.
+    # 4) Build M0-M4 from the cell + tool placements + the saved keyframe configs
+    #    (approach/assembled are None when the bar has no IK yet).
     movements, _env_geom = build_assembly_movements(
         rcell, planner, bar_id,
         base_frame_world_mm,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
-        approach_groups=bar_keyframe["approach"],
-        assembled_groups=bar_keyframe["assembled"],
+        approach_groups=approach_groups,
+        assembled_groups=assembled_groups,
+        retreat_groups=retreat_groups,
     )
 
     # 5) Assembly-sequence metadata for the action wrapper (the movements
@@ -1044,4 +1279,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid):
         ],
         active_bar_id=bar_id,
         assembly_seq=assembly_seq,
+        # Which WalkableGround surface(s) the headless base sampler may use for
+        # this bar (set via RSAssignAndShowWalkableGround; empty if not assigned yet).
+        walkable_ground_ids=get_bar_ground_ids(bar_oid),
     )

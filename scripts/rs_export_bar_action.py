@@ -10,12 +10,18 @@
 """RSExportBarAction - Save the per-bar `BarAssemblyAction` to JSON.
 
 Pick a bar; the script reads its IK keyframe data (`KEY_ASSEMBLY_*` user-text
-written by ``rs_ik_keyframe.py``), builds the four movements via
+written by ``rs_ik_keyframe.py``), builds the movements via
 ``core.bar_action.build_bar_assembly_action`` (which reuses the cached static
 cell -- the full canonical assembly + env obstacles + arm ToolModels built by
 RSRebuildRobotCell) and writes them to ``<root>/BarActions/<bar_id>.json``
 using ``compas.json_dump``. Names are already canonical (``bar_<bid>`` /
 ``joint_<jid>_<sub>``); no canonicalization or snapshot/restore.
+
+A bar WITHOUT saved IK keyframes is still exported (``allow_missing_ik=True``,
+same as RSExportAllBarActions): placeholder base + no configs, so the headless
+keyframe solver can sample its base + IK later. Unlike the batch command, this
+single-bar export does NOT emit ``RobotCell.json`` / ``WalkableGround.json``, so
+it is meant to refresh one bar inside a bundle a prior batch export produced.
 
 Run RSRebuildRobotCell after any geometry edit so the export reflects it. Root
 folder is shared with RSExportRobotCell via ``sc.sticky[EXPORT_ROOT_STICKY_KEY]``.
@@ -104,7 +110,14 @@ def main() -> None:
     # cell -- no snapshot/restore needed. If you edited geometry since the last
     # RSRebuildRobotCell, rebuild first so the export reflects it.
     try:
-        action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
+        # allow_missing_ik=True (matches RSExportAllBarActions): a bar without a
+        # saved IK keyframe is still exported with a placeholder base + no configs
+        # so the headless solver can fill in its base + IK later, instead of hard-
+        # erroring here. The target EE frames come from the placed tool blocks
+        # (pure geometry), so they are complete either way.
+        action = bar_action.build_bar_assembly_action(
+            rcell, planner, bar_id, bar_oid, allow_missing_ik=True
+        )
     except RuntimeError as exc:
         rs.MessageBox(str(exc), 0, "RSExportBarAction")
         return

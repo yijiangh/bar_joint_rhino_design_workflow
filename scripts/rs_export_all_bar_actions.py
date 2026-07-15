@@ -7,21 +7,24 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSExportAllBarActions - Batch-export BarAssemblyAction JSON for every bar with IK results.
+"""RSExportAllBarActions - Batch-export BarAssemblyAction JSON for every bar.
 
 Right-click companion to ``RSExportBarAction`` (left-click = single picked bar).
-Walks every registered bar in assembly-sequence order; for each one that
-carries the IK keyframe user-text (``KEY_ASSEMBLY_BASE_FRAME`` +
-``KEY_ASSEMBLY_IK_APPROACH`` + ``KEY_ASSEMBLY_IK_ASSEMBLED``) it builds the
-four-movement ``BarAssemblyAction`` via ``core.bar_action.build_bar_assembly_action``
-and writes ``<root>/BarActions/<bar_id>.json``. Bars without IK results are
-skipped with a note.
+Walks every registered bar in assembly-sequence order and builds the five-movement
+``BarAssemblyAction`` via ``core.bar_action.build_bar_assembly_action``, writing
+``<root>/BarActions/<bar_id>.json``. Bars that already have IK keyframe user-text
+(``KEY_ASSEMBLY_BASE_FRAME`` + ``KEY_ASSEMBLY_IK_APPROACH`` +
+``KEY_ASSEMBLY_IK_ASSEMBLED``) carry a real base + configs; bars WITHOUT IK are
+still exported (placeholder base, no configs) so the headless keyframe solver can
+sample their base + IK later. Each BarAction also carries the bar's
+``walkable_ground_ids`` (set via RSAssignAndShowWalkableGround).
 
 The cached ``RobotCell`` is the persistent static registry (full canonical
 assembly + env obstacles + arm ToolModels, built by RSRebuildRobotCell), so
-after the loop this script also dumps ``<root>/RobotCell.json`` (plain
-``compas.json_dump``) so the cell + every BarAction form a consistent bundle
-for the downstream motion planner.
+after the loop this script also dumps ``<root>/RobotCell.json`` and
+``<root>/WalkableGround.json`` (every WalkableGround brep meshed, keyed by its
+stable id) via plain ``compas.json_dump`` so the cell + grounds + every BarAction
+form a consistent bundle for the downstream headless solver / motion planner.
 
 PyBullet must be running (RSPBStart); run RSRebuildRobotCell after geometry
 edits. Root folder is shared with RSExportBarAction / RSExportRobotCell via
@@ -67,14 +70,6 @@ def _prompt_export_root() -> str | None:
     return chosen
 
 
-def _has_ik_results(bar_oid, config) -> bool:
-    return bool(
-        rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME)
-        and rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH)
-        and rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED)
-    )
-
-
 def main() -> None:
     robot_cell = importlib.reload(_robot_cell_module)
     config = importlib.reload(_config_module)
@@ -105,15 +100,14 @@ def main() -> None:
     # Assembly-sequence order so the build / output order is deterministic.
     ordered = sorted(seq_map.items(), key=lambda kv: kv[1][1])  # [(bar_id, (oid, seq)), ...]
 
-    with_ik = [(bid, oid) for bid, (oid, _seq) in ordered if _has_ik_results(oid, config)]
-    skipped = [bid for bid, (oid, _seq) in ordered if not _has_ik_results(oid, config)]
-    if not with_ik:
-        rs.MessageBox(
-            "No bars have IK results attached. Run RSIKKeyframe on at least one bar first.",
-            0,
-            "RSExportAllBarActions",
-        )
-        return
+    # Export EVERY registered bar, not just the ones with IK. Bars without IK are
+    # built with a placeholder base (allow_missing_ik=True) so the headless solver
+    # can sample their base + IK later; we only track which had IK for the report.
+    # Use the SAME predicate the build uses to decide real-IK vs placeholder, so
+    # the reported split can't drift from what actually gets exported.
+    all_bars = [(bid, oid) for bid, (oid, _seq) in ordered]
+    with_ik_ids = [bid for bid, oid in all_bars if bar_action.has_ik_keyframe(oid)]
+    without_ik_ids = [bid for bid, oid in all_bars if not bar_action.has_ik_keyframe(oid)]
 
     root = _prompt_export_root()
     if not root:
@@ -124,21 +118,42 @@ def main() -> None:
     os.makedirs(actions_dir, exist_ok=True)
 
     print(
-        f"RSExportAllBarActions: {len(with_ik)} bar(s) with IK results; "
-        f"{len(skipped)} skipped (no IK): {skipped or '-'}"
+        f"RSExportAllBarActions: exporting {len(all_bars)} bar(s) "
+        f"({len(with_ik_ids)} with IK, {len(without_ik_ids)} without IK: "
+        f"{without_ik_ids or '-'})"
     )
 
     n_ok = 0
     failures = []
-    total = len(with_ik)
+    total = len(all_bars)
     # The cell is the persistent static registry; ensure it once up front so the
     # RobotCell.json dumped after the loop is the full assembly. No snapshot/
     # restore -- the cell is meant to carry everything.
     robot_cell.ensure_assembly_cell(rcell, planner)
-    for i, (bar_id, bar_oid) in enumerate(with_ik, start=1):
+
+    # Auto-assign WalkableGround to any bar that has none, up front, so each
+    # exported BarAction carries a non-empty `walkable_ground_ids` even if
+    # RSRebuildRobotCell's auto-assign was skipped. Non-destructive (keeps manual
+    # picks); shares one definition with RSRebuildRobotCell. `grounds` is reused
+    # below for the WalkableGround.json dump so the layer is only scanned once.
+    from core.rhino_walkable_ground import (
+        auto_assign_walkable_ground_ids_all_bars,
+        brep_to_compas_mesh,
+        get_all_walkable_grounds,
+    )
+    grounds = get_all_walkable_grounds()  # {ground_id: oid}; also stamps ids
+    n_grounds, n_assigned, n_kept, n_noground = auto_assign_walkable_ground_ids_all_bars(grounds)
+    print(
+        f"RSExportAllBarActions: WalkableGround {n_grounds} surface(s); "
+        f"{n_assigned} bar(s) auto-assigned, {n_kept} kept, {n_noground} still none."
+    )
+
+    for i, (bar_id, bar_oid) in enumerate(all_bars, start=1):
         print(f"  [{i}/{total}] exporting bar '{bar_id}' ...")
         try:
-            action = bar_action.build_bar_assembly_action(rcell, planner, bar_id, bar_oid)
+            action = bar_action.build_bar_assembly_action(
+                rcell, planner, bar_id, bar_oid, allow_missing_ik=True
+            )
         except Exception as exc:  # noqa: BLE001 -- one bad bar must not abort the batch
             import traceback
             tb = traceback.format_exc().strip().splitlines()
@@ -160,15 +175,35 @@ def main() -> None:
         f"({len(rcell.rigid_body_models)} rigid bodies, {len(rcell.tool_models)} tools)"
     )
 
+    # Dump every WalkableGround brep as a meshed surface keyed by its stable id,
+    # so the headless base sampler can snap to it. Bars reference these ids via
+    # their `walkable_ground_ids`. `grounds` was scanned once up front (above).
+    ground_meshes = {}
+    for gid, oid in grounds.items():
+        try:
+            ground_meshes[gid] = brep_to_compas_mesh(oid)
+        except RuntimeError as exc:
+            print(f"  [x] WalkableGround {gid}: {exc}")
+    wg_out = os.path.join(root, "WalkableGround.json")
+    with open(wg_out, "w") as f:
+        json_dump({"grounds": ground_meshes}, f, pretty=True)
+    print(f"  [OK] WalkableGround -> {wg_out} ({len(ground_meshes)} ground surface(s))")
+
     os.makedirs(os.path.join(root, "Trajectories"), exist_ok=True)
 
-    msg = f"Exported {n_ok}/{len(with_ik)} BarAction(s) + RobotCell.json to:\n{root}"
-    if skipped:
-        msg += f"\n\nSkipped (no IK results): {', '.join(skipped)}"
+    msg = (
+        f"Exported {n_ok}/{len(all_bars)} BarAction(s) + RobotCell.json + "
+        f"WalkableGround.json ({len(ground_meshes)} ground(s)) to:\n{root}"
+    )
+    if without_ik_ids:
+        msg += f"\n\nNo IK Computed: {', '.join(without_ik_ids)}"
     if failures:
         msg += "\n\nFailed:\n" + "\n".join(f"  {b}: {e}" for b, e in failures)
     rs.MessageBox(msg, 0, "RSExportAllBarActions")
-    print(f"RSExportAllBarActions: done ({n_ok} exported, {len(failures)} failed, {len(skipped)} skipped).")
+    print(
+        f"RSExportAllBarActions: done ({n_ok} exported, {len(failures)} failed, "
+        f"{len(without_ik_ids)} without IK)."
+    )
 
 
 if __name__ == "__main__":

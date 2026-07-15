@@ -1,10 +1,23 @@
 #! python 3
 # venv: scaffolding_env
 # r: numpy==1.24.4
-"""RSReorderBarID - Renumber every bar so ``B<n>`` matches assembly seq ``n``.
+"""RSReorderBarID - Renumber bars, or geometrically relink joints & tools.
 
-Workflow
---------
+On entry the command line offers two operations:
+
+- **Renumber bars** -- renumber every bar so ``B<n>`` matches assembly seq
+  ``n`` and propagate the rename through joints/tools via their (valid) string
+  references. Use when the joint/tool -> bar links are intact.
+- **Relink joints and tools** -- re-derive each joint/tool block's parent
+  bar(s) from geometry (``core.joint_relink``) and rewrite ``joint_id`` /
+  ``tool_id`` + parent-ref fields to match the bars' current ids. Use after a
+  copy/paste, which re-issues fresh ``bar_id``s to the copied curves but leaves
+  the copied joints/tools pointing at the *source* bars. Their string refs are
+  unrecoverable (the originals may still be in the document, duplicating them),
+  but their positions survived the copy. Does not renumber bars.
+
+Renumber-bars workflow
+----------------------
 1. Run the standard ``repair_on_entry`` pass (heals duplicate seqs etc.).
 2. Read every registered bar; assert that:
    - every bar has an integer ``bar_seq`` user-text,
@@ -44,6 +57,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_relink
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
     BAR_SEQ_KEY,
@@ -199,9 +213,31 @@ def _print_joint_table(jid_remap):
         print(f"    ... {len(changed) - _PRINT_CAP} more")
 
 
-def _confirm_apply():
+def _choose_operation():
+    """Top-level prompt: renumber bars vs. relink joints/tools.
+
+    Returns ``"renumber"``, ``"relink"``, or ``None`` (cancelled).
+    """
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Apply rename?")
+    go.SetCommandPrompt("RSReorderBarID - choose operation")
+    renumber_idx = go.AddOption("RenumberBars")
+    relink_idx = go.AddOption("RelinkJointsAndTools")
+    go.AcceptNothing(False)
+    while True:
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Option:
+            chosen = go.OptionIndex()
+            if chosen == renumber_idx:
+                return "renumber"
+            if chosen == relink_idx:
+                return "relink"
+        else:
+            return None
+
+
+def _confirm_apply(prompt="Apply?"):
+    go = Rhino.Input.Custom.GetOption()
+    go.SetCommandPrompt(prompt)
     apply_idx = go.AddOption("Apply")
     cancel_idx = go.AddOption("Cancel")
     go.AcceptNothing(False)
@@ -373,14 +409,8 @@ def _verify_after(expected_n):
 # ---------------------------------------------------------------------------
 
 
-def main():
-    importlib.reload(config)
-    repair_on_entry(float(config.BAR_RADIUS), caller="RSReorderBarID")
-
-    all_bars = get_all_bars()
-    if not all_bars:
-        print("RSReorderBarID: no registered bars in document.")
-        return
+def _run_renumber(all_bars):
+    """Renumber bars to ``B1..BN`` and propagate through valid joint/tool refs."""
     if len(all_bars) == 1:
         print("RSReorderBarID: only 1 bar; nothing to reorder.")
         return
@@ -404,13 +434,61 @@ def main():
     _print_bar_table(bar_rename, seq_map)
     _print_joint_table(jid_remap)
 
-    if not _confirm_apply():
+    if not _confirm_apply("Apply renumber?"):
         print("RSReorderBarID: cancelled. No changes applied.")
         return
 
     _apply_rename(bar_rename, jid_remap, seq_map)
     _verify_after(len(all_bars))
     print("RSReorderBarID: post-check OK (B1..B{} contiguous).".format(len(all_bars)))
+
+
+def _run_relink():
+    """Geometrically relink every joint/tool block to its current parent bar(s)."""
+    plan = joint_relink.build_plan()
+    if not plan["edits"]:
+        print("RSReorderBarID: no joint/tool blocks found to relink.")
+        return
+    if plan["n_changed"] == 0:
+        print(
+            "RSReorderBarID: all joints/tools already consistent with their bars. "
+            "Nothing to do."
+        )
+        return
+
+    joint_relink.print_plan(plan)
+
+    if not _confirm_apply("Apply relink?"):
+        print("RSReorderBarID: cancelled. No changes applied.")
+        return
+
+    joint_relink.apply_plan(plan)
+    problems = joint_relink.verify_links()
+    if problems:
+        print("RSReorderBarID: relink applied WITH warnings:")
+        for problem in problems:
+            print(f"  - {problem}")
+    else:
+        print("RSReorderBarID: relink post-check OK (all parent/joint refs resolve).")
+
+
+def main():
+    importlib.reload(config)
+    repair_on_entry(float(config.BAR_RADIUS), caller="RSReorderBarID")
+
+    all_bars = get_all_bars()
+    if not all_bars:
+        print("RSReorderBarID: no registered bars in document.")
+        return
+
+    operation = _choose_operation()
+    if operation is None:
+        print("RSReorderBarID: cancelled.")
+        return
+    if operation == "renumber":
+        _run_renumber(all_bars)
+    elif operation == "relink":
+        _run_relink()
 
 
 if __name__ == "__main__":

@@ -376,6 +376,10 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
         "rb_sos": rb_sos,
         "rb_keyset": frozenset(rb_sos.keys()),
         "active_mesh_mode": get_mesh_mode(),
+        # Ids of rigid bodies the current movement state hides (not-yet-built
+        # bars/joints); refreshed by update_state, consulted by
+        # _set_visibility_for_mode. Empty until the first state is applied.
+        "hidden_rb_ids": set(),
         "layer": layer_name,
         "layer_key": layer_key or "",
     }
@@ -383,12 +387,13 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
     return bundle
 
 
-def _iter_mode_guids(bundle: dict, mesh_mode: str):
-    """Yield every Rhino GUID the bundle has baked for ``mesh_mode``.
+def _iter_robot_tool_mode_guids(bundle: dict, mesh_mode: str):
+    """Yield every ROBOT + TOOL GUID the bundle baked for ``mesh_mode``.
 
     Robot + tools store per-link dicts (``_links_<mode>_mesh_native_geometry``
-    -> ``{link_name: [guid, ...]}``); RBs store flat lists
-    (``_<mode>_mesh_native_geometry``).
+    -> ``{link_name: [guid, ...]}``). Rigid bodies are handled separately (see
+    :func:`_rb_mode_guids`) so each body's per-movement ``is_hidden`` visibility
+    can be honored -- robot + tools are never sequence-hidden.
     """
     is_visual = mesh_mode == MESH_MODE_VISUAL
     robot_so = bundle["robot_so"]
@@ -409,24 +414,46 @@ def _iter_mode_guids(bundle: dict, mesh_mode: str):
         for guids in (link_dict or {}).values():
             for g in guids:
                 yield g
-    for rb_so in (bundle["rb_sos"] or {}).values():
-        guids = (
-            rb_so._visual_mesh_native_geometry
-            if is_visual
-            else rb_so._collision_mesh_native_geometry
-        )
-        for g in (guids or []):
-            yield g
+
+
+def _rb_mode_guids(rb_so, mesh_mode: str) -> list:
+    """Return one rigid body's baked GUIDs for ``mesh_mode`` (a flat list)."""
+    if mesh_mode == MESH_MODE_VISUAL:
+        return list(rb_so._visual_mesh_native_geometry or [])
+    return list(rb_so._collision_mesh_native_geometry or [])
 
 
 def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
-    """Show ``mesh_mode`` GUIDs, hide the OTHER mode's GUIDs.
+    """Show ``mesh_mode`` geometry and hide the OTHER mode's -- while keeping any
+    sequence-hidden bar (a not-yet-built bar/joint) hidden in BOTH modes.
+
+    The active movement state stamps ``is_hidden=True`` on every rigid body whose
+    parent bar comes later in the assembly sequence than the bar being assembled
+    (see ``ik_collision_setup.build_full_assembly_state``). ``update_state`` records
+    those ids on the bundle as ``hidden_rb_ids``; here we make sure their baked
+    meshes stay hidden. Without this the mesh-mode visibility flip re-shows every
+    rigid body, so the preview draws all bars sitting at their final assembled pose
+    instead of only the ones that exist at this step.
 
     Per-GUID visibility flip via ``rs.HideObjects`` / ``rs.ShowObjects``.
     """
     other = MESH_MODE_COLLISION if mesh_mode == MESH_MODE_VISUAL else MESH_MODE_VISUAL
-    show = list(_iter_mode_guids(bundle, mesh_mode))
-    hide = list(_iter_mode_guids(bundle, other))
+    hidden_rb_ids = bundle.get("hidden_rb_ids") or set()
+
+    # Robot + tools: active mode shown, other mode hidden (never sequence-hidden).
+    show = list(_iter_robot_tool_mode_guids(bundle, mesh_mode))
+    hide = list(_iter_robot_tool_mode_guids(bundle, other))
+
+    # Rigid bodies: a sequence-hidden bar is hidden in BOTH modes; a visible bar
+    # follows the mesh-mode toggle like everything else.
+    for rb_id, rb_so in (bundle["rb_sos"] or {}).items():
+        hide.extend(_rb_mode_guids(rb_so, other))
+        active_guids = _rb_mode_guids(rb_so, mesh_mode)
+        if rb_id in hidden_rb_ids:
+            hide.extend(active_guids)
+        else:
+            show.extend(active_guids)
+
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
@@ -581,6 +608,17 @@ def update_state(
 
     # Compute attached-RB frames (mirrors BaseRobotCellObject.update).
     state = robot_cell.compute_attach_objects_frames(state)
+
+    # Remember which rigid bodies this movement state hides -- the not-yet-built
+    # bars/joints whose parent bar is later in the assembly sequence than the bar
+    # being assembled (stamped is_hidden=True by build_full_assembly_state). The
+    # visibility pass below keeps them hidden so the preview shows only the bars
+    # that actually exist at this step.
+    bundle["hidden_rb_ids"] = {
+        rb_id
+        for rb_id, rbs in state.rigid_body_states.items()
+        if getattr(rbs, "is_hidden", False)
+    }
 
     was = sc.doc.Views.RedrawEnabled
     try:

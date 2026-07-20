@@ -350,8 +350,8 @@ it to its arm's planning group by the tool name's L/R suffix (lines 1298–1318)
 
 ```python
 arm_group = {"left": config.LEFT_GROUP, "right": config.RIGHT_GROUP}
-for tid in robot_cell.tool_models:                 # AT3L / AT3R
-    side = _arm_side_from_tool_name(tid)           # 'left' / 'right'
+for tid in robot_cell.tool_models:                 # active pair, e.g. AT3L / AT3R
+    side = arm_side_from_tool_name(tid)            # 'left' / 'right' (core.robotic_tool)
     ts = state.tool_states[tid]
     ts.attached_to_group = arm_group[side]         # base_left/right_arm_manipulator
     ts.touch_links       = list(_ARM_TOOL_WRIST_TOUCH_LINKS[side])

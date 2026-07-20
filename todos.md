@@ -33,7 +33,7 @@ Like in itj, we don't do mp in Rhino, only do mp in python and just load planned
 
 ### Robotic-tool definition workflow
 
-- [ ] **rs_define_robotic_tool should also export a per-tool collision OBJ.** After the user picks the tool block + TCP frame points + names the tool, prompt them to pick the visual / collision meshes (any number) and write a single combined OBJ to asset/<block_name>.obj whose origin coincides with the block's local frame (= tool0 / robot flange). Update the dataclass to fill collision_filename with the basename. The IK keyframe workflow already wires this through core.robot_cell.attach_arm_tool_rigid_bodies -- once the export step exists, every newly-defined tool gets per-arm collision out of the box. Preserve X / Y axis sign of the picked meshes (no re-orthonormalization beyond the already-recorded TCP frame).
+- [x] **rs_define_robotic_tool should also export a per-tool collision OBJ.** Done -- RSDefineRoboticTool (AssemblyTool mode) prompts you to pick hand-modeled collision MESH object(s) -- and/or a block instance whose definition already is a low-poly mesh (e.g. the tool block itself; only actual Mesh objects are taken, breps are never auto-meshed) -- and writes them merged to `asset/<block_name>.obj` in the block's local frame, filling `collision_filename`. See also RSSwapRoboticTool for switching the active tool candidate pair.
 
 
 # RobotAction class

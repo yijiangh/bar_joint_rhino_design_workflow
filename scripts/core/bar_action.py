@@ -85,6 +85,9 @@ from rs_data_structure.bar_action import (  # noqa: E402  (path-prepend gate abo
     BarAssemblyAction,
 )
 
+# Single home of the L/R tool-name suffix rule (Rhino-free).
+from core.robotic_tool import arm_side_from_tool_name  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Geometry helpers (numpy, no Rhino)
@@ -306,13 +309,9 @@ def _classify_male_joints_per_arm(bar_id: str) -> dict:
         if toid is None:
             continue
         tname = rs.GetUserText(toid, "tool_name") or ""
-        if not tname:
-            continue
-        last = tname.strip()[-1].upper()
-        if last == "L":
-            out[jid] = "left"
-        elif last == "R":
-            out[jid] = "right"
+        side = arm_side_from_tool_name(tname)
+        if side is not None:
+            out[jid] = side
     return out
 
 

@@ -376,7 +376,7 @@ def _pick_grasp_frame_on_bar(bar_curve, gripper_kind="Robotiq"):
     if gripper_kind not in config.BAR_GRASP_TO_TOOL0:
         rs.MessageBox(
             f"BAR_GRASP_TO_TOOL0['{gripper_kind}'] is empty. "
-            "Run RSExportGraspTool0TF in Gripper mode first.",
+            "Run RSDefineRoboticTool in SupportGripper mode first.",
             0,
             "RSIKSupportKeyframe",
         )

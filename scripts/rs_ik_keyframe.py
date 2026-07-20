@@ -71,7 +71,7 @@ from core.rhino_bar_registry import (
 from core.rhino_frame_io import doc_unit_scale_to_mm
 from core.rhino_helpers import suspend_redraw
 from core.rhino_tool_place import find_tool_for_joint
-from core.robotic_tool import get_robotic_tool
+from core.robotic_tool import arm_side_from_tool_name, get_robotic_tool
 # Base-frame math shared with the headless sampler. These are pure numpy (no
 # Rhino), so they live in `core.walkable_ground` and are imported under the
 # private names this script already uses at its call sites.
@@ -234,18 +234,6 @@ def _has_block_definition(name) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _arm_side_from_tool_name(tool_name):
-    """Classify a tool by ``tool_name`` user-text suffix: 'L' -> left, 'R' -> right."""
-    if not tool_name:
-        return None
-    last = tool_name.strip()[-1].upper()
-    if last == "L":
-        return "left"
-    if last == "R":
-        return "right"
-    return None
-
-
 def _males_on_bar(bar_id):
     """Return list of joint block instance oids whose ``parent_bar_id`` matches.
 
@@ -300,7 +288,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
                 "Run RSJointEdit / tool-cycle first."
             )
         tname = rs.GetUserText(toid, "tool_name") or ""
-        side = _arm_side_from_tool_name(tname)
+        side = arm_side_from_tool_name(tname)
         if side is None:
             return None, (
                 f"Tool '{tname}' on joint '{jid}' has no L/R suffix in its name; "

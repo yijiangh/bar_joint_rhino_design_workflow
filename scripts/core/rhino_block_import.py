@@ -104,3 +104,56 @@ def require_block_definition(block_name: str, *, asset_path: str | None = None) 
         f"Missing required Rhino block definition '{block_name}'."
         + (f"  (Tried to import from {asset_path}.)" if asset_path else "")
     )
+
+
+def refresh_block_definition(block_name: str, asset_path: str) -> None:
+    """Force-reload *block_name* from *asset_path*, replacing any in-doc copy.
+
+    ``require_block_definition`` skips the import when a definition of that
+    name already exists, so edits to a block's asset file would silently keep
+    the stale in-doc geometry.  This helper deletes the existing
+    InstanceDefinition first (together with any instances still referencing
+    it -- callers like the tool swap remove their instances beforehand anyway)
+    and then re-imports from the asset.
+
+    Args:
+        block_name (str): the InstanceDefinition name to reload.
+        asset_path (str): the .3dm file to import the definition from.
+
+    Raises:
+        RuntimeError: if the asset file is missing, the delete fails, or the
+            re-import does not produce the definition.
+    """
+    import scriptcontext as sc  # noqa: PLC0415
+
+    asset_path = os.path.normpath(asset_path)
+    if not os.path.isfile(asset_path):
+        raise RuntimeError(
+            f"Cannot refresh block '{block_name}': asset file not found at "
+            f"{asset_path}. Re-run RSDefineRoboticTool (AssemblyTool mode) to "
+            "export it."
+        )
+
+    # Delete the stale in-doc definition (and any leftover references) so the
+    # import below starts clean instead of being rejected as a duplicate name.
+    for idef in sc.doc.InstanceDefinitions:
+        if idef is None or idef.IsDeleted or idef.Name != block_name:
+            continue
+        ok = sc.doc.InstanceDefinitions.Delete(idef.Index, True, True)
+        if not ok:
+            raise RuntimeError(
+                f"Failed to delete existing block definition '{block_name}' "
+                "before re-import. Check for locked instances and retry."
+            )
+        break
+
+    if not import_block_definition_from_3dm(block_name, asset_path):
+        raise RuntimeError(
+            f"Failed to re-import block '{block_name}' from {asset_path}."
+        )
+    if not has_block_definition(block_name):
+        raise RuntimeError(
+            f"Block '{block_name}' still missing after re-import from "
+            f"{asset_path}."
+        )
+    print(f"  [refresh_block] reloaded '{block_name}' from {asset_path}")

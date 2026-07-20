@@ -23,6 +23,13 @@ import time
 import numpy as np
 
 from core import config
+# Tool registry: the L/R naming rule + the active candidate pair. Rhino-free,
+# so importing at the top keeps this module headless-importable.
+from core.robotic_tool import (
+    arm_side_from_tool_name,
+    get_active_pair,
+    get_active_pair_names,
+)
 
 
 # When imported inside Rhino (ScriptEditor), `scriptcontext.sticky` is the
@@ -1444,57 +1451,31 @@ _ARM_TOOL_WRIST_TOUCH_LINKS = {
 }
 
 
-def _arm_side_from_tool_name(tool_name):
-    """Classify an arm side from a tool name's L/R suffix.
-
-    Rhino-free duplicate of ``ik_collision_setup._arm_side_from_tool_name`` so
-    this module stays headless-importable (that module imports rhinoscriptsyntax
-    at top).
-
-    Args:
-        tool_name (str): e.g. ``"AT3L"`` / ``"AT3R"``.
-
-    Returns:
-        str | None: ``"left"`` for an 'L' suffix, ``"right"`` for 'R', else
-        ``None``.
-    """
-    if not tool_name:
-        return None
-    last = str(tool_name).strip()[-1].upper()
-    if last == "L":
-        return "left"
-    if last == "R":
-        return "right"
-    return None
-
-
 def arm_tool_ids():
-    """Map each arm side to its tool id from the registry.
+    """Map each arm side to the ACTIVE pair's tool id.
 
-    The tool id is the registry name (e.g. ``AT3L``/``AT3R``); side is the
-    L/R name suffix. Headless-safe (reads ``robotic_tools.json`` only).
+    The tool id is the registry name (e.g. ``AT3L``/``AT3R``); the active
+    pair comes from the registry's ``active`` entry. Headless-safe (reads
+    ``robotic_tools.json`` only).
 
     Returns:
-        dict: ``{"left": tool_id | None, "right": tool_id | None}``.
-    """
-    from core.robotic_tool import load_robotic_tools
+        dict: ``{"left": tool_id, "right": tool_id}``.
 
-    out = {"left": None, "right": None}
-    for name in load_robotic_tools():
-        side = _arm_side_from_tool_name(name)
-        if side in out and out[side] is None:
-            out[side] = name
-    return out
+    Raises:
+        RuntimeError: if the active pair cannot be resolved (empty registry,
+            missing/invalid ``active`` entry) -- run RSSwapRoboticTool.
+    """
+    return get_active_pair_names()
 
 
 def build_arm_tool_models():
     """Build the two arm-tool ``ToolModel``s straight from ``robotic_tools.json``.
 
-    Picks the registry tool whose name ends in 'L' and the one ending in 'R'
-    (exactly one of each is required), loads each tool's collision OBJ as the
-    tool geometry, and sets ``tool_model.frame`` from the registry's
-    ``M_tcp_from_block`` (which, despite its name, holds ``tool0_from_tcp`` --
-    the TCP expressed in the flange/block frame; see `core.robotic_tool`).
+    Uses the registry's ACTIVE candidate pair (the ``active`` entry, set by
+    RSSwapRoboticTool), loads each tool's collision OBJ as the tool geometry,
+    and sets ``tool_model.frame`` from the registry's ``M_tcp_from_block``
+    (which, despite its name, holds ``tool0_from_tcp`` -- the TCP expressed
+    in the flange/block frame; see `core.robotic_tool`).
 
     Headless-safe (no Rhino).
 
@@ -1503,39 +1484,26 @@ def build_arm_tool_models():
         (e.g. ``AT3L`` / ``AT3R``).
 
     Raises:
-        RuntimeError: if there isn't exactly one left + one right tool, or a
-            tool's collision OBJ is missing.
+        RuntimeError: if the active pair cannot be resolved, or a tool's
+            collision OBJ is missing.
     """
-    from core.robotic_tool import load_robotic_tools
-
     deps = _import_compas_stack()
     Mesh = deps["Mesh"]
     ToolModel = deps["ToolModel"]
     Frame = deps["Frame"]
     Transformation = deps["Transformation"]
 
-    tools = load_robotic_tools()
-    by_side = {"left": [], "right": []}
-    for name, tdef in tools.items():
-        side = _arm_side_from_tool_name(name)
-        if side in by_side:
-            by_side[side].append(tdef)
+    pair = get_active_pair()
 
     out = {}
     for side in ("left", "right"):
-        defs = by_side[side]
-        if len(defs) != 1:
-            raise RuntimeError(
-                f"build_arm_tool_models: expected exactly one {side}-arm tool "
-                f"(name ending {side[0].upper()!r}); found {[d.name for d in defs]}. "
-                "Define tools with RSDefineRoboticTool."
-            )
-        tdef = defs[0]
+        tdef = pair[side]
         col_path = tdef.collision_path()
         if not col_path or not os.path.isfile(col_path):
             raise RuntimeError(
                 f"build_arm_tool_models: collision OBJ missing for tool "
-                f"{tdef.name!r}: {col_path!r}."
+                f"{tdef.name!r}: {col_path!r}. Re-run RSDefineRoboticTool "
+                f"(AssemblyTool mode) for {tdef.name!r} to export it."
             )
         mesh = Mesh.from_obj(col_path)
         mesh.scale(0.001)  # OBJ exported in mm -> meters
@@ -1563,7 +1531,7 @@ def base_assembly_cell_state():
     ``tool_states`` key-set matches ``tool_models`` (assert_cell_state_match).
 
     Returns:
-        RobotCellState: the cell's default state with ``AT3L``/``AT3R``
+        RobotCellState: the cell's default state with the active pair's
         ``tool_states`` attached to the LEFT/RIGHT arm groups (wrist touch-links,
         identity attachment frame).
     """
@@ -1575,7 +1543,7 @@ def base_assembly_cell_state():
 
     arm_group = {"left": config.LEFT_GROUP, "right": config.RIGHT_GROUP}
     for tid in robot_cell.tool_models:
-        side = _arm_side_from_tool_name(tid)
+        side = arm_side_from_tool_name(tid)
         if side is None:
             continue
         ts = state.tool_states.get(tid)
@@ -1595,10 +1563,16 @@ def _live_assembly_fingerprint():
 
     Counts bars / joint instances / environment meshes and sums bar endpoint
     coordinates, so add/remove (counts) and move/resize (coord sum) both change
-    it. Used only for the staleness warning. Rhino-only -> lazy imports.
+    it. The fingerprint also includes the ACTIVE tool-pair names. If
+    RSSwapRoboticTool changes that pair without rebuilding the collision cell,
+    the next IK command detects the mismatch and prompts the user to Rebuild,
+    Proceed with the old cell, or Abort. If the cell was rebuilt during the
+    swap, its fingerprint is already current and no prompt appears. Used only
+    for the staleness (outdate) warning. Rhino-only -> lazy imports.
 
     Returns:
-        tuple: ``(n_bars, n_joint_instances, n_env_meshes, rounded_endpoint_sum)``.
+        tuple: ``(n_bars, n_joint_instances, n_env_meshes,
+        rounded_endpoint_sum, (left_tool, right_tool))``.
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_bar_seq_map
@@ -1625,7 +1599,17 @@ def _live_assembly_fingerprint():
         if rs.IsLayer(config.LAYER_ENVIRONMENT)
         else 0
     )
-    return (len(seq_map), n_joints, n_env, round(coord_sum, 3))
+    # Active tool identity: a tool swap changes the cell geometry just like a
+    # bar edit does, so it must change the fingerprint too. The staleness probe
+    # runs at every command entry, so an unresolvable pair only gets a
+    # placeholder here -- the loud error surfaces in build_arm_tool_models /
+    # arm_tool_ids, which every real consumer hits.
+    try:
+        names = get_active_pair_names()
+        active_sig = (names["left"], names["right"])
+    except Exception:
+        active_sig = ("<unresolved>", "<unresolved>")
+    return (len(seq_map), n_joints, n_env, round(coord_sum, 3), active_sig)
 
 
 def rebuild_assembly_cell(robot_cell, planner):

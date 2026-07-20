@@ -32,7 +32,8 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSExportCase | `rs_export_case.py` | Export T1-S2 debug case JSON for solver replay | Developers/debugging |
 | RSSetup | RSExportConfig | `rs_export_config.py` | Export CAD-derived connector config and frame snapshot | Joint-library authors |
 | RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
-| RSSetup | RSExportGraspTool0TF | `rs_export_grasp_tool0_tf.py` | Export male-joint/bar-grasp to tool0 transforms | Advanced IK users |
+| RSSetup | RSDefineRoboticTool | `rs_define_robotic_tool.py` | AssemblyTool mode: define a tool candidate (block + TCP points + picked collision meshes, exports `.3dm` + `.obj`). SupportGripper mode: export bar-grasp -> tool0 transform | Advanced IK users |
+| RSSetup | RSSwapRoboticTool | `rs_swap_robotic_tool.py` | Prints registered tool names; type either L/R member to make its pair ACTIVE (registry updated, all placed tools re-placed, block geometry refreshed, cell rebuild offered) | Advanced IK users |
 | RSSetup | RSPBStart | `rs_pb_start.py` | Left-click: start shared PyBullet client/planner in Direct mode. Right-click (`rs_pb_start_gui.py`): start in GUI mode | Advanced IK users |
 | RSSetup | RSPBStop | `rs_pb_stop.py` | Disconnect shared PyBullet client | Advanced IK users |
 | RSSetup | RSRebuildRobotCell | `rs_rebuild_robot_cell.py` | (Re)build the static assembly collision cell (bars + joints + env obstacles + arm ToolModels), AND auto-assign WalkableGround surfaces to bars by distance (non-destructive: keeps manual picks). Run after adding/moving/resizing geometry. | Planning/export users |
@@ -137,11 +138,51 @@ This is the canonical Rhino entrypoint reference for this repository.
 - Prompts for origin, +X point, and +Y-side point.
 - Rebuilds a right-handed orthogonal frame and bakes axis geometry.
 
-### RSExportGraspTool0TF (`rs_export_grasp_tool0_tf.py`)
+### RSDefineRoboticTool (`rs_define_robotic_tool.py`)
 
-- `Joint` mode: writes male-joint OCF -> tool0 transform.
-- `Gripper` mode: writes bar-grasp -> tool0 transform.
-- Persists in `scripts/core/config_generated_ik.py`.
+Two modes, chosen at the first prompt:
+
+- **AssemblyTool** (default): define/update one assembly-tool candidate. Pick the tool
+  block instance (geometry baked at the flange -- the block-local origin IS tool0),
+  then the TCP origin / +X tip / +Y tip points (the frame of the male joint while
+  held), then the collision-mesh source(s), then type the tool name.
+  The name MUST end in `L` (left arm) or `R` (right arm); the two sides of one
+  candidate share a prefix (`AT4L`/`AT4R`).
+  Collision-mesh sources: hand-modeled low-poly MESH object(s) and/or a block
+  instance whose definition already IS a low-poly mesh (e.g. the tool block
+  itself -- it stays visible for this pick). From an instance only actual Mesh
+  objects are taken; breps are never auto-meshed. All picked sources are merged
+  into one OBJ, so pick the block OR the coincident loose meshes, not both
+  (overlap = duplicated triangles).
+  Exports `asset/<tool-name>.3dm` + the merged meshes as `asset/<tool-name>.obj`
+  (block-local frame, mm) and saves `M_tcp_from_block` + `collision_filename`
+  into `scripts/core/robotic_tools.json`. Reusing an exact tool name replaces
+  that entry instead of adding a duplicate. Defining does NOT activate the
+  candidate -- run RSSwapRoboticTool for that.
+- **SupportGripper**: pick a baked bar-grasp frame group + a baked tool0 frame
+  group; writes `BAR_GRASP_TO_TOOL0[gripper_kind]` into
+  `scripts/core/config_generated_ik.py` (other gripper kinds preserved).
+
+What you prepare in Rhino per candidate pair: two block definitions (left + right,
+block local frame = flange/tool0; this is the visual geometry), a hand-modeled
+low-poly collision mesh per side (positioned on the tool instance; a few simple
+meshes are fine -- or skip the extra meshes entirely when the block itself is
+already a low-poly mesh and pick the block as the collision source), plus the
+three TCP points per side. Then run AssemblyTool mode twice, once per side.
+
+### RSSwapRoboticTool (`rs_swap_robotic_tool.py`)
+
+- Prints all tool names in `robotic_tools.json`, then prompts for the exact name
+  of either L/R member. The suffix resolves the pair partner and both sides
+  activate together; no candidate block is required in the active Rhino file.
+- Imports or force-refreshes both selected tool definitions from their exported
+  `.3dm` files even when no tool instances are currently placed.
+- Updates the registry `active` entry, re-places EVERY placed tool instance with
+  the side-matching new tool (each joint keeps its arm side), force-refreshes both
+  block definitions from `asset/`, warns about bars whose solved IK keyframes are
+  now stale, and offers an immediate RSRebuildRobotCell (or tells you to run it).
+- Pre-flight: both sides must be registered with their `.3dm` + collision `.obj`
+  on disk -- otherwise nothing is changed.
 
 ### RSPBStart (`rs_pb_start.py`) and RSPBStop (`rs_pb_stop.py`)
 

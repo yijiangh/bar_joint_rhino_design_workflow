@@ -116,14 +116,14 @@ HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
 # IK base sampling fallback
 IK_BASE_SAMPLE_RADIUS = 1000.0  # mm
-IK_BASE_SAMPLE_MAX_ITER = 10
+IK_BASE_SAMPLE_MAX_ITER = 20
 # How far BEHIND the bar the SEED mobile base stands (mm). The seed is offset
 # from the bar's ground projection by this distance, OPPOSITE the average
 # male-joint insertion direction (the way the bar is pushed to mate), so the base
 # faces along the insertion direction and moving forward carries the bar into the
 # assembly. Only a starting point: the expanding-radius search samples around this
 # seed and IK validates each. Tunable.
-IK_BASE_STANDOFF_MM = 1000.0  # mm
+IK_BASE_STANDOFF_MM = 700.0  # mm
 
 # IK solver tuning (compas_fab PyBullet planner)
 # How many candidate IK solutions the PyBullet planner generates in ONE
@@ -191,37 +191,6 @@ SSIK_ARM_BUILD = {
     "left": ("left_ur_arm_base_link", "left_ur_arm_tool0", "left_ur_arm_ik"),
     "right": ("right_ur_arm_base_link", "right_ur_arm_tool0", "right_ur_arm_ik"),
 }
-
-
-def _sanitize_ocf_to_tool0_dict(raw):
-    """Sanitize `{joint_type: {arm_side: 4x4}}` into orthonormal float matrices.
-
-    Accepts only the nested-per-arm schema. Left and right UR arms each carry
-    a distinct physical tool, so the OCF -> tool0 transform differs per side.
-    """
-    if raw is None:
-        return {}
-    sanitized = {}
-    for joint_type, per_side in raw.items():
-        if not isinstance(per_side, dict):
-            raise ValueError(
-                f"MALE_JOINT_OCF_TO_TOOL0['{joint_type}'] must be a "
-                "{'left': <4x4>, 'right': <4x4>} dict. Re-export via RSExportGraspTool0TF (Joint mode)."
-            )
-        sanitized_sides = {}
-        for side, matrix in per_side.items():
-            if side not in ARM_SIDES:
-                raise ValueError(
-                    f"MALE_JOINT_OCF_TO_TOOL0['{joint_type}']['{side}']: side must be one of {ARM_SIDES}."
-                )
-            sanitized_sides[str(side)] = _as_matrix(matrix)
-        sanitized[str(joint_type)] = sanitized_sides
-    return sanitized
-
-
-MALE_JOINT_OCF_TO_TOOL0 = _sanitize_ocf_to_tool0_dict(
-    getattr(_generated_ik, "MALE_JOINT_OCF_TO_TOOL0", None) if _generated_ik is not None else None
-)
 
 
 def _sanitize_bar_grasp_to_tool0(raw):

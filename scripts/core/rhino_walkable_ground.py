@@ -486,3 +486,72 @@ def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
         )
         n_populated += 1
     return n_populated, n_kept, n_failed
+
+
+# ---------------------------------------------------------------------------
+# Rebuild summary (shared by RSRebuildRobotCell + RSPBStart)
+# ---------------------------------------------------------------------------
+
+
+def rebuild_summary_after_assign(collision_bodies, tool_names):
+    """Run the WalkableGround auto-assign + seed-base passes and format the summary.
+
+    Both RSRebuildRobotCell and RSPBStart call this right after
+    ``robot_cell.rebuild_assembly_cell`` so their pop-up (and console echo) read
+    exactly the same. It runs the two NON-DESTRUCTIVE passes
+    (:func:`auto_assign_walkable_ground_ids_all_bars` +
+    :func:`auto_populate_base_frames_all_bars`) and turns their counts, together
+    with the registered-body and arm-tool counts, into ready-to-show text.
+
+    Args:
+        collision_bodies (dict): ``{name: body_info}`` returned by
+            ``robot_cell.rebuild_assembly_cell`` (read only for its ``kind`` tags).
+        tool_names (list[str]): the arm-tool ids on the cell,
+            i.e. ``sorted(rcell.tool_models.keys())`` -- e.g. ``["AT3L", "AT3R"]``.
+
+    Returns:
+        tuple[str, str]: ``(popup_msg, console_line)`` -- the multi-line body for
+        ``rs.MessageBox`` and a one-line console echo. Neither is prefixed with a
+        command name, so each caller can prepend its own (``RSRebuildRobotCell:`` /
+        ``RSPBStart:``).
+    """
+    # ---- The two NON-DESTRUCTIVE passes the rebuild button also runs: link every
+    # ---- un-associated bar to its nearest ground, then seed a base pose on any
+    # ---- bar that still lacks one (hand-picked / IK-solved bases are kept).
+    n_grounds, n_assigned, n_kept, n_noground = auto_assign_walkable_ground_ids_all_bars()
+    n_base_pop, n_base_kept, n_base_fail = auto_populate_base_frames_all_bars()
+
+    # ---- Count the registered collision bodies by kind.
+    n_bar = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "bar")
+    n_joint = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "joint")
+    n_env = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "environment")
+    n_tools = len(tool_names)
+
+    # WalkableGround line: only warn about un-grounded bars when grounds exist.
+    if n_grounds == 0:
+        ground_line = "  WalkableGround: none on layer (skipped auto-assign)"
+    else:
+        ground_line = (
+            f"  WalkableGround: {n_grounds} surface(s); "
+            f"{n_assigned} bar(s) auto-assigned, {n_kept} kept, {n_noground} still none"
+        )
+    base_line = (
+        f"  Base pose: {n_base_pop} bar(s) auto-populated, {n_base_kept} kept, "
+        f"{n_base_fail} skipped (no ground)"
+    )
+    popup_msg = (
+        f"Rebuilt the robot cell:\n"
+        f"  {n_bar} bar(s)\n"
+        f"  {n_joint} joint half/halves\n"
+        f"  {n_env} environment obstacle(s)\n"
+        f"  {n_tools} arm tool(s): {', '.join(sorted(tool_names)) or '-'}\n"
+        f"{ground_line}\n"
+        f"{base_line}"
+    )
+    console_line = (
+        f"{n_bar} bars, {n_joint} joints, {n_env} obstacles, "
+        f"{n_tools} tools; WalkableGround {n_grounds} surf / {n_assigned} assigned / "
+        f"{n_kept} kept / {n_noground} none; Base pose {n_base_pop} populated / "
+        f"{n_base_kept} kept / {n_base_fail} skipped."
+    )
+    return popup_msg, console_line

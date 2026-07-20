@@ -96,8 +96,14 @@ def export_picked_meshes_to_obj_mm(
 ) -> bool:
     """Write picked Rhino meshes to an OBJ in MM, expressed in the block's LOCAL frame.
 
-    `mesh_object_ids` -- list of Rhino object guids; non-mesh objects are
-        skipped with a warning.
+    `mesh_object_ids` -- list of Rhino object guids.  Each entry may be:
+        * a MESH object (used as-is), or
+        * a BLOCK INSTANCE: the Mesh objects already inside its definition
+          are extracted at the instance's world pose.  Only actual meshes
+          are taken -- breps etc. are NEVER auto-meshed (collision meshes
+          must be hand-modeled); an instance whose definition holds no
+          mesh is skipped with a warning.
+        Anything else is skipped with a warning.
     `block_xform_doc` -- 4x4 numpy InstanceXform of the block instance the
         meshes were authored against (doc units).  Picked meshes live in
         WORLD space; we apply `inverse(block_xform_doc)` to bring them into
@@ -142,14 +148,44 @@ def export_picked_meshes_to_obj_mm(
             n_skipped += 1
             continue
         geom = rh_obj.Geometry
-        if not isinstance(geom, Rhino.Geometry.Mesh):
+        if isinstance(geom, Rhino.Geometry.Mesh):
+            m = geom.DuplicateMesh()
+            m.Transform(rh_xform_inv)
+            combined.Append(m)
+            n_picked += 1
+        elif isinstance(rh_obj, Rhino.DocObjects.InstanceObject):
+            # A picked block instance: reuse the Mesh objects already inside
+            # its definition (def-local -> world via the instance xform, then
+            # world -> target block-local). Breps etc. are NEVER auto-meshed.
+            inst_xform = rh_obj.InstanceXform
+            inst_def = rh_obj.InstanceDefinition
+            inst_name = inst_def.Name if inst_def is not None else "<unnamed>"
+            n_inst_meshes = 0
+            for def_obj in (inst_def.GetObjects() if inst_def is not None else []):
+                g = def_obj.Geometry
+                if isinstance(g, Rhino.Geometry.Mesh):
+                    m = g.DuplicateMesh()
+                    m.Transform(inst_xform)     # definition-local -> world
+                    m.Transform(rh_xform_inv)   # world -> target block-local
+                    combined.Append(m)
+                    n_inst_meshes += 1
+            if n_inst_meshes == 0:
+                print(
+                    f"    [export_picked_obj] block instance '{inst_name}' "
+                    f"contains no Mesh objects (breps are NOT auto-meshed; "
+                    f"hand-model a low-poly mesh); skipped for '{label}'."
+                )
+                n_skipped += 1
+            else:
+                print(
+                    f"    [export_picked_obj] took {n_inst_meshes} mesh(es) "
+                    f"from block instance '{inst_name}' for '{label}'."
+                )
+                n_picked += 1
+        else:
             print(f"    [export_picked_obj] skipping non-mesh object {oid} for '{label}'.")
             n_skipped += 1
             continue
-        m = geom.DuplicateMesh()
-        m.Transform(rh_xform_inv)
-        combined.Append(m)
-        n_picked += 1
 
     if combined.Vertices.Count == 0:
         print(f"    [export_picked_obj] no mesh vertices collected for '{label}' (picked={n_picked}, skipped={n_skipped}).")

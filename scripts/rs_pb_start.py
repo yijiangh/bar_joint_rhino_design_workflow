@@ -15,17 +15,21 @@ loaded into a cached PyBullet planner. Subsequent IK scripts (RSIKKeyframe,
 RSShowIK) reuse this same client via `sc.sticky`.
 
 After the client is up, this also auto-builds the static assembly collision
-cell (the same work as the RSRebuildRobotCell button), so you no longer have
-to click RSRebuildRobotCell by hand before the first IK / ShowIK / export.
-The auto-build is best-effort: if it can't run yet (e.g. the two arm tools
-aren't defined), it just warns and leaves PyBullet running -- click
-RSRebuildRobotCell later once the geometry + tools exist.
+cell (the same work as the RSRebuildRobotCell button, including the
+WalkableGround auto-assign + seed-base passes), so you no longer have to click
+RSRebuildRobotCell by hand before the first IK / ShowIK / export. On success it
+pops up the same summary window RSRebuildRobotCell shows. The auto-build is
+best-effort: if it can't run yet (e.g. the two arm tools aren't defined), it
+just warns and leaves PyBullet running -- click RSRebuildRobotCell later once
+the geometry + tools exist.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+
+import rhinoscriptsyntax as rs
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +44,7 @@ from core.robot_cell import (
     start_pb_client,
 )
 from core.rhino_bar_registry import repair_on_entry
+from core.rhino_walkable_ground import rebuild_summary_after_assign
 
 
 def main(use_gui: bool = False) -> None:
@@ -63,12 +68,22 @@ def _auto_build_robot_cell(planner) -> None:
     most commonly "the two arm tools aren't defined yet" -- is a non-fatal
     warning rather than aborting the PyBullet session that just started fine.
     The manual RSRebuildRobotCell button still works for later geometry edits.
+
+    On success it shows the SAME pop-up summary as RSRebuildRobotCell (bar /
+    joint / obstacle / tool counts + WalkableGround + seed-base lines), built by
+    the shared ``rhino_walkable_ground.rebuild_summary_after_assign`` helper so
+    the two windows never drift apart.
     """
     rcell = get_or_load_robot_cell()
     try:
         # ! Same bar-registry hygiene the manual RSRebuildRobotCell runs on entry.
         repair_on_entry(float(config.BAR_RADIUS), "RSPBStart")
         collision_bodies = rebuild_assembly_cell(rcell, planner)
+        # ! Same WalkableGround auto-assign + seed-base passes + summary text that
+        # ! RSRebuildRobotCell produces, so the pop-up window matches exactly.
+        msg, console_line = rebuild_summary_after_assign(
+            collision_bodies, sorted(rcell.tool_models.keys())
+        )
     except Exception as exc:  # noqa: BLE001 -- never let a cell-build issue kill startup
         print(
             f"RSPBStart: skipped auto-building the robot cell "
@@ -77,15 +92,9 @@ def _auto_build_robot_cell(planner) -> None:
         )
         return
 
-    # ---- Report what was registered (mirrors the RSRebuildRobotCell summary).
-    n_bar = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "bar")
-    n_joint = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "joint")
-    n_env = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "environment")
-    n_tools = len(rcell.tool_models)
-    print(
-        f"RSPBStart: auto-built robot cell -- {n_bar} bar(s), "
-        f"{n_joint} joint half/halves, {n_env} obstacle(s), {n_tools} tool(s)."
-    )
+    # ---- Same pop-up window + console echo as the RSRebuildRobotCell button.
+    print(f"RSPBStart: {console_line}")
+    rs.MessageBox(msg, 0, "RSPBStart")
 
 
 if __name__ == "__main__":

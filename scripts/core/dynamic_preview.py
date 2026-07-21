@@ -12,6 +12,7 @@ Rhino 8 ScriptEditor (not from standalone tests).
 from __future__ import annotations
 
 import contextlib
+import math
 
 import Rhino
 import scriptcontext as sc
@@ -37,6 +38,142 @@ def _force_redraw():
     Rhino.RhinoApp.Wait()
 
 
+# ---------------------------------------------------------------------------
+# Reach-circle outline (radial-clamp deformation vs obstacles / ground edge)
+# ---------------------------------------------------------------------------
+
+# Shared reach-outline colors: clear (no contact) vs touching an obstacle or the
+# walkable-ground edge.
+_REACH_COLOR_CLEAR = _color_from_rgb(100, 100, 220)
+_REACH_COLOR_TOUCH = _color_from_rgb(255, 100, 100)
+
+
+def _ray_segment_t(cu, cv, dx, dy, ax, ay, bx, by):
+    """Parametric distance ``t`` along the ray (origin (cu,cv), unit dir (dx,dy))
+    to its crossing with segment A(ax,ay)->B(bx,by), or ``None`` if it misses.
+
+    Pure 2D float math (no RhinoCommon) so it is cheap enough to run per spoke on
+    every mouse-move.
+    """
+    ex = bx - ax
+    ey = by - ay
+    det = ex * dy - dx * ey
+    if -1e-12 < det < 1e-12:
+        return None  # parallel
+    aox = ax - cu
+    aoy = ay - cv
+    t = (-aox * ey + ex * aoy) / det   # distance along the ray
+    s = (dx * aoy - aox * dy) / det    # position along the segment [0,1]
+    if t < 0.0 or s < 0.0 or s > 1.0:
+        return None
+    return t
+
+
+def _ray_polygons_min_dist(cu, cv, dx, dy, maxlen, polygons):
+    """Nearest crossing distance (<= ``maxlen``) of the ray with any polygon edge.
+
+    Returns ``(dist, hit)``. Each polygon is a list of (u, v) points in plane
+    coords; edges wrap (last -> first).
+    """
+    best = maxlen
+    hit = False
+    for poly in polygons:
+        m = len(poly)
+        if m < 2:
+            continue
+        for i in range(m):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % m]
+            t = _ray_segment_t(cu, cv, dx, dy, ax, ay, bx, by)
+            if t is not None and 0.0 < t < best:
+                best = t
+                hit = True
+    return best, hit
+
+
+def compute_reach_outline(center_doc, normal_doc, radius_doc, clip_curves, tol, segments=90):
+    """Return ``(outline_curve, overlaps)`` for the base reach circle, clamped
+    inward where it would enter an obstacle footprint or leave the walkable edge.
+
+    Radial-clamp method done in the ground plane's 2D coordinates: cast
+    ``segments`` spokes from the center; each spoke length starts at ``radius_doc``
+    and is shortened to the nearest crossing with an obstacle footprint polygon or
+    the walkable boundary polygon (all precomputed 2D polygons in ``clip_curves``).
+    Every intersection is pure float math -- no per-frame RhinoCommon curve
+    intersection -- so it stays smooth when recomputed on every mouse-move.
+
+    Args:
+        center_doc (Rhino.Geometry.Point3d): circle center (base origin), doc units.
+        normal_doc (Rhino.Geometry.Vector3d): plane normal, used only when
+            ``clip_curves`` carries no precomputed plane (plain-circle fast path).
+        radius_doc (float): full reach radius, doc units.
+        clip_curves (dict | None): ``{"plane": Plane, "boundary": [(u,v),...] | None,
+            "obstacles": [[(u,v),...], ...]}`` precomputed by the caller in ONE
+            fixed plane. Empty -> plain circle.
+        tol (float): absolute tolerance, used for the overlap epsilon.
+        segments (int): number of spokes.
+
+    Returns:
+        (Rhino.Geometry.Curve | None, bool): outline + whether any spoke clamped.
+    """
+    if radius_doc is None or float(radius_doc) <= 0.0:
+        return None, False
+    radius_doc = float(radius_doc)
+
+    clip = clip_curves or {}
+    plane = clip.get("plane")
+    boundary = clip.get("boundary")
+    obstacles = clip.get("obstacles") or []
+    if plane is None:
+        if normal_doc is None:
+            return None, False
+        plane = Rhino.Geometry.Plane(center_doc, normal_doc)
+
+    # Fast path: nothing to clip against -> the exact circle.
+    if not boundary and not obstacles:
+        return Rhino.Geometry.Circle(plane, radius_doc).ToNurbsCurve(), False
+
+    polygons = []
+    if boundary:
+        polygons.append(boundary)
+    polygons.extend(obstacles)
+
+    ok, center_plane = plane.RemapToPlaneSpace(center_doc)
+    if not ok:
+        return Rhino.Geometry.Circle(plane, radius_doc).ToNurbsCurve(), False
+    cu = center_plane.X
+    cv = center_plane.Y
+
+    eps = max(float(tol), radius_doc * 1e-4)
+    n = max(8, int(segments))
+    overlaps = False
+    poly = Rhino.Geometry.Polyline()
+    first_pt = None
+    for i in range(n):
+        ang = (2.0 * math.pi * i) / n
+        dx = math.cos(ang)
+        dy = math.sin(ang)
+        dist, hit = _ray_polygons_min_dist(cu, cv, dx, dy, radius_doc, polygons)
+        r = dist if hit else radius_doc
+        if r < radius_doc - eps:
+            overlaps = True
+        pt = plane.PointAt(cu + dx * r, cv + dy * r)
+        if first_pt is None:
+            first_pt = pt
+        poly.Add(pt)
+    if first_pt is not None:
+        poly.Add(first_pt)  # close the loop
+    return poly.ToNurbsCurve(), overlaps
+
+
+def _draw_reach(e, curve, overlaps, color_clear=None, color_touch=None):
+    """Draw the reach outline in the touch color when it overlaps, else clear."""
+    if curve is None:
+        return
+    color = (color_touch or _REACH_COLOR_TOUCH) if overlaps else (color_clear or _REACH_COLOR_CLEAR)
+    e.Display.DrawCurve(curve, color, 2)
+
+
 class MeshPreviewConduit(Rhino.Display.DisplayConduit):
     """DisplayConduit drawing a fixed list of meshes under a mutable world
     transform with a translucent material.
@@ -53,6 +190,17 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
             color = _color_from_rgb(180, 180, 220)
         self._material = Rhino.Display.DisplayMaterial(color)
         self._material.Transparency = max(0.0, min(1.0, 1.0 - float(alpha)))
+        # Optional reach-circle outline drawn on top of the ghost meshes (used by
+        # the RSIKKeyframe base pick). None -> nothing drawn, so other callers of
+        # MeshPreviewConduit are unaffected.
+        self._reach_curve = None
+        self._reach_overlaps = False
+
+    def set_reach_outline(self, curve, overlaps):
+        """Set the reach outline to draw. No redraw here -- the paired
+        ``update_xform`` call on the same tick triggers the single redraw."""
+        self._reach_curve = curve
+        self._reach_overlaps = bool(overlaps)
 
     def update_xform(self, xform):
         self._xform = xform if xform is not None else Rhino.Geometry.Transform.Identity
@@ -63,6 +211,10 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
             bb = m.GetBoundingBox(self._xform)
             if bb.IsValid:
                 e.IncludeBoundingBox(bb)
+        if self._reach_curve is not None:
+            bb = self._reach_curve.GetBoundingBox(False)
+            if bb.IsValid:
+                e.IncludeBoundingBox(bb)
 
     def PostDrawObjects(self, e):
         e.Display.PushModelTransform(self._xform)
@@ -71,6 +223,9 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
                 e.Display.DrawMeshShaded(m, self._material)
         finally:
             e.Display.PopModelTransform()
+        # Reach outline is in doc/world coords -> draw AFTER popping the model
+        # transform so it does not follow the ghost-robot xform.
+        _draw_reach(e, self._reach_curve, self._reach_overlaps)
 
 
 @contextlib.contextmanager
@@ -138,6 +293,10 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
         self._seed_x_axis_doc = None
         self._seed_arrow_len_doc = 1.0
         self._circle_doc = None
+        # Deformed (obstacle-clipped) reach outline; when set it is drawn instead
+        # of the plain _circle_doc.
+        self._reach_curve = None
+        self._reach_overlaps = False
         # tried = [(Point3d origin_doc, Vector3d x_axis_doc, bool success), ...]
         self._tried = []
 
@@ -153,15 +312,28 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
         normal_doc,
         radius_doc,
         arrow_len_doc,
+        clip_curves=None,
+        tol=None,
     ):
         self._seed_origin_doc = origin_doc
         self._seed_x_axis_doc = x_axis_doc
         self._seed_arrow_len_doc = float(arrow_len_doc)
+        self._circle_doc = None
+        self._reach_curve = None
+        self._reach_overlaps = False
         if radius_doc and float(radius_doc) > 0 and normal_doc is not None:
-            plane = Rhino.Geometry.Plane(origin_doc, normal_doc)
-            self._circle_doc = Rhino.Geometry.Circle(plane, float(radius_doc))
-        else:
-            self._circle_doc = None
+            if clip_curves is not None:
+                # Deformed outline clipped against obstacles / walkable edge.
+                self._reach_curve, self._reach_overlaps = compute_reach_outline(
+                    origin_doc,
+                    normal_doc,
+                    float(radius_doc),
+                    clip_curves,
+                    tol if tol is not None else sc.doc.ModelAbsoluteTolerance,
+                )
+            else:
+                plane = Rhino.Geometry.Plane(origin_doc, normal_doc)
+                self._circle_doc = Rhino.Geometry.Circle(plane, float(radius_doc))
         # Pump the message queue: this conduit is driven from the blocking IK
         # base-sampling loop, so a plain Redraw() would not paint until the loop
         # ends (see _force_redraw).
@@ -183,6 +355,10 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
                     e.IncludeBoundingBox(bb)
         if self._circle_doc is not None:
             e.IncludeBoundingBox(self._circle_doc.BoundingBox)
+        if self._reach_curve is not None:
+            bb = self._reach_curve.GetBoundingBox(False)
+            if bb.IsValid:
+                e.IncludeBoundingBox(bb)
         if self._seed_origin_doc is not None:
             e.IncludeBoundingBox(Rhino.Geometry.BoundingBox(self._seed_origin_doc, self._seed_origin_doc))
         for origin, _x, _s in self._tried:
@@ -207,7 +383,9 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
             finally:
                 e.Display.PopModelTransform()
 
-        if self._circle_doc is not None:
+        if self._reach_curve is not None:
+            _draw_reach(e, self._reach_curve, self._reach_overlaps, self._color_circle)
+        elif self._circle_doc is not None:
             e.Display.DrawCircle(self._circle_doc, self._color_circle, 2)
 
         sample_arrow_len = self._seed_arrow_len_doc * 0.6
@@ -236,6 +414,45 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
 def ik_sample_viz(robot_meshes, *, alpha=0.35):
     """Enable an IKSampleVizConduit for the duration of the with-block."""
     conduit = IKSampleVizConduit(robot_meshes, alpha=alpha)
+    conduit.Enabled = True
+    try:
+        yield conduit
+    finally:
+        conduit.Enabled = False
+        sc.doc.Views.Redraw()
+
+
+class ReachCircleConduit(Rhino.Display.DisplayConduit):
+    """Draws only the (optionally obstacle-clipped) reach outline -- no meshes.
+
+    Used for the RSIKKeyframe saved-base reuse preview, where the robot is
+    already shown via ``ik_viz`` and only the reach circle needs a conduit.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._reach_curve = None
+        self._reach_overlaps = False
+
+    def set_reach_outline(self, curve, overlaps):
+        self._reach_curve = curve
+        self._reach_overlaps = bool(overlaps)
+        _force_redraw()
+
+    def CalculateBoundingBox(self, e):
+        if self._reach_curve is not None:
+            bb = self._reach_curve.GetBoundingBox(False)
+            if bb.IsValid:
+                e.IncludeBoundingBox(bb)
+
+    def PostDrawObjects(self, e):
+        _draw_reach(e, self._reach_curve, self._reach_overlaps)
+
+
+@contextlib.contextmanager
+def reach_circle_viz():
+    """Enable a ReachCircleConduit for the duration of the with-block."""
+    conduit = ReachCircleConduit()
     conduit.Enabled = True
     try:
         yield conduit

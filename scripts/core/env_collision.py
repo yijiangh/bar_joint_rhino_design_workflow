@@ -460,13 +460,81 @@ def _sanitize_obstacle_name(name) -> str:
     return cleaned or "env"
 
 
+def _coerce_env_brep(oid):
+    """Return a ``Rhino.Geometry.Brep`` for a brep/surface/polysurface/extrusion
+    object, or ``None`` if *oid* is not brep-like.
+
+    Mirrors ``core.rhino_walkable_ground.as_brep``: ``rs.coercebrep`` handles
+    breps/surfaces directly, and closed Extrusion primitives (Rhino's native box)
+    are converted via ``Extrusion.ToBrep`` (``rs.coercebrep`` returns ``None`` for
+    those).
+    """
+    import Rhino
+    import rhinoscriptsyntax as rs
+
+    brep = rs.coercebrep(oid)
+    if brep is not None:
+        return brep
+    rhobj = rs.coercerhinoobject(oid, True, True)
+    geom = getattr(rhobj, "Geometry", None)
+    if isinstance(geom, Rhino.Geometry.Extrusion):
+        return geom.ToBrep(False)
+    return None
+
+
+def _env_object_to_compas_mesh(oid, scale_to_m, Mesh):
+    """Return a COMPAS ``Mesh`` (vertices in METERS, world coords) for an env
+    object, or ``None`` if it is neither a mesh nor a meshable brep/extrusion.
+
+    Native meshes are read directly; brep / surface / polysurface / (closed)
+    extrusion objects are meshed with coarse settings (same as WalkableGround)
+    and the per-face meshes joined into one. Both paths yield Rhino's quad face
+    convention (triangles repeat the last index), collapsed to tris/quads for
+    ``Mesh.from_vertices_and_faces``.
+    """
+    import Rhino
+    import rhinoscriptsyntax as rs
+
+    if rs.IsMesh(oid):
+        verts = rs.MeshVertices(oid)
+        faces = rs.MeshFaceVertices(oid)
+    else:
+        brep = _coerce_env_brep(oid)
+        if brep is None:
+            return None
+        face_meshes = Rhino.Geometry.Mesh.CreateFromBrep(
+            brep, Rhino.Geometry.MeshingParameters.Coarse
+        )
+        if not face_meshes:
+            return None
+        joined = Rhino.Geometry.Mesh()
+        for m in face_meshes:
+            if m is not None:
+                joined.Append(m)
+        verts = [(v.X, v.Y, v.Z) for v in joined.Vertices]
+        faces = [(f.A, f.B, f.C, f.D) for f in joined.Faces]
+    if not verts or not faces:
+        return None
+    cverts = [
+        (float(p[0]) * scale_to_m, float(p[1]) * scale_to_m, float(p[2]) * scale_to_m)
+        for p in verts
+    ]
+    cfaces = []
+    for f in faces:
+        a, b, c, d = f
+        cfaces.append([a, b, c] if c == d else [a, b, c, d])
+    return Mesh.from_vertices_and_faces(cverts, cfaces)
+
+
 def collect_environment_geometry():
     """Collect static obstacle bodies from ``config.LAYER_ENVIRONMENT``.
 
-    Every mesh on that layer becomes a static ``obstacle_<name>`` rigid body.
-    Mesh vertices are already in world coordinates (scaled doc-units -> m), so
-    ``frame_world_mm`` is identity. Non-mesh objects on the layer are skipped
-    with a warning.
+    Every mesh, brep, surface, polysurface or (closed) extrusion on that layer
+    becomes a static ``obstacle_<name>`` rigid body -- breps/extrusions are
+    meshed on the fly (coarse settings). Geometry is already in world
+    coordinates (scaled doc-units -> m), so ``frame_world_mm`` is identity.
+    Objects that are neither a mesh nor a meshable brep are skipped with a
+    warning.
 
     Returns:
         dict: ``{name: body_info}`` with ``kind:"environment"`` -- the same
@@ -486,26 +554,17 @@ def collect_environment_geometry():
 
     out = {}
     used = set()
+    n_skipped = 0
     for i, oid in enumerate(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or []):
-        if not rs.IsMesh(oid):
+        mesh = _env_object_to_compas_mesh(oid, scale_to_m, Mesh)
+        if mesh is None:
+            n_skipped += 1
             print(
                 f"core.env_collision.collect_environment_geometry: object {oid} on "
-                f"{config.LAYER_ENVIRONMENT!r} is not a mesh; skipping."
+                f"{config.LAYER_ENVIRONMENT!r} is not a mesh/brep/extrusion (or could "
+                f"not be meshed); skipping."
             )
             continue
-        verts = rs.MeshVertices(oid)
-        faces = rs.MeshFaceVertices(oid)
-        if not verts or not faces:
-            continue
-        cverts = [
-            (float(p[0]) * scale_to_m, float(p[1]) * scale_to_m, float(p[2]) * scale_to_m)
-            for p in verts
-        ]
-        cfaces = []
-        for f in faces:
-            a, b, c, d = f
-            cfaces.append([a, b, c] if c == d else [a, b, c, d])
-        mesh = Mesh.from_vertices_and_faces(cverts, cfaces)
         rb = RigidBody(visual_meshes=[mesh], collision_meshes=[mesh], native_scale=1.0)
         name = _sanitize_obstacle_name(rs.ObjectName(oid) or f"env{i}")
         base, k = name, 1
@@ -522,6 +581,7 @@ def collect_environment_geometry():
     print(
         f"core.env_collision.collect_environment_geometry: {len(out)} obstacle(s) "
         f"from {config.LAYER_ENVIRONMENT!r}"
+        + (f" ({n_skipped} skipped)" if n_skipped else "")
     )
     return out
 

@@ -56,6 +56,7 @@ if SCRIPT_DIR not in sys.path:
 from core import bar_action as _bar_action_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
+from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
 from core import ik_keyframe as _ik_keyframe_module
 from core import ik_viz as _ik_viz_module
@@ -106,9 +107,10 @@ def _reload_runtime_modules():
     Returns:
         None.
     """
-    global bar_action, config, dynamic_preview, highlight_env, ik_keyframe, ik_viz, robot_cell
+    global bar_action, config, dynamic_preview, env_collision, highlight_env, ik_keyframe, ik_viz, robot_cell
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
+    env_collision = importlib.reload(_env_collision_module)
     highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
@@ -522,6 +524,224 @@ def _bake_robot_meshes_at_zero():
     return ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
 
 
+# ---------------------------------------------------------------------------
+# Reach-circle clip geometry (obstacle footprints + walkable boundary)
+# ---------------------------------------------------------------------------
+
+
+def _walkable_ground_plane(brep):
+    """Return a representative ``Rhino.Geometry.Plane`` for a walkable brep.
+
+    Origin = area centroid snapped onto the brep; normal = the surface normal
+    there. This is the flat-ground plane the reach-circle clip curves live in.
+    Returns None if no plane can be derived.
+    """
+    try:
+        amp = Rhino.Geometry.AreaMassProperties.Compute(brep)
+    except Exception:
+        amp = None
+    if amp is not None:
+        pt, normal = _closest_point_on_brep(brep, amp.Centroid)
+        if pt is not None and normal is not None:
+            return Rhino.Geometry.Plane(pt, normal)
+    try:
+        face = brep.Faces[0]
+        u = face.Domain(0).Mid
+        v = face.Domain(1).Mid
+        return Rhino.Geometry.Plane(face.PointAt(u, v), face.NormalAt(u, v))
+    except Exception:
+        return None
+
+
+def _rect_curve_in_plane(plane, bbox_in_plane):
+    """Return a closed rectangle curve (world/doc coords) for a plane-aligned
+    bounding box -- the obstacle footprint fallback when a brep does not section
+    the ground plane."""
+    lo = bbox_in_plane.Min
+    hi = bbox_in_plane.Max
+    corners = [
+        plane.PointAt(lo.X, lo.Y),
+        plane.PointAt(hi.X, lo.Y),
+        plane.PointAt(hi.X, hi.Y),
+        plane.PointAt(lo.X, hi.Y),
+        plane.PointAt(lo.X, lo.Y),
+    ]
+    poly = Rhino.Geometry.Polyline()
+    for c in corners:
+        poly.Add(c)
+    return poly.ToNurbsCurve()
+
+
+def _brep_footprint_in_plane(brep, plane, tol):
+    """Return the obstacle brep's footprint curves in ``plane``: the section
+    where the brep crosses the plane, or a bbox rectangle fallback when it floats
+    clear of the plane. Curves need not be closed (obstacles clip by crossing)."""
+    curves = None
+    try:
+        rc, xs, _pts = Rhino.Geometry.Intersection.BrepPlane(brep, plane, tol)
+        if rc and xs:
+            curves = list(xs)
+    except Exception:
+        curves = None
+    if curves:
+        joined = Rhino.Geometry.Curve.JoinCurves(curves, tol)
+        return [c for c in (joined or curves) if c is not None]
+    try:
+        bb = brep.GetBoundingBox(plane)
+    except Exception:
+        bb = None
+    if bb is not None and bb.IsValid:
+        rect = _rect_curve_in_plane(plane, bb)
+        if rect is not None:
+            return [rect]
+    return []
+
+
+def _mesh_footprint_in_plane(mesh, plane, tol):
+    """Return an obstacle mesh's footprint curves in ``plane``: the section where
+    the mesh crosses the plane, or a plane-aligned bbox rectangle fallback when it
+    floats clear of (or sits coincident with) the plane."""
+    polylines = None
+    try:
+        polylines = Rhino.Geometry.Intersection.MeshPlane(mesh, plane)
+    except Exception:
+        polylines = None
+    curves = []
+    for pl in polylines or []:
+        if pl is not None and pl.Count >= 2:
+            c = pl.ToNurbsCurve()
+            if c is not None:
+                curves.append(c)
+    if curves:
+        joined = Rhino.Geometry.Curve.JoinCurves(curves, tol)
+        return [c for c in (joined or curves) if c is not None]
+    try:
+        bb = mesh.GetBoundingBox(plane)
+    except Exception:
+        bb = None
+    if bb is not None and bb.IsValid:
+        rect = _rect_curve_in_plane(plane, bb)
+        if rect is not None:
+            return [rect]
+    return []
+
+
+def _obstacle_footprints_in_plane(oid, plane, tol):
+    """Footprint curves of an environment obstacle in ``plane``, for either a
+    mesh or a brep/surface/polysurface/extrusion object.
+
+    Environment obstacles are typically meshes by the time RSIKKeyframe runs (see
+    ``env_collision`` -- non-mesh env objects are converted to mesh), so a
+    brep-only path would drop them and the reach circle would never clamp against
+    them. Meshes are sectioned with ``MeshPlane``; brep-like objects reuse
+    ``env_collision._coerce_env_brep`` + ``_brep_footprint_in_plane``."""
+    if rs.IsMesh(oid):
+        mesh = rs.coercemesh(oid)
+        if mesh is None:
+            return []
+        return _mesh_footprint_in_plane(mesh, plane, tol)
+    try:
+        brep = env_collision._coerce_env_brep(oid)
+    except Exception:
+        brep = None
+    if brep is None:
+        return []
+    return _brep_footprint_in_plane(brep, plane, tol)
+
+
+def _walkable_boundary_loop(brep, tol):
+    """Return the walkable brep's outer boundary as one closed curve (longest
+    joined naked-edge loop), or None. Used to clamp the reach circle to the
+    ground edge."""
+    try:
+        edges = brep.DuplicateNakedEdgeCurves(True, False)
+    except Exception:
+        edges = None
+    if not edges:
+        return None
+    joined = Rhino.Geometry.Curve.JoinCurves(list(edges), tol)
+    if not joined:
+        return None
+    best = None
+    best_len = -1.0
+    for c in joined:
+        if c is None:
+            continue
+        try:
+            length = c.GetLength()
+        except Exception:
+            continue
+        if length > best_len:
+            best_len = length
+            best = c
+    return best
+
+
+def _plane_from_frame_mm(frame_mm):
+    """Return a doc-unit ``Plane`` at a base frame's origin, normal = base +Z."""
+    origin_doc, _x_axis_doc, z_axis_doc = _frame_mm_to_doc_marker(frame_mm)
+    return Rhino.Geometry.Plane(origin_doc, z_axis_doc)
+
+
+def _curve_to_plane_polygon(curve, plane, count=64):
+    """Sample ``curve`` into a list of (u, v) points in ``plane`` coordinates.
+
+    The reach-circle clip runs pure-2D math against these polygons (see
+    ``dynamic_preview.compute_reach_outline``), so we tessellate each Rhino curve
+    ONCE here instead of intersecting NURBS geometry on every mouse-move.
+    """
+    pts = []
+    try:
+        params = curve.DivideByCount(count, True)
+    except Exception:
+        params = None
+    if not params:
+        try:
+            params = [curve.Domain.Min, curve.Domain.Max]
+        except Exception:
+            return pts
+    for t in params:
+        p = curve.PointAt(t)
+        ok, pp = plane.RemapToPlaneSpace(p)
+        if ok:
+            pts.append((pp.X, pp.Y))
+    return pts
+
+
+def _gather_reach_clip_curves(plane, walkable_brep=None):
+    """Precompute the reach-circle clip polygons in ``plane`` (2D plane coords).
+
+    Obstacle footprints come from every object on ``config.LAYER_ENVIRONMENT``
+    (meshes and brep-like objects alike, via ``_obstacle_footprints_in_plane``);
+    the walkable boundary (when ``walkable_brep`` is given) clamps the circle to
+    the ground edge. Curves are tessellated to polygons up front so the live
+    preview clamp is cheap float math. Returns ``{"plane": Plane,
+    "boundary": [(u,v),...] | None, "obstacles": [[(u,v),...], ...]}``.
+    """
+    if plane is None:
+        return {"plane": None, "boundary": None, "obstacles": []}
+    tol = sc.doc.ModelAbsoluteTolerance
+    obstacles = []
+    if rs.IsLayer(config.LAYER_ENVIRONMENT):
+        for oid in rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or []:
+            try:
+                footprints = _obstacle_footprints_in_plane(oid, plane, tol)
+            except Exception:
+                footprints = []
+            for footprint in footprints:
+                poly = _curve_to_plane_polygon(footprint, plane)
+                if len(poly) >= 2:
+                    obstacles.append(poly)
+    boundary = None
+    if walkable_brep is not None:
+        loop = _walkable_boundary_loop(walkable_brep, tol)
+        if loop is not None:
+            bpoly = _curve_to_plane_polygon(loop, plane)
+            if len(bpoly) >= 3:
+                boundary = bpoly
+    return {"plane": plane, "boundary": boundary, "obstacles": obstacles}
+
+
 def _pick_base_frame_on_walkable(brep_id):
     """Pick base origin + heading on the walkable brep, with the dual-arm
     robot's mesh tracking the cursor. Returns
@@ -530,7 +750,24 @@ def _pick_base_frame_on_walkable(brep_id):
     brep = _as_brep(brep_id)
     robot_meshes = _bake_robot_meshes_at_zero()
 
+    # Reach-circle preview: obstacle footprints + walkable boundary in the brep's
+    # tangent plane, precomputed once (static) and reused on every mouse-move.
+    radius_doc = float(config.IK_BASE_SAMPLE_RADIUS) / doc_unit_scale_to_mm()
+    tol = sc.doc.ModelAbsoluteTolerance
+    clip_curves = _gather_reach_clip_curves(_walkable_ground_plane(brep), brep)
+
     with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4) as conduit:
+        def _update_reach(center_pt, normal_v):
+            """Rebuild the clipped reach outline at ``center_pt`` and push it to the
+            ghost-preview conduit (drawn on the same redraw tick as the ghost)."""
+            try:
+                curve, overlaps = dynamic_preview.compute_reach_outline(
+                    center_pt, normal_v, radius_doc, clip_curves, tol
+                )
+                conduit.set_reach_outline(curve, overlaps)
+            except Exception as exc:  # noqa: BLE001 -- preview must not break the pick
+                print(f"RSIKKeyframe: reach outline failed ({exc}).")
+
         # Phase A: base origin on brep.
         def _xform_phase_a(cursor_doc):
             """Ghost-robot transform while picking the base origin.
@@ -548,6 +785,7 @@ def _pick_base_frame_on_walkable(brep_id):
             close_pt, normal = _closest_point_on_brep(brep, cursor_doc)
             if close_pt is None:
                 return None
+            _update_reach(close_pt, normal)
             world_x = Rhino.Geometry.Vector3d(1.0, 0.0, 0.0)
             return _world_from_base_doc_xform(close_pt, normal, world_x)
 
@@ -560,6 +798,7 @@ def _pick_base_frame_on_walkable(brep_id):
         close_pt, normal = _closest_point_on_brep(brep, picked_doc)
         if close_pt is None:
             return None, None, None, None
+        _update_reach(close_pt, normal)  # lock the circle at the confirmed origin
 
         # Phase B: heading point.
         def _xform_phase_b(cursor_doc):
@@ -924,7 +1163,7 @@ def _frame_mm_to_doc_marker(frame_mm):
     return origin_doc, x_axis_doc, z_axis_doc
 
 
-def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm):
+def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm, clip_curves=None):
     """Create + enable an IK-sampling viz conduit and draw the seed marker + circle.
 
     Draws seed origin + X-axis arrow + sampling circle in the seed's tangent plane
@@ -953,6 +1192,8 @@ def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm):
         z_axis_doc,
         float(sample_radius_mm) * scale_from_mm,
         arrow_len_mm * scale_from_mm,
+        clip_curves=clip_curves,
+        tol=sc.doc.ModelAbsoluteTolerance,
     )
     return conduit
 
@@ -1308,7 +1549,26 @@ def _resolve_seed_base_frame(
         # Default mesh-mode for the preview matches the user's last choice.
         preview_mode = ik_viz.get_mesh_mode()
         _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
-        answer = _ask_reuse_saved_base()
+        # Reach circle at the saved base, clipped against obstacles + the nearest
+        # walkable brep's edge (the reuse path never picks a brep of its own).
+        with dynamic_preview.reach_circle_viz() as _reach:
+            try:
+                reuse_brep_id = _resolve_sampling_brep_for_base(saved_base, None)
+                reuse_brep = _as_brep(reuse_brep_id) if reuse_brep_id is not None else None
+                clip_curves = _gather_reach_clip_curves(
+                    _plane_from_frame_mm(saved_base), reuse_brep
+                )
+                radius_doc = float(config.IK_BASE_SAMPLE_RADIUS) / doc_unit_scale_to_mm()
+                origin_doc, _x, z_axis_doc = _frame_mm_to_doc_marker(saved_base)
+                _reach.set_reach_outline(
+                    *dynamic_preview.compute_reach_outline(
+                        origin_doc, z_axis_doc, radius_doc, clip_curves,
+                        sc.doc.ModelAbsoluteTolerance,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 -- preview must not break the prompt
+                print(f"RSIKKeyframe: reach preview failed ({exc}).")
+            answer = _ask_reuse_saved_base()
         if answer is None:
             print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
             ik_viz.end_session()
@@ -1736,7 +1996,13 @@ def main():
             # drawn circle + tried-sample markers + seed arrow stay visible through
             # the accept/retry prompt below (the user can see which bases were
             # tried). It is torn down in the `finally` once they decide.
-            viz = _open_ik_sample_viz(seed_base_frame, config.IK_BASE_SAMPLE_RADIUS)
+            _solve_brep = _as_brep(brep_id) if brep_id is not None else None
+            _solve_clip = _gather_reach_clip_curves(
+                _plane_from_frame_mm(seed_base_frame), _solve_brep
+            )
+            viz = _open_ik_sample_viz(
+                seed_base_frame, config.IK_BASE_SAMPLE_RADIUS, _solve_clip
+            )
             try:
                 # * S
                 print("RSIKKeyframe: solving M1->M2->M3 IK chain ...")

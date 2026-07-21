@@ -39,6 +39,7 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000015" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000015</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000017</right_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000016" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000016</left_macro_id>
@@ -76,6 +77,7 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000009" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000009</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000045</right_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000023" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000023</left_macro_id>
@@ -222,6 +224,18 @@
         <locale_1033>RSIKKeyframe</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_ik_keyframe.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000017">
+      <text>
+        <locale_1033>RSIKKeyframeAll</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Right-click companion of RSIKKeyframe: multi-select bars, auto-place each robot base a standoff behind the grabbed-joint center (projected to the ground, opposite the insertion direction), then Save-base-and-exit or solve IK once per bar. Solved bars turn orange, failed bars magenta; a popup tallies the result. Retry failed bars with the single-bar RSIKKeyframe.</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSIKKeyframeAll</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_ik_keyframe_all.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000016">
       <text>
@@ -415,6 +429,18 @@
         <locale_1033>RSUpdatePreview</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_update_preview.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000045">
+      <text>
+        <locale_1033>RSShowIKPreview</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Right-click companion of RSUpdatePreview: color every bar that has a solved IK keyframe (COLOR_HAS_IK) and print the IK color legend to the command line. Left-click RSUpdatePreview clears these colors.</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSShowIKPreview</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_show_ik_preview.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000023">
       <text>

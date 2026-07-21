@@ -1187,6 +1187,87 @@ def reset_bar_color(curve_id):
             rs.ObjectColorSource(tube, 0)
 
 
+# ---------------------------------------------------------------------------
+# IK color preview (shared single source of truth)
+# ---------------------------------------------------------------------------
+#
+# The multi-bar IK command (rs_ik_keyframe_all) colors bars by IK outcome;
+# RSUpdatePreview (left-click) clears those colors and its right-click companion
+# (rs_show_ik_preview) re-shows them on demand. All three import the two colors
+# and the show/clear/legend helpers from here so the meanings live in ONE place.
+#
+# These are `paint_bar` overrides (by-object color on the centerline + tube),
+# reverted with `reset_bar_color`. COLOR_HAS_IK is PERSISTED state (readable back
+# via `core.bar_action.has_ik_keyframe`); COLOR_FAILED is TRANSIENT -- only shown
+# live during an rs_ik_keyframe_all solve run, never stored on the bar, so
+# `show_all_ik_preview` cannot reconstruct it.
+COLOR_HAS_IK = (75, 120, 150)    # bar has a solved IK keyframe
+COLOR_FAILED = (230, 115, 150)   # IK attempted at the placed base but failed
+
+
+def ik_preview_legend_lines():
+    """Return the IK color-legend lines (for command-line print / message boxes)."""
+    return [
+        "IK color preview -- what the bar colors mean:",
+        "  gray blue  = bar HAS a solved IK keyframe",
+        "  pink  = IK attempted but FAILED (shown live during "
+        "RSIKKeyframeAll; not persisted)",
+        "  default (by-layer)   = no IK solved yet",
+    ]
+
+
+def print_ik_preview_legend():
+    """Print the IK color legend to the Rhino command line."""
+    for line in ik_preview_legend_lines():
+        print(line)
+
+
+def clear_ik_preview():
+    """Revert every registered bar's color override back to by-layer.
+
+    Clears the IK overlay left by rs_ik_keyframe_all (and by
+    :func:`show_all_ik_preview`). Visibility is untouched -- only color is reset.
+
+    Returns:
+        int: the number of bars reset.
+    """
+    n = 0
+    rs.EnableRedraw(False)
+    for _bar_id, (oid, _seq) in get_bar_seq_map().items():
+        reset_bar_color(oid)
+        n += 1
+    rs.EnableRedraw(True)
+    return n
+
+
+def show_all_ik_preview():
+    """Color every solved bar ``COLOR_HAS_IK``; leave unsolved bars by-layer.
+
+    Reverts all bar colors first (so a stale color from a previous run does not
+    linger), then paints the bars that currently carry a solved IK keyframe. Only
+    the persisted "has IK" state can be shown -- the transient "failed" state is
+    not stored on the bar (see the section comment above).
+
+    Returns:
+        tuple[int, int]: ``(n_has_ik, n_total)``.
+    """
+    # Lazy import: bar_action is heavy and does its own lazy imports; keep this
+    # module import-light and avoid an import cycle (bar_action imports us).
+    from core.bar_action import has_ik_keyframe
+
+    n_has_ik = n_total = 0
+    rs.EnableRedraw(False)
+    for _bar_id, (oid, _seq) in get_bar_seq_map().items():
+        n_total += 1
+        if has_ik_keyframe(oid):
+            paint_bar(oid, COLOR_HAS_IK)
+            n_has_ik += 1
+        else:
+            reset_bar_color(oid)
+    rs.EnableRedraw(True)
+    return n_has_ik, n_total
+
+
 # Note: interactive ``pick_bar`` and the ``pick_bar_with_*_option`` family
 # now live in :mod:`core.rhino_bar_pick`, which shares a single tube-aware
 # geometry filter and tube->centerline resolver.  Import from there.

@@ -27,7 +27,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
-from core.rhino_bar_registry import repair_on_entry, update_all_previews
+from core.rhino_bar_registry import clear_ik_preview, repair_on_entry, update_all_previews
 from core.rhino_tool_place import resync_tools_to_joints
 
 
@@ -54,6 +54,13 @@ def main():
     n_tools = resync_tools_to_joints(verbose=False)
     if n_tools:
         print(f"RSUpdatePreview: re-snapped {n_tools} drifted tool(s) onto their joints.")
+
+    # Clean up the IK color preview: revert any orange/magenta bar overrides left
+    # by RSIKKeyframeAll back to by-layer. Right-click (RSShowIKPreview) re-shows
+    # them. Shares the color helpers in core.rhino_bar_registry.
+    n_cleared = clear_ik_preview()
+    if n_cleared:
+        print(f"RSUpdatePreview: cleared IK color preview on {n_cleared} bar(s).")
 
 
 if __name__ == "__main__":

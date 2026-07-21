@@ -124,6 +124,11 @@ IK_BASE_SAMPLE_MAX_ITER = 10
 # assembly. Only a starting point: the expanding-radius search samples around this
 # seed and IK validates each. Tunable.
 IK_BASE_STANDOFF_MM = 1000.0  # mm
+# Standoff used by the MULTI-bar IK command (RSIKKeyframeAll): the mobile base is
+# placed this far perpendicular from each bar, facing the center between the two
+# held joints. Shorter than the single-bar seed above by design (the user places
+# these deliberately, closer to the work). Tunable.
+IK_BASE_STANDOFF_MULTIBAR_MM = 750.0  # mm
 
 # IK solver tuning (compas_fab PyBullet planner)
 # How many candidate IK solutions the PyBullet planner generates in ONE

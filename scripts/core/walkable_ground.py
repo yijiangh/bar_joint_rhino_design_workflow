@@ -334,15 +334,17 @@ def _ground_heading_direction(heading_dir_mm, normal) -> np.ndarray:
 
 
 def derive_seed_base(soups: Sequence[TriangleSoup], bar_midpoint_mm,
-                     heading_dir_mm=None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                     heading_dir_mm=None,
+                     standoff_mm=None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Pick an automatic seed base: stand behind the bar, face the insertion axis.
 
     Offline there is no human pick. The base FACES along ``heading_dir_mm`` -- the
     average male-joint insertion direction, i.e. the way the bar is pushed to mate
-    -- and stands the standoff distance (``config.IK_BASE_STANDOFF_MM``) BEHIND the
-    bar's ground projection (opposite the heading), so moving forward (+X) carries
-    the bar into the assembly. Using the insertion direction (rather than "a side
-    of the bar") removes the left/right ambiguity of which side to stand on.
+    -- and stands the standoff distance (``standoff_mm``, default
+    ``config.IK_BASE_STANDOFF_MM``) BEHIND the bar's ground projection (opposite the
+    heading), so moving forward (+X) carries the bar into the assembly. Using the
+    insertion direction (rather than "a side of the bar") removes the left/right
+    ambiguity of which side to stand on.
 
     Args:
         soups (Sequence[TriangleSoup]): the bar's associated ground soups.
@@ -350,6 +352,8 @@ def derive_seed_base(soups: Sequence[TriangleSoup], bar_midpoint_mm,
             and faces, this point's ground projection.
         heading_dir_mm (np.ndarray | None): the average male-joint insertion
             direction (world vector). ``None`` -> a world-horizontal fallback.
+        standoff_mm (float | None): how far behind the bar to stand, in mm.
+            ``None`` -> ``config.IK_BASE_STANDOFF_MM`` (the single-bar default).
 
     Returns:
         tuple: ``(seed_origin_mm, seed_normal, heading_dir)`` -- ``heading_dir`` is
@@ -359,6 +363,7 @@ def derive_seed_base(soups: Sequence[TriangleSoup], bar_midpoint_mm,
     Raises:
         RuntimeError: if no ground point can be found (empty / missing soups).
     """
+    standoff = float(config.IK_BASE_STANDOFF_MM if standoff_mm is None else standoff_mm)
     bar_ground_point, ground_normal = closest_point_on_meshes(soups, bar_midpoint_mm)
     if bar_ground_point is None:
         raise RuntimeError("No walkable-ground surface to seed a base on.")
@@ -366,7 +371,7 @@ def derive_seed_base(soups: Sequence[TriangleSoup], bar_midpoint_mm,
     # Stand the standoff BEHIND the bar (opposite the insertion direction), then
     # re-snap that point back onto the ground (it may sit on a different triangle).
     heading_dir = _ground_heading_direction(heading_dir_mm, ground_normal)
-    behind_point = np.asarray(bar_ground_point, dtype=float) - heading_dir * float(config.IK_BASE_STANDOFF_MM)
+    behind_point = np.asarray(bar_ground_point, dtype=float) - heading_dir * standoff
     origin, normal = closest_point_on_meshes(soups, behind_point)
     if origin is None:
         # Offset landed off the ground -> fall back to standing under the bar.

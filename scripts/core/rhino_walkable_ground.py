@@ -407,7 +407,9 @@ def _bar_ground_soups(bar_oid, grounds_map):
     return soups
 
 
-def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] = None) -> Optional[np.ndarray]:
+def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] = None,
+                               standoff_mm: float = None,
+                               center_mm=None) -> Optional[np.ndarray]:
     """Compute the heuristic seed mobile-base frame (4x4 mm) for a bar, or ``None``.
 
     Stands a standoff behind the bar and faces along the average male-joint
@@ -420,6 +422,14 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
         bar_id (str): the bar id (used to find its male joints).
         grounds_map (dict | None): ``{ground_id: oid}``; scanned via
             :func:`get_all_walkable_grounds` when ``None``.
+        standoff_mm (float | None): how far to stand behind the bar, in mm.
+            ``None`` -> ``config.IK_BASE_STANDOFF_MM`` (the default single-bar seed).
+            The multi-bar IK command (RSIKKeyframeAll) passes a shorter
+            ``config.IK_BASE_STANDOFF_MULTIBAR_MM`` (~500 mm).
+        center_mm (np.ndarray | None): the ground-projection reference point (mm)
+            the base stands behind of. ``None`` -> the bar centerline midpoint
+            (:func:`_bar_center_mm`). The multi-bar IK command passes the grabbed-
+            joint center (midpoint of the two tool-bearing joints) instead.
 
     Returns:
         np.ndarray | None: the 4x4 mm base frame, or ``None``.
@@ -429,13 +439,14 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
     soups = _bar_ground_soups(bar_oid, grounds_map)
     if not soups:
         return None
-    center_mm = _bar_center_mm(bar_oid)
+    if center_mm is None:
+        center_mm = _bar_center_mm(bar_oid)
     if center_mm is None:
         return None
     insertion_dir = _avg_male_insertion_dir_mm(bar_id)
     try:
         origin, normal, heading_dir = _walkable_np.derive_seed_base(
-            soups, center_mm, heading_dir_mm=insertion_dir
+            soups, center_mm, heading_dir_mm=insertion_dir, standoff_mm=standoff_mm,
         )
         return _walkable_np.frame_from_origin_normal_heading(
             origin, normal, origin + heading_dir * 1000.0

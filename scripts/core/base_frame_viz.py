@@ -32,6 +32,7 @@ _AXIS_COLORS = {
     "z": (40, 90, 220),    # blue
 }
 _FOOTPRINT_COLOR = (150, 150, 150)  # grey rectangle
+_REACH_CIRCLE_COLOR = (100, 100, 220)  # light blue -- matches the live reach circle
 
 
 def _ensure_preview_layer() -> str:
@@ -61,12 +62,17 @@ def _pt(origin_doc, vec, dist):
     )
 
 
-def draw_base_frame(bar_id: str, base_frame_mm) -> list:
+def draw_base_frame(bar_id: str, base_frame_mm, circle_radius_mm=None) -> list:
     """Bake one bar's base-frame marker (triad + footprint) and return its oids.
 
     Args:
         bar_id (str): the bar this base frame belongs to (tagged on each object).
         base_frame_mm (np.ndarray): 4x4 mm base frame (X=heading, Z=up).
+        circle_radius_mm (float | None): when set, also bake a reach circle of this
+            radius (mm) centered at the base origin in the base XY plane. ``None``
+            (the default) draws no circle, so existing callers are unaffected. The
+            multi-bar IK command passes ``config.IK_BASE_SAMPLE_RADIUS`` to show the
+            static (non-draggable) base circle at each placed base.
 
     Returns:
         list: the created Rhino object ids (grouped + tagged with ``bar_id``).
@@ -89,6 +95,15 @@ def draw_base_frame(bar_id: str, base_frame_mm) -> list:
         line = rs.AddLine(origin_pt, _pt(origin, axis, axis_len))
         rs.ObjectColor(line, _AXIS_COLORS[key])
         created.append(line)
+
+    # Optional reach circle in the base XY plane (base +Z is the plane normal).
+    if circle_radius_mm:
+        plane = rs.PlaneFromNormal(origin_pt, [z_axis[0], z_axis[1], z_axis[2]],
+                                   [x_axis[0], x_axis[1], x_axis[2]])
+        circle = rs.AddCircle(plane, float(circle_radius_mm) * scale_from_mm)
+        if circle:
+            rs.ObjectColor(circle, _REACH_CIRCLE_COLOR)
+            created.append(circle)
 
     # Ground footprint rectangle in the base XY plane (corners ordered CCW).
     corners = [
@@ -116,11 +131,13 @@ def draw_base_frame(bar_id: str, base_frame_mm) -> list:
     return created
 
 
-def draw_base_frames(frames_by_bar: dict) -> None:
+def draw_base_frames(frames_by_bar: dict, circle_radius_mm=None) -> None:
     """Clear then bake base-frame markers for many bars.
 
     Args:
         frames_by_bar (dict): ``{bar_id: base_frame_mm (4x4)}``.
+        circle_radius_mm (float | None): forwarded to :func:`draw_base_frame`; when
+            set, each base also gets a reach circle of this radius (mm).
 
     Returns:
         None.
@@ -128,7 +145,7 @@ def draw_base_frames(frames_by_bar: dict) -> None:
     clear_base_frames()
     for bar_id, base_mm in frames_by_bar.items():
         try:
-            draw_base_frame(bar_id, base_mm)
+            draw_base_frame(bar_id, base_mm, circle_radius_mm=circle_radius_mm)
         except Exception as exc:  # one bad frame must not abort the rest
             print(f"core.base_frame_viz.draw_base_frames: bar '{bar_id}' skipped ({exc}).")
 

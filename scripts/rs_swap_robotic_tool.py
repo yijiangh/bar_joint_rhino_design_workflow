@@ -9,10 +9,10 @@
 # r: pybullet_planning==0.6.1
 """RSSwapRoboticTool - make a tool candidate's L/R pair the ACTIVE pair.
 
-The command prints every tool registered in ``robotic_tools.json`` and asks
-for one exact tool name.  Enter either the L or the R member; the name suffix
-resolves the pair partner, and then the whole document + kinematics config
-switches to that pair:
+The command lists every tool registered in ``robotic_tools.json`` in a pop-up
+selection box; click either the L or the R member and the name suffix resolves
+the pair partner, and then the whole document + kinematics config switches to
+that pair:
 
     1. registry `active` entry updated (scripts/core/robotic_tools.json)
     2. EVERY placed tool instance is re-placed with the side-matching new
@@ -22,7 +22,9 @@ switches to that pair:
        asset/<tool_name>.3dm files, so no candidate source block is needed
     4. bars carrying solved IK keyframes are listed in a WARNING (they were
        solved against the OLD tools; re-run RSIKKeyframe per bar)
-    5. if PyBullet is running you are offered an immediate collision-cell
+    5. the IK preview mesh cache is dropped so the next RSIKKeyframe redraws
+       the new tool (its baked tool meshes are not auto-refreshed on a swap)
+    6. if PyBullet is running you are offered an immediate collision-cell
        rebuild; otherwise run RSPBStart + RSRebuildRobotCell before any IK
 
 Nothing is changed until the pre-flight checks pass: both sides of the pair
@@ -44,6 +46,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config as _config_module
+from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robotic_tool as _robotic_tool_module
 from core import rhino_tool_place as _tool_place_module
@@ -135,6 +138,7 @@ def main() -> None:
     robotic_tool = importlib.reload(_robotic_tool_module)
     tool_place = importlib.reload(_tool_place_module)
     config = importlib.reload(_config_module)
+    ik_viz = importlib.reload(_ik_viz_module)
 
     tools = robotic_tool.load_robotic_tools()
     if not tools:
@@ -151,21 +155,25 @@ def main() -> None:
     for available_name in available_names:
         print(f"  - {available_name}")
 
-    name = rs.GetString(
-        "Type the exact robotic tool name to activate (either L or R member)"
+    # Pre-highlight the currently-active tool (if it resolves) so the current
+    # pick is obvious in the list; fall back to no default otherwise.
+    try:
+        default_name = robotic_tool.get_active_pair_names().get("left")
+    except (RuntimeError, ValueError):
+        default_name = None
+
+    # Pop-up list: click a tool name to activate its pair (no typing). Picking
+    # either the L or R member resolves the full pair downstream.
+    name = rs.ListBox(
+        available_names,
+        "Select the robotic tool to activate (either the L or R member of a pair)",
+        "RSSwapRoboticTool",
+        default_name,
     )
     if name is None:
         print("RSSwapRoboticTool: Cancelled.")
         return
     name = name.strip()
-    if not name:
-        rs.MessageBox(
-            "A robotic tool name is required. Available tools: "
-            + ", ".join(available_names),
-            0,
-            "RSSwapRoboticTool",
-        )
-        return
 
     try:
         if name not in tools:
@@ -212,7 +220,16 @@ def main() -> None:
     # 4. Stale solved keyframes: warn only (never auto-cleared).
     _warn_stale_keyframes(config)
 
-    # 5. Collision cell: rebuild now or tell the user exactly what to click.
+    # 5. Drop the IK preview cache. The ik_viz bundle bakes the robot + TOOL
+    #    meshes once, keyed by the robot-cell object, and never re-syncs the tools
+    #    when the active pair changes (update_state only diffs rigid bodies). So
+    #    without this, the next RSIKKeyframe preview (e.g. the toggle-pose phase)
+    #    would still draw the OLD tool. Dropping the bundle forces a fresh bake of
+    #    the new tool on the next IK run; safe even if no IK preview ran this session.
+    ik_viz.discard_cache()
+    print("  IK preview cache dropped (next RSIKKeyframe re-bakes the new tool).")
+
+    # 6. Collision cell: rebuild now or tell the user exactly what to click.
     _offer_cell_rebuild(robot_cell)
 
 

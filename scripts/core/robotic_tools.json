@@ -1,7 +1,7 @@
 {
   "active": {
-    "left": "ATExtended4L",
-    "right": "ATExtended4R"
+    "left": "AT3_E2L",
+    "right": "AT3_E2R"
   },
   "tools": [
     {
@@ -81,16 +81,92 @@
       ]
     },
     {
-      "name": "AT4L",
-      "block_name": "LeftHandTool_SimpleVis",
-      "asset_filename": "LeftHandTool_SimpleVis.3dm",
+      "name": "AT3_E1L",
+      "block_name": "AT3_E1L",
+      "asset_filename": "AT3_E1L.3dm",
       "mesh_filename": "",
       "mesh_scale": [
         1.0,
         1.0,
         1.0
       ],
-      "collision_filename": "LeftHandTool_SimpleVis.obj",
+      "collision_filename": "AT3_E1L.obj",
+      "M_tcp_from_block": [
+        [
+          0.707760409077129,
+          -6.389621684553456e-16,
+          -0.7064525485430533,
+          -166.07265216370166
+        ],
+        [
+          -5.0196472652647525e-16,
+          1.0,
+          -1.4073598158778834e-15,
+          1.1458969049263485e-12
+        ],
+        [
+          0.7064525485430533,
+          1.350687819337789e-15,
+          0.707760409077129,
+          67.29347686521643
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "name": "AT3_E1R",
+      "block_name": "AT3_E1R",
+      "asset_filename": "AT3_E1R.3dm",
+      "mesh_filename": "",
+      "mesh_scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision_filename": "AT3_E1R.obj",
+      "M_tcp_from_block": [
+        [
+          0.7077604090771294,
+          5.960831127501906e-16,
+          0.7064525485430528,
+          166.07265216348912
+        ],
+        [
+          5.019647265264752e-16,
+          1.0,
+          -1.3466635160434703e-15,
+          1.1458969049261978e-12
+        ],
+        [
+          -0.7064525485430528,
+          1.307729381337517e-15,
+          0.7077604090771294,
+          67.29347686542856
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "name": "AT3_E2L",
+      "block_name": "AT3_E2L",
+      "asset_filename": "AT3_E2L_SimpleVis.3dm",
+      "mesh_filename": "",
+      "mesh_scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "collision_filename": "AT3_E2L.obj",
       "M_tcp_from_block": [
         [
           1.0,
@@ -100,15 +176,15 @@
         ],
         [
           0.0,
-          1.0,
-          -8.526512829121205e-16,
-          1.1368683772161603e-12
+          0.7077604090771283,
+          0.7064525485430538,
+          78.02319057942162
         ],
         [
           0.0,
-          8.526512829121205e-16,
-          1.0,
-          80.00000000000003
+          -0.7064525485430538,
+          0.7077604090771283,
+          78.16763545673231
         ],
         [
           0.0,
@@ -119,16 +195,16 @@
       ]
     },
     {
-      "name": "AT4R",
-      "block_name": "RightHandTool_SimpleVis",
-      "asset_filename": "RightHandTool_SimpleVis.3dm",
+      "name": "AT3_E2R",
+      "block_name": "AT3_E2R",
+      "asset_filename": "AT3_E2R_SimpleVis.3dm",
       "mesh_filename": "",
       "mesh_scale": [
         1.0,
         1.0,
         1.0
       ],
-      "collision_filename": "RightHandTool_SimpleVis.obj",
+      "collision_filename": "AT3_E2R.obj",
       "M_tcp_from_block": [
         [
           1.0,
@@ -138,91 +214,15 @@
         ],
         [
           0.0,
-          1.0,
-          -8.526512829121205e-16,
-          1.1368683772161603e-12
+          0.7077604090771283,
+          0.7064525485430537,
+          78.02319057942162
         ],
         [
           0.0,
-          8.526512829121205e-16,
-          1.0,
-          80.00000000000003
-        ],
-        [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ]
-      ]
-    },
-    {
-      "name": "ATExtended4L",
-      "block_name": "LeftHandTool_SimpleVis",
-      "asset_filename": "LeftHandTool_SimpleVis.3dm",
-      "mesh_filename": "",
-      "mesh_scale": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "collision_filename": "LeftHandTool_SimpleVis.obj",
-      "M_tcp_from_block": [
-        [
-          1.0,
-          0.0,
-          0.0,
-          -70.00000000015012
-        ],
-        [
-          0.0,
-          1.0,
-          -1.1368683772161607e-15,
-          1.1368683772161603e-12
-        ],
-        [
-          0.0,
-          1.1368683772161607e-15,
-          1.0,
-          80.0
-        ],
-        [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ]
-      ]
-    },
-    {
-      "name": "ATExtended4R",
-      "block_name": "RightHandTool_SimpleVis",
-      "asset_filename": "RightHandTool_SimpleVis.3dm",
-      "mesh_filename": "",
-      "mesh_scale": [
-        1.0,
-        1.0,
-        1.0
-      ],
-      "collision_filename": "RightHandTool_SimpleVis.obj",
-      "M_tcp_from_block": [
-        [
-          1.0,
-          0.0,
-          0.0,
-          69.99999999984988
-        ],
-        [
-          0.0,
-          1.0,
-          -1.1368683772161607e-15,
-          1.1368683772161603e-12
-        ],
-        [
-          0.0,
-          1.1368683772161607e-15,
-          1.0,
-          80.0
+          -0.7064525485430537,
+          0.7077604090771286,
+          78.16763545673231
         ],
         [
           0.0,

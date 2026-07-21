@@ -1,8 +1,8 @@
 """Rhino-side WalkableGround helpers: stable ids, meshing, bar association.
 
 This is the Rhino half of the WalkableGround feature (the numpy half lives in
-``core.walkable_ground``). It handles everything that needs ``rhinoscriptsyntax`` /
-``Rhino``:
+``husky_assembly_tamp.keyframe.walkable_ground``). It handles everything that
+needs ``rhinoscriptsyntax`` / ``Rhino``:
 
 - give every WalkableGround brep a stable id (``WG0``, ``WG1``, ...) stored as
   user-text so it survives copy/paste and matches the exported id;
@@ -28,7 +28,9 @@ import rhinoscriptsyntax as rs
 from compas.datastructures import Mesh
 
 from core import config
-from core import walkable_ground as _walkable_np
+# The numpy half moved into the tamp submodule with the solvers (core.config
+# put it on sys.path); imported under the same private name as before.
+from husky_assembly_tamp.keyframe import walkable_ground as _walkable_np
 from core.rhino_frame_io import doc_unit_scale_to_mm
 
 
@@ -338,7 +340,8 @@ def auto_assign_walkable_ground_ids_all_bars(grounds: Dict[str, object] = None):
 # Default mobile-base placement (shared heuristic seed)
 # ---------------------------------------------------------------------------
 #
-# The base-placement heuristic itself is Rhino-free (``core.walkable_ground``).
+# The base-placement heuristic itself is Rhino-free (the tamp
+# ``keyframe.walkable_ground`` module, imported above as ``_walkable_np``).
 # These wrappers gather its Rhino-side inputs for one bar -- the assigned ground
 # soups, the bar center, and the average male-joint insertion direction -- so
 # BOTH RSAssignAndShowWalkableGround (the interactive preview) and
@@ -412,7 +415,7 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
 
     Stands a standoff behind the bar and faces along the average male-joint
     insertion direction, on the bar's assigned WalkableGround(s) -- the shared
-    ``core.walkable_ground.derive_seed_base`` heuristic. Returns ``None`` when the
+    ``keyframe.walkable_ground.derive_seed_base`` heuristic. Returns ``None`` when the
     bar has no assigned / meshable ground or its curve is unreadable.
 
     Args:

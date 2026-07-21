@@ -16,17 +16,17 @@ grab; everything is shown again at the end:
     3. pick the TCP +X axis tip point (defines TCP X direction)
     4. pick the TCP +Y axis tip point (only used to disambiguate Z
        handedness; the frame is re-orthonormalized from X and Y)
-    5. pick the collision MESH object(s) -- hand-modeled low-poly meshes
-       positioned on the tool instance, and/or a block instance whose
-       definition already IS a low-poly mesh (e.g. the tool block itself);
-       from an instance only the actual Mesh objects are taken -- we never
-       auto-mesh breps/render geometry (too dense/unreliable for collision
-       + planning).  The tool block stays visible for this pick.
+    5. pick the collision MESH object(s) -- hand-modeled low-poly Mesh
+       objects positioned on the tool instance. Block instances are NOT
+       accepted here (mesh objects only); we never auto-mesh breps/render
+       geometry (too dense/unreliable for collision + planning). Every
+       previous selection (the tool block AND the TCP points) is hidden
+       for this pick, so only the collision meshes are left to grab.
     6. enter the tool name -- it MUST end in L (left arm) or R (right
        arm); the two sides of one candidate share a prefix (AT4L / AT4R)
 
-    The script then exports ``asset/<tool_name>.3dm`` (overwrite), writes the
-    picked meshes to ``asset/<tool_name>.obj`` (overwrite; expressed in the
+    The script then exports ``asset/<tool_name>_SimpleVis.3dm`` (overwrite), writes
+    the picked meshes to ``asset/<tool_name>.obj`` (overwrite; expressed in the
     source block's local frame, in millimeters), and saves the entry (including
     ``M_tcp_from_block`` and ``collision_filename``) into
     ``scripts/core/robotic_tools.json``.
@@ -156,10 +156,14 @@ def _pick_point(prompt: str):
 
 
 def _pick_collision_sources(prompt: str):
-    """Pick one or more collision-mesh sources: mesh objects and/or block
-    instances (filter 32 + 4096).  Returns a list of guids or None."""
+    """Pick one or more collision-mesh objects (filter 32, mesh only).
+
+    Block instances are intentionally NOT accepted here: collision meshes must
+    be hand-modeled low-poly Mesh objects, never auto-derived from a block
+    definition. Returns a list of guids or None.
+    """
     return rs.GetObjects(
-        prompt, filter=32 + 4096, preselect=False, select=False, minimum_count=1
+        prompt, filter=32, preselect=False, select=False, minimum_count=1
     )
 
 
@@ -240,14 +244,13 @@ def _run_assembly_tool_mode() -> None:
         return
     selected.append(y_tip_id)
 
-    # Collision meshes -- only the TCP points are hidden for this pick; the
-    # tool block instance stays VISIBLE and PICKABLE, because when the tool
-    # block already is a low-poly mesh the user picks the block itself and
-    # its definition meshes are reused (never auto-meshed from breps).
-    with _temporarily_hidden(selected[1:]):
+    # Collision meshes -- hide EVERY previous selection (the tool block instance
+    # AND the TCP points) so only the hand-modeled low-poly mesh objects are left
+    # to pick. Block instances are not accepted in this step (mesh objects only);
+    # we never auto-derive a collision mesh from a block definition.
+    with _temporarily_hidden(selected):
         mesh_ids = _pick_collision_sources(
-            "Pick collision MESH object(s) and/or the tool block instance, "
-            "then press Enter"
+            "Pick collision MESH object(s), then press Enter"
         )
     if not mesh_ids:
         print("RSDefineRoboticTool: cancelled at collision-mesh pick (none selected).")
@@ -322,25 +325,51 @@ def _run_assembly_tool_mode() -> None:
     tcp_frame_world_mm = _world_tcp_frame(tcp_origin_mm, x_tip_mm, y_tip_mm)
     M_tcp_from_block = invert_transform(block_frame_mm) @ tcp_frame_world_mm
 
-    # Diagnostics.
+    # ! ---- Diagnostics ------------------------------------------------------
+    # ! M_tcp_from_block is the flange->TCP transform, computed RELATIVE to the
+    # ! picked block instance's frame. It changes ONLY when the three TCP points
+    # ! move relative to THAT block -- a differently-SHAPED tool that still holds
+    # ! the joint at the same offset from its flange yields the SAME M_tcp (the
+    # ! shape lives in the .obj collision mesh, not here). These prints dump
+    # ! every input and the full result so a "the TCP didn't change" report can
+    # ! be checked against the real numbers: if the printed M_tcp already equals
+    # ! the old value, the picks/block genuinely produced it; if it is new but
+    # ! the saved JSON still shows the old value, the problem is the save step.
     print(f"RSDefineRoboticTool[AssemblyTool]: tool '{tool_name}'")
-    print(f"  source block name       : {source_block_name}")
+    print(f"  source block name        : {source_block_name}")
+    print("  picked block world frame rows (mm):")
+    for _r in range(4):
+        _row = block_frame_mm[_r]
+        print(f"    [{_row[0]:10.4f} {_row[1]:10.4f} {_row[2]:10.4f} {_row[3]:10.4f}]")
+    print(
+        f"  picked TCP points (world mm) : origin "
+        f"({tcp_origin_mm[0]:.4f}, {tcp_origin_mm[1]:.4f}, {tcp_origin_mm[2]:.4f}) | "
+        f"+X ({x_tip_mm[0]:.4f}, {x_tip_mm[1]:.4f}, {x_tip_mm[2]:.4f}) | "
+        f"+Y ({y_tip_mm[0]:.4f}, {y_tip_mm[1]:.4f}, {y_tip_mm[2]:.4f})"
+    )
+    print("  computed M_tcp_from_block rows (block-local mm):")
+    for _r in range(4):
+        _row = M_tcp_from_block[_r]
+        print(f"    [{_row[0]:10.4f} {_row[1]:10.4f} {_row[2]:10.4f} {_row[3]:10.4f}]")
     tcp_local_origin = M_tcp_from_block[:3, 3]
     tcp_local_z = M_tcp_from_block[:3, 2]
     print(
-        f"  TCP origin (block-local mm)  : "
+        f"  -> TCP origin (block-local mm): "
         f"({tcp_local_origin[0]:.4f}, {tcp_local_origin[1]:.4f}, {tcp_local_origin[2]:.4f})"
     )
     print(
-        f"  TCP +Z axis (block-local)    : "
+        f"  -> TCP +Z axis (block-local)  : "
         f"({tcp_local_z[0]:.4f}, {tcp_local_z[1]:.4f}, {tcp_local_z[2]:.4f})"
     )
 
-    # Export the block geometry (.3dm) and picked collision meshes (.obj)
-    # under the registry TOOL NAME, not the source Rhino block name. This
-    # keeps different tool definitions independent even when their source
-    # blocks share a generic name such as RightHandTool_SimpleVis.
-    asset_filename = f"{tool_name}.3dm"
+    # Export the block geometry (.3dm) and picked collision meshes (.obj) under
+    # the registry TOOL NAME, not the source Rhino block name -- this keeps
+    # different tool definitions independent even when their source blocks share
+    # a generic name such as RightHandTool_SimpleVis. The .3dm carries a
+    # `_SimpleVis` suffix to mark it as the visualization block; the swap/import
+    # helper reads this exact filename back from the registry, so the suffix is
+    # transparent to placement (the imported definition is still named <tool_name>).
+    asset_filename = f"{tool_name}_SimpleVis.3dm"
     asset_path = os.path.join(DEFAULT_ASSET_DIR, asset_filename)
     obj_filename = f"{tool_name}.obj"
     obj_path = os.path.join(DEFAULT_ASSET_DIR, obj_filename)

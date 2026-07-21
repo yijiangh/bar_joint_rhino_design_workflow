@@ -334,12 +334,14 @@ def solve_support_ik(
     state.robot_configuration.merge(cfg)
 
     if verbose_pairs:
-        from core import env_collision
-        print(env_collision.summarize_check_collision(planner, state))
+        # The pair-count summary moved to the tamp solvers with the dual-arm IK.
+        from husky_assembly_tamp.keyframe.dual_arm_ik import summarize_check_collision
+        print(summarize_check_collision(planner, state))
 
     return state
 
 
 def extract_group_config(state, group: str, robot_cell) -> dict:
     """Return ``{'joint_names': [...], 'joint_values': [...]}`` for a group."""
-    return _rc.extract_group_config(state, group, robot_cell)
+    from husky_assembly_tamp.keyframe.dual_arm_ik import extract_group_config as _extract
+    return _extract(state, group, robot_cell)

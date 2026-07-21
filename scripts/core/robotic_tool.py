@@ -212,6 +212,113 @@ def save_robotic_tool(tool: RoboticToolDef, path: str = DEFAULT_REGISTRY_PATH) -
     _save_registry_payload(payload, path)
 
 
+def delete_robotic_tools(
+    names,
+    *,
+    path: str = DEFAULT_REGISTRY_PATH,
+    asset_dir: str = DEFAULT_ASSET_DIR,
+    remove_files: bool = True,
+) -> dict:
+    """Remove one or more tool entries from the registry (and their asset files).
+
+    This is the delete counterpart to :func:`save_robotic_tool`. Only the
+    ``tools`` list is rebuilt; every other top-level key is preserved, EXCEPT
+    that any ``active`` side pointing at a removed tool is cleared to ``""``.
+    Deleting an active tool is intentionally NOT blocked -- the active pair is
+    simply left incomplete, to be refilled later in Rhino with RSSwapRoboticTool.
+
+    Args:
+        names (Iterable[str]): tool names to remove. Unknown names are ignored
+            (and reported back under ``"not_found"``).
+        path (str): registry JSON path (tests override this).
+        asset_dir (str): directory that holds the .3dm / .obj asset files.
+        remove_files (bool): also delete each removed tool's exported .3dm
+            (``asset_filename``) and .obj (``collision_filename``) from disk.
+
+    Returns:
+        dict: summary with keys ``removed`` (names actually removed),
+        ``not_found`` (requested names that were not registered),
+        ``files_deleted`` (absolute paths deleted from disk),
+        ``files_missing`` (asset paths that did not exist on disk),
+        ``files_kept_referenced`` (asset filenames NOT deleted because another
+        tool that is being kept still points at them), and
+        ``cleared_active_sides`` (``"left"`` / ``"right"`` sides of the active
+        pair that were cleared because their tool was deleted).
+    """
+    # Accept any iterable and drop duplicates while keeping the given order.
+    requested = list(dict.fromkeys(names))
+
+    payload = _load_registry_payload(path)
+    tools = load_robotic_tools(path)
+
+    removed: list[str] = []
+    not_found: list[str] = []
+    # Remember each removed tool's definition so we still know which files to
+    # delete after it has been dropped from the name-keyed mapping.
+    removed_defs: list[RoboticToolDef] = []
+    for name in requested:
+        if name in tools:
+            removed_defs.append(tools.pop(name))
+            removed.append(name)
+        else:
+            not_found.append(name)
+
+    # Rebuild the tools list in the same sorted shape save_robotic_tool writes.
+    payload["tools"] = [tools[name].to_dict() for name in sorted(tools)]
+
+    # ! Clear any active side that pointed at a deleted tool. We leave it as an
+    # ! empty string on purpose (an incomplete active pair) rather than raising;
+    # ! the user re-picks the active pair in Rhino via RSSwapRoboticTool.
+    cleared_active_sides: list[str] = []
+    active = payload.get("active")
+    if isinstance(active, dict):
+        for side in ("left", "right"):
+            if active.get(side) in removed:
+                active[side] = ""
+                cleared_active_sides.append(side)
+
+    _save_registry_payload(payload, path)
+
+    # ! Some candidates share the same exported .3dm/.obj filename (e.g. AT3L and
+    # ! AT4L both point at LeftHandTool_SimpleVis.obj). Never delete a file that a
+    # ! tool we are KEEPING still references, or we would orphan that tool.
+    still_referenced = {
+        filename
+        for keep in tools.values()
+        for filename in (keep.asset_filename, keep.collision_filename)
+        if filename
+    }
+
+    # Delete the exported asset files only after the JSON has been written, so a
+    # crash mid-way never leaves the registry pointing at files that are gone.
+    files_deleted: list[str] = []
+    files_missing: list[str] = []
+    files_kept_referenced: list[str] = []
+    if remove_files:
+        for tool in removed_defs:
+            for filename in (tool.asset_filename, tool.collision_filename):
+                if not filename:
+                    continue
+                if filename in still_referenced:
+                    files_kept_referenced.append(filename)
+                    continue
+                file_path = os.path.join(asset_dir, filename)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    files_deleted.append(file_path)
+                else:
+                    files_missing.append(file_path)
+
+    return {
+        "removed": removed,
+        "not_found": not_found,
+        "files_deleted": files_deleted,
+        "files_missing": files_missing,
+        "files_kept_referenced": sorted(set(files_kept_referenced)),
+        "cleared_active_sides": cleared_active_sides,
+    }
+
+
 def get_robotic_tool(
     name: str, *, path: str = DEFAULT_REGISTRY_PATH
 ) -> RoboticToolDef:

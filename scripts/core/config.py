@@ -28,6 +28,37 @@ _CORE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.dirname(_CORE_DIR)
 REPO_ROOT = os.path.dirname(SCRIPTS_DIR)
 
+# ---------------------------------------------------------------------------
+# husky_assembly_tamp submodule (the offline planner package)
+# ---------------------------------------------------------------------------
+# ! The dual-arm IK solvers, the keyframe chain solve, and the base search live
+# ! in the husky_assembly_tamp submodule now (its `keyframe` package), together
+# ! with their tuning constants. Rhino has no pip install, so the submodule is
+# ! put on sys.path here -- config.py is imported first by every entry script,
+# ! which wires the path for all later `husky_assembly_tamp.*` imports too.
+_TAMP_ROOT = os.path.join(REPO_ROOT, "external", "husky_assembly_tamp")
+if not os.path.isdir(os.path.join(_TAMP_ROOT, "husky_assembly_tamp")):
+    raise RuntimeError(
+        f"husky_assembly_tamp submodule missing at {_TAMP_ROOT}. "
+        "Run `git submodule update --init --recursive`."
+    )
+if _TAMP_ROOT not in sys.path:
+    sys.path.insert(0, _TAMP_ROOT)
+
+# Solver tuning is owned by the solver package; re-imported here so Rhino-side
+# call sites keep reading `config.IK_*` with ONE definition project-wide. This
+# import is cheap (os/sys only -- no compas / pybullet).
+from husky_assembly_tamp.keyframe.config import (  # noqa: E402
+    IK_BACKEND,
+    IK_BASE_SAMPLE_RADIUS,
+    IK_BASE_SAMPLE_MAX_ITER,
+    IK_BASE_STANDOFF_MM,
+    IK_MAX_DESCEND_ITERATIONS,
+    IK_MAX_RESTART_ITER,
+    IK_TOLERANCE_POSITION,
+    IK_TOLERANCE_ORIENTATION,
+)
+
 
 def _as_matrix(value) -> np.ndarray:
     matrix = np.asarray(value, dtype=float)
@@ -114,16 +145,11 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
-# IK base sampling fallback
-IK_BASE_SAMPLE_RADIUS = 1000.0  # mm
-IK_BASE_SAMPLE_MAX_ITER = 20
-# How far BEHIND the bar the SEED mobile base stands (mm). The seed is offset
-# from the bar's ground projection by this distance, OPPOSITE the average
-# male-joint insertion direction (the way the bar is pushed to mate), so the base
-# faces along the insertion direction and moving forward carries the bar into the
-# assembly. Only a starting point: the expanding-radius search samples around this
-# seed and IK validates each. Tunable.
-IK_BASE_STANDOFF_MM = 700.0  # mm
+# NOTE: the IK/base-search tuning constants (IK_BASE_SAMPLE_*, IK_BASE_STANDOFF_MM,
+# IK_MAX_DESCEND_ITERATIONS, IK_MAX_RESTART_ITER, IK_TOLERANCE_*, IK_BACKEND) and
+# the ssik sidecar wiring moved to `husky_assembly_tamp.keyframe.config` with the
+# solvers; they are re-imported near the top of this file so Rhino call sites keep
+# reading `config.IK_*`.
 
 # IK solver tuning (compas_fab PyBullet planner)
 # How many candidate IK solutions the PyBullet planner generates in ONE
@@ -133,64 +159,12 @@ IK_BASE_STANDOFF_MM = 700.0  # mm
 # NOTE: only the single-arm SUPPORT robot uses this (see
 # core.robot_cell_support). The dual-arm path forces max_results=1 (deterministic
 # single descent) and owns its own random restarts in solve_dual_arm_ik so the
-# two arms are resampled together -- see IK_MAX_RESTART_ITER below.
+# two arms are resampled together -- see IK_MAX_RESTART_ITER (now in the tamp
+# keyframe config).
 # TODO This seems unnecessary for me and should be using the same IK_MAX_RESTART_ITER as the dual arm
 IK_MAX_RESULTS = 20
-# Max gradient-descent steps the solver takes toward the target within a single
-# seed before giving up on that seed. Used by both single and dual arm
-IK_MAX_DESCEND_ITERATIONS = 200
-
-# Dual-arm IK random-restart budget for a COLD solve (no good warm-start, e.g. the
-# first movement M1). Each restart resamples a random dual-arm config to descend
-# from. Warm-started solves (M2/M3, seeded from the previous keyframe) force this to 1.
-# It is an early-exit CEILING -- easy poses solve in a few restarts; only a tight pose
-# (or a genuinely unreachable one) spends the whole budget. Measured M1 success on the
-# tight double-kissing-jig B6 at base (0,0,0): 50 -> ~1/8, 150 -> ~4/8, 400 -> 8/8.
-IK_MAX_RESTART_ITER = 100
-IK_TOLERANCE_POSITION = 1e-5  # m (compas_fab uses SI; values converted at the call site if needed)
-IK_TOLERANCE_ORIENTATION = 1e-5  # rad
 
 ARM_SIDES = ("left", "right")
-
-# ---------------------------------------------------------------------------
-# IK backend selection
-# ---------------------------------------------------------------------------
-# * Which inverse-kinematics engine ``core.robot_cell.solve_dual_arm_ik`` uses:
-# *   "ssik"     -> DEFAULT. Analytical IK from ssik (github.com/personalrobotics/ssik).
-# *                 ssik builds a closed-form solver straight from our CALIBRATED
-# *                 URDF, so there is nothing to tune. ssik needs Python 3.11+ and
-# *                 Rhino runs 3.9, so it lives in a sidecar process we talk to over
-# *                 stdio. One-time venv setup: see the repo README ("Analytical IK
-# *                 solver (ssik)") or scripts/ssik_sidecar/README.md. Code:
-# *                 ``core.ssik_client`` + ``core.robot_cell.solve_dual_arm_ik_ssik``.
-# *   "gradient" -> the original PyBullet damped-least-squares descent with random
-# *                 restarts. Kept only for benchmarking against ssik and as an
-# *                 archival fallback; not used in the normal workflow.
-IK_BACKEND = "ssik"
-# IK_BACKEND = "gradient"  # benchmark / archival fallback only
-
-# --- ssik sidecar wiring (paths only; there are no tuning knobs) -----------
-# The Python 3.11 venv that has ssik installed. Created one-time by the user (see
-# scripts/ssik_sidecar/README.md).
-SSIK_VENV_DIR = os.path.join(REPO_ROOT, "external", "ssik_env")
-# A venv stores its interpreter in a different place per OS: Windows puts it under
-# Scripts\python.exe, macOS/Linux under bin/python. Pick the right one so the
-# sidecar launches whether Rhino runs on Windows or Mac.
-if sys.platform == "win32":
-    SSIK_VENV_PYTHON = os.path.join(SSIK_VENV_DIR, "Scripts", "python.exe")
-else:
-    SSIK_VENV_PYTHON = os.path.join(SSIK_VENV_DIR, "bin", "python")
-# The stdio sidecar server, launched BY that 3.11 interpreter.
-SSIK_SIDECAR_SCRIPT = os.path.join(SCRIPTS_DIR, "ssik_sidecar", "serve.py")
-# Where the per-arm solver modules generated by `ssik build` live.
-SSIK_ARTIFACT_DIR = os.path.join(REPO_ROOT, "asset", "ssik")
-# Per-arm build recipe: (base_link, ee_link, generated module name). Documents the
-# one-time `ssik build <urdf> --base <base_link> --ee <ee_link>` for each arm and
-# tells the client/sidecar which module to import. Each arm is a plain 6R chain.
-SSIK_ARM_BUILD = {
-    "left": ("left_ur_arm_base_link", "left_ur_arm_tool0", "left_ur_arm_ik"),
-    "right": ("right_ur_arm_base_link", "right_ur_arm_tool0", "right_ur_arm_ik"),
-}
 
 
 def _sanitize_bar_grasp_to_tool0(raw):

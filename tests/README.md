@@ -6,8 +6,9 @@ Two layers:
 - **Capture / replay** for the IK keyframe workflow — see below.
 
 > **Headless BarAction solving + replay** (`headless_bar_action_planner.py`,
-> `replay_bar_action_plan.py`) has its own guide:
-> [README_headless_bar_action.md](README_headless_bar_action.md).
+> `replay_bar_action_plan.py`) moved to the offline-planner submodule
+> (`external/husky_assembly_tamp/scripts/`); its guide moved with it:
+> [README_headless_bar_action.md](../external/husky_assembly_tamp/scripts/README_headless_bar_action.md).
 
 ## Capture / replay (no Rhino clicking required)
 

@@ -34,6 +34,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
 | RSSetup | RSDefineRoboticTool | `rs_define_robotic_tool.py` | AssemblyTool mode: define a tool candidate (block + TCP points + picked collision meshes, exports `.3dm` + `.obj`). SupportGripper mode: export bar-grasp -> tool0 transform | Advanced IK users |
 | RSSetup | RSSwapRoboticTool | `rs_swap_robotic_tool.py` | Prints registered tool names; type either L/R member to make its pair ACTIVE (registry updated, all placed tools re-placed, block geometry refreshed, cell rebuild offered) | Advanced IK users |
+| RSSetup | RSInspectRoboticTool | `rs_inspect_robotic_tool.py` | PyBullet viewer for ALL tool candidates: a slider steps through L/R pairs (L at origin, R at +0.30 m), each showing its tool0 + TCP frame (`M_tcp_from_block`); a two-step GUI confirm deletes a whole candidate pair (registry entries + `.3dm`/`.obj`). Reads/edits `robotic_tools.json` only — no Rhino geometry. | Advanced IK users |
 | RSSetup | RSPBStart | `rs_pb_start.py` | Left-click: start shared PyBullet client/planner in Direct mode. Right-click (`rs_pb_start_gui.py`): start in GUI mode | Advanced IK users |
 | RSSetup | RSPBStop | `rs_pb_stop.py` | Disconnect shared PyBullet client | Advanced IK users |
 | RSSetup | RSRebuildRobotCell | `rs_rebuild_robot_cell.py` | (Re)build the static assembly collision cell (bars + joints + env obstacles + arm ToolModels), AND auto-assign WalkableGround surfaces to bars by distance (non-destructive: keeps manual picks). Run after adding/moving/resizing geometry. | Planning/export users |
@@ -184,6 +185,29 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Pre-flight: both sides must be registered with their `.3dm` + collision `.obj`
   on disk -- otherwise nothing is changed.
 
+### RSInspectRoboticTool (`rs_inspect_robotic_tool.py`)
+
+- Opens a **standalone PyBullet GUI window** (its own client; not the shared
+  RSPBStart planner) to visually inspect every candidate in `robotic_tools.json`.
+- A `candidate index` slider steps through candidates grouped into left/right
+  pairs by shared name prefix (`AT4_E3_L` + `AT4_E3_R`). For the selected pair
+  the left `.obj` loads at the world origin and the right `.obj` 0.30 m along +X
+  (meshes are mm, scaled to metres). An unpaired candidate shows just its one
+  side.
+- Each tool draws two triads: a **longer** one at the mesh base = tool0 / robot
+  flange, and a **shorter** one at the TCP frame from `M_tcp_from_block`
+  (`base @ M_tcp_from_block`), with `<name> tool0` / `<name> tcp` labels.
+- **Delete** is a two-step, GUI-only confirm (no command-line prompt): click
+  `DELETE candidate (step 1: arm)` — a red banner + printout lists exactly what
+  goes — then `CONFIRM DELETE (step 2)` to remove BOTH sides' registry entries
+  and their `.3dm` + `.obj` files. Moving the slider cancels a pending delete.
+  A file another remaining tool still references is kept. Deleting a tool that is
+  the registry `active` tool is not blocked; that `active` side is cleared —
+  re-pick the active pair afterwards with RSSwapRoboticTool.
+- Read-only toward the Rhino document (touches only `robotic_tools.json` + asset
+  files). Close the PyBullet window to end the command. Needs PyBullet (provided
+  by the `scaffolding_env` `# r:` header, same as RSIKKeyframe).
+
 ### RSPBStart (`rs_pb_start.py`) and RSPBStop (`rs_pb_stop.py`)
 
 - Start/stop shared PyBullet planner state used by IK workflows.
@@ -195,7 +219,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Dual-arm IK for two selected male joints sharing one Ln bar.
 - Supports collision options and base-sampling fallback when direct solve fails.
 - Saves `ik_assembly` JSON on the shared Ln bar.
-- **Save base / continue off-ramp:** right after you pick the base origin + heading (or reuse a saved base), it asks **Continue** vs **SaveBaseAndExit**. Enter/Continue runs the in-Rhino solve as before; SaveBaseAndExit keeps the just-saved base frame and stops, so you can solve the keyframes headlessly with `headless_bar_action_planner.py --solve-keyframes --base saved` (export the bar first). Not shown on a RetrySameBase loop.
+- **Save base / continue off-ramp:** right after you pick the base origin + heading (or reuse a saved base), it asks **Continue** vs **SaveBaseAndExit**. Enter/Continue runs the in-Rhino solve as before; SaveBaseAndExit keeps the just-saved base frame and stops, so you can solve the keyframes headlessly with `external/husky_assembly_tamp/scripts/headless_bar_action_planner.py --solve-keyframes --base saved` (export the bar first). Not shown on a RetrySameBase loop.
 
 ### RSShowBarActionPlan (`rs_show_bar_action_plan.py`) / …Motion (`rs_show_bar_action_plan_motion.py`)
 
@@ -224,12 +248,12 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 - Batch export of ALL bars (not just IK-solved ones): writes `<root>/BarActions/<bar_id>.json`, `<root>/RobotCell.json`, and `<root>/WalkableGround.json`.
 - Each BarAction carries the bar's `walkable_ground_ids` (set by RSRebuildRobotCell auto-assign or RSAssignAndShowWalkableGround). `WalkableGround.json` holds every WalkableGround brep meshed and keyed by its stable id.
-- Bars exported without IK get a placeholder base; the headless keyframe solver (`tests/headless_bar_action_planner.py --solve-keyframes`) samples their base + IK afterward.
+- Bars exported without IK get a placeholder base; the headless keyframe solver (`external/husky_assembly_tamp/scripts/headless_bar_action_planner.py --solve-keyframes`) samples their base + IK afterward.
 
 ### RSAssignAndShowWalkableGround (`rs_assign_and_show_walkable_ground.py`)
 
 - **Single left-click**, a view↔re-assign loop:
-  1. **View.** Pick a bar (first run). Its assigned WalkableGround(s) are highlighted green; the default mobile-base placement is computed — the same heuristic the headless solver uses in `--base sample` mode (`core.walkable_ground.derive_seed_base` + `frame_from_origin_normal_heading`): the base stands a standoff **behind** the bar and **faces along the average male-joint insertion direction** (the way the bar is pushed to mate), which removes the left/right side ambiguity. It's drawn as a base-frame marker + a **half-transparent ghost robot** standing on that base. The ground ids + base position are printed. Then it asks: *change the assignment?*
+  1. **View.** Pick a bar (first run). Its assigned WalkableGround(s) are highlighted green; the default mobile-base placement is computed — the same heuristic the headless solver uses in `--base sample` mode (`husky_assembly_tamp.keyframe.walkable_ground`: `derive_seed_base` + `frame_from_origin_normal_heading`): the base stands a standoff **behind** the bar and **faces along the average male-joint insertion direction** (the way the bar is pushed to mate), which removes the left/right side ambiguity. It's drawn as a base-frame marker + a **half-transparent ghost robot** standing on that base. The ground ids + base position are printed. Then it asks: *change the assignment?*
   2. **Re-assign** (only if you answer Yes). Select the WalkableGround brep(s) you want (multiple allowed), Enter to confirm. That set **overwrites** the bar's assignment (saved to user-text), and it loops back to step 1 to re-visualize. Answer No / Esc at step 1 to finish.
 - If a bar has no assignment yet, the nearest ground(s) are auto-assigned + saved first so step 1 always has something to show.
 - The ghost robot is FK-only (no PyBullet needed): its link meshes are harvested once at the home pose (`core.ik_viz.get_robot_link_meshes_at_state`, from a **bare** robot cell so only the robot is drawn) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.

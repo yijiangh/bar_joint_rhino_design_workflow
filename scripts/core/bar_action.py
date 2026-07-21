@@ -397,7 +397,8 @@ def _frame_to_mm4(frame) -> np.ndarray:
     """Convert a compas ``Frame`` (meters) to a 4x4 numpy transform with mm origin.
 
     Inverse of :func:`_mm4_to_frame`. Kept local so this module needs no import of
-    ``core.ik_keyframe`` (which pulls the robot stack) just to serialize a base.
+    the tamp ``keyframe.ik_keyframe`` module (which pulls the robot stack) just to
+    serialize a base.
     """
     matrix = np.eye(4, dtype=float)
     matrix[:3, 0] = np.asarray(frame.xaxis, dtype=float)
@@ -433,7 +434,8 @@ def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
     """
     import rhinoscriptsyntax as rs
     from core import config
-    from core import robot_cell
+    # The group-config reader lives with the solvers in the tamp submodule now.
+    from husky_assembly_tamp.keyframe.dual_arm_ik import extract_group_config
 
     m1 = _movement_by_role(action, "M1")
     m2 = _movement_by_role(action, "M2")
@@ -445,8 +447,8 @@ def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
         if state is None or state.robot_configuration is None:
             return None
         return {
-            "left": robot_cell.extract_group_config(state, config.LEFT_GROUP, rcell),
-            "right": robot_cell.extract_group_config(state, config.RIGHT_GROUP, rcell),
+            "left": extract_group_config(state, config.LEFT_GROUP, rcell),
+            "right": extract_group_config(state, config.RIGHT_GROUP, rcell),
         }
 
     base_frame = None

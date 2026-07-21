@@ -2,11 +2,18 @@
 # venv: scaffolding_env
 # r: numpy==1.24.4
 # r: scipy==1.13.1
-"""RSUpdatePreview - Refresh tube previews for all registered bars.
+"""RSUpdatePreview - Refresh tube previews and re-snap drifted tools.
 
 Scans the document for every bar tagged with a bar_id, checks whether its
 tube preview is present and geometrically current, and regenerates any that
 are missing or stale.
+
+It then re-snaps any robotic-tool instance that has drifted away from the
+joint it belongs to: a tool whose TCP frame no longer coincides with its
+joint block (because the user nudged the tool, or moved/rebuilt the joint
+after placement) is moved back onto the joint's current frame, reusing the
+same placement routine that RSBarSnap / RSBarBrace auto-placement use. Tools
+already sitting on their joints are left untouched.
 """
 
 import importlib
@@ -21,6 +28,7 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core.rhino_bar_registry import repair_on_entry, update_all_previews
+from core.rhino_tool_place import resync_tools_to_joints
 
 
 def main():
@@ -39,6 +47,13 @@ def main():
         print(f"RSUpdatePreview: regenerated/created {n_changed} bar preview(s).")
     else:
         print("RSUpdatePreview: all bar previews already up to date.")
+
+    # Snap any tool that drifted away from its joint back onto it (reuses the
+    # canonical RSBarSnap/RSBarBrace placement path). Tools already on their
+    # joints are left untouched.
+    n_tools = resync_tools_to_joints(verbose=False)
+    if n_tools:
+        print(f"RSUpdatePreview: re-snapped {n_tools} drifted tool(s) onto their joints.")
 
 
 if __name__ == "__main__":

@@ -359,6 +359,87 @@ def find_attached_block_for_joint(joint_id: str):
     return find_ground_block_for_joint(joint_id)
 
 
+# ---------------------------------------------------------------------------
+# Re-snapping drifted tools back onto their joint blocks
+# ---------------------------------------------------------------------------
+
+#: Element-wise tolerance (mm / unitless) for the tool-on-joint check below.
+#: A correctly-placed tool satisfies ``tool_world @ M_tcp_from_block ==
+#: block_world`` to floating-point precision, so any real drift (user nudged
+#: the tool, or the joint was moved after the tool was placed) sits far above
+#: this.  Mirrors the TCP-coincidence invariant used by ``core.joint_relink``.
+_TOOL_ON_JOINT_TOL = 1e-3
+
+
+def resync_tools_to_joints(verbose: bool = False) -> int:
+    """Snap any tool that has drifted away from its joint back onto it.
+
+    For every robotic-tool instance this checks whether its TCP frame still
+    coincides with the joint block it is tagged to (``joint_id`` user text) --
+    the same ``tool_world @ M_tcp_from_block == block_world`` invariant that
+    :mod:`core.joint_relink` relies on.  When a tool has drifted (the user
+    nudged it, or the joint block moved after the tool was placed) it is put
+    back by re-running the canonical placement,
+    :func:`place_tool_at_block_instance` -- the very routine RSBarSnap /
+    RSBarBrace auto-placement and the tool-cycle command already use -- so the
+    same tool lands exactly on the joint's current frame.
+
+    Tools already sitting on their joint are left untouched.  Tools whose
+    joint block is gone (joint deleted) or whose ``tool_name`` is no longer in
+    the registry are skipped with a note when *verbose*.  Returns the number
+    of tools actually re-snapped.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
+        return 0
+
+    all_tools = _robotic_tool.load_robotic_tools()
+    n_moved = 0
+    for tool_oid in list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []):
+        if not rs.IsObject(tool_oid):
+            continue  # already removed (e.g. a duplicate cleared this pass)
+        joint_id = rs.GetUserText(tool_oid, "joint_id")
+        tool_name = rs.GetUserText(tool_oid, "tool_name")
+        if not joint_id or not tool_name:
+            continue
+        tool = all_tools.get(tool_name)
+        if tool is None:
+            if verbose:
+                print(
+                    f"  [tool] {joint_id}: tool_name '{tool_name}' not in "
+                    f"registry; cannot resync, skipping."
+                )
+            continue
+        block_id = find_attached_block_for_joint(joint_id)
+        if block_id is None:
+            if verbose:
+                print(f"  [tool] {joint_id}: no joint block found; skipping.")
+            continue
+
+        # Is the tool still on its joint?  Its TCP frame should reproduce the
+        # joint block's world frame (see place_tool_at_block_instance).  Skip
+        # (rather than abort the whole pass) if either object isn't a readable
+        # block instance -- e.g. it was exploded.
+        try:
+            tool_world = _block_instance_world_xform(tool_oid)
+            block_world = _block_instance_world_xform(block_id)
+        except ValueError as exc:
+            if verbose:
+                print(f"  [tool] {joint_id}: cannot read block frame ({exc}); skipping.")
+            continue
+        tcp_world = tool_world @ np.asarray(tool.M_tcp_from_block, dtype=float)
+        if np.allclose(tcp_world, block_world, rtol=0.0, atol=_TOOL_ON_JOINT_TOL):
+            continue  # already on the joint -- leave it alone
+
+        # Drifted -> re-place the same tool on the joint's current frame.
+        if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+            n_moved += 1
+            if verbose:
+                print(f"  [tool] {joint_id}: drifted tool re-snapped onto joint.")
+    return n_moved
+
+
 def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     """Replace the clicked tool instance with the next tool in the registry.
 

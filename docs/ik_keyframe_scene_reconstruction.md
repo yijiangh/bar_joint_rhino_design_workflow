@@ -4,7 +4,7 @@
 
 This report documents the scene-reconstruction pipeline behind
 `scripts/rs_ik_keyframe.py` and the BarAction headless workflow in
-`tests/headless_bar_action_planner.py`:
+`external/husky_assembly_tamp/scripts/headless_bar_action_planner.py`:
 
 1. **Scene creation** — building the static `RobotCell` (robot + tools + all bars,
    joints, and obstacles) once per geometry edit.
@@ -350,8 +350,8 @@ it to its arm's planning group by the tool name's L/R suffix (lines 1298–1318)
 
 ```python
 arm_group = {"left": config.LEFT_GROUP, "right": config.RIGHT_GROUP}
-for tid in robot_cell.tool_models:                 # AT3L / AT3R
-    side = _arm_side_from_tool_name(tid)           # 'left' / 'right'
+for tid in robot_cell.tool_models:                 # active pair, e.g. AT3L / AT3R
+    side = arm_side_from_tool_name(tid)            # 'left' / 'right' (core.robotic_tool)
     ts = state.tool_states[tid]
     ts.attached_to_group = arm_group[side]         # base_left/right_arm_manipulator
     ts.touch_links       = list(_ARM_TOOL_WRIST_TOUCH_LINKS[side])
@@ -543,7 +543,7 @@ bar↔tool whitelist, scoped to the one movement where the two actually approach
 
 ## 7. Stage 4 — Consumers
 
-### 7.1 The solver — `rs_ik_keyframe.py` + `core.ik_keyframe.solve_keyframe_chain`
+### 7.1 The solver — `rs_ik_keyframe.py` + `husky_assembly_tamp.keyframe.ik_keyframe.solve_keyframe_chain`
 
 `RSIKKeyframe.main()` picks a bar with one L + one R tool, reads the two placed
 tool blocks' world transforms as the assembled `tool0` targets, prompts for a robot
@@ -552,7 +552,7 @@ base frame on a `Walkable Ground` brep, builds M0–M4 once via
 chain, sampling base frames on failure.
 
 `solve_keyframe_chain(planner, [(role, movement)…], base_frame_mm)` (in
-`core.ik_keyframe`, shared with the headless test) is the one place that:
+`husky_assembly_tamp.keyframe.ik_keyframe`, shared with the headless planner) is the one place that:
 
 1. Copies each movement's `start_state` (carrying its attachments + `touch_bodies`).
 2. Seeds `robot_configuration` from the **previous** movement's solution (M2 starts
@@ -598,14 +598,14 @@ base is accepted only if the **whole** chain solves.
 
 ### 7.2 Headless diagnostics and planning
 
-`tests/headless_bar_action_planner.py --solve-keyframes --base saved` re-solves
+`external/husky_assembly_tamp/scripts/headless_bar_action_planner.py --solve-keyframes --base saved` re-solves
 the same M1→M2→M3 chain through the identical `solve_keyframe_chain` at the base
 already stored on the bar, and with `--gui` pauses on each freshly-solved keyframe
 (pushing it into PyBullet and printing a joint-vs-limit chart) so a failing
 keyframe can be inspected from the previous one's pose. This replaced the former
 `tests/headless_ik_keyframe.py` diagnostic.
 
-`tests/headless_bar_action_planner.py --solve-keyframes` is the broader
+`external/husky_assembly_tamp/scripts/headless_bar_action_planner.py --solve-keyframes` is the broader
 export/planning path. It can solve one action or every clean exported action,
 sample the base + M1–M3 keyframes, and write
 `BarActions/<bar>.solved_keyframe.json`. Motion planning writes the separate
@@ -715,7 +715,7 @@ built. The ground-anchor and negative-cache items are direct implementation gaps
 | | `_apply_movement_touch_policy` | 574 | per-movement `touch_bodies` (ACM) |
 | | `_build_m1`/`m2`/`m3`/`m4`/`m0` | 669 / 743 / 800 / 876 / 927 | the five movement builders |
 | | `build_assembly_movements` | 1000 | Stage 3 orchestrator |
-| `core/ik_keyframe.py` | `frame_to_mm4` | 24 | compas `Frame` (m) → 4×4 mm |
+| `husky_assembly_tamp/keyframe/ik_keyframe.py` | `frame_to_mm4` | 24 | compas `Frame` (m) → 4×4 mm |
 | | `solve_keyframe_chain` | 46 | chained M1→M2→M3 IK solve |
 | | `find_first_unsolvable_movement` | 139 | locate the first failing movement for ssik inspection |
 | `rs_show_bar_action_plan.py` | `_PreviewSession._build_movements` | 473 | rebuild keyframe-view movement states |

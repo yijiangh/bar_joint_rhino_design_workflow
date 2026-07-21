@@ -20,32 +20,12 @@ import ``rhinoscriptsyntax`` lazily so this module stays importable outside Rhin
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 from core import config
 from core import robot_cell
-
-
-def _arm_side_from_tool_name(tool_name: str) -> Optional[str]:
-    """Classify an arm side from a tool name's L/R suffix.
-
-    Args:
-        tool_name (str): e.g. ``"AT3L"`` / ``"AT3R"``.
-
-    Returns:
-        str | None: ``"left"`` if the name ends in 'L', ``"right"`` if 'R',
-        else ``None``.
-    """
-    if not tool_name:
-        return None
-    last = tool_name.strip()[-1].upper()
-    if last == "L":
-        return "left"
-    if last == "R":
-        return "right"
-    return None
+# Single home of the L/R tool-name suffix rule.
+from core.robotic_tool import arm_side_from_tool_name
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +86,7 @@ def resolve_arm_tools_on_bar(bar_id: str):
         toid = find_tool_for_joint(jid)
         if toid is None:
             return None, f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed."
-        side = _arm_side_from_tool_name(rs.GetUserText(toid, "tool_name") or "")
+        side = arm_side_from_tool_name(rs.GetUserText(toid, "tool_name") or "")
         if side is None:
             return None, f"Tool on joint '{jid}' has no L/R suffix; cannot decide arm side."
         if sides[side] is not None:

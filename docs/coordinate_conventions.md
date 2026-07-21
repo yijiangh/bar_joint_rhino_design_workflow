@@ -155,7 +155,7 @@ The IK keyframe workflow (`RSIKKeyframe`) stores a JSON record as user-text on t
 |-------|---------|
 | `robot_id` | Identifier of the robot model the keyframe was solved against. Currently `"dual-arm_husky_Cindy"`. |
 | `base_frame_world_mm` | 4x4 homogeneous transform of the mobile-base frame in world coordinates, **translations in mm**. Z = Brep face normal at the picked base point; X = heading projected onto the tangent plane. |
-| `final` | Joint configurations for both arms with the tools at the final contact poses (tool0 = male OCF ⊗ `MALE_JOINT_OCF_TO_TOOL0[joint_type]`). |
+| `final` | Joint configurations for both arms with the tools at the final contact poses (tool0 = the placed tool block's world transform, i.e. male OCF ⊗ `inv(M_tcp_from_block)` from `robotic_tools.json`). |
 | `approach` | Joint configurations for both arms with tools offset by `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE` from the final poses. |
 | Per-side `joint_names` / `joint_values` | Configurable joints of the planning group (`base_left_arm_manipulator` / `base_right_arm_manipulator`), order preserved from `RobotCell.get_configurable_joint_names(group)`. |
 

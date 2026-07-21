@@ -23,7 +23,7 @@ import numpy as np
 
 from core import config
 from core import robotic_tool as _robotic_tool
-from core.rhino_block_import import require_block_definition
+from core.rhino_block_import import refresh_block_definition, require_block_definition
 
 
 # Doc-userText key for the session-wide default tool.
@@ -166,6 +166,104 @@ def place_tool_at_block_instance(
     return tool_oid
 
 
+def replace_all_tool_instances(pair: dict) -> dict:
+    """Re-place EVERY placed tool instance with the side-matching tool from *pair*.
+
+    The engine of RSSwapRoboticTool.  Each joint keeps the arm side it
+    already had (the L/R suffix of its instance's ``tool_name`` user-text);
+    only the tool itself changes.
+
+    Two passes, validate-then-mutate:
+
+    Pass 1 (read-only): for every object on ``config.LAYER_TOOL_INSTANCES``,
+    read ``joint_id`` + ``tool_name``, classify the side, and resolve the
+    joint block it is attached to.  ANY failure aborts with a RuntimeError
+    listing every offending instance -- nothing has been deleted yet.
+
+    Pass 2 (mutate): delete all tool instances, force-refresh/import both pair
+    blocks from their asset .3dm files (even when no tools are currently
+    placed), then re-place one tool per joint.
+
+    Args:
+        pair (dict): ``{"left": RoboticToolDef, "right": RoboticToolDef}``,
+            e.g. from ``core.robotic_tool.get_active_pair()``.
+
+    Returns:
+        dict: ``{"replaced": total, "left": n_left, "right": n_right}``.
+
+    Raises:
+        RuntimeError: on any Pass-1 validation failure, block-refresh
+            failure, or per-joint placement failure.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+    # Rhino-runtime import: rhino_helpers pulls in rhinoscriptsyntax at its
+    # top, so importing it lazily keeps this module importable outside Rhino.
+    from core.rhino_helpers import suspend_redraw  # noqa: PLC0415
+
+    # * Pass 1: validate every placed tool instance before touching anything.
+    jobs: dict = {}       # joint_id -> (side, joint_block_id)
+    tool_oids: list = []  # everything on the tool layer (deleted in pass 2)
+    problems: list = []
+    if rs.IsLayer(config.LAYER_TOOL_INSTANCES):
+        existing_tool_oids = rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []
+    else:
+        existing_tool_oids = []
+    for oid in existing_tool_oids:
+        tool_oids.append(oid)
+        joint_id = rs.GetUserText(oid, "joint_id")
+        tool_name = rs.GetUserText(oid, "tool_name") or ""
+        if not joint_id:
+            problems.append(f"  - object {oid}: missing 'joint_id' user-text")
+            continue
+        side = _robotic_tool.arm_side_from_tool_name(tool_name)
+        if side is None:
+            problems.append(
+                f"  - joint {joint_id}: tool_name {tool_name!r} has no L/R "
+                "suffix; cannot keep its arm side"
+            )
+            continue
+        block_id = find_attached_block_for_joint(joint_id)
+        if block_id is None:
+            problems.append(
+                f"  - joint {joint_id}: no male/ground joint block found in doc"
+            )
+            continue
+        if joint_id in jobs and jobs[joint_id][0] != side:
+            problems.append(
+                f"  - joint {joint_id}: two tool instances with conflicting "
+                "L/R sides"
+            )
+            continue
+        jobs[joint_id] = (side, block_id)
+    if problems:
+        raise RuntimeError(
+            "replace_all_tool_instances: aborting BEFORE any change; fix "
+            "these tool instances first:\n" + "\n".join(problems)
+        )
+
+    # * Pass 2: delete everything, refresh/import definitions, re-place.
+    # ! Always refresh both definitions, even with zero existing tool
+    # ! instances. This supports swapping from an IK document that never had
+    # ! the candidate source blocks inserted into it.
+    counts = {"left": 0, "right": 0}
+    with suspend_redraw():
+        for oid in tool_oids:
+            if rs.IsObject(oid):
+                rs.DeleteObject(oid)
+        for side in ("left", "right"):
+            tool = pair[side]
+            refresh_block_definition(tool.block_name, tool.asset_path())
+        for joint_id, (side, block_id) in jobs.items():
+            new_oid = place_tool_at_block_instance(block_id, joint_id, pair[side])
+            if new_oid is None:
+                raise RuntimeError(
+                    f"replace_all_tool_instances: failed to place tool "
+                    f"'{pair[side].name}' at joint {joint_id}."
+                )
+            counts[side] += 1
+    return {"replaced": counts["left"] + counts["right"], **counts}
+
+
 def place_tool_at_male_joint(
     male_id,
     joint_id: str,
@@ -180,51 +278,76 @@ def place_tool_at_male_joint(
     return place_tool_at_block_instance(male_id, joint_id, tool)
 
 
+def _get_active_pair_or_none():
+    """Load the active tool pair, printing (not raising) when unresolvable.
+
+    Auto-placement runs in the middle of joint placement; a missing tool
+    setup should not abort the whole joint command, so the error is printed
+    loudly and ``None`` is returned instead of raising.
+    """
+    try:
+        return _robotic_tool.get_active_pair()
+    except (RuntimeError, ValueError) as exc:
+        print(f"  [tool] no active tool pair; skipping tool placement: {exc}")
+        return None
+
+
+def _resolve_default_active_tool(active: dict) -> _robotic_tool.RoboticToolDef:
+    """Pick the doc-default tool if it is in the active pair, else active left.
+
+    Any doc default that is NOT in the active pair is loudly skipped -- the
+    active pair (set by RSSwapRoboticTool) always wins over stale defaults.
+    """
+    name = get_default_tool_name()
+    if name == active["left"].name:
+        return active["left"]
+    if name == active["right"].name:
+        return active["right"]
+    if name:
+        print(
+            f"  [tool] doc default '{name}' is not in the active pair; using "
+            f"active left tool '{active['left'].name}' instead "
+            "(run RSSwapRoboticTool to change pairs)."
+        )
+    return active["left"]
+
+
 def auto_place_tool_at_male_joint(male_id, joint_id: str, pair):
     """Place the appropriate tool at a newly-created male joint.
 
-    Resolution order:
-      1. ``pair.male.preferred_robotic_tool_name`` if set on the pair
-         definition (and the named tool exists in the registry).
-      2. The doc-stored default ``scaffolding.last_robotic_tool``.
-      3. The first tool in the registry (alphabetical).
+    Resolution order (active pair only -- no silent fallback outside it):
+      1. ``pair.male.preferred_robotic_tool_name`` if it is one of the
+         ACTIVE pair's tools.
+      2. The doc-stored default ``scaffolding.last_robotic_tool`` if it is
+         one of the active pair's tools.
+      3. The active LEFT tool.
 
     Designers don't have to configure anything.  The only no-op case (with
-    a console message) is when the registry itself is empty.
+    a console message) is when the active pair cannot be resolved.
     """
-    all_tools = _robotic_tool.load_robotic_tools()
-    if not all_tools:
-        print("  [tool] no robotic tools registered; skipping tool placement.")
+    active = _get_active_pair_or_none()
+    if active is None:
         return None
 
+    active_by_name = {active["left"].name: active["left"], active["right"].name: active["right"]}
     preferred = getattr(pair.male, "preferred_robotic_tool_name", "") or ""
     if preferred:
-        if preferred in all_tools:
+        if preferred in active_by_name:
             print(
                 f"  [tool] using pair-preferred tool '{preferred}' "
                 f"for joint {joint_id}."
             )
             return place_tool_at_male_joint(
-                male_id, joint_id, pair, all_tools[preferred]
+                male_id, joint_id, pair, active_by_name[preferred]
             )
         print(
-            f"  [tool] pair-preferred tool '{preferred}' not in registry; "
-            f"falling back."
+            f"  [tool] pair-preferred tool '{preferred}' is not in the active "
+            f"pair ({sorted(active_by_name)}); ignoring it "
+            "(run RSSwapRoboticTool to change pairs)."
         )
 
-    name = get_default_tool_name()
-    if not name or name not in all_tools:
-        name = sorted(all_tools.keys())[0]
-        print(f"  [tool] no default set; falling back to first tool '{name}'.")
-    return place_tool_at_male_joint(male_id, joint_id, pair, all_tools[name])
-
-
-def _resolve_default_tool_name(all_tools: dict) -> str:
-    """Pick a default tool name: doc-default if registered, else alphabetic first."""
-    name = get_default_tool_name()
-    if not name or name not in all_tools:
-        name = sorted(all_tools.keys())[0]
-    return name
+    tool = _resolve_default_active_tool(active)
+    return place_tool_at_male_joint(male_id, joint_id, pair, tool)
 
 
 def auto_place_tool_at_ground_block(ground_id, joint_id: str):
@@ -233,12 +356,11 @@ def auto_place_tool_at_ground_block(ground_id, joint_id: str):
     Same resolution order as the male variant minus the per-pair preference
     (ground joints have no `pair.male.preferred_robotic_tool_name`).
     """
-    all_tools = _robotic_tool.load_robotic_tools()
-    if not all_tools:
-        print("  [tool] no robotic tools registered; skipping tool placement.")
+    active = _get_active_pair_or_none()
+    if active is None:
         return None
-    name = _resolve_default_tool_name(all_tools)
-    return place_tool_at_block_instance(ground_id, joint_id, all_tools[name])
+    tool = _resolve_default_active_tool(active)
+    return place_tool_at_block_instance(ground_id, joint_id, tool)
 
 
 def place_tool_by_name_at_ground_block(
@@ -441,53 +563,59 @@ def resync_tools_to_joints(verbose: bool = False) -> int:
 
 
 def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
-    """Replace the clicked tool instance with the next tool in the registry.
+    """Toggle the clicked tool instance between the ACTIVE pair's L/R tools.
 
-    The ordering is the alphabetical order of tool names, cycled.  If the
-    registry has only one entry, this no-ops.  Returns the new tool name
-    on success (or the unchanged name if cycling was a no-op), ``None``
-    on failure.
+    With candidate pairs in the registry, "cycling" is a side toggle within
+    the active pair only: a joint holding the active LEFT tool gets the
+    active RIGHT tool and vice versa.  Use RSSwapRoboticTool to change WHICH
+    pair is active.  Returns the new tool name on success, ``None`` on
+    failure.
 
-    *pair* is forwarded to :func:`place_tool_at_male_joint` for API
-    parity; it is currently unused by the placement math (TCP is matched
-    to the male block origin) but kept for forward compatibility.
+    *pair* is kept for API parity with older callers; it is unused by the
+    placement math (TCP is matched to the joint block origin).
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
     joint_id = rs.GetUserText(tool_oid, "joint_id")
-    current_name = rs.GetUserText(tool_oid, "tool_name")
+    current_name = rs.GetUserText(tool_oid, "tool_name") or ""
     if not joint_id:
-        print("  [tool] clicked tool has no 'joint_id' user-text; cannot cycle.")
+        print("  [tool] clicked tool has no 'joint_id' user-text; cannot toggle.")
         return None
 
-    names = sorted(_robotic_tool.load_robotic_tools().keys())
-    if not names:
-        print("  [tool] registry is empty; nothing to cycle to.")
+    try:
+        active = _robotic_tool.get_active_pair()
+    except (RuntimeError, ValueError) as exc:
+        print(f"  [tool] cannot resolve the active tool pair: {exc}")
         return None
-    if len(names) == 1:
-        print(f"  [tool] only one tool registered ('{names[0]}'); cycle is a no-op.")
-        next_name = names[0]
-    else:
-        try:
-            idx = names.index(current_name)
-        except ValueError:
-            idx = -1
-        next_name = names[(idx + 1) % len(names)]
+
+    side = _robotic_tool.arm_side_from_tool_name(current_name)
+    if side is None:
+        print(
+            f"  [tool] clicked tool {current_name!r} has no L/R suffix; cannot "
+            "decide which side to toggle. Run RSSwapRoboticTool to re-place "
+            "all tools from the active pair."
+        )
+        return None
+    if current_name not in (active["left"].name, active["right"].name):
+        # Stale doc (tool placed before the last pair swap): still toggle the
+        # side, but land on the active pair -- with a note, never silently.
+        print(
+            f"  [tool] clicked tool {current_name!r} is not in the active pair "
+            f"({active['left'].name}/{active['right'].name}); toggling onto "
+            "the active pair."
+        )
+
+    other_side = "right" if side == "left" else "left"
+    tool = active[other_side]
 
     male_id = find_attached_block_for_joint(joint_id)
     if male_id is None:
         print(f"  [tool] could not locate joint block for {joint_id}.")
         return None
 
-    try:
-        tool = _robotic_tool.get_robotic_tool(next_name)
-    except KeyError:
-        print(f"  [tool] tool '{next_name}' not found in registry.")
-        return None
-
     new_oid = place_tool_at_block_instance(male_id, joint_id, tool)
     if new_oid is None:
         return None
-    set_default_tool_name(next_name)
-    print(f"  [tool] {joint_id}: tool cycled '{current_name}' -> '{next_name}'.")
-    return next_name
+    set_default_tool_name(tool.name)
+    print(f"  [tool] {joint_id}: tool toggled '{current_name}' -> '{tool.name}'.")
+    return tool.name

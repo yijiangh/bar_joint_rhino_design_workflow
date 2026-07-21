@@ -72,12 +72,19 @@
       <text>
         <locale_1033>RSSetup</locale_1033>
       </text>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000006" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000006</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000019" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000019</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002b</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000002a" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002a</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000009" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000009</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000045</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000006" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000006</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000023" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000023</left_macro_id>
@@ -103,15 +110,14 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000018" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000018</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000019" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000019</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002b</right_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000002a" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002a</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000052" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000052</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001e" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001e</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000060" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000060</left_macro_id>
       </tool_bar_item>
     </tool_bar>
     <!-- RSMoCap: motion capture retrieval -->
@@ -495,7 +501,7 @@
         <locale_1033>RSDefineRoboticTool</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Define a new robotic tool from a baked block instance and TCP frame points</locale_1033>
+        <locale_1033>AssemblyTool mode: define a tool candidate (block + TCP points + picked collision meshes, exports .3dm + .obj). SupportGripper mode: export bar-grasp to tool0 transform</locale_1033>
       </tooltip>
       <button_text>
         <locale_1033>RSDefineRoboticTool</locale_1033>
@@ -528,15 +534,27 @@
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000018">
       <text>
-        <locale_1033>RSExportGraspTool0TF</locale_1033>
+        <locale_1033>RSSwapRoboticTool</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Export male-joint OCF and bar-grasp to tool0 transforms</locale_1033>
+        <locale_1033>Type a registered tool name to activate its L/R pair (imports tool definitions, re-places existing tools, prompts a cell rebuild)</locale_1033>
       </tooltip>
       <button_text>
-        <locale_1033>RSExportGraspTool0TF</locale_1033>
+        <locale_1033>RSSwapRoboticTool</locale_1033>
       </button_text>
-      <script>! _-ScriptEditor _R "rs_export_grasp_tool0_tf.py"</script>
+      <script>! _-ScriptEditor _R "rs_swap_robotic_tool.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000052">
+      <text>
+        <locale_1033>RSInspectRoboticTool</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Open a PyBullet viewer to inspect all robotic tool candidates: slide through L/R pairs (L at origin, R at +0.30 m), see each tool0 + TCP frame, and delete a whole candidate pair (entries + .3dm/.obj) with a two-step confirm</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSInspectRoboticTool</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_inspect_robotic_tool.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000019">
       <text>
@@ -585,6 +603,18 @@
         <locale_1033>RSExportBarTool0TF</locale_1033>
       </button_text>
       <script>! _-ScriptEditor _R "rs_export_bar_tool0_tf.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000060">
+      <text>
+        <locale_1033>RSRegisterAliases</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Register a typeable command alias for every RS* toolbar macro, so you can type e.g. RSDefineRoboticTool in the command line instead of clicking a button. Run once per machine; re-run after macro changes. Aliases persist across Rhino sessions.</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSRegisterAliases</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "register_command_aliases.py"</script>
     </macro_item>
     <!-- RSMoCap macros -->
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000030">

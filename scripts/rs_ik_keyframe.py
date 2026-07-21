@@ -31,9 +31,9 @@ Right after the base point + heading are chosen (step 2), the command offers an
 off-ramp: continue the in-Rhino solve as normal, or just save the base frame on
 the bar and exit. The exit path is for the "indicate the base pose in Rhino,
 solve the keyframes headlessly" workflow -- the saved base is then picked up by
-``headless_bar_action_planner.py --solve-keyframes --base saved`` (export the
-bar first). Pressing Enter continues the in-Rhino solve, so the default flow is
-unchanged.
+``external/husky_assembly_tamp/scripts/headless_bar_action_planner.py
+--solve-keyframes --base saved`` (export the bar first). Pressing Enter
+continues the in-Rhino solve, so the default flow is unchanged.
 """
 
 from __future__ import annotations
@@ -58,9 +58,13 @@ from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
-from core import ik_keyframe as _ik_keyframe_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
+# The shared solvers live in the husky_assembly_tamp submodule (importing
+# core.config above put it on sys.path) -- ONE implementation used by both this
+# command and the headless planner.
+from husky_assembly_tamp.keyframe import dual_arm_ik as _dual_arm_ik_module
+from husky_assembly_tamp.keyframe import ik_keyframe as _ik_keyframe_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
@@ -72,11 +76,11 @@ from core.rhino_bar_registry import (
 from core.rhino_frame_io import doc_unit_scale_to_mm
 from core.rhino_helpers import suspend_redraw
 from core.rhino_tool_place import find_tool_for_joint
-from core.robotic_tool import get_robotic_tool
+from core.robotic_tool import arm_side_from_tool_name, get_robotic_tool
 # Base-frame math shared with the headless sampler. These are pure numpy (no
-# Rhino), so they live in `core.walkable_ground` and are imported under the
-# private names this script already uses at its call sites.
-from core.walkable_ground import (
+# Rhino), so they live in the tamp `keyframe.walkable_ground` module and are
+# imported under the private names this script already uses at its call sites.
+from husky_assembly_tamp.keyframe.walkable_ground import (
     frame_from_origin_normal_heading as _frame_from_origin_normal_heading,
     sample_base_offsets as _sample_base_offsets,
 )
@@ -107,7 +111,7 @@ def _reload_runtime_modules():
     Returns:
         None.
     """
-    global bar_action, config, dynamic_preview, env_collision, highlight_env, ik_keyframe, ik_viz, robot_cell
+    global bar_action, config, dual_arm_ik, dynamic_preview, highlight_env, ik_keyframe, ik_viz, robot_cell
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
     env_collision = importlib.reload(_env_collision_module)
@@ -115,9 +119,11 @@ def _reload_runtime_modules():
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
     # bar_action builds the M1-M4 movements (collision context + EE targets);
-    # ik_keyframe solves the chained IK against them. Reload both so edits to the
-    # shared solve path take effect without restarting Rhino.
+    # dual_arm_ik + ik_keyframe (from the tamp submodule) solve the chained IK
+    # against them. Reload all three so edits to the shared solve path take
+    # effect without restarting Rhino.
     bar_action = importlib.reload(_bar_action_module)
+    dual_arm_ik = importlib.reload(_dual_arm_ik_module)
     ik_keyframe = importlib.reload(_ik_keyframe_module)
 
 
@@ -236,18 +242,6 @@ def _has_block_definition(name) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _arm_side_from_tool_name(tool_name):
-    """Classify a tool by ``tool_name`` user-text suffix: 'L' -> left, 'R' -> right."""
-    if not tool_name:
-        return None
-    last = tool_name.strip()[-1].upper()
-    if last == "L":
-        return "left"
-    if last == "R":
-        return "right"
-    return None
-
-
 def _males_on_bar(bar_id):
     """Return list of joint block instance oids whose ``parent_bar_id`` matches.
 
@@ -302,7 +296,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
                 "Run RSJointEdit / tool-cycle first."
             )
         tname = rs.GetUserText(toid, "tool_name") or ""
-        side = _arm_side_from_tool_name(tname)
+        side = arm_side_from_tool_name(tname)
         if side is None:
             return None, (
                 f"Tool '{tname}' on joint '{jid}' has no L/R suffix in its name; "
@@ -1232,7 +1226,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
 
     A base frame is accepted only when the WHOLE chain solves (approach ->
     assembled -> retreat). The chain itself is solved by
-    ``core.ik_keyframe.solve_keyframe_chain`` -- one place, shared with the
+    ``husky_assembly_tamp.keyframe.ik_keyframe.solve_keyframe_chain`` -- one place, shared with the
     headless test. This wrapper only adds the Rhino-specific base search: try the
     seed base, then sample offsets on the WalkableGround brep and re-snap each.
 
@@ -1309,6 +1303,9 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                 base_frame,
                 check_collision=check_collision,
                 verbose_pairs=check_collision,
+                # The ssik backend orders cold candidate pairs by distance to
+                # home; the solver takes it as an explicit argument now.
+                home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12,
             )
             if viz is not None and idx > 0:
                 sample_origin_doc, sample_x_doc, _z = _frame_mm_to_doc_marker(base_frame)
@@ -1353,12 +1350,12 @@ def _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell):
         "robot_id": config.ROBOT_ID,
         "base_frame_world_mm": np.asarray(base_frame_mm, dtype=float).tolist(),
         "final": {
-            "left": robot_cell.extract_group_config(final_state, config.LEFT_GROUP, rcell),
-            "right": robot_cell.extract_group_config(final_state, config.RIGHT_GROUP, rcell),
+            "left": dual_arm_ik.extract_group_config(final_state, config.LEFT_GROUP, rcell),
+            "right": dual_arm_ik.extract_group_config(final_state, config.RIGHT_GROUP, rcell),
         },
         "approach": {
-            "left": robot_cell.extract_group_config(approach_state, config.LEFT_GROUP, rcell),
-            "right": robot_cell.extract_group_config(approach_state, config.RIGHT_GROUP, rcell),
+            "left": dual_arm_ik.extract_group_config(approach_state, config.LEFT_GROUP, rcell),
+            "right": dual_arm_ik.extract_group_config(approach_state, config.RIGHT_GROUP, rcell),
         },
     }
 
@@ -1379,8 +1376,8 @@ def _build_group_pair(state, rcell):
         dict: ``{"left": <left group config>, "right": <right group config>}``.
     """
     return {
-        "left": robot_cell.extract_group_config(state, config.LEFT_GROUP, rcell),
-        "right": robot_cell.extract_group_config(state, config.RIGHT_GROUP, rcell),
+        "left": dual_arm_ik.extract_group_config(state, config.LEFT_GROUP, rcell),
+        "right": dual_arm_ik.extract_group_config(state, config.RIGHT_GROUP, rcell),
     }
 
 
@@ -1641,7 +1638,7 @@ def _oids_for_offenders(offenders, env_geom, mesh_mode):
     """Map resolved ``(kind, name)`` offenders to the Rhino oids to red-highlight.
 
     ``offenders`` come already named + classified from
-    ``robot_cell.enumerate_ssik_candidate_pairs`` (RigidBody names are reverse-mapped
+    ``dual_arm_ik.enumerate_ssik_candidate_pairs`` (RigidBody names are reverse-mapped
     there, since the objects carry no ``.name``). Each is resolved to its baked
     preview geometry: robot links + tools via the cached ``ik_viz`` bundle on the
     assembly layer (for the currently-visible ``mesh_mode``), env rigid bodies
@@ -1794,7 +1791,8 @@ def _inspect_ssik_candidates(planner, movements, base_frame_mm, include_self, in
 
     print("RSIKKeyframe: locating the first movement that fails to solve at this base ...")
     failing = ik_keyframe.find_first_unsolvable_movement(
-        planner, ordered, base_frame_mm, check_collision=check_collision
+        planner, ordered, base_frame_mm, check_collision=check_collision,
+        home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12,
     )
     if failing is None:
         rs.MessageBox(
@@ -1819,7 +1817,7 @@ def _inspect_ssik_candidates(planner, movements, base_frame_mm, include_self, in
     left_mm = ik_keyframe.frame_to_mm4(movement.target_ee_frames["left"])
     right_mm = ik_keyframe.frame_to_mm4(movement.target_ee_frames["right"])
     print(f"RSIKKeyframe: enumerating ssik candidate pairs for first failing movement '{role}' ...")
-    result = robot_cell.enumerate_ssik_candidate_pairs(
+    result = dual_arm_ik.enumerate_ssik_candidate_pairs(
         planner, movement.start_state, base_frame_mm, left_mm, right_mm,
     )
     branch_counts = result["branch_counts"]
@@ -1876,6 +1874,10 @@ def main():
         return
     _client, planner = robot_cell.get_planner()
     rcell = robot_cell.get_or_load_robot_cell()
+    # The dual-arm solvers are cache-free now (they read the cell already on the
+    # planner), so swapping back from a support-cell session is this command's
+    # job -- do it once up front.
+    robot_cell.ensure_dual_arm_cell(planner)
 
     if not robot_cell.prompt_if_cell_stale(rcell, planner):
         print("RSIKKeyframe: aborted (stale collision cell).")
@@ -1985,7 +1987,8 @@ def main():
                         "skipped the in-Rhino IK solve.\n"
                         "  Next: export this bar (RSExportBarAction), then solve the "
                         "keyframes headlessly with\n"
-                        "  headless_bar_action_planner.py --solve-keyframes "
+                        "  external/husky_assembly_tamp/scripts/"
+                        "headless_bar_action_planner.py --solve-keyframes "
                         f"--base saved --bar-action {target_bar_id}.json"
                     )
                     return

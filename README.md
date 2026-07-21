@@ -16,6 +16,53 @@ core math stack (`numpy` + `scipy`) and is split into two stages:
   stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
   assets in `asset/`.
 
+## Three-module pipeline
+
+This repo is the first of three modules that carry a scaffolding design from
+Rhino all the way to a real robot:
+
+![Three-module pipeline](docs/three_module_pipeline.png)
+
+1. **Design front-end (this repo, Rhino 8 / Windows).** Design the scaffolding
+   (bars, joints, assembly sequence, walkable ground), run quick IK keyframe
+   checks (`RSIKKeyframe`), then export everything as three JSON files via
+   compas / compas_fab serialization. The JSONs carry the complete scene — the
+   robot model with SRDF semantics, both arm tools, every bar / joint /
+   obstacle body, per-movement start states with the allowed-contact policy,
+   end-effector targets, and the home configuration — so the downstream
+   modules never read anything from Rhino or from this repo's Python config.
+2. **Offline planner (`external/husky_assembly_tamp` submodule, Windows +
+   Ubuntu).** Consumes only the exported JSONs. It solves the robot base +
+   M1→M2→M3 IK keyframes (base search on the walkable-ground meshes, dual-arm
+   analytical IK via the ssik sidecar), then plans full RRT trajectories
+   between the keyframes, and writes the results as sidecar files next to the
+   clean exports. How to run it:
+   [external/husky_assembly_tamp/scripts/README_headless_bar_action.md](external/husky_assembly_tamp/scripts/README_headless_bar_action.md).
+3. **Live execution ([husky-assembly-teleop], ROS2 / Ubuntu).** Loads the
+   solved JSONs on the robot. Motion capture localizes the mobile base; the
+   base tracks its planned pose as closely as it can, and — since it never
+   lands on it exactly — once the base stops, the **arm** motion is replanned
+   live against the **original tool0 targets** using the mocap-sensed base
+   pose. Solved plans also flow back into Rhino for visualization
+   (`RSLoadSolvedBarAction` / `RSShowBarActionPlan`).
+
+| Artifact | Produced by | Consumed by |
+|---|---|---|
+| `RobotCell.json` (robot + tools + all rigid bodies) | 1 · `RSExportRobotCell` / `RSExportAllBarActions` | 2 (scene rebuild), 3 |
+| `BarActions/<bar>.json` (M0–M4 movements) | 1 · `RSExportBarAction` / `RSExportAllBarActions` | 2 (solve input) |
+| `WalkableGround.json` (ground meshes) | 1 · `RSExportAllBarActions` | 2 (`--base sample` search) |
+| `<bar>.solved_keyframe.json` (base + IK keyframes) | 2 · `--solve-keyframes` | 2 (motion planning), 1 (viewer) |
+| `<bar>.solved_motion.json` (full trajectories) | 2 · `--movement all` | 3 (execution), 1 (viewer) |
+
+The JSON schema shared by all three modules lives in the
+[rs_data_structure](https://github.com/yijiangh/rs_data_structure) submodule
+(`external/rs_data_structure`). After pulling a new version of any submodule,
+reload Rhino's Python engine (**ScriptEditor → Tools → Reload Python 3
+(CPython) Engine**) so no stale module copies linger — the same ritual already
+documented for compas_fab below.
+
+[husky-assembly-teleop]: https://github.com/yijiangh/husky-assembly-teleop
+
 ## Rhino 8 Workshop Install (Start Here)
 
 ### 1. Get the repository onto your machine
@@ -80,9 +127,11 @@ The same submodule mechanism also vendors [rs_data_structure](https://github.com
 
 The IK scripts still declare the remaining transitive dependencies (`compas`, `compas_robots`, `pybullet`, `pybullet_planning`, plus `numpy` / `scipy`) via `# r:` so Rhino's ScriptEditor installs them into `scaffolding_env` on first run. Do **not** add `# r: compas_fab` — that would bypass the submodule and silently shadow it.
 
+A third submodule, [husky_assembly_tamp](https://github.com/yijiangh/husky_assembly_tamp) at `external/husky_assembly_tamp`, is the **offline planner** (module 2 of the pipeline above). It also hosts the code shared between Rhino and offline planning: the dual-arm IK solvers, the keyframe chain solve, the walkable-ground base search, and their tuning constants (`husky_assembly_tamp.keyframe`). `scripts/core/config.py` puts it on `sys.path`, so Rhino commands import the solvers from there — one implementation for both the quick in-Rhino IK check and the headless planner.
+
 ### Analytical IK solver (ssik) — one-time venv
 
-[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` / `RSShowIK` — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env` (that path is wired into `core.config`) which the Rhino scripts start and talk to automatically.
+[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` (and the headless planner) — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env`. The sidecar code and its path resolution live in the tamp submodule (`husky_assembly_tamp.keyframe.config`): the default is `<this repo>/external/ssik_env` + artifacts in `asset/ssik`, overridable per machine with the `HUSKY_SSIK_VENV_DIR` / `HUSKY_SSIK_ARTIFACT_DIR` environment variables. The scripts start and talk to the sidecar automatically.
 
 **The per-arm solver modules are already built and committed** (`asset/ssik/left_ur_arm_ik.py`, `asset/ssik/right_ur_arm_ik.py`), so you never run `ssik build` — you only create the venv once.
 
@@ -98,9 +147,9 @@ uv venv --python 3.11 external/ssik_env
 uv pip install --python external/ssik_env ssik
 ```
 
-That's the whole setup. Run `RSPBStart`, then `RSIKKeyframe` / `RSShowIK` — the sidecar spawns on the first solve and is shut down by `RSPBStop`.
+That's the whole setup. Run `RSPBStart`, then `RSIKKeyframe` — the sidecar spawns on the first solve and is shut down by `RSPBStop`.
 
-`core.config` also carries a pure-PyBullet `gradient` backend (`IK_BACKEND = "gradient"`) that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. To regenerate the solver modules after a URDF change, see [scripts/ssik_sidecar/README.md](scripts/ssik_sidecar/README.md).
+There is also a pure-PyBullet `gradient` backend that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. Select it with the `HUSKY_IK_BACKEND=gradient` environment variable (default is `ssik`; see `husky_assembly_tamp.keyframe.config`). To regenerate the solver modules after a URDF change, see [external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md](external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md).
 
 ### Optional developer install
 
@@ -312,7 +361,7 @@ scripts/
     joint_pair_solver.py                # Pair-specific joint solving utilities
     joint_placement.py                  # Joint placement computation and bake helpers
     ground_placement.py                 # Ground-joint placement logic
-    robot_cell.py                       # Dual-arm robot cell bootstrap + planner access
+    robot_cell.py                       # Dual-arm robot cell bootstrap + planner access (IK solvers live in the tamp submodule)
     robot_cell_support.py               # Support-arm robot cell helpers
     env_collision.py                    # Environment collision geometry collection/registration
     ik_collision_setup.py               # Allowed-touch and IK collision-state preparation
@@ -340,7 +389,8 @@ scripts/
   rs_pb_stop.py
   rs_ik_keyframe.py
   rs_ik_support_keyframe.py
-  rs_show_ik.py
+  rs_show_bar_action_plan.py
+  rs_load_solved_bar_action.py
 
   # Planning/export and mocap entry points
   rs_export_bar_action.py
@@ -354,11 +404,13 @@ tests/
   test_s2_t1.py
   test_joint_pair_roundtrip.py
   test_three_bar_scene.py
-  test_export_grasp_tool0_tf_writer.py
+  test_robotic_tool_registry.py
 
 external/
   compas_fab/                           # IK/planning dependency (git submodule)
   rs_data_structure/                    # Shared Movement / BarAssemblyAction schema (git submodule)
+  husky_assembly_tamp/                  # Offline planner (git submodule): keyframe + motion solvers,
+                                        #   headless CLI scripts under its scripts/ folder
 
 asset/
   *.3dm                                 # Joint/block assets used by placement workflows

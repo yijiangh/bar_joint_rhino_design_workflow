@@ -29,7 +29,7 @@ If a bar has no assignment yet, the nearest ground(s) are auto-assigned + saved
 first so step 1 always has something to show.
 
 The base-placement heuristic is Rhino-free and shared with the headless solver
-(``core.walkable_ground.derive_seed_base`` + ``frame_from_origin_normal_heading``):
+(the tamp ``keyframe.walkable_ground``: ``derive_seed_base`` + ``frame_from_origin_normal_heading``):
 the base stands a standoff BEHIND the bar and faces along the average male-joint
 insertion direction (the way the bar is pushed to mate). Here we feed it the bar
 centerline midpoint (its ground projection is where the base stands behind of) and

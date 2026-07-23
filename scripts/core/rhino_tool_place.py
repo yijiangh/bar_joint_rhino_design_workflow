@@ -76,7 +76,15 @@ def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
     """
     asset_path = tool.asset_path() if tool.asset_filename else None
     try:
-        require_block_definition(tool.block_name, asset_path=asset_path)
+        # Pin the tool's parts onto the (visible) tool-instances layer: the
+        # source .3dm's own layers are not imported, so without this the block's
+        # geometry lands on a hidden/unrelated layer and the inserted tool shows
+        # nothing (see rhino_block_import.import_block_definition_from_3dm).
+        require_block_definition(
+            tool.block_name,
+            asset_path=asset_path,
+            layer_name=config.LAYER_TOOL_INSTANCES,
+        )
         return True
     except RuntimeError as exc:
         print(f"  [tool] {exc}")
@@ -252,7 +260,13 @@ def replace_all_tool_instances(pair: dict) -> dict:
                 rs.DeleteObject(oid)
         for side in ("left", "right"):
             tool = pair[side]
-            refresh_block_definition(tool.block_name, tool.asset_path())
+            # Re-import onto the visible tool-instances layer so the swapped
+            # tool's parts are not left on a hidden source-file layer.
+            refresh_block_definition(
+                tool.block_name,
+                tool.asset_path(),
+                layer_name=config.LAYER_TOOL_INSTANCES,
+            )
         for joint_id, (side, block_id) in jobs.items():
             new_oid = place_tool_at_block_instance(block_id, joint_id, pair[side])
             if new_oid is None:
@@ -560,6 +574,96 @@ def resync_tools_to_joints(verbose: bool = False) -> int:
             if verbose:
                 print(f"  [tool] {joint_id}: drifted tool re-snapped onto joint.")
     return n_moved
+
+
+def _restore_side_tool(block_id, joint_id, active, default_tool):
+    """Pick the correct-side tool for a joint whose tool went missing.
+
+    A bar carries two tool-bearing joints, one LEFT-suffix tool and one
+    RIGHT-suffix tool (this is the L/R layout RSIKKeyframe requires).  So if the
+    SIBLING joint on the same bar (matched by ``parent_bar_id``) still holds a
+    tool with a resolvable side, the missing joint must be the OPPOSITE side --
+    restore that so the bar's L/R layout is preserved.  When the side cannot be
+    inferred (no ``parent_bar_id``, no sibling tool, or an ambiguous layout)
+    fall back to *default_tool* (the doc default active tool).
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    bar_id = rs.GetUserText(block_id, "parent_bar_id")
+    if not bar_id:
+        return default_tool
+
+    sibling_sides: set = set()
+    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+        if not rs.IsLayer(layer):
+            continue
+        for other_id in rs.ObjectsByLayer(layer) or []:
+            other_jid = rs.GetUserText(other_id, "joint_id")
+            if not other_jid or other_jid == joint_id:
+                continue
+            if rs.GetUserText(other_id, "parent_bar_id") != bar_id:
+                continue
+            other_toid = find_tool_for_joint(other_jid)
+            if other_toid is None:
+                continue
+            side = _robotic_tool.arm_side_from_tool_name(
+                rs.GetUserText(other_toid, "tool_name") or ""
+            )
+            if side is not None:
+                sibling_sides.add(side)
+
+    if len(sibling_sides) == 1:
+        opposite = "right" if next(iter(sibling_sides)) == "left" else "left"
+        return active[opposite]
+    return default_tool
+
+
+def restore_missing_tools_at_joints(verbose: bool = False) -> int:
+    """Re-place the active-pair tool on any joint block that lost its tool.
+
+    Every male (``J*``) and ground (``G*``) joint block is auto-tooled the
+    moment it is created (RSBarSnap / RSBarBrace / RSGroundPlace / RSJointEdit
+    all call the ``auto_place_tool_*`` helpers), so the document convention is
+    "every joint block carries exactly one tool instance".  A tool can still go
+    missing -- most visibly after :func:`replace_all_tool_instances`
+    (RSSwapRoboticTool) swaps to a tool of a DIFFERENT type, which deletes the
+    old instances before re-inserting the new ones -- leaving the joint with no
+    visible tool.
+
+    For every joint block that currently has NO tool instance tagged to its
+    ``joint_id``, this re-places the correct-side active-pair tool (inferred from
+    the bar's surviving sibling tool by :func:`_restore_side_tool`, falling back
+    to the doc default) via :func:`place_tool_at_block_instance`, so the tool
+    re-appears on the joint's current frame with the L/R layout preserved.
+    Joints that already carry a tool are left untouched.
+
+    Returns the number of tools restored.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    active = _get_active_pair_or_none()
+    if active is None:
+        return 0  # no resolvable pair -> nothing to restore with (already noted)
+    default_tool = _resolve_default_active_tool(active)
+
+    n_placed = 0
+    seen_joint_ids: set = set()
+    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+        if not rs.IsLayer(layer):
+            continue
+        for block_id in list(rs.ObjectsByLayer(layer) or []):
+            joint_id = rs.GetUserText(block_id, "joint_id")
+            if not joint_id or joint_id in seen_joint_ids:
+                continue
+            seen_joint_ids.add(joint_id)
+            if find_tool_for_joint(joint_id) is not None:
+                continue  # already tooled -- leave it alone
+            tool = _restore_side_tool(block_id, joint_id, active, default_tool)
+            if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+                n_placed += 1
+                if verbose:
+                    print(f"  [tool] {joint_id}: restored missing tool '{tool.name}'.")
+    return n_placed
 
 
 def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:

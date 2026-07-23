@@ -28,7 +28,7 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core.rhino_bar_registry import clear_ik_preview, repair_on_entry, update_all_previews
-from core.rhino_tool_place import resync_tools_to_joints
+from core.rhino_tool_place import resync_tools_to_joints, restore_missing_tools_at_joints
 
 
 def main():
@@ -47,6 +47,16 @@ def main():
         print(f"RSUpdatePreview: regenerated/created {n_changed} bar preview(s).")
     else:
         print("RSUpdatePreview: all bar previews already up to date.")
+
+    # Restore tools that went missing entirely -- e.g. after RSSwapRoboticTool
+    # swaps to a tool of a different type, a joint can be left with no visible
+    # tool. Re-place the active pair's default tool on any joint block that has
+    # lost its tool (every joint block is meant to carry one). Do this BEFORE the
+    # drift re-snap: restored tools land exactly on the joint, so the re-snap
+    # below then only has to touch genuinely drifted ones.
+    n_restored = restore_missing_tools_at_joints(verbose=False)
+    if n_restored:
+        print(f"RSUpdatePreview: restored {n_restored} missing tool(s) onto their joints.")
 
     # Snap any tool that drifted away from its joint back onto it (reuses the
     # canonical RSBarSnap/RSBarBrace placement path). Tools already on their

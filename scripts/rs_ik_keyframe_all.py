@@ -59,7 +59,10 @@ if SCRIPT_DIR not in sys.path:
 # reuse its helpers (mirrors rs_clear_ik_keyframe_all -> rs_clear_ik_keyframe).
 import rs_ik_keyframe as ikf
 from core import base_frame_viz as _base_frame_viz_module
-from core import walkable_ground as _wg_np_module
+# The numpy half of WalkableGround lives in the husky_assembly_tamp submodule
+# (core.config puts it on sys.path); rhino_walkable_ground imports THIS same
+# module object, so reloading it below refreshes the shared solver code.
+from husky_assembly_tamp.keyframe import walkable_ground as _wg_np_module
 from core import rhino_walkable_ground as _rwg_module
 from core.rhino_bar_pick import bar_or_tube_filter, resolve_picked_to_bar_curve
 # IK preview colors + the show helper live in rhino_bar_registry (single source of

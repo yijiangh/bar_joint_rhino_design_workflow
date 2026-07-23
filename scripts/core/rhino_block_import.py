@@ -27,13 +27,41 @@ def has_block_definition(block_name: str) -> bool:
     return False
 
 
-def import_block_definition_from_3dm(block_name: str, asset_path: str) -> bool:
+def _resolve_visible_layer_index(layer_name: str):
+    """Ensure *layer_name* exists + is visible; return its doc layer index.
+
+    Returns ``None`` if the layer cannot be resolved (so callers leave the
+    imported attributes' layer untouched).
+    """
+    import scriptcontext as sc  # noqa: PLC0415
+    from core.rhino_helpers import ensure_layer  # noqa: PLC0415
+
+    ensure_layer(layer_name)
+    index = sc.doc.Layers.FindByFullPath(layer_name, -1)
+    return index if index is not None and index >= 0 else None
+
+
+def import_block_definition_from_3dm(
+    block_name: str, asset_path: str, *, layer_name: str | None = None
+) -> bool:
     """Import a single block definition named *block_name* from *asset_path*.
 
     Strategy: read the .3dm via :class:`Rhino.FileIO.File3dm`, gather every
     geometry/attribute pair, and register them as one InstanceDefinition
     under *block_name*.  Falls back to Rhino's ``_-Insert`` command if the
     File3dm path fails.  Returns True on success.
+
+    Args:
+        block_name (str): the InstanceDefinition name to create.
+        asset_path (str): the .3dm file to import the definition from.
+        layer_name (str | None): if given, pin EVERY imported sub-object onto
+            this (visible) layer.  ``InstanceDefinitions.Add`` does NOT import
+            the source file's layer table, so each object's
+            ``Attributes.LayerIndex`` would otherwise index the CURRENT doc's
+            layers by the source file's numbering -- landing the geometry on an
+            unrelated / hidden layer, so the inserted block shows nothing.
+            Pinning keeps the whole block visible (used by tool placement to
+            force parts onto the "Robotic Tool Instances" layer).
     """
     import Rhino  # noqa: PLC0415
     import rhinoscriptsyntax as rs  # noqa: PLC0415
@@ -43,6 +71,10 @@ def import_block_definition_from_3dm(block_name: str, asset_path: str) -> bool:
     if not os.path.isfile(asset_path):
         print(f"  [import_block] asset file not found: {asset_path}")
         return False
+
+    target_layer_index = (
+        _resolve_visible_layer_index(layer_name) if layer_name else None
+    )
 
     # ---- Attempt 1: RhinoCommon File3dm direct read --------------------
     try:
@@ -56,7 +88,16 @@ def import_block_definition_from_3dm(block_name: str, asset_path: str) -> bool:
                 if obj is None or obj.Geometry is None:
                     continue
                 geometries.append(obj.Geometry.Duplicate())
-                attributes.append(obj.Attributes.Duplicate() if obj.Attributes else None)
+                attr = (
+                    obj.Attributes.Duplicate()
+                    if obj.Attributes
+                    else Rhino.DocObjects.ObjectAttributes()
+                )
+                # Force the sub-object onto a known visible layer (see docstring):
+                # otherwise the source file's layer index makes the part invisible.
+                if target_layer_index is not None:
+                    attr.LayerIndex = target_layer_index
+                attributes.append(attr)
             if geometries:
                 idef_index = sc.doc.InstanceDefinitions.Add(
                     block_name,
@@ -94,11 +135,19 @@ def import_block_definition_from_3dm(block_name: str, asset_path: str) -> bool:
     return False
 
 
-def require_block_definition(block_name: str, *, asset_path: str | None = None) -> str:
-    """Ensure *block_name* is loaded; import from *asset_path* if missing."""
+def require_block_definition(
+    block_name: str, *, asset_path: str | None = None, layer_name: str | None = None
+) -> str:
+    """Ensure *block_name* is loaded; import from *asset_path* if missing.
+
+    *layer_name* (if given) pins imported sub-objects onto that visible layer --
+    see :func:`import_block_definition_from_3dm`.
+    """
     if has_block_definition(block_name):
         return block_name
-    if asset_path and import_block_definition_from_3dm(block_name, asset_path):
+    if asset_path and import_block_definition_from_3dm(
+        block_name, asset_path, layer_name=layer_name
+    ):
         return block_name
     raise RuntimeError(
         f"Missing required Rhino block definition '{block_name}'."
@@ -106,7 +155,9 @@ def require_block_definition(block_name: str, *, asset_path: str | None = None) 
     )
 
 
-def refresh_block_definition(block_name: str, asset_path: str) -> None:
+def refresh_block_definition(
+    block_name: str, asset_path: str, *, layer_name: str | None = None
+) -> None:
     """Force-reload *block_name* from *asset_path*, replacing any in-doc copy.
 
     ``require_block_definition`` skips the import when a definition of that
@@ -119,6 +170,8 @@ def refresh_block_definition(block_name: str, asset_path: str) -> None:
     Args:
         block_name (str): the InstanceDefinition name to reload.
         asset_path (str): the .3dm file to import the definition from.
+        layer_name (str | None): if given, pin imported sub-objects onto that
+            visible layer -- see :func:`import_block_definition_from_3dm`.
 
     Raises:
         RuntimeError: if the asset file is missing, the delete fails, or the
@@ -147,7 +200,7 @@ def refresh_block_definition(block_name: str, asset_path: str) -> None:
             )
         break
 
-    if not import_block_definition_from_3dm(block_name, asset_path):
+    if not import_block_definition_from_3dm(block_name, asset_path, layer_name=layer_name):
         raise RuntimeError(
             f"Failed to re-import block '{block_name}' from {asset_path}."
         )

@@ -1,0 +1,54 @@
+#!/bin/sh
+# Auto-pack toolbar tab icons into scaffolding_toolbar.rui before a commit.
+#
+# Rhino stores tab icons *inside* the .rui as base64 sprite sheets -- it can't
+# point a tab at a loose icon/*.png file -- so an edited PNG only takes effect
+# once it is re-packed with scripts/apply_toolbar_icons.py.  This hook runs
+# that packer automatically whenever an icon, the .rui, or the packer itself is
+# part of the commit, then re-stages the rewritten .rui.  So the workflow is
+# just: edit the PNG, commit.  No manual "run the script" step, and the
+# committed .rui is always in sync with icon/.
+#
+# Enable it once per clone with:
+#     git config core.hooksPath .githooks
+#
+# It is a no-op for commits that touch none of the relevant paths, and prints
+# "already up to date" (changing nothing) when the .rui already matches icon/.
+
+set -e
+
+# Only do work when this commit actually touches the icons, the .rui, or the
+# packer -- every other commit skips straight through.
+staged=$(git diff --cached --name-only)
+case "$staged" in
+    *icon/*.png*|*scaffolding_toolbar.rui*|*scripts/apply_toolbar_icons.py*) ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# Find a working Python.  On Windows the real interpreter is the `py` launcher;
+# the bare `python`/`python3` names are often WindowsApps store shims that fail,
+# so probe each candidate by actually running it rather than trusting PATH.
+PY=""
+for candidate in "py -3" py python3 python; do
+    if $candidate -c "import sys" >/dev/null 2>&1; then
+        PY="$candidate"
+        break
+    fi
+done
+if [ -z "$PY" ]; then
+    echo "pre-commit: no working Python found; skipping toolbar-icon packing." >&2
+    echo "            run 'python scripts/apply_toolbar_icons.py' by hand." >&2
+    exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+echo "pre-commit: packing toolbar icons into scaffolding_toolbar.rui ..."
+$PY "$repo_root/scripts/apply_toolbar_icons.py"
+
+# Re-stage the .rui so whatever the packer rewrote goes into THIS commit.
+# (No-op if the packer left it byte-for-byte identical.)
+git add "$repo_root/scaffolding_toolbar.rui"
+
+exit 0

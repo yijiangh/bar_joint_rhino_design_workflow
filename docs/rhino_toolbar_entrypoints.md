@@ -46,6 +46,8 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSDesign | RSAssignAndShowWalkableGround | `rs_assign_and_show_walkable_ground.py` | Pick a bar; view its assigned WalkableGround(s) + the default mobile-base placement (half-transparent ghost robot), then optionally overwrite the assignment by selecting brep(s) — loops back to re-show. Auto-assigns nearest if none. Auto-assign also runs in RSRebuildRobotCell; use this to inspect/correct a specific bar. | Planning/export users |
 | RSMoCap | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one rigid body from Motive and bake markers | Mocap users |
 | RSMoCap | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit model bars to mocap bars and transform managed layers | Mocap users |
+| RSStability | RSImportScaffoldJSON | `rs_import_scaffold_json.py` | Import a `node_list`/`rod_list`/`coupler_list` layout JSON as registered bars (`bar_id` = `B<rod_id>`), sequenced by `layer_id` then `rod_id` | Workshop participants |
+| RSStability | RSExportScaffoldJSON | `rs_export_scaffold_json.py` | Export the current bars back to the same JSON schema, with node positions taken from the snapped geometry | Workshop participants |
 
 ## Detailed behavior by entrypoint
 
@@ -282,6 +284,26 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 - Fits model bars to three mocap bars and applies a rigid transform to managed geometry.
 
+### RSImportScaffoldJSON (`rs_import_scaffold_json.py`)
+
+- Reads a `node_list` / `rod_list` / `coupler_list` layout JSON (e.g. `large_scaffold.json`, produced by the upstream stability/layout generator) and bakes **one registered bar per rod** — same registration RSCreateBar does (`bar_type` / `bar_id` / `bar_guid` / `bar_seq` user text, object name, centerline layer, tube preview).
+- `bar_id` is set to **`B<rod_id>`** so the Rhino id reads the same as the rod id. The rod id is *also* written to the `rod_id` user-text key, which is what the export reads — so RSReorderBarID renumbering `bar_id`, or a copy/paste making `ensure_bar_id` re-issue one, cannot break the correspondence.
+- Assembly sequence (`bar_seq` 1..N) follows `layer_id` then `rod_id`, i.e. bottom-up. This is what decides joint roles later: RSJointPlace gives the earlier bar of a pair the female half.
+- **Nothing in the source file is dropped.** Per-rod fields (`layer_id`, `grounded`, `end_node_ids`, the as-imported endpoint positions, and any field this schema doesn't model) go on the bar curve as user text; `coupler_list`, node-level extras and top-level extras go into **document** user text. Each bar also gets a `rod_coupled_rod_ids` list denormalised from `coupler_list`, as a design-time convenience.
+- Warns if the document is not in millimetres (the JSON and every joint constant are mm).
+- If the document already contains imported bars, it offers to delete them **with** their joints and robotic tools before re-importing, or to cancel and leave the document untouched.
+- Prints a summary: bars created, bars per `layer_id`, grounded count, and any rod skipped as degenerate.
+
+### RSExportScaffoldJSON (`rs_export_scaffold_json.py`)
+
+- The inverse of RSImportScaffoldJSON: rebuilds `node_list` / `rod_list` / `coupler_list` from the **current** bar geometry and writes the same schema. With nothing moved, the output is identical to the input file.
+- **Nodes follow the geometry.** In the source file rods meet exactly at shared nodes; a buildable model can't, because each joint holds its two bars apart by the pair's contact distance. So a source node whose incident bar ends have been pulled apart is split into one node per distinct position — the original `node_id` stays with the lowest-numbered rod, the others get fresh ids past the top of the original range. Rod-to-rod connectivity is unaffected: it lives in `coupler_list`, not in shared node ids.
+- A curve reversed in Rhino still gets its `end_node_ids` on the right physical ends — the as-imported endpoint positions are used to detect the flip.
+- `coupler_list` is the imported list **merged with** any additional pairs discovered from joint blocks placed since (`parent_bar_id` / `connected_bar_id` on the female/male instances), so joints added in Rhino appear as new couplers. Ground joints are skipped — they anchor a bar to the ground, not to another rod. Couplers whose rods no longer exist are dropped, and both changes are printed.
+- Bars drawn in Rhino without imported rod data are exported too, with freshly minted rod ids, `layer_id` 0 and `grounded` false; they are listed in the summary so the defaults are visible.
+- Prints a pre-export sanity report: a histogram of the actual centerline gap for every coupled pair (pairs still at < 1 mm have no joint fitted yet), and any *uncoupled* pair closer than two bar radii, whose tubes therefore overlap.
+- Shared round-trip logic lives in `scripts/core/scaffold_json.py` (pure Python, covered by `tests/test_scaffold_json.py`).
+
 ## Manual macro pattern
 
 If a toolbar button is missing, run the script directly in Rhino ScriptEditor:
@@ -292,6 +314,56 @@ If a toolbar button is missing, run the script directly in Rhino ScriptEditor:
 
 Rhino resolves filenames through Search Paths, so `<repo>/scripts` must be added.
 
+## Toolbar tab icons
+
+The little picture on each toolbar *tab* (RSDesign, RSSetup, RSMoCap,
+RSStability) is not a file reference — Rhino stores icons **inside** the
+`.rui` as three base64 PNG sprite sheets (16 / 24 / 32 px cells). A
+`<tool_bar bitmap_id="…">` attribute points at a cell; without it the tab
+renders blank.
+
+Source icons live in [`icon/`](../icon/) as `icon_<Toolbar>.png` (e.g.
+`icon/icon_RSDesign.png`), one 48×48 RGBA PNG per toolbar, matched to the
+toolbar by name. To (re)pack them into the `.rui`:
+
+```bash
+python scripts/apply_toolbar_icons.py            # apply
+python scripts/apply_toolbar_icons.py --check    # report only, write nothing
+```
+
+The script downsamples each icon to the three sizes (source PNGs may be any
+square 8-bit RGBA size — the current set is 355×355), rebuilds the
+`<bitmaps>` block, and sets `bitmap_id` on each matching toolbar; it is
+idempotent (guids are derived from the toolbar name) and touches nothing
+else in the file. To add an icon for a new toolbar, drop
+`icon/icon_<Name>.png` and re-run it.
+
+Because the icons live *inside* the `.rui`, a user only has to **open**
+`scaffolding_toolbar.rui` in Rhino to get the tabs — there is no per-user
+icon step and no Rhino "on open" hook to install; the committed `.rui`
+already carries the sheets.
+
+### Keep it packed automatically (pre-commit hook)
+
+So no one has to remember to re-run the packer, a tracked git hook at
+[`.githooks/pre-commit`](../.githooks/pre-commit) re-packs the icons and
+re-stages the `.rui` whenever a commit touches `icon/*.png`,
+`scaffolding_toolbar.rui`, or the packer itself. Then the workflow is just:
+edit the PNG, commit. Enable it once per clone (it finds the `py` launcher
+on Windows automatically, and is a no-op for unrelated commits):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It also self-heals the "Rhino stripped the `<bitmaps>` block on save" case
+below: the next commit repacks the sheets before they can be lost.
+
+**Rhino overwrites `.rui` files it has loaded.** Whenever Rhino saves the
+UI layout it re-serialises the whole file from memory and drops the
+`<bitmaps>` block, blanking the tabs again. If that happens, close Rhino
+(or unload the toolbar) and re-run the script.
+
 ## Maintenance rule
 
 When adding, renaming, or removing a Rhino entrypoint script:
@@ -299,3 +371,8 @@ When adding, renaming, or removing a Rhino entrypoint script:
 1. Update `scaffolding_toolbar.rui`.
 2. Update this file.
 3. Keep install and quickstart wording in `README.md` aligned.
+4. If you add or rename a *toolbar* (not just a button), add a matching
+   `icon/icon_<Toolbar>.png`. With the `.githooks` pre-commit hook enabled
+   (`git config core.hooksPath .githooks`) the icon is packed into the `.rui`
+   on your next commit automatically; otherwise re-run
+   `python scripts/apply_toolbar_icons.py` by hand.

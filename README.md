@@ -89,7 +89,8 @@ Example install location:
    `C:\Users\<your-user>\Documents\bar_joint_rhino_design_workflow\scripts`
 3. Open **Tools -> Toolbars -> File -> Open Toolbar File...**.
 4. Select `scaffolding_toolbar.rui` from the repository root.
-5. Show and dock the **RSDesign** and **RSSetup** toolbars.
+5. Show and dock the **RSDesign** and **RSSetup** toolbars (plus **RSStability**
+   if you exchange layouts with the stability simulation).
 
 ### 3. Run any toolbar command once
 
@@ -195,6 +196,31 @@ for the canonical Rhino entrypoint reference:
 - Run **RSCreateBar** to register that line as your first bar and generate its preview.
 - Draw a second line and repeat **RSCreateBar** if you want to test **RSBarSnap** and **RSBarBrace** next.
 - Use joint-definition tools only after you author or import matching block definitions for your chosen joint family.
+
+### Stability-simulation exchange (RSStability toolbar)
+
+The stability simulation exchanges whole layouts as a `node_list` /
+`rod_list` / `coupler_list` JSON (see `large_scaffold.json`), where each rod
+is one bar (`rod_id` = the Rhino `bar_id`) and `coupler_list` holds the
+rod-to-rod connectivity:
+
+1. **RSImportScaffoldJSON** — pick the JSON; it bakes one registered bar per
+   rod, named `B<rod_id>`, sequenced bottom-up by `layer_id` then `rod_id`.
+   Every field of the source file is stored (per-rod fields on the bar
+   curve, `coupler_list` and anything else in document user text) so nothing
+   is lost by the trip through Rhino.
+2. Design as usual — **RSBarSnap** to push each coupled bar out to its joint
+   contact distance, then joint placement.
+3. **RSExportScaffoldJSON** — writes the same schema back out with the
+   node positions taken from the snapped geometry. A node whose bars have
+   been pulled apart is split into one node per position (the original id
+   stays with the lowest-numbered rod); connectivity is unaffected because
+   it lives in `coupler_list`. Before saving it prints a sanity report:
+   the actual gap for every coupled pair, plus any uncoupled bars whose
+   tubes overlap.
+
+With nothing moved between import and export, the exported file is
+identical to the imported one (covered by `tests/test_scaffold_json.py`).
 
 ## Standalone Developer Tools
 
@@ -367,6 +393,8 @@ scripts/
     ik_collision_setup.py               # Allowed-touch and IK collision-state preparation
     ik_viz.py                           # Rhino visualization cache/session for IK scenes
     bar_action.py                       # Movement/BarAssemblyAction builders for export workflows
+    scaffold_json.py                    # node/rod/coupler layout-JSON round trip, for the
+                                        #   stability-simulation exchange (see RSStability below)
     robotic_tool.py                     # Robotic tool registry helpers
     capture_io.py                       # Persist/reload IK captures
 
@@ -398,6 +426,10 @@ scripts/
   rs_export_robotcell.py
   rs_read_mocap_bar.py
   rs_align_model_three_bars.py
+
+  # RSStability toolbar: exchange with the stability simulation / layout generator
+  rs_import_scaffold_json.py            # layout JSON -> registered bars (bar_id = B<rod_id>)
+  rs_export_scaffold_json.py            # registered bars -> the same JSON schema
 
 tests/
   test_geometry.py

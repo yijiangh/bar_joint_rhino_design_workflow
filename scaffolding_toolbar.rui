@@ -369,12 +369,12 @@
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000045">
       <text>
-        <locale_1033>RSShowIKPreview</locale_1033>
+        <locale_1033>RSClearColorPreview</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Right-click companion of RSUpdatePreview: color every bar that has a solved IK keyframe (COLOR_HAS_IK) and print the IK color legend to the command line. Left-click RSUpdatePreview clears these colors.</locale_1033>
+        <locale_1033>Right-click companion of RSUpdatePreview: clear every color preview -- IK bar colors, broken-link colors, and the orange marker dots -- and unselect. Left-click RSUpdatePreview offers UpdatePreview (repair) and ShowColorsPreview (paint them again).</locale_1033>
       </tooltip>
-      <script>! _-ScriptEditor _R "rs_show_ik_preview.py"</script>
+      <script>! _-ScriptEditor _R "rs_clear_color_preview.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000023">
       <text>

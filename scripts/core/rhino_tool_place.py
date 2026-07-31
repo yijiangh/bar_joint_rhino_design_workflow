@@ -859,6 +859,297 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> int:
     return n_placed
 
 
+def _joint_position_mm(block_id) -> float:
+    """Read a joint block's ``position_mm`` along its bar; ``inf`` when unset."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    try:
+        return float(rs.GetUserText(block_id, "position_mm"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+# ---------------------------------------------------------------------------
+# L/R tool sides from the robot's approach
+#
+# Which end of a bar carries the LEFT tool is NOT a property of the bar -- it is
+# a property of where the mobile base stands. The robot faces the bar along the
+# base heading, so the bar end lying on the robot's left is the one its left arm
+# reaches:
+#
+#           [tool R]
+#              |
+#              |
+#             bar          [robot]        heading = robot -> bar
+#              |                          left    = up x heading
+#              |
+#           [tool L]
+#
+# Move the base to the other side of the bar and the heading negates, so "left"
+# negates and BOTH ends swap tools. That is why this lives here, driven by
+# `core.rhino_walkable_ground.resolve_bar_heading`, and why an earlier version of
+# `enforce_bar_tool_sides` deliberately refused to decide it from bar geometry.
+# ---------------------------------------------------------------------------
+
+
+def _bar_anchor_joints(bar_id):
+    """Return ``[(joint_id, block_id, center_mm)]`` for a bar's tool-bearing joints.
+
+    Scans the male + ground joint layers (the two kinds assembly IK accepts as
+    arm anchors), de-duplicated by ``joint_id``. The center is the block
+    instance's world origin in mm -- where the robot actually grabs.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    from core import env_collision  # noqa: PLC0415  (Rhino-only, avoids a cycle)
+
+    anchors = []
+    seen: set = set()
+    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+        if not rs.IsLayer(layer):
+            continue
+        for block_id in list(rs.ObjectsByLayer(layer) or []):
+            if rs.GetUserText(block_id, "parent_bar_id") != bar_id:
+                continue
+            joint_id = rs.GetUserText(block_id, "joint_id")
+            if not joint_id or joint_id in seen:
+                continue
+            seen.add(joint_id)
+            try:
+                center = np.asarray(
+                    env_collision._block_instance_xform_mm(block_id), dtype=float
+                )[:3, 3]
+            except Exception:
+                continue
+            anchors.append((joint_id, block_id, center))
+    return anchors
+
+
+def assign_tool_sides_from_heading(bar_id, heading_mm, ground_normal,
+                                   verbose: bool = False) -> int:
+    """Re-place a bar's two tools so L/R matches where the robot will stand.
+
+    Computes each anchor joint's side with
+    ``core.base_guide_geom.arm_side_for_joint`` (the bar end on the robot's left
+    takes the left tool) and re-places any tool that is on the wrong side, via
+    the idempotent :func:`place_tool_at_block_instance`.
+
+    **A hand-picked side always wins.** A joint the user cycled by hand in
+    RSJointEdit carries ``config.KEY_TOOL_SIDE_MANUAL`` and is skipped here, so a
+    deliberate manual edit is never silently undone by the next preview / IK run.
+    An explicit base Flip calls :func:`clear_tool_side_overrides` first, because
+    that IS the user re-deciding the side.
+
+    Args:
+        bar_id (str): the bar to correct.
+        heading_mm (np.ndarray): the resolved base heading (base +X).
+        ground_normal (np.ndarray): the ground normal at the base (base +Z).
+        verbose (bool): print a line per correction / skip.
+
+    Returns:
+        int: the number of tools re-placed (0 when nothing needed changing, or
+        when the bar's layout is not a resolvable two-anchor L/R pair).
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    from core import base_guide_geom  # noqa: PLC0415  (pure numpy, no Rhino)
+
+    active = _get_active_pair_or_none()
+    if active is None:
+        return 0  # no resolvable pair -> nothing to place with (already noted)
+
+    anchors = _bar_anchor_joints(bar_id)
+    if len(anchors) != 2:
+        if verbose and anchors:
+            print(f"  [tool] {bar_id}: {len(anchors)} anchor joint(s); "
+                  "L/R layout is undefined, leaving their sides alone.")
+        return 0
+
+    bar_center = 0.5 * (anchors[0][2] + anchors[1][2])
+    wanted = []
+    for joint_id, block_id, center in anchors:
+        side = base_guide_geom.arm_side_for_joint(
+            center, bar_center, heading_mm, ground_normal
+        )
+        wanted.append((joint_id, block_id, side))
+
+    sides = [side for _jid, _bid, side in wanted]
+    if None in sides or sides[0] == sides[1]:
+        # Both joints on one side (or on the base's fore-aft axis): the robot is
+        # facing the bar end-on, so neither arm has a distinct end to take.
+        if verbose:
+            print(f"  [tool] {bar_id}: base faces the bar end-on "
+                  f"(sides {sides}); tool sides left as they are.")
+        return 0
+
+    n_fixed = 0
+    for joint_id, block_id, side in wanted:
+        manual = get_tool_side_override(block_id)
+        if manual is not None:
+            if verbose and manual != side:
+                print(f"  [tool] {bar_id}/{joint_id}: keeping hand-picked "
+                      f"'{manual}' tool (auto rule wanted '{side}').")
+            continue
+        tool_oid = find_tool_for_joint(joint_id)
+        if tool_oid is None:
+            continue  # restore_missing_tools_at_joints owns this joint this pass
+        current_name = rs.GetUserText(tool_oid, "tool_name") or ""
+        if _robotic_tool.arm_side_from_tool_name(current_name) == side:
+            continue
+        tool = active[side]
+        if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+            n_fixed += 1
+            if verbose:
+                print(f"  [tool] {bar_id}/{joint_id}: side corrected "
+                      f"'{current_name}' -> '{tool.name}' ({side}, from base heading).")
+    return n_fixed
+
+
+def enforce_bar_tool_sides(verbose: bool = False) -> int:
+    """Give each bar the L/R tool layout its robot approach implies.
+
+    Which end of a bar carries the LEFT tool follows from where the mobile base
+    stands: the robot faces the bar, so the end on its left is the one the left
+    arm reaches.  For every bar that has a resolvable base heading -- i.e. an
+    assigned WalkableGround to stand on -- this pass derives BOTH sides from that
+    heading via :func:`assign_tool_sides_from_heading`, which makes the heading
+    the single source of truth for the layout (RSIKKeyframeAll applies the same
+    rule when it places a base, including after a Flip).
+
+    An earlier version could not do this: the approach was unknowable here, so it
+    only repaired the one unambiguous breakage -- a bar holding two SAME-side
+    tools -- and left one-L-one-R bars alone whichever end held which.  That
+    fallback is still used verbatim for bars with no walkable ground, where there
+    is still no approach to derive from.
+
+    Bars with a single tool-bearing joint are skipped (nothing to disambiguate),
+    as are bars with three or more (the L/R layout is undefined there -- reported
+    when *verbose*).  Re-placement always goes through the idempotent
+    :func:`place_tool_at_block_instance`.
+
+    Args:
+        verbose (bool): print a line per corrected / skipped bar.
+
+    Returns:
+        int: the number of tools re-placed onto the correct side.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    active = _get_active_pair_or_none()
+    if active is None:
+        return 0  # no resolvable pair -> nothing to place with (already noted)
+
+    n_fixed = 0
+    heading_done: set = set()
+    # Pass 1: every bar whose base heading is resolvable gets both sides derived
+    # from it. One shared soup cache -- tessellating a ground brep is the
+    # expensive step and every bar would otherwise redo it (Su_note.md 14).
+    try:
+        from core import rhino_walkable_ground as _rwg  # noqa: PLC0415  (Rhino-only)
+        from core.rhino_bar_registry import get_all_bars  # noqa: PLC0415
+
+        grounds = _rwg.get_all_walkable_grounds()
+        soup_cache: dict = {}
+        for bar_id, bar_oid in get_all_bars().items():
+            anchors = _bar_anchor_joints(bar_id)
+            if len(anchors) != 2:
+                continue
+            soups = _rwg._bar_ground_soups(bar_oid, grounds, soup_cache=soup_cache)
+            if not soups:
+                continue  # no ground -> no approach -> fall through to pass 2
+            center = 0.5 * (anchors[0][2] + anchors[1][2])
+            ground_point, ground_normal = _rwg._walkable_np.closest_point_on_meshes(
+                soups, center
+            )
+            if ground_point is None:
+                continue
+            diag = _rwg.resolve_bar_heading(
+                bar_oid, bar_id, soups, ground_point, ground_normal,
+                float(config.IK_BASE_STANDOFF_MULTIBAR_MM), verbose=False,
+            )
+            heading_done.add(bar_id)
+            n_fixed += assign_tool_sides_from_heading(
+                bar_id, diag["heading"], ground_normal, verbose=verbose
+            )
+    except Exception as exc:  # noqa: BLE001 -- never let this block the repair pass
+        print(f"  [tool] heading-based side check skipped ({exc}); "
+              "falling back to the same-side repair.")
+
+    # Pass 2 (fallback): bars with no resolvable heading still get the narrow
+    # repair -- a bar holding two SAME-side tools is broken whatever the approach.
+    # Group every tool-bearing joint (male J* + ground G*) by its parent bar.
+    by_bar: dict = {}
+    seen_joint_ids: set = set()
+    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+        if not rs.IsLayer(layer):
+            continue
+        for block_id in list(rs.ObjectsByLayer(layer) or []):
+            joint_id = rs.GetUserText(block_id, "joint_id")
+            bar_id = rs.GetUserText(block_id, "parent_bar_id")
+            if not joint_id or not bar_id or joint_id in seen_joint_ids:
+                continue
+            if bar_id in heading_done:
+                continue  # pass 1 already set this bar's sides from its heading
+            seen_joint_ids.add(joint_id)
+            by_bar.setdefault(bar_id, []).append(
+                (_joint_position_mm(block_id), joint_id, block_id)
+            )
+
+    for bar_id in sorted(by_bar):
+        entries = by_bar[bar_id]
+        if len(entries) < 2:
+            continue
+        if len(entries) > 2:
+            if verbose:
+                print(
+                    f"  [tool] {bar_id}: {len(entries)} tool-bearing joints; "
+                    "L/R layout is undefined, leaving their sides alone."
+                )
+            continue
+        # joint_id breaks ties so the order never depends on ObjectsByLayer.
+        entries.sort(key=lambda entry: (entry[0], entry[1]))
+
+        held = []
+        for _jp, joint_id, block_id in entries:
+            tool_oid = find_tool_for_joint(joint_id)
+            if tool_oid is None:
+                held = []
+                break  # restore_missing_tools_at_joints owns this bar this pass
+            current_name = rs.GetUserText(tool_oid, "tool_name") or ""
+            held.append(
+                (
+                    joint_id,
+                    block_id,
+                    current_name,
+                    _robotic_tool.arm_side_from_tool_name(current_name),
+                )
+            )
+        if len(held) != 2:
+            continue
+
+        near, far = held
+        if near[3] is not None and far[3] is not None and near[3] != far[3]:
+            continue  # one L + one R -> correct as it stands, whichever end
+
+        # Same side (or one side unreadable): keep one joint and flip the other.
+        # A hand-picked joint is the one to keep; otherwise keep the near joint.
+        if get_tool_side_override(near[1]) is None and get_tool_side_override(far[1]):
+            near, far = far, near
+        keep_side = near[3] or far[3] or "left"
+        want = "right" if keep_side == "left" else "left"
+        joint_id, block_id, current_name, _side = far
+        if _robotic_tool.arm_side_from_tool_name(current_name) != want:
+            tool = active[want]
+            if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+                n_fixed += 1
+                if verbose:
+                    print(
+                        f"  [tool] {bar_id}/{joint_id}: side corrected "
+                        f"'{current_name}' -> '{tool.name}' ({want})."
+                    )
+    return n_fixed
+
+
 def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     """Toggle the clicked tool instance between the ACTIVE pair's L/R tools.
 

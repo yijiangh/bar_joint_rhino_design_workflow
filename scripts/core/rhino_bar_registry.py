@@ -1192,9 +1192,10 @@ def reset_bar_color(curve_id):
 # ---------------------------------------------------------------------------
 #
 # The multi-bar IK command (rs_ik_keyframe_all) colors bars by IK outcome;
-# RSUpdatePreview (left-click) clears those colors and its right-click companion
-# (rs_show_ik_preview) re-shows them on demand. All three import the two colors
-# and the show/clear/legend helpers from here so the meanings live in ONE place.
+# RSUpdatePreview re-shows them under its ShowColorsPreview option and clears them
+# in its repair pass, and its right-click companion (rs_clear_color_preview) clears
+# them on demand. All of them import the two colors and the show/clear/legend
+# helpers from here so the meanings live in ONE place.
 #
 # These are `paint_bar` overrides (by-object color on the centerline + tube),
 # reverted with `reset_bar_color`. COLOR_HAS_IK is PERSISTED state (readable back

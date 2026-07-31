@@ -85,6 +85,16 @@ BAR_RADIUS = 10.0
 # interactive scripts that show selection feedback (snap, brace, …).
 SELECTED_BAR_COLOR = (30, 100, 220)  # blue
 
+# UI: RSUpdatePreview paints broken model links so they are visible without
+# reading the command history. Neither case can be auto-repaired (the bar is
+# gone / the joint needs RSJointPlace or RSGroundPlace) -- see
+# `core.rhino_joint_refresh.find_broken_links`.
+ORPHAN_LINK_COLOR = (175, 55, 10)   # orange -- joint/tool whose parent bar is gone
+# Muted indigo, deliberately: a green bare-bar color is hard to tell apart from
+# the green R-side robotic tools, and a bright purple competes with the orange
+# orphan color for attention. This one reads as "flagged" without shouting.
+BARE_BAR_COLOR = (75, 55, 110)      # dark indigo -- registered bar carrying no joint
+
 # Output / optimizer tuning
 DEFAULT_NEW_BAR_LENGTH = 500.0
 OPTIMIZER_RANDOM_RESTARTS = 12

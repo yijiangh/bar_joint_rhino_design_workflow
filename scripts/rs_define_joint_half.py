@@ -7,7 +7,9 @@ Workflow:
 
     Step 0  Choose kind: Male, Female, or Ground.
     Step 1  Pick the block instance.
-    Step 2  Pick the bar axis line.
+    Step 2  Pick the bar axis line.  GROUND instead picks a +X point and a +Y
+            point (see below), then shows a ghost preview of the tool and an
+            Accept / Repick prompt.
     Step 3  (Male/Female only) Pick the screw axis line.
     Step 4  (Male/Female only) Pick the screw center point.
     Step 5  Enter the half name.  For Male/Female the name MUST equal the
@@ -23,6 +25,38 @@ The script:
   - Persists the half/ground entry into the normalized
     `scripts/core/joint_pairs.json` registry.
 
+Ground: the tool-attach frame
+-----------------------------
+A ground block's own orientation is not free: `core.ground_placement.
+auto_jr_y_down` rotates it about the bar until its local +Y points at the
+floor, so the foot lands on the ground.  The arm, however, may have to
+approach with its TCP rolled relative to that.  The two frames therefore
+cannot be the same frame, and the Ground branch picks the second one
+explicitly -- the same way RSDefineRoboticTool picks a TCP frame, except the
+ORIGIN is not picked: it is the ground block's own insertion point, and both
+picked points are read as directions from it.
+
+    * +X direction point -- where the tool's +X should point.  Together with
+      the origin it also IS the bar axis, feeding `compute_M_block_from_bar`
+      in place of the old bar-axis line pick.
+    * +Y direction point -- direction only, and only to fix the roll (the
+      frame is re-orthonormalized from X, so it may be picked loosely).
+
+The rotation between the picked frame and the block frame is saved as
+`GroundJointDef.M_tool_from_block`, and `core.rhino_tool_place.
+tool_attach_frame` applies it when a tool is placed.  The ground block
+itself is NEVER moved by it.
+
+! Anchoring the bar axis at the block origin makes `M_block_from_bar` come
+! out with a ZERO translation, so RSGroundPlace lands the block origin
+! exactly on the point clicked on the bar.  Ground joints defined with the
+! older bar-axis-line pick carry whatever offset that line's start point had
+! (T20Ground: 25 mm), so re-defining one shifts where a given `jp` puts it.
+! Its DIRECTION also sets both the tool's +X and the sense of the bar axis,
+! so re-defining can flip which way new placements face along the bar --
+! RSGroundPlace's Flip covers that, and the old pick had the same
+! sensitivity.  Already-baked instances never move either way.
+
 Stacked picks: each pick auto-hides the previous selection, then everything
 is restored at the end (same UX as the legacy RSDefineJointPair command).
 """
@@ -35,6 +69,7 @@ import sys
 
 import numpy as np
 import rhinoscriptsyntax as rs
+import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -45,7 +80,13 @@ from core import joint_pair as _joint_pair_module
 from core import joint_pick_helpers as _picks_module
 from core.rhino_block_export import export_block_definition_to_3dm
 from core.rhino_block_obj_export import export_picked_meshes_to_obj_mm
-from core.rhino_helpers import suspend_redraw
+from core.rhino_helpers import delete_objects, suspend_redraw
+from core.transforms import (
+    frame_from_x_and_y_hint,
+    invert_transform,
+    make_transform,
+    orthonormalize_rotation,
+)
 
 
 def _reload():
@@ -84,6 +125,167 @@ def _project_screw_origin(screw_point, screw_axis_start, screw_axis_end):
     return proj, screw_dir
 
 
+# ---------------------------------------------------------------------------
+# Ground: tool-attach frame picks + ghost preview
+# ---------------------------------------------------------------------------
+
+def _resolve_preview_tool():
+    """The tool to ghost: the doc default when it is in the active pair, else
+    the active LEFT tool.  ``None`` when no active pair can be resolved (the
+    preview is then skipped -- it must never block a definition)."""
+    from core import rhino_tool_place as tool_place  # noqa: PLC0415
+
+    active = tool_place._get_active_pair_or_none()
+    if active is None:
+        return None
+    return tool_place._resolve_default_active_tool(active)
+
+
+def _show_ghost_tool(tool, attach_doc, scale_to_mm):
+    """Insert a preview instance of *tool* with its TCP on *attach_doc*.
+
+    ``attach_doc`` is in DOCUMENT units while ``M_tcp_from_block`` is stored in
+    millimetres, so the latter's translation is scaled back before use (the
+    inverse of ``picks.frame_to_mm``).
+
+    Deliberately NOT placed on ``LAYER_TOOL_INSTANCES`` and given no
+    ``joint_id`` / ``tool_name`` user-text: a ghost that leaked onto that layer
+    would be reported as an orphan by ``find_detached_tools``.  The caller
+    deletes it in a ``finally``.
+
+    No preview color is set, deliberately.  An object color on a BLOCK INSTANCE
+    only reaches sub-objects whose color source is "by parent", and the robotic
+    tool assets carry baked colors -- so the instance renders in its layer's
+    color whatever we ask for.  (Same limitation that makes RSUpdatePreview mark
+    flagged tools with a text dot instead of recoloring them.)  The ghost's job
+    is to show the ORIENTATION, which reads fine either way.
+    """
+    from core import rhino_tool_place as tool_place  # noqa: PLC0415
+    from core.joint_placement import insert_block_instance  # noqa: PLC0415
+
+    if not tool_place._import_tool_block_definition(tool):
+        return None
+    m_tcp_doc = np.array(tool.M_tcp_from_block, dtype=float, copy=True)
+    m_tcp_doc[:3, 3] /= float(scale_to_mm)
+    frame = attach_doc @ invert_transform(m_tcp_doc)
+    try:
+        return insert_block_instance(tool.block_name, frame)
+    except RuntimeError as exc:
+        print(f"{_DIALOG}: ghost preview unavailable ({exc}).")
+        return None
+
+
+def _print_attach_diagnostics(M_tool_from_block) -> None:
+    """Dump the picked attach rotation so a wrong pick is visible in the log."""
+    print(f"{_DIALOG}: M_tool_from_block (block-local rotation), rows:")
+    for row_index in range(3):
+        row = M_tool_from_block[row_index]
+        print(f"    [{row[0]:8.4f} {row[1]:8.4f} {row[2]:8.4f}]")
+    cos_angle = (float(np.trace(M_tool_from_block[:3, :3])) - 1.0) / 2.0
+    angle_deg = float(np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0))))
+    print(
+        f"{_DIALOG}: -> the tool attaches rotated {angle_deg:.1f} deg from the "
+        "block frame (0 deg = the historical 'tool sits on the block frame')."
+    )
+
+
+def _pick_ground_tool_frame(block_id, selected, scale_to_mm):
+    """Pick the ground +X / +Y direction points and confirm the tool frame.
+
+    Same shape as RSDefineRoboticTool's TCP picks -- pick a point giving the +X
+    direction, then one giving +Y -- with one difference: the origin is NOT
+    picked.  It is the ground block's own insertion point, so both vectors are
+    measured from there.
+
+    That origin doubles as the bar-axis anchor, so the bar line handed back is
+    ``block origin -> +X point``.  ``M_block_from_bar`` therefore comes out with
+    a zero translation, and RSGroundPlace lands the block origin exactly on the
+    point clicked on the bar (rather than a fixed offset past it).
+
+    Loops until accepted: pick +X -> pick +Y -> ghost tool -> Accept / Repick.
+    Returns ``(x_point_id, y_point_id, bar_start, bar_end, M_tool_from_block)``
+    with the points in DOCUMENT units, or ``None`` when cancelled.
+    """
+    tool = _resolve_preview_tool()
+    if tool is None:
+        print(
+            f"{_DIALOG}: no active robotic tool pair; continuing WITHOUT the "
+            "ghost preview (run RSSwapRoboticTool to get one)."
+        )
+
+    block_xform_doc, _block_name = picks.block_instance_frame(block_id)
+    origin_doc = np.asarray(block_xform_doc[:3, 3], dtype=float)
+    # SVD-orthonormalized so a scaled block instance still yields a rotation.
+    block_rotation = orthonormalize_rotation(block_xform_doc[:3, :3])
+    print(
+        f"{_DIALOG}: frame origin = block insertion point "
+        f"({origin_doc[0]:.4f}, {origin_doc[1]:.4f}, {origin_doc[2]:.4f}) [doc units]; "
+        "both picked points are read as directions FROM it."
+    )
+
+    while True:
+        with picks.temporarily_hidden(selected):
+            x_point_id = picks.pick_point(
+                "Pick the +X direction point (tool +X; also sets the bar axis)"
+            )
+        if x_point_id is None:
+            return None
+        with picks.temporarily_hidden(selected + [x_point_id]):
+            y_point_id = picks.pick_point(
+                "Pick the +Y direction point (direction only -- fixes the roll)"
+            )
+        if y_point_id is None:
+            return None
+
+        x_dir = picks.point_xyz(x_point_id) - origin_doc
+        y_hint = picks.point_xyz(y_point_id) - origin_doc
+        try:
+            # X is exact; Y is only a hint, so the frame is re-orthonormalized
+            # from it and the +Y point may be picked loosely.
+            attach_frame = frame_from_x_and_y_hint(origin_doc, x_dir, y_hint)
+        except ValueError:
+            rs.MessageBox(
+                "The +X and +Y points must not be collinear with the block "
+                "origin, and neither may sit on it: +X sets the direction and "
+                "+Y is what fixes the roll about it.",
+                0,
+                _DIALOG,
+            )
+            continue
+
+        attach_rotation = attach_frame[:3, :3]
+        M_tool_from_block = make_transform(rotation=block_rotation.T @ attach_rotation)
+        _print_attach_diagnostics(M_tool_from_block)
+
+        ghost_id = None
+        answer = None
+        try:
+            if tool is not None:
+                # `attach_frame` already sits on the block origin -- only the
+                # rotation is being chosen here, never the position.
+                ghost_id = _show_ghost_tool(tool, attach_frame, scale_to_mm)
+                if ghost_id is not None:
+                    sc.doc.Views.Redraw()
+                    print(f"{_DIALOG}: ghost preview showing tool '{tool.name}'.")
+            answer = rs.GetString("Tool orientation", "Accept", ["Accept", "Repick"])
+        finally:
+            if ghost_id is not None:
+                delete_objects([ghost_id])
+                sc.doc.Views.Redraw()
+
+        if answer is None:
+            return None
+        if answer.strip().lower().startswith("r"):
+            continue
+        return (
+            x_point_id,
+            y_point_id,
+            origin_doc,
+            origin_doc + x_dir,
+            M_tool_from_block,
+        )
+
+
 def main() -> None:
     _reload()
     rs.UnselectAllObjects()
@@ -104,12 +306,27 @@ def main() -> None:
         return
     selected.append(block_id)
 
-    with picks.temporarily_hidden(selected):
-        bar_id = picks.pick_line(f"Pick {kind.upper()} bar axis line", _DIALOG)
-    if bar_id is None:
-        print(f"{_DIALOG}: cancelled at bar axis pick.")
-        return
-    selected.append(bar_id)
+    # Ground halves pick TWO POINTS -- a +X direction and a +Y direction, both
+    # measured from the block's own origin (RSDefineRoboticTool's TCP picks,
+    # minus the origin pick) -- which fix the tool-attach frame AND the bar
+    # axis.  Male/female halves keep the single bar-axis line pick: their tool
+    # attaches on the block frame, so there is no second frame to choose.
+    M_tool_from_block = np.eye(4)
+    if kind == "ground":
+        picked = _pick_ground_tool_frame(block_id, selected, scale_to_mm)
+        if picked is None:
+            print(f"{_DIALOG}: cancelled at ground +X / +Y pick.")
+            return
+        x_point_id, y_point_id, bar_start_doc, bar_end_doc, M_tool_from_block = picked
+        selected.extend([x_point_id, y_point_id])
+    else:
+        with picks.temporarily_hidden(selected):
+            bar_id = picks.pick_line(f"Pick {kind.upper()} bar axis line", _DIALOG)
+        if bar_id is None:
+            print(f"{_DIALOG}: cancelled at bar axis pick.")
+            return
+        selected.append(bar_id)
+        bar_start_doc, bar_end_doc = picks.line_endpoints(bar_id)
 
     screw_axis_id = None
     screw_point_id = None
@@ -176,7 +393,6 @@ def main() -> None:
         )
         return
 
-    bar_start_doc, bar_end_doc = picks.line_endpoints(bar_id)
     block_frame_mm = picks.frame_to_mm(block_xform_doc, scale_to_mm)
     bar_start_mm = picks.vec_to_mm(bar_start_doc, scale_to_mm)
     bar_end_mm = picks.vec_to_mm(bar_end_doc, scale_to_mm)
@@ -254,8 +470,15 @@ def main() -> None:
             M_block_from_bar=M_block_from_bar,
             asset_filename=asset_filename,
             collision_filename=obj_filename,
+            M_tool_from_block=M_tool_from_block,
         )
         jp_mod.save_ground_joint(ground)
+        # The tool-attach offsets are cached per registry file stamp; drop the
+        # cache so the very next tool placement in this session uses the frame
+        # just picked, without waiting on a file-stat comparison.
+        from core.rhino_tool_place import clear_tool_attach_cache  # noqa: PLC0415
+
+        clear_tool_attach_cache()
         print(f"{_DIALOG}: saved ground joint '{half_name}' (block={block_def_name}) to registry.")
 
     print(f"{_DIALOG}: done.")

@@ -33,10 +33,18 @@ perpendicular distance to the finite axis) is the block's own parent, and the
 2nd-nearest is the mate. A robotic tool is posed as
 (``core.rhino_tool_place.place_tool_at_block_instance``)::
 
-    world_tool_block = block_world @ inv(M_tcp_from_block)
+    world_tool_block = tool_attach_frame(block_id) @ inv(M_tcp_from_block)
 
 so ``tool_frame @ M_tcp_from_block`` reproduces the male/ground block origin --
 we match a tool to the joint block whose origin coincides with that TCP point.
+
+``tool_attach_frame`` is the block's own world frame post-multiplied by the
+ground definition's ``M_tool_from_block`` (identity for male/female halves).
+That offset is a PURE ROTATION about the block origin -- ``GroundJointDef``
+zeroes its translation -- so the TCP probe point below is bit-identical either
+way and the ``_TOOL_TCP_TOL_MM`` match is unaffected.  An offset carrying a
+translation would move the probe and break :func:`_tool_edit`; that is exactly
+why the translation is forced to zero rather than merely expected to be.
 
 All distances are millimetres; the document is assumed to be in mm like the rest
 of the toolchain (BAR_RADIUS, contact_distance, ... are all mm).

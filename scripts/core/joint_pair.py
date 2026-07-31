@@ -124,6 +124,14 @@ class GroundJointDef:
     environment.  It exposes the same `(jp, jr)` DOFs as a regular joint
     half (slide along the bar, rotate about it), but has no `M_screw_from_block`
     because there is no mating partner.
+
+    `M_tool_from_block` decouples the robotic tool's attach frame from the
+    block frame.  It is needed because the two are governed by different
+    constraints: `core.ground_placement.auto_jr_y_down` requires the block's
+    local +Y to point at the ground (the foot must sit down), while the arm
+    may have to approach with its TCP rolled relative to that.  Identity --
+    the default, and what every male/female half does implicitly -- means the
+    tool attaches on the block frame itself.
     """
 
     name: str
@@ -133,9 +141,21 @@ class GroundJointDef:
     collision_filename: str = ""
     jp_range: tuple[float, float] = DEFAULT_JP_RANGE
     jr_range: tuple[float, float] = DEFAULT_JR_RANGE
+    # Constant BLOCK-LOCAL rotation from the ground block's frame to the frame
+    # the robotic tool's TCP is attached at.  ROTATION ONLY: `__post_init__`
+    # forces the translation to zero, so the TCP always stays on the block
+    # origin and the 50 mm TCP probe in `core.joint_relink._tool_edit` is
+    # unaffected.  Being block-local, it rides along with the `flip` operation
+    # (`core.ground_placement.effective_M_block_from_bar`) automatically; note
+    # that flip reverses block-local +Z, so a 180 deg roll about Z is exactly
+    # invariant under a flip while a general angle reverses sense.
+    M_tool_from_block: np.ndarray = field(default_factory=lambda: np.eye(4))
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
+        tool_from_block = _as_4x4(self.M_tool_from_block)
+        tool_from_block[:3, 3] = 0.0
+        object.__setattr__(self, "M_tool_from_block", tool_from_block)
 
     def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
         return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
@@ -152,6 +172,8 @@ class GroundJointDef:
             "jp_range": list(self.jp_range),
             "jr_range": list(self.jr_range),
             "M_block_from_bar": self.M_block_from_bar.tolist(),
+            # Emitted even when identity so the knob is discoverable in the file.
+            "M_tool_from_block": self.M_tool_from_block.tolist(),
         }
 
     @classmethod
@@ -164,6 +186,11 @@ class GroundJointDef:
             collision_filename=str(data.get("collision_filename", "")),
             jp_range=tuple(float(v) for v in data.get("jp_range", DEFAULT_JP_RANGE)),
             jr_range=tuple(float(v) for v in data.get("jr_range", DEFAULT_JR_RANGE)),
+            # Absent from registries written before the tool-attach frame existed
+            # -> identity -> the historical "the tool attaches on the block frame".
+            M_tool_from_block=np.asarray(
+                data.get("M_tool_from_block", np.eye(4)), dtype=float
+            ),
         )
 
 

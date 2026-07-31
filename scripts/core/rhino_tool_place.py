@@ -1,9 +1,22 @@
 """Robotic-tool placement in Rhino.
 
-Given a male joint block instance already placed in the document, this
-module computes the world TCP frame (the screw-axis frame on the male
-block) and inserts the chosen robotic-tool block so that the tool's TCP
-coincides with that screw frame.
+Given a joint block instance already placed in the document, this module
+computes the joint's **tool-attach frame** and inserts the chosen
+robotic-tool block so that the tool's TCP coincides with it.
+
+:func:`tool_attach_frame` is that frame, and it is the single function both
+the write side (:func:`place_tool_at_block_instance`) and the read side
+(:func:`is_tool_on_joint`) go through, so the two can never disagree:
+
+* male / female joint blocks -> the block instance's own world frame (the
+  historical convention: the block origin IS the TCP).
+* ground joint blocks -> that frame post-multiplied by the definition's
+  constant block-local ``M_tool_from_block``, so a ground joint's tool can
+  be rolled relative to the block WITHOUT moving the block.  The ground
+  block's own orientation is pinned by ``auto_jr_y_down`` (its local +Y must
+  point at the floor), which is why the arm's approach needs a frame of its
+  own.  ``M_tool_from_block`` is identity for every ground joint defined
+  before that frame existed, so their behaviour is unchanged.
 
 Tagging convention on the inserted tool block (Rhino UserText):
     tool_id     : "T<joint_id>"            (e.g. "TJ1-2")
@@ -18,6 +31,8 @@ Rhino (it imports ``rhinoscriptsyntax`` lazily inside its functions).
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 
@@ -109,6 +124,105 @@ def _block_instance_world_xform(block_id) -> np.ndarray:
 _male_world_frame_from_object = _block_instance_world_xform
 
 
+# ---------------------------------------------------------------------------
+# Tool-attach frame (block frame + optional block-local offset)
+# ---------------------------------------------------------------------------
+
+#: Cache of ``ground_joint_name -> 4x4 block-local tool-attach offset``, keyed by
+#: the registry file's (path, mtime, size).  `resync_tools_to_joints`,
+#: `restore_missing_tools_at_joints` and `enforce_bar_tool_sides` each walk EVERY
+#: tool in the document on EVERY RSUpdatePreview run, so the registry must not be
+#: re-parsed per tool.  Keying on the file stamp means a hand-edit of
+#: joint_pairs.json is still picked up on the next call, with no Rhino restart.
+_GROUND_OFFSET_CACHE: dict = {}
+_GROUND_OFFSET_STAMP = None
+
+
+def clear_tool_attach_cache() -> None:
+    """Drop the cached ground tool-attach offsets.
+
+    Call after writing the registry (RSDefineJointHalf) and from tests; the
+    file-stamp key below already covers ordinary edits.
+    """
+    global _GROUND_OFFSET_STAMP
+
+    _GROUND_OFFSET_CACHE.clear()
+    _GROUND_OFFSET_STAMP = None
+
+
+def _ground_offsets(path: str | None = None) -> dict:
+    """``{ground_joint_name: 4x4}`` for the whole registry, cached by file stamp."""
+    global _GROUND_OFFSET_STAMP
+
+    from core import joint_pair as _joint_pair  # noqa: PLC0415
+
+    path = path or _joint_pair.DEFAULT_REGISTRY_PATH
+    try:
+        stat = os.stat(path)
+        stamp = (path, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = (path, None, None)
+    if stamp == _GROUND_OFFSET_STAMP:
+        return _GROUND_OFFSET_CACHE
+
+    offsets: dict = {}
+    try:
+        registry = _joint_pair.load_joint_registry(path)
+    except (OSError, ValueError, KeyError) as exc:
+        # ! A malformed registry must not abort a whole RSUpdatePreview repair
+        # ! pass -- fall back to identity (the historical behaviour) and say so.
+        print(
+            f"  [tool] cannot read ground tool-attach offsets ({exc}); "
+            "attaching tools on the raw block frames."
+        )
+    else:
+        for name, ground in registry.ground_joints.items():
+            offsets[name] = np.asarray(
+                getattr(ground, "M_tool_from_block", np.eye(4)), dtype=float
+            )
+    _GROUND_OFFSET_CACHE.clear()
+    _GROUND_OFFSET_CACHE.update(offsets)
+    _GROUND_OFFSET_STAMP = stamp
+    return _GROUND_OFFSET_CACHE
+
+
+def ground_tool_attach_offset(
+    ground_joint_name: str, path: str | None = None
+) -> np.ndarray:
+    """Block-local tool-attach offset for a ground joint DEFINITION (4x4).
+
+    Identity for an empty or unregistered name.  Always a pure rotation about
+    the block origin -- ``GroundJointDef`` zeroes the translation -- so the TCP
+    probe point in :mod:`core.joint_relink` is unaffected.
+    """
+    if not ground_joint_name:
+        return np.eye(4)
+    return _ground_offsets(path).get(str(ground_joint_name), np.eye(4))
+
+
+def tool_attach_offset(block_id) -> np.ndarray:
+    """Block-local offset between a joint block's frame and its tool's TCP frame.
+
+    Ground blocks carry a ``ground_joint_name`` user-text (written by
+    :func:`core.ground_placement.place_ground_block`); male/female blocks do
+    not, so they resolve to identity and their behaviour is unchanged.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    name = rs.GetUserText(block_id, "ground_joint_name") or ""
+    return ground_tool_attach_offset(name)
+
+
+def tool_attach_frame(block_id) -> np.ndarray:
+    """THE world frame a tool's TCP must coincide with for *block_id*.
+
+    Single source of truth shared by :func:`place_tool_at_block_instance`
+    (which poses a tool onto it) and :func:`is_tool_on_joint` (which checks a
+    tool against it), so a placement can never be reported as drift.
+    """
+    return _block_instance_world_xform(block_id) @ tool_attach_offset(block_id)
+
+
 def remove_tool_for_joint(joint_id: str) -> int:
     """Delete any existing tool instance(s) tagged with ``joint_id``.
 
@@ -133,12 +247,14 @@ def place_tool_at_block_instance(
 ):
     """Insert *tool*'s block aligned to *block_id*'s frame.
 
-    Generic core: works for ANY block instance whose origin frame is the
-    target TCP coordinate frame -- both male joint blocks and ground
-    joint blocks satisfy this (the OCF / block-origin convention).
+    Generic core: works for ANY joint block instance -- male and ground
+    alike -- via :func:`tool_attach_frame`.
 
-    Computes ``world_tool_block = block_world @ inv(M_tcp_from_block)``
-    so the tool's TCP coincides with ``block_world``.
+    Computes ``world_tool_block = tool_attach_frame(block_id) @
+    inv(M_tcp_from_block)`` so the tool's TCP coincides with the joint's
+    tool-attach frame.  That frame is the block's own world frame for male
+    joints and for any ground joint whose ``M_tool_from_block`` is identity,
+    which is the historical behaviour.
 
     Returns the inserted tool's Rhino object id, or ``None`` on failure.
     """
@@ -154,9 +270,9 @@ def place_tool_at_block_instance(
     # Idempotent placement: drop any existing tool tagged with this joint_id.
     remove_tool_for_joint(joint_id)
 
-    block_world = _block_instance_world_xform(block_id)
+    attach_world = tool_attach_frame(block_id)
     M_tcp_from_block = np.asarray(tool.M_tcp_from_block, dtype=float)
-    world_tool_block = block_world @ np.linalg.inv(M_tcp_from_block)
+    world_tool_block = attach_world @ np.linalg.inv(M_tcp_from_block)
 
     tool_oid = rs.InsertBlock(tool.block_name, [0, 0, 0])
     if tool_oid is None:
@@ -501,10 +617,90 @@ def find_attached_block_for_joint(joint_id: str):
 
 #: Element-wise tolerance (mm / unitless) for the tool-on-joint check below.
 #: A correctly-placed tool satisfies ``tool_world @ M_tcp_from_block ==
-#: block_world`` to floating-point precision, so any real drift (user nudged
-#: the tool, or the joint was moved after the tool was placed) sits far above
-#: this.  Mirrors the TCP-coincidence invariant used by ``core.joint_relink``.
+#: tool_attach_frame(block_id)`` to floating-point precision, so any real drift
+#: (user nudged the tool, or the joint was moved after the tool was placed) sits
+#: far above this.  Mirrors the TCP-coincidence invariant used by
+#: ``core.joint_relink``.
 _TOOL_ON_JOINT_TOL = 1e-3
+
+
+def is_tool_on_joint(tool_oid, block_id, tool) -> bool:
+    """True when *tool_oid* is placed on the joint block *block_id*.
+
+    THE definition of "this tool sits on that joint", inverted straight from
+    :func:`place_tool_at_block_instance`, which poses a tool as
+    ``world_tool_block = tool_attach_frame(block_id) @ inv(M_tcp_from_block)``.
+    So a correctly placed tool satisfies ``tool_world @ M_tcp_from_block ==
+    tool_attach_frame(block_id)``.  Both :func:`resync_tools_to_joints` (which
+    repairs) and :func:`find_detached_tools` (which reports) go through here,
+    and both sides read the attach frame from the same function, so a ground
+    joint's rolled tool is never mistaken for drift and re-snapped away.
+
+    Args:
+        tool_oid: the robotic-tool block instance.
+        block_id: the male/ground joint block it claims to be on.
+        tool (RoboticToolDef): supplies ``M_tcp_from_block``.
+
+    Returns:
+        bool: True when the tool's TCP reproduces the joint's attach frame.
+
+    Raises:
+        ValueError: if either object is not a readable block instance.
+    """
+    tool_world = _block_instance_world_xform(tool_oid)
+    attach_world = tool_attach_frame(block_id)
+    tcp_world = tool_world @ np.asarray(tool.M_tcp_from_block, dtype=float)
+    return bool(
+        np.allclose(tcp_world, attach_world, rtol=0.0, atol=_TOOL_ON_JOINT_TOL)
+    )
+
+
+def find_detached_tools() -> list:
+    """Return tool instances that are not sitting on a joint block.  Read-only.
+
+    Same criterion as :func:`resync_tools_to_joints` (both call
+    :func:`is_tool_on_joint`), but reporting instead of repairing.  Run it AFTER
+    the resync pass: anything still detached is one the resync could not fix,
+    i.e. a tool genuinely flying free of the model.  That is the case a
+    ``joint_id``-only check misses -- the metadata can still resolve while the
+    geometry has come adrift.
+
+    Returns:
+        list[tuple]: ``(tool_oid, joint_id, reason)`` per detached tool.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
+        return []
+
+    all_tools = _robotic_tool.load_robotic_tools()
+    detached = []
+    for tool_oid in list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []):
+        if not rs.IsObject(tool_oid):
+            continue
+        joint_id = rs.GetUserText(tool_oid, "joint_id") or ""
+        tool_name = rs.GetUserText(tool_oid, "tool_name") or ""
+        if not joint_id:
+            detached.append((tool_oid, "", "no 'joint_id' user-text"))
+            continue
+        tool = all_tools.get(tool_name)
+        if tool is None:
+            detached.append(
+                (tool_oid, joint_id, f"tool_name {tool_name!r} is not registered")
+            )
+            continue
+        block_id = find_attached_block_for_joint(joint_id)
+        if block_id is None:
+            detached.append((tool_oid, joint_id, "its joint block is gone"))
+            continue
+        try:
+            if not is_tool_on_joint(tool_oid, block_id, tool):
+                detached.append(
+                    (tool_oid, joint_id, "not on its joint (could not be re-snapped)")
+                )
+        except ValueError as exc:
+            detached.append((tool_oid, joint_id, f"unreadable block frame ({exc})"))
+    return detached
 
 
 def resync_tools_to_joints(verbose: bool = False) -> int:
@@ -553,19 +749,16 @@ def resync_tools_to_joints(verbose: bool = False) -> int:
                 print(f"  [tool] {joint_id}: no joint block found; skipping.")
             continue
 
-        # Is the tool still on its joint?  Its TCP frame should reproduce the
-        # joint block's world frame (see place_tool_at_block_instance).  Skip
-        # (rather than abort the whole pass) if either object isn't a readable
-        # block instance -- e.g. it was exploded.
+        # Is the tool still on its joint?  Skip (rather than abort the whole
+        # pass) if either object isn't a readable block instance -- e.g. it was
+        # exploded.
         try:
-            tool_world = _block_instance_world_xform(tool_oid)
-            block_world = _block_instance_world_xform(block_id)
+            on_joint = is_tool_on_joint(tool_oid, block_id, tool)
         except ValueError as exc:
             if verbose:
                 print(f"  [tool] {joint_id}: cannot read block frame ({exc}); skipping.")
             continue
-        tcp_world = tool_world @ np.asarray(tool.M_tcp_from_block, dtype=float)
-        if np.allclose(tcp_world, block_world, rtol=0.0, atol=_TOOL_ON_JOINT_TOL):
+        if on_joint:
             continue  # already on the joint -- leave it alone
 
         # Drifted -> re-place the same tool on the joint's current frame.

@@ -21,6 +21,7 @@ if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
 from core.joint_pair import (
+    GroundJointDef,
     JointHalfDef,
     JointPairDef,
     canonical_bar_frame_from_line,
@@ -218,3 +219,58 @@ def test_joint_pair_def_serialization_roundtrip(tmp_path):
         rebuilt.male.M_screw_from_block, pair.male.M_screw_from_block, atol=1e-12
     )
     assert rebuilt.contact_distance_mm == pytest.approx(pair.contact_distance_mm)
+
+
+# ---------------------------------------------------------------------------
+# GroundJointDef.M_tool_from_block  (the ground tool-attach frame)
+# ---------------------------------------------------------------------------
+
+
+def _ground_def(**kwargs) -> GroundJointDef:
+    return GroundJointDef(
+        name="T20Ground",
+        block_name="T20Ground",
+        M_block_from_bar=np.eye(4),
+        **kwargs,
+    )
+
+
+def test_ground_joint_def_roundtrips_the_tool_attach_frame():
+    """A picked attach rotation survives a save/load of joint_pairs.json."""
+    rz_180 = np.array(
+        [
+            [-1.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    ground = _ground_def(M_tool_from_block=rz_180)
+
+    rebuilt = GroundJointDef.from_dict(ground.to_dict())
+
+    np.testing.assert_allclose(rebuilt.M_tool_from_block, rz_180, atol=1e-12)
+
+
+def test_ground_joint_def_defaults_the_tool_attach_frame_to_identity():
+    """Registries written before the attach frame existed keep loading."""
+    payload = _ground_def().to_dict()
+    payload.pop("M_tool_from_block")
+
+    rebuilt = GroundJointDef.from_dict(payload)
+
+    np.testing.assert_allclose(rebuilt.M_tool_from_block, np.eye(4), atol=1e-12)
+
+
+def test_ground_joint_def_forces_the_tool_attach_translation_to_zero():
+    """Rotation only, structurally.
+
+    `core.joint_relink._tool_edit` matches a tool to its joint by the TCP POINT
+    within 50 mm; a rotation leaves that point put, a translation would not.
+    """
+    with_translation = np.eye(4)
+    with_translation[:3, 3] = [123.0, -45.0, 6.0]
+
+    ground = _ground_def(M_tool_from_block=with_translation)
+
+    np.testing.assert_allclose(ground.M_tool_from_block[:3, 3], 0.0, atol=1e-12)

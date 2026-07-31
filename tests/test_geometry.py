@@ -230,3 +230,39 @@ class TestAreLinesParallel:
 
     def test_near_parallel(self):
         assert are_lines_parallel(np.array([1.0, 0.0, 0.0]), np.array([1.0, 1e-8, 0.0]))
+
+
+class TestFrameFromXAndYHint:
+    """`core.transforms.frame_from_x_and_y_hint` -- the shared "pick X, pick Y"
+    recipe behind RSDefineRoboticTool's TCP picks and RSDefineJointHalf's
+    ground tool-attach picks."""
+
+    def test_x_is_exact_and_the_frame_is_orthonormal(self):
+        from core.transforms import frame_from_x_and_y_hint
+
+        frame = frame_from_x_and_y_hint(
+            (1.0, 2.0, 3.0), (2.0, 0.0, 0.0), (0.0, 5.0, 0.0)
+        )
+
+        np.testing.assert_allclose(frame[:3, 3], [1.0, 2.0, 3.0], atol=TOL)
+        np.testing.assert_allclose(frame[:3, 0], [1.0, 0.0, 0.0], atol=TOL)
+        rotation = frame[:3, :3]
+        np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=TOL)
+        assert float(np.linalg.det(rotation)) > 0
+
+    def test_a_sloppy_y_hint_gives_the_same_frame(self):
+        """Only the component of the hint perpendicular to X matters, so the
+        Y line may be picked loosely."""
+        from core.transforms import frame_from_x_and_y_hint
+
+        exact = frame_from_x_and_y_hint((0, 0, 0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+        sloppy = frame_from_x_and_y_hint((0, 0, 0), (1.0, 0.0, 0.0), (7.3, 1.0, 0.0))
+
+        np.testing.assert_allclose(sloppy, exact, atol=TOL)
+
+    def test_parallel_directions_raise(self):
+        """The caller turns this into "the X and Y lines must not be parallel"."""
+        from core.transforms import frame_from_x_and_y_hint
+
+        with pytest.raises(ValueError):
+            frame_from_x_and_y_hint((0, 0, 0), (1.0, 0.0, 0.0), (-4.0, 0.0, 0.0))

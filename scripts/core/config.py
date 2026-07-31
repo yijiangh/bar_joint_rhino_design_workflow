@@ -169,7 +169,52 @@ IK_BASE_STANDOFF_MM = 1000.0  # mm
 # placed this far perpendicular from each bar, facing the center between the two
 # held joints. Shorter than the single-bar seed above by design (the user places
 # these deliberately, closer to the work). Tunable.
-IK_BASE_STANDOFF_MULTIBAR_MM = 750.0  # mm
+#
+# Kept equal to the MIDDLE entry of ``BASE_GUIDE_OFFSETS_MM`` below, so the
+# auto-placed base lands exactly on the middle base-guide line that
+# RSIKKeyframe / RSIKKeyframeAll draw on the walkable ground.
+IK_BASE_STANDOFF_MULTIBAR_MM = 500.0  # mm
+
+# ---------------------------------------------------------------------------
+# Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)
+#
+# Both IK keyframe commands draw a set of ground lines that show WHERE the
+# mobile base may stand for a bar:
+#   - the line joining the bar's two assembly-joint centers, projected onto the
+#     walkable ground (offset 0);
+#   - that line offset AGAINST the assembly direction by each distance below;
+#   - the "extension line" joining all those lines' midpoints -- the line the
+#     placed base origin sits on.
+# The middle offset is the multi-bar default standoff (see above).
+# ---------------------------------------------------------------------------
+BASE_GUIDE_OFFSETS_MM = (375.0, 500.0, 625.0)
+
+# ---------------------------------------------------------------------------
+# Base heading degeneracy thresholds (core.rhino_walkable_ground.resolve_bar_heading)
+#
+# The base heading is the average of the bar's anchor-joint insertion axes (each
+# joint block's local +Z). A male half's +Z is -bar_X spun about the bar axis by
+# its `jr`, i.e. HORIZONTAL and PERPENDICULAR to the bar -- so two anchors on one
+# bar can point in opposite directions and cancel, and `jr` can tip an axis
+# near-vertical. Either way the naive average degenerates into numerical noise
+# and the base lands on an arbitrary side. These two knobs detect that:
+#   - an axis whose ground-plane (horizontal) component is shorter than
+#     MIN_HORIZONTAL carries no usable azimuth and is discarded;
+#   - a set of axes whose mean resultant length (|sum of units| / count) is below
+#     CANCEL_TOL is treated as cancelling -> the open-side fallback is used.
+# ---------------------------------------------------------------------------
+INSERTION_DIR_MIN_HORIZONTAL = 0.20  # ~78 deg from horizontal
+INSERTION_DIR_CANCEL_TOL = 0.30      # |sum(unit axes)| / n
+
+# User-text key stamped on a JOINT BLOCK when the user picks that joint's tool
+# side BY HAND (RSJointEdit's tool cycle). Value = the chosen side, "left" or
+# "right". The automatic heading rule
+# (`core.rhino_tool_place.assign_tool_sides_from_heading`) never overwrites a
+# joint carrying this, so a deliberate manual edit is not silently undone on the
+# next RSUpdatePreview / IK run. It lives on the joint block rather than the tool
+# instance because re-placing a tool deletes and recreates the tool object.
+# Cleared by an explicit base Flip (that IS the user re-deciding the side).
+KEY_TOOL_SIDE_MANUAL = "tool_side_manual"
 # NOTE: the IK/base-search tuning constants (IK_BASE_SAMPLE_*, IK_BASE_STANDOFF_MM,
 # IK_MAX_DESCEND_ITERATIONS, IK_MAX_RESTART_ITER, IK_TOLERANCE_*, IK_BACKEND) and
 # the ssik sidecar wiring moved to `husky_assembly_tamp.keyframe.config` with the

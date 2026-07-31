@@ -1205,5 +1205,43 @@ def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     if new_oid is None:
         return None
     set_default_tool_name(tool.name)
-    print(f"  [tool] {joint_id}: tool toggled '{current_name}' -> '{tool.name}'.")
+    # This was a deliberate hand-pick: record it on the JOINT BLOCK so the
+    # automatic heading rule leaves this joint alone from now on (see
+    # config.KEY_TOOL_SIDE_MANUAL / assign_tool_sides_from_heading). Stamped on
+    # the block, not the tool, because re-placing a tool recreates that object.
+    rs.SetUserText(male_id, config.KEY_TOOL_SIDE_MANUAL, other_side)
+    print(f"  [tool] {joint_id}: tool toggled '{current_name}' -> '{tool.name}' "
+          "(manual side; auto side-assignment will not override it).")
     return tool.name
+
+
+def get_tool_side_override(block_id) -> str | None:
+    """Return the hand-picked arm side stamped on a joint block, or ``None``."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    side = rs.GetUserText(block_id, config.KEY_TOOL_SIDE_MANUAL)
+    return side if side in ("left", "right") else None
+
+
+def clear_tool_side_overrides(bar_id, verbose: bool = False) -> int:
+    """Drop the manual tool-side marks on a bar's anchor joints.
+
+    Called when the user explicitly flips which side the base stands on: that is
+    them re-deciding the side, so the earlier hand-pick no longer applies and the
+    automatic rule takes over again.
+
+    Returns:
+        int: how many marks were cleared.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    n_cleared = 0
+    for joint_id, block_id, _center in _bar_anchor_joints(bar_id):
+        if get_tool_side_override(block_id) is None:
+            continue
+        rs.SetUserText(block_id, config.KEY_TOOL_SIDE_MANUAL, "")
+        n_cleared += 1
+        if verbose:
+            print(f"  [tool] {bar_id}/{joint_id}: manual tool-side mark cleared "
+                  "(base side was flipped).")
+    return n_cleared

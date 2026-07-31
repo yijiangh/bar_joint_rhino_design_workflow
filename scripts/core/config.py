@@ -368,6 +368,38 @@ BASE_FRAME_AXIS_LEN_MM = 400.0
 # Layer the base-frame markers are baked onto (cleared when the viewer exits).
 LAYER_BASE_FRAME_PREVIEW = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Base Frame Preview"
 
+# Layer the base-placement GUIDE lines are baked onto (see BASE_GUIDE_OFFSETS_MM).
+# Deliberately a separate layer from LAYER_BASE_FRAME_PREVIEW: `base_frame_viz.
+# draw_base_frames` clears its own layer before drawing, which would otherwise
+# wipe the guides every time a base marker is re-baked. Like the two layers above
+# it is NOT in MANAGED_LAYERS -- the managed-layer enforcer would evict the guide
+# lines as strays.
+LAYER_BASE_GUIDE_PREVIEW = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Base Guide Preview"
+
+# ---------------------------------------------------------------------------
+# Arm reachability ghost (RSIKKeyframe base pick)
+#
+# A translucent sphere per arm, centered on that arm's mount link and sized to
+# the UR5e's nominal reach, ghosted at the candidate base so the user can see
+# what the robot can actually touch from there. Cosmetic: the real reachability
+# test is still the IK solve.
+# ---------------------------------------------------------------------------
+ARM_REACH_RADIUS_MM = 850.0  # UR5e nominal reach, per arm
+# URDF link each arm is bolted to (fixed joints all the way from the root link),
+# used to place the reach spheres relative to the mobile-base frame.
+ARM_MOUNT_LINKS = {
+    "left": "left_ur_arm_base_link",
+    "right": "right_ur_arm_base_link",
+}
+
+# Layer holding the text-dot markers RSUpdatePreview drops on broken links. A
+# block instance's object color only reaches sub-objects whose color source is
+# "by parent", and the robotic-tool assets carry baked colors, so recoloring the
+# instance is invisible on them -- a colored dot beside the object is what
+# actually shows. Deliberately NOT in MANAGED_LAYERS: the managed-layer enforcer
+# would evict these markers as strays.
+LAYER_DIAGNOSTIC_MARKS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Diagnostic Marks"
+
 MANAGED_LAYERS = (
     LAYER_BAR_CENTERLINES,
     LAYER_BAR_TUBE_PREVIEWS,

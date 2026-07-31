@@ -54,11 +54,16 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import bar_action as _bar_action_module
+from core import base_guide_geom as _base_guide_geom_module
+from core import base_guide_viz as _base_guide_viz_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
 from core import ik_viz as _ik_viz_module
+from core import reach_viz as _reach_viz_module
+from core import rhino_tool_place as _rhino_tool_place_module
+from core import rhino_walkable_ground as _rhino_walkable_ground_module
 from core import robot_cell as _robot_cell_module
 # The shared solvers live in the husky_assembly_tamp submodule (importing
 # core.config above put it on sys.path) -- ONE implementation used by both this
@@ -111,13 +116,22 @@ def _reload_runtime_modules():
     Returns:
         None.
     """
-    global bar_action, config, dual_arm_ik, dynamic_preview, highlight_env, ik_keyframe, ik_viz, robot_cell
+    global bar_action, base_guide_geom, base_guide_viz, config, dual_arm_ik
+    global dynamic_preview, highlight_env, ik_keyframe, ik_viz, reach_viz
+    global rhino_tool_place, rhino_walkable_ground, robot_cell
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
     env_collision = importlib.reload(_env_collision_module)
     highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
+    # Base-placement guide lines + the arm reach-volume ghost. Reloaded here so
+    # tweaking a guide offset / sphere radius takes effect without a Rhino restart.
+    base_guide_geom = importlib.reload(_base_guide_geom_module)
+    base_guide_viz = importlib.reload(_base_guide_viz_module)
+    reach_viz = importlib.reload(_reach_viz_module)
+    rhino_tool_place = importlib.reload(_rhino_tool_place_module)
+    rhino_walkable_ground = importlib.reload(_rhino_walkable_ground_module)
     # bar_action builds the M1-M4 movements (collision context + EE targets);
     # dual_arm_ik + ik_keyframe (from the tamp submodule) solve the chained IK
     # against them. Reload all three so edits to the shared solve path take
@@ -518,6 +532,65 @@ def _bake_robot_meshes_at_zero():
     return ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
 
 
+def _reach_sphere_meshes(rcell):
+    """Return the two arm reach-volume spheres, or ``[]`` if unavailable.
+
+    Handed to the ghost conduit as ``extra_meshes`` so they follow the candidate
+    base with the robot. Never raises: a failed preview must not break the pick.
+    """
+    try:
+        return reach_viz.reach_sphere_meshes(rcell.robot_model)
+    except Exception as exc:  # noqa: BLE001 -- preview must not break the pick
+        print(f"RSIKKeyframe: reach spheres unavailable ({exc}).")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Base-placement guide lines
+# ---------------------------------------------------------------------------
+
+
+def _draw_base_guides_for_bar(bar_oid, bar_id, joint_a_mm, joint_b_mm,
+                              standoff_mm=None):
+    """Bake the 5 base-placement guide lines for one bar; return its diag or None.
+
+    Drawn right after the bar pick so the guides are on screen through the
+    walkable-ground pick and both phases of the base pick: the user can read the
+    375 / 500 / 625 mm standoffs straight off the ground and drop the base on the
+    yellow extension line. Bars with no assigned / meshable WalkableGround are
+    skipped with a note rather than blocking the pick.
+    """
+    standoff = float(config.IK_BASE_STANDOFF_MM if standoff_mm is None else standoff_mm)
+    try:
+        grounds = rhino_walkable_ground.get_all_walkable_grounds()
+        soups = rhino_walkable_ground._bar_ground_soups(bar_oid, grounds)
+        if not soups:
+            print(f"RSIKKeyframe: bar '{bar_id}' has no assigned WalkableGround; "
+                  "skipping the base guide lines.")
+            return None
+        center_mm = 0.5 * (np.asarray(joint_a_mm, dtype=float)
+                           + np.asarray(joint_b_mm, dtype=float))
+        ground_point, ground_normal = (
+            rhino_walkable_ground._walkable_np.closest_point_on_meshes(soups, center_mm)
+        )
+        if ground_point is None:
+            return None
+        diag = rhino_walkable_ground.resolve_bar_heading(
+            bar_oid, bar_id, soups, ground_point, ground_normal, standoff,
+            verbose=True,
+        )
+        guides = base_guide_geom.build_base_guides(
+            soups, joint_a_mm, joint_b_mm, diag["heading"]
+        )
+        base_guide_viz.draw_base_guides({bar_id: guides})
+        sc.doc.Views.Redraw()
+        diag["ground_normal"] = ground_normal
+        return diag
+    except Exception as exc:  # noqa: BLE001 -- guides are an aid, never a blocker
+        print(f"RSIKKeyframe: base guide lines unavailable ({exc}).")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Reach-circle clip geometry (obstacle footprints + walkable boundary)
 # ---------------------------------------------------------------------------
@@ -736,10 +809,13 @@ def _gather_reach_clip_curves(plane, walkable_brep=None):
     return {"plane": plane, "boundary": boundary, "obstacles": obstacles}
 
 
-def _pick_base_frame_on_walkable(brep_id):
+def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
     """Pick base origin + heading on the walkable brep, with the dual-arm
     robot's mesh tracking the cursor. Returns
     (base_origin_mm, base_normal, heading_mm, seed_base_frame_mm) or all None.
+
+    ``reach_meshes`` (from :func:`_reach_sphere_meshes`) are drawn as translucent
+    arm reach volumes moving with the ghost robot.
     """
     brep = _as_brep(brep_id)
     robot_meshes = _bake_robot_meshes_at_zero()
@@ -750,7 +826,8 @@ def _pick_base_frame_on_walkable(brep_id):
     tol = sc.doc.ModelAbsoluteTolerance
     clip_curves = _gather_reach_clip_curves(_walkable_ground_plane(brep), brep)
 
-    with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4) as conduit:
+    with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4,
+                                      extra_meshes=reach_meshes) as conduit:
         def _update_reach(center_pt, normal_v):
             """Rebuild the clipped reach outline at ``center_pt`` and push it to the
             ghost-preview conduit (drawn on the same redraw tick as the ghost)."""
@@ -1511,6 +1588,7 @@ def _resolve_seed_base_frame(
     brep_id,
     heading_mm,
     allow_saved_base_prompt,
+    reach_meshes=None,
 ):
     """Decide which robot base frame to seed the IK solve with.
 
@@ -1533,6 +1611,8 @@ def _resolve_seed_base_frame(
             None to derive it during this call.
         allow_saved_base_prompt: When True, offer to reuse ``saved_base``;
             set False on retries so the prompt does not reappear.
+        reach_meshes: Arm reach-volume spheres shown with the ghost robot
+            during the pick (see :func:`_reach_sphere_meshes`).
 
     Returns:
         The tuple ``(seed_base_frame, brep_id, heading_mm,
@@ -1582,7 +1662,7 @@ def _resolve_seed_base_frame(
         if brep_id is None:
             return None
         _base_origin_mm, _base_normal, heading_mm, seed_base_frame = (
-            _pick_base_frame_on_walkable(brep_id)
+            _pick_base_frame_on_walkable(brep_id, reach_meshes=reach_meshes)
         )
         if seed_base_frame is None:
             return None
@@ -1891,8 +1971,43 @@ def main():
     picked = _pick_bar_with_arm_tools()
     if picked is None:
         return
-    # Male-joint oids are not needed past the pick (the tool blocks carry tool0).
-    target_bar_id, target_bar_oid, (_, left_tool_oid), (_, right_tool_oid) = picked
+    # The male/ground joint oids ARE needed past the pick now: their block origins
+    # are the two grab points the base guide lines are built from.
+    (target_bar_id, target_bar_oid,
+     (left_joint_oid, left_tool_oid), (right_joint_oid, right_tool_oid)) = picked
+
+    # Base-placement guides: drawn before the walkable-ground pick so they are on
+    # screen for the whole base pick. The heading they are built on also fixes the
+    # bar's L/R tool layout -- see below.
+    joint_a_mm = _block_instance_xform_mm(left_joint_oid)[:3, 3]
+    joint_b_mm = _block_instance_xform_mm(right_joint_oid)[:3, 3]
+    guide_diag = _draw_base_guides_for_bar(
+        target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm
+    )
+
+    # Which end of the bar carries the LEFT tool follows from where the robot
+    # stands (see core.rhino_tool_place.assign_tool_sides_from_heading). Correct
+    # it NOW, before the movements are built from the tool frames -- re-placing a
+    # tool after the build would leave the movements pointing at the old poses.
+    if guide_diag is not None:
+        try:
+            n_sides = rhino_tool_place.assign_tool_sides_from_heading(
+                target_bar_id, guide_diag["heading"], guide_diag["ground_normal"],
+                verbose=True,
+            )
+            if n_sides:
+                # Re-resolve: the pick's tool oids point at the now-deleted
+                # instances that place_tool_at_block_instance replaced.
+                result, err = _resolve_arm_tools_on_bar(target_bar_oid)
+                if err is not None:
+                    rs.MessageBox(err, 0, "RSIKKeyframe")
+                    base_guide_viz.clear_base_guides()
+                    return
+                _bid, (left_joint_oid, left_tool_oid), (right_joint_oid, right_tool_oid) = result
+                print(f"RSIKKeyframe: {n_sides} tool(s) re-placed to match the "
+                      "robot's approach side.")
+        except Exception as exc:  # noqa: BLE001 -- never block the solve on this
+            print(f"RSIKKeyframe: tool-side check skipped ({exc}).")
 
     extra_hidden_tools, tool0_left_final, tool0_right_final = _collect_target_context(
         target_bar_id,
@@ -1932,6 +2047,8 @@ def main():
         heading_mm = None
         saved_base = _read_saved_assembly_base_frame(target_bar_oid)
         allow_saved_base_prompt = True
+        # Arm reach volumes, built once and reused by every ghost this run.
+        reach_meshes = _reach_sphere_meshes(rcell)
 
         while True:
             # A base is "freshly decided" this turn only when we don't already
@@ -1947,6 +2064,7 @@ def main():
                 brep_id,
                 heading_mm,
                 allow_saved_base_prompt,
+                reach_meshes=reach_meshes,
             )
             if base_resolution is None:
                 return
@@ -1955,6 +2073,19 @@ def main():
             # Persist the base frame ASAP so a Ctrl+C mid-IK still leaves it on
             # the bar for the next run's reuse path.
             _write_assembly_base_frame(target_bar_oid, seed_base_frame)
+
+            # The tool sides were set from the AUTO heading before the movements
+            # were built. If the user hand-picked a base on the other side of the
+            # bar, the arms are now crossed -- warn rather than silently re-place,
+            # because re-placing a tool here would leave `movements` pointing at
+            # the old tool poses.
+            if guide_diag is not None and base_freshly_decided:
+                if float(np.dot(seed_base_frame[:3, 0], guide_diag["heading"])) < 0.0:
+                    print("RSIKKeyframe: WARNING - the picked base faces the OPPOSITE "
+                          "way to the base guide lines, so the bar's L/R tools are on "
+                          "the wrong ends for this approach.\n"
+                          "  Re-run the command to have the tool sides re-derived from "
+                          "this base, or pick a base on the guide side.")
 
             # ! Off-ramp: with the base pose now set + saved, let the user stop
             # here and run the (slow) keyframe IK solve headlessly instead of in
@@ -1968,7 +2099,8 @@ def main():
                 # vanish the moment the base pick finished (the pick's own
                 # mesh_preview conduit closed on return).
                 base_ghost = dynamic_preview.MeshPreviewConduit(
-                    _bake_robot_meshes_at_zero(), alpha=0.4
+                    _bake_robot_meshes_at_zero(), alpha=0.4,
+                    extra_meshes=reach_meshes,
                 )
                 base_ghost.Enabled = True
                 base_ghost.update_xform(_np_mm_to_rhino_xform(seed_base_frame))
@@ -2144,6 +2276,14 @@ def main():
         ik_viz.end_session()
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)
+        # Base guide lines are transient: gone on EVERY exit -- solved, ESC at any
+        # prompt, or an exception. Its own try/except so a failure here can never
+        # mask the real outcome (same reason as the color restore below).
+        try:
+            base_guide_viz.clear_base_guides()
+            sc.doc.Views.Redraw()
+        except Exception as exc:  # noqa: BLE001
+            print(f"RSIKKeyframe: failed to clear base guide lines ({exc}); continuing.")
         # Restore canvas exactly like RSSequenceEdit exit path.
         try:
             _show_objects(extra_hidden_tools)

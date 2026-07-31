@@ -182,7 +182,8 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
     DisplayMaterial.Transparency = 1 - alpha.
     """
 
-    def __init__(self, meshes_at_identity, color=None, alpha=0.5):
+    def __init__(self, meshes_at_identity, color=None, alpha=0.5,
+                 extra_meshes=None, extra_color=None, extra_alpha=None):
         super().__init__()
         self._meshes = list(meshes_at_identity)
         self._xform = Rhino.Geometry.Transform.Identity
@@ -190,6 +191,20 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
             color = _color_from_rgb(180, 180, 220)
         self._material = Rhino.Display.DisplayMaterial(color)
         self._material.Transparency = max(0.0, min(1.0, 1.0 - float(alpha)))
+        # Optional SECOND mesh set drawn under the same model transform but with
+        # its own material -- used for the arm reach-volume spheres, which must
+        # follow the ghost robot but be far more transparent than it. None ->
+        # nothing extra drawn, so other callers are unaffected.
+        self._extra_meshes = list(extra_meshes) if extra_meshes else []
+        self._extra_material = None
+        if self._extra_meshes:
+            if extra_color is None:
+                extra_color = _color_from_rgb(120, 200, 255)
+            self._extra_material = Rhino.Display.DisplayMaterial(extra_color)
+            # Faint enough to read as a volume you can see the robot through, but
+            # not so faint it disappears against a light viewport. Tunable.
+            extra_alpha = 0.20 if extra_alpha is None else extra_alpha
+            self._extra_material.Transparency = max(0.0, min(1.0, 1.0 - float(extra_alpha)))
         # Optional reach-circle outline drawn on top of the ghost meshes (used by
         # the RSIKKeyframe base pick). None -> nothing drawn, so other callers of
         # MeshPreviewConduit are unaffected.
@@ -207,7 +222,7 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
         sc.doc.Views.Redraw()
 
     def CalculateBoundingBox(self, e):
-        for m in self._meshes:
+        for m in list(self._meshes) + list(self._extra_meshes):
             bb = m.GetBoundingBox(self._xform)
             if bb.IsValid:
                 e.IncludeBoundingBox(bb)
@@ -221,6 +236,9 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
         try:
             for m in self._meshes:
                 e.Display.DrawMeshShaded(m, self._material)
+            # Reach volumes last so they blend OVER the robot they surround.
+            for m in self._extra_meshes:
+                e.Display.DrawMeshShaded(m, self._extra_material)
         finally:
             e.Display.PopModelTransform()
         # Reach outline is in doc/world coords -> draw AFTER popping the model
@@ -229,9 +247,18 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
 
 
 @contextlib.contextmanager
-def mesh_preview(meshes_at_identity, *, color=None, alpha=0.5):
-    """Enable a MeshPreviewConduit for the duration of the with-block."""
-    conduit = MeshPreviewConduit(meshes_at_identity, color=color, alpha=alpha)
+def mesh_preview(meshes_at_identity, *, color=None, alpha=0.5,
+                 extra_meshes=None, extra_color=None, extra_alpha=None):
+    """Enable a MeshPreviewConduit for the duration of the with-block.
+
+    ``extra_meshes`` / ``extra_color`` / ``extra_alpha`` are forwarded to
+    :class:`MeshPreviewConduit` -- a second mesh set moving with the same
+    transform but drawn with its own (typically far more transparent) material.
+    """
+    conduit = MeshPreviewConduit(
+        meshes_at_identity, color=color, alpha=alpha,
+        extra_meshes=extra_meshes, extra_color=extra_color, extra_alpha=extra_alpha,
+    )
     conduit.Enabled = True
     try:
         yield conduit

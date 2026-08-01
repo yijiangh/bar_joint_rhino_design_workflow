@@ -26,7 +26,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSDefineJointHalf | `rs_define_joint_half.py` | Define one joint half (Male/Female/Ground) and collision mesh | Joint-library authors |
 | RSSetup | RSDefineJointMate | `rs_define_joint_mate.py` | Define mate between existing joint halves | Joint-library authors |
 | RSSetup | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite lines | Workshop participants |
-| RSSetup | RSUpdatePreview | `rs_update_preview.py` | Rebuild stale/missing bar tube previews | Workshop participants |
+| RSSetup | RSUpdatePreview | `rs_update_preview.py` | Left-click: one idempotent repair pass -- rebuild stale/missing bar tube previews, reload joint blocks whose `asset/*.3dm` changed (in place), restore/re-side/re-snap robotic tools, then report unmated joint pairs and broken bar/joint/tool links. Never moves a joint. A second option, ShowColorsPreview, paints the IK + broken-link overlay instead. Right-click (`rs_clear_color_preview.py`): clear every color preview. | Workshop participants |
 | RSSetup | RSReorderBarID | `rs_reorder_bar_id.py` | Renumber bars to match sequence and cascade IDs | Workshop participants |
 | RSSetup | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication JSON | Workshop participants |
 | RSSetup | RSExportCase | `rs_export_case.py` | Export T1-S2 debug case JSON for solver replay | Developers/debugging |
@@ -81,11 +81,21 @@ This is the canonical Rhino entrypoint reference for this repository.
 
 - Anchors a ground joint to a selected bar and point.
 - Uses an auto-`jr` heuristic to align block +Y toward world up.
+- The robotic tool it auto-places is rolled by the definition's
+  `M_tool_from_block` (picked in RSDefineJointHalf, see below). That rotation
+  moves the **tool only** — never the ground block, whose own orientation stays
+  pinned by the auto-`jr` heuristic above.
 
 ### RSJointEdit (`rs_joint_edit.py`)
 
 - Re-opens orientation editing for an existing placed joint pair.
 - Reads stored orientation state from user-text.
+- Clicking a **tool instance** toggles it between the active pair's L/R tools. That is
+  treated as a deliberate hand-pick: it stamps `config.KEY_TOOL_SIDE_MANUAL` on the joint
+  block, and from then on the automatic approach-based side rule (RSUpdatePreview step 4,
+  and both IK keyframe commands) leaves that joint alone rather than putting it back.
+  An explicit base **Flip** in RSIKKeyframeAll clears the mark, since that is you
+  re-deciding which side the robot approaches from.
 
 ### RSBarEdit (`rs_bar_edit.py`)
 
@@ -103,6 +113,31 @@ This is the canonical Rhino entrypoint reference for this repository.
 - Defines one half: `Male`, `Female`, or `Ground`.
 - Exports `asset/<block_name>.3dm` and collision `asset/<block_name>.obj`.
 - Upserts half data in `scripts/core/joint_pairs.json`.
+- **Ground picks two direction points, not a bar axis line.** A ground block's
+  own orientation is not free — RSGroundPlace's auto-`jr` rotates it about the
+  bar until its local +Y points at the floor — so the frame the arm approaches
+  on has to be chosen separately. It is picked the same way RSDefineRoboticTool
+  picks a TCP frame, except the **origin is not picked**: it is the ground
+  block's own insertion point, and both points are read as directions from it.
+  - **+X direction point** — where the tool's +X should point. With the origin
+    it also *is* the bar axis, feeding the unchanged `M_block_from_bar` math.
+  - **+Y direction point** — direction only, and only to fix the roll. The frame
+    is re-orthonormalized from X, so this one can be picked loosely.
+  - A **ghost tool** (magenta) then appears at the resulting frame; `Accept`
+    keeps it, `Repick` loops back to the +X pick. The ghost is the active pair's
+    default tool; with no active pair the preview is skipped, not blocked.
+  - The rotation between the picked frame and the block frame is saved as
+    `M_tool_from_block` and applied by `core.rhino_tool_place.tool_attach_frame`
+    at tool-placement time. Run RSUpdatePreview afterwards to re-snap tools that
+    are already placed.
+  - Anchoring the bar axis at the block origin gives `M_block_from_bar` a **zero
+    translation**, so RSGroundPlace lands the block origin exactly on the point
+    you click on the bar. Ground joints defined with the older bar-axis-*line*
+    pick carry whatever offset that line's start point happened to have
+    (`T20Ground`: 25 mm), so re-defining one shifts where a given `jp` puts it.
+  - The +X *direction* also sets the sense of the bar axis, so re-defining can
+    flip which way new placements face along the bar — RSGroundPlace's `Flip`
+    covers that. Already-baked instances never move either way.
 
 ### RSDefineJointMate (`rs_define_joint_mate.py`)
 
@@ -116,7 +151,101 @@ This is the canonical Rhino entrypoint reference for this repository.
 
 ### RSUpdatePreview (`rs_update_preview.py`)
 
-- Rebuilds missing or stale tube previews for all registered bars.
+Left-click offers two jobs on the command line:
+
+- **UpdatePreview** (default) — the repair pass below.
+- **ShowColorsPreview** — read-only: paints the diagnostic overlay
+  (`core.rhino_joint_refresh.show_colors_preview`) — bars by IK status, plus the
+  broken links. Right-click (RSClearColorPreview) removes it again.
+
+The repair pass is idempotent: running it twice in a row reports the same and
+changes nothing. In order:
+
+1. Rebuilds missing or stale tube previews for all registered bars.
+2. Clears both overlays (IK colors + broken-link marks) — the repair pass leaves a
+   clean document; the color previews re-apply them on demand.
+3. **Reloads joint block definitions whose `asset/*.3dm` changed** since they were
+   imported (`core.rhino_joint_refresh.refresh_stale_joint_blocks`). This is the
+   joint-side counterpart of what RSSwapRoboticTool does for tools: every joint
+   placement path uses `require_block_definition`, which skips the import when a
+   definition of that name already exists, so an edited block would otherwise never
+   reach an open document. Change detection is an *asset stamp* (the source file's
+   mtime + size) recorded in the block definition's description by
+   `core.rhino_block_import`. The reload is
+   `update_block_definition_geometry`, which swaps the geometry **in place** via
+   RhinoCommon's `InstanceDefinitions.ModifyGeometry` — nothing is deleted or
+   re-created, so every placed instance keeps its id, world transform, object name
+   and user text. A block with no stamp (document saved before stamping existed) is
+   reloaded once. **After editing a joint half with RSDefineJointHalf, click
+   RSUpdatePreview to pull the new geometry in.**
+4. Restores robotic tools that went missing entirely, then **sets each bar's L/R tool
+   layout from the robot's approach** (`core.rhino_tool_place.enforce_bar_tool_sides`).
+   A bar is meant to carry one `*L` and one `*R`, and WHICH end holds which follows
+   from where the mobile base stands: the robot faces the bar, so the end on its left
+   (`ground_normal × heading`) takes the left tool. For every bar with an assigned
+   WalkableGround the pass resolves that heading
+   (`core.rhino_walkable_ground.resolve_bar_heading`) and derives both sides from it,
+   so the whole document converges on one rule — the same one RSIKKeyframeAll applies
+   when it places a base, including after a Flip. Bars with no walkable ground have no
+   approach to derive from, and fall back to the older narrow repair: only a bar
+   holding two SAME-side tools is rewritten, near joint keeps what it has, far one
+   flips. **A side you cycled by hand in RSJointEdit is never overridden** — that
+   stamps `config.KEY_TOOL_SIDE_MANUAL` on the joint block and this pass skips it.
+   Finally, any tool that drifted off its joint is re-snapped —
+   "on its joint" meaning its TCP sits on the joint's **tool-attach frame**
+   (`core.rhino_tool_place.tool_attach_frame`), not necessarily on the raw block
+   frame: a ground joint whose definition carries an `M_tool_from_block` is
+   supposed to hold its tool rolled, and is left alone.
+5. **Reports pairs whose halves no longer mate** (`report_unmated_joints`), judged
+   with the creation side's own definition of a good interface: the female and male
+   screw frames must coincide within `VARIANT_OK_ORIGIN_TOL_MM` /
+   `VARIANT_OK_Z_AXIS_TOL_RAD`, measured by
+   `core.joint_pair_solver.screw_alignment_diagnostics` — exactly the test
+   `is_variant_acceptable` applies when the solver picks a variant. Measured from
+   the blocks' **actual** transforms, so it says where the joints really are.
+6. **Counts what cannot be repaired automatically** (`find_broken_links`): a joint
+   that lost its bar **or its other half** (a female with no male is as broken as
+   one with no bar — there is nothing for it to mate with; ground joints are
+   single-sided by design and exempt), a tool that lost its joint or is no longer
+   on it, and a registered bar carrying no joint. Detached tools come from
+   `core.rhino_tool_place.find_detached_tools`, which shares `is_tool_on_joint`
+   with the re-snap pass — so "attached" means one thing everywhere. The repair
+   pass only prints the counts; ShowColorsPreview / right-click paints and lists
+   them. Fix them with RSJointPlace / RSGroundPlace, or delete the orphan.
+
+### RSClearColorPreview (`rs_clear_color_preview.py`)
+
+Right-click companion of RSUpdatePreview: removes every diagnostic overlay and
+unselects. Bar colors (IK status and the bare-bar color) revert to by-layer on both
+the centre-line and its tube, joint/tool instances revert, and the marker dots are
+deleted. Appearance only — no geometry or metadata is touched.
+
+**How the marking works**, since no single channel covers everything:
+
+- **bars** go through `paint_bar`, which colors the centre-line *and* its tube
+  preview — coloring the curve alone is invisible because the tube covers it.
+  `BARE_BAR_COLOR` is a muted indigo on purpose: a green would be hard to tell
+  apart from the green R-side robotic tools, and a bright purple would compete
+  with the orange orphan color for attention;
+- **joint blocks** take an ordinary `ObjectColor` override — color only, no dot;
+- **tools cannot be recolored at all** — a block instance's color only reaches
+  sub-objects whose color source is *by parent*, and the tool assets carry baked
+  colors (that is what makes them read as red/green). So each flagged tool gets a
+  colored **text dot** labelled with its tool id (`T<joint_id>`) on the
+  `Diagnostic Marks` layer. That layer is deliberately **not** in `MANAGED_LAYERS`
+  — the managed-layer enforcer would evict the markers as strays;
+- everything flagged is left **selected**, ready to inspect or delete. A bare bar
+  contributes **both** its centre-line curve and its tube preview
+  (`_bar_curve_and_tube`), so pressing Delete removes the whole bar instead of
+  leaving an orphaned tube behind. Nothing is ever deleted for you — a bare bar
+  may simply be one you have not jointed yet.
+
+**This command never moves a joint.** Re-deriving a solved placement from the
+stored `(jp, jr)` is not a reliable enough authority to act on silently — earlier
+attempts moved joints that were correct — so joints are only ever reported. One
+consequence: editing `M_block_from_bar` in `joint_pairs.json` affects only NEWLY
+placed joints; re-place an existing one with RSJointEdit / RSGroundPlace to adopt a
+changed transform.
 
 ### RSReorderBarID (`rs_reorder_bar_id.py`)
 
@@ -221,7 +350,20 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Dual-arm IK for two selected male joints sharing one Ln bar.
 - Supports collision options and base-sampling fallback when direct solve fails.
 - Saves `ik_assembly` JSON on the shared Ln bar.
+- **Base guide lines.** Right after the bar pick, five lines are drawn on the bar's walkable ground and stay up through the whole base pick: the line joining the two grabbed-joint centres **projected onto the ground** (teal), three copies offset *against* the assembly direction by 375 / 500 / 625 mm (`config.BASE_GUIDE_OFFSETS_MM`, light teal, each labelled with a text dot), and the **extension line** through their midpoints (yellow) — the line an auto-placed base sits on. So you can read a standoff straight off the canvas before committing. See `docs/coordinate_conventions.md` §7.
+- **Arm reach ghost.** The translucent robot that tracks the cursor now carries two translucent spheres of `config.ARM_REACH_RADIUS_MM` (850 mm, the UR5e's nominal reach) centred on each arm's mount link, so you can see what the arms can actually touch from a candidate base. Approximate — the real reachability test is still the IK solve. Display-conduit only; nothing is baked.
+- **Tool sides follow the approach.** Which end of the bar carries the LEFT tool depends on which side the robot stands (`ground_normal × heading` = the robot's left). The command corrects the two tools from the resolved heading *before* building the movements, and warns if you then hand-pick a base facing the other way. A side you cycled by hand in RSJointEdit is never overridden.
 - **Save base / continue off-ramp:** right after you pick the base origin + heading (or reuse a saved base), it asks **Continue** vs **SaveBaseAndExit**. Enter/Continue runs the in-Rhino solve as before; SaveBaseAndExit keeps the just-saved base frame and stops, so you can solve the keyframes headlessly with `external/husky_assembly_tamp/scripts/headless_bar_action_planner.py --solve-keyframes --base saved` (export the bar first). Not shown on a RetrySameBase loop.
+- The guide lines are transient: cleared on **every** exit path, including ESC at any prompt.
+
+### RSIKKeyframeAll (`rs_ik_keyframe_all.py`) — right-click on the RSIKKeyframe button
+
+- Multi-select bars; places a mobile base on each and optionally solves them all in one batch.
+- **Standoff** is typed at the prompt, defaulting to `config.IK_BASE_STANDOFF_MULTIBAR_MM` = **500 mm** — deliberately the *middle* base-guide offset, so the auto-placed base lands exactly on the middle guide line and 375 / 625 read as the two alternatives either side of it.
+- Each processed bar gets its own guide-line set plus a base marker and reach circle.
+- **FlipAll / FlipOne** at the off-ramp prompt move bases to the other side of their bar (FlipOne asks you to click a base marker). The guides, the saved base frame, and the L/R tool sides all follow the flip; a flip also clears any hand-picked tool side, since it is you re-deciding the approach.
+- Bars whose base side could not be derived with confidence — anchor axes cancelling, or the ground running out before the standoff — are flagged **"Ambiguous heading — verify the side"** in the summary popup, with the per-bar diagnosis printed to the command line.
+- All preview geometry (guides, base markers, reach circles) is removed on **every** exit path: solved, ESC at any prompt, SaveAndExit, or an exception. The saved base frames on the bars are untouched.
 
 ### RSShowBarActionPlan (`rs_show_bar_action_plan.py`) / …Motion (`rs_show_bar_action_plan_motion.py`)
 
@@ -255,7 +397,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 ### RSAssignAndShowWalkableGround (`rs_assign_and_show_walkable_ground.py`)
 
 - **Single left-click**, a view↔re-assign loop:
-  1. **View.** Pick a bar (first run). Its assigned WalkableGround(s) are highlighted green; the default mobile-base placement is computed — the same heuristic the headless solver uses in `--base sample` mode (`husky_assembly_tamp.keyframe.walkable_ground`: `derive_seed_base` + `frame_from_origin_normal_heading`): the base stands a standoff **behind** the bar and **faces along the average male-joint insertion direction** (the way the bar is pushed to mate), which removes the left/right side ambiguity. It's drawn as a base-frame marker + a **half-transparent ghost robot** standing on that base. The ground ids + base position are printed. Then it asks: *change the assignment?*
+  1. **View.** Pick a bar (first run). Its assigned WalkableGround(s) are highlighted green; the default mobile-base placement is computed — the same heuristic the headless solver uses in `--base sample` mode (`husky_assembly_tamp.keyframe.walkable_ground`: `derive_seed_base` + `frame_from_origin_normal_heading`): the base stands a standoff **behind** the bar and **faces along the average anchor-joint insertion direction** (the way the bar is pushed to mate), which removes the left/right side ambiguity. That average now covers **both** male and ground joints, discards near-vertical axes, and detects the case where a bar's two anchors cancel, falling back to the open side of the bar instead of to a noise direction (`core.rhino_walkable_ground.resolve_bar_heading`; see `docs/coordinate_conventions.md` §7). It's drawn as a base-frame marker + a **half-transparent ghost robot** standing on that base. The ground ids + base position are printed. Then it asks: *change the assignment?*
   2. **Re-assign** (only if you answer Yes). Select the WalkableGround brep(s) you want (multiple allowed), Enter to confirm. That set **overwrites** the bar's assignment (saved to user-text), and it loops back to step 1 to re-visualize. Answer No / Esc at step 1 to finish.
 - If a bar has no assignment yet, the nearest ground(s) are auto-assigned + saved first so step 1 always has something to show.
 - The ghost robot is FK-only (no PyBullet needed): its link meshes are harvested once at the home pose (`core.ik_viz.get_robot_link_meshes_at_state`, from a **bare** robot cell so only the robot is drawn) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.

@@ -52,9 +52,12 @@ _DOC_USERTEXT_DEFAULT_TOOL_KEY = "scaffolding.last_robotic_tool"
 
 def get_default_tool_name() -> str | None:
     """Return the doc-stored default tool name, or ``None`` if unset/missing."""
-    import scriptcontext as sc  # noqa: PLC0415  (Rhino runtime)
+    # Rhino-runtime import: rhino_helpers pulls in rhinoscriptsyntax at module
+    # level, and this module must stay importable outside Rhino (see the module
+    # docstring) -- same reason as the suspend_redraw import further down.
+    from core.rhino_helpers import get_doc_string  # noqa: PLC0415
 
-    name = sc.doc.Strings.GetValue(_DOC_USERTEXT_DEFAULT_TOOL_KEY)
+    name = get_doc_string(_DOC_USERTEXT_DEFAULT_TOOL_KEY)
     if not name:
         return None
     if name not in _robotic_tool.load_robotic_tools():
@@ -63,9 +66,9 @@ def get_default_tool_name() -> str | None:
 
 
 def set_default_tool_name(name: str) -> None:
-    import scriptcontext as sc  # noqa: PLC0415  (Rhino runtime)
+    from core.rhino_helpers import set_doc_string  # noqa: PLC0415
 
-    sc.doc.Strings.SetString(_DOC_USERTEXT_DEFAULT_TOOL_KEY, str(name))
+    set_doc_string(_DOC_USERTEXT_DEFAULT_TOOL_KEY, str(name))
 
 
 # ---------------------------------------------------------------------------

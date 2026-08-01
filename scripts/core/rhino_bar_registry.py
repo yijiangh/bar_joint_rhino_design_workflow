@@ -24,7 +24,10 @@ from core.rhino_helpers import (
     curve_endpoints,
     delete_objects,
     ensure_layer,
+    get_doc_string,
     point_to_array,
+    set_doc_string,
+    suspend_redraw,
 )
 
 # ---------------------------------------------------------------------------
@@ -617,10 +620,19 @@ def _reset_obj_color(oid):
     rs.ObjectColorSource(oid, 0)  # 0 = by layer
 
 
-def _bar_curve_and_tube(curve_id):
-    """Return ``[curve_id]`` plus the tube GUID if one exists."""
+def _bar_curve_and_tube(curve_id, tube_index=None):
+    """Return ``[curve_id]`` plus the tube GUID if one exists.
+
+    *tube_index* is an optional ``{axis_guid_str: tube_oid}`` map from
+    :func:`_tube_index`.  Pass one whenever looping over many bars:
+    :func:`_find_existing_tube` rescans the entire tube-preview layer on every
+    call, so without an index a pass over N bars costs N layer scans.
+    """
     ids = [curve_id]
-    tube = _find_existing_tube(curve_id)
+    if tube_index is None:
+        tube = _find_existing_tube(curve_id)
+    else:
+        tube = tube_index.get(str(rs.coerceguid(curve_id)))
     if tube is not None:
         ids.append(tube)
     return ids
@@ -721,6 +733,9 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
     # Build a quick "is this bar visible?" map for the joint pass.
     bar_visible_by_id = {}
 
+    # One tube-layer scan for the whole pass (see _tube_index).
+    tube_index = _tube_index()
+
     rs.EnableRedraw(False)
     for bar_id, (oid, seq) in bar_map.items():
         if seq < active_seq:
@@ -733,7 +748,7 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
             color = SEQ_COLOR_UNBUILT
             visible = show_unbuilt
         bar_visible_by_id[bar_id] = visible
-        for obj in _bar_curve_and_tube(oid):
+        for obj in _bar_curve_and_tube(oid, tube_index):
             _set_obj_color(obj, color)
             _set_visible(obj, visible)
 
@@ -774,9 +789,10 @@ def reset_sequence_colors():
     """Restore default (by-layer) colour and make all registered bars,
     joints, and tools visible again."""
     bar_map = get_bar_seq_map()
+    tube_index = _tube_index()
     rs.EnableRedraw(False)
     for bar_id, (oid, _) in bar_map.items():
-        for obj in _bar_curve_and_tube(oid):
+        for obj in _bar_curve_and_tube(oid, tube_index):
             _reset_obj_color(obj)
             rs.ShowObject(obj)
     for joint_oid in _joint_layer_objects():
@@ -809,6 +825,29 @@ def _parse_cached_point(s):
         return tuple(float(p) for p in parts)
     except (ValueError, TypeError):
         return None
+
+
+def _tube_index():
+    """Return ``{axis_guid_str: tube_oid}`` for the whole tube-preview layer.
+
+    :func:`_find_existing_tube` answers "which tube belongs to this curve?" by
+    scanning the whole layer, so asking it once per bar rescans the layer once
+    per bar (N bars x N tubes user-text reads).  This builds the same
+    curve->tube mapping in ONE scan; callers looping over every bar then look
+    each tube up by GUID, which is a dict hash rather than another scan.
+
+    First tube wins on a duplicate ``tube_axis_id``, matching
+    :func:`_find_existing_tube`'s first-match return (``repair_on_entry`` purges
+    the duplicates that copy/paste leaves behind).
+    """
+    index = {}
+    if not rs.IsLayer(TUBE_LAYER):
+        return index
+    for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
+        axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
+        if axis_guid:
+            index.setdefault(axis_guid, oid)
+    return index
 
 
 def _find_existing_tube(curve_id):

@@ -133,6 +133,49 @@ def group_objects(object_ids):
 
 
 # ---------------------------------------------------------------------------
+# Document user text (persistent per-file state)
+# ---------------------------------------------------------------------------
+#
+# Three storage tiers exist for "remember this", and they are easy to mix up:
+#
+#   * a local / session variable -> dies when the script ends;
+#   * ``scriptcontext.sticky``   -> a dict Rhino keeps between script runs, but
+#     it dies when Rhino closes and is never written to the .3dm;
+#   * ``sc.doc.Strings`` (below) -> document user text, SAVED INSIDE the .3dm,
+#     so it survives a Rhino restart and travels with the file.
+#
+# Anything that must still be true after reopening the document belongs here.
+# This is the same store ``rs.Get/SetDocumentUserText`` reads and writes, and it
+# shows up under Document Properties -> User Text.
+
+
+def get_doc_string(key):
+    """Return the document-stored string for *key*, or ``None`` if unset.
+
+    Empty strings are normalised to ``None``, so ``set_doc_string(key, "")`` is a
+    valid "clear this setting".  Never raises: outside a live document (or on a
+    Rhino build without ``doc.Strings``) it simply reports ``None``.
+    """
+    try:
+        value = sc.doc.Strings.GetValue(key)
+    except Exception:
+        value = None
+    return value or None
+
+
+def set_doc_string(key, value):
+    """Store *value* under *key* in the document's user text.
+
+    Pass ``""`` to clear the entry (:func:`get_doc_string` then returns ``None``).
+    Never raises, for the same reason as :func:`get_doc_string`.
+    """
+    try:
+        sc.doc.Strings.SetString(key, str(value))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Redraw context manager
 # ---------------------------------------------------------------------------
 

@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import Rhino
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 from core.joint_pair import (
     JointPairDef,
@@ -55,6 +54,7 @@ from core.rhino_bar_registry import (
     TUBE_AXIS_GUID_KEY,
     TUBE_BAR_ID_KEY,
 )
+from core.rhino_helpers import get_doc_string, set_doc_string
 
 
 # ---------------------------------------------------------------------------
@@ -68,19 +68,12 @@ _DOC_USERTEXT_SUBFLOOR_RIGHT_KEY = "scaffolding.last_subfloor_right_pair"
 _DEFAULT_BRACE_LENGTH = 500.0
 
 
-def _get_doc_string(key: str) -> str | None:
-    try:
-        value = sc.doc.Strings.GetValue(key)
-    except Exception:
-        value = None
-    return value or None
-
-
-def _set_doc_string(key: str, value: str) -> None:
-    try:
-        sc.doc.Strings.SetString(key, str(value))
-    except Exception:
-        pass
+# The read/write pair itself now lives in ``core.rhino_helpers`` so the bar
+# registry can use it too (this module imports FROM the registry, so it cannot
+# be the shared home).  Kept as module-level aliases: the accessors below and a
+# few call sites elsewhere refer to them by these names.
+_get_doc_string = get_doc_string
+_set_doc_string = set_doc_string
 
 
 def get_default_pair_name() -> str | None:

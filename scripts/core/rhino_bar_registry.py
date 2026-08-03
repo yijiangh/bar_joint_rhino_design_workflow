@@ -18,6 +18,16 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from core import config
+from core.build_stage import (
+    BUILD_STAGE_KEY,
+    STATUS_CLEAR,
+    STATUS_FALLBACK,
+    STATUS_OFF,
+    format_build_stage,
+    parse_build_stage,
+    resolve_build_stage_seq,
+    stage_filter_note,
+)
 from core.rhino_helpers import (
     as_object_id_list,
     apply_object_display,
@@ -723,6 +733,14 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
         Only the robotic tool(s) belonging to the *active* step are
         shown -- i.e. tools whose joint's male side is parented to
         *active_bar_id*.  All other tools are hidden.
+
+    This is the **in-command** view and it is deliberately pure: it reads the
+    document and paints, and never writes the build stage.  Do not confuse it
+    with :func:`apply_build_stage_visibility`, the persistent filter, which
+    differs in exactly one rule -- it keeps every *built* bar's tools visible
+    instead of only the active step's, so RSSwapRoboticTool and
+    RSInspectRoboticTool stay usable once the command has exited.  The latch is
+    written only by an explicit user toggle (``RSSequenceEdit > HideUnbuilt``).
     """
     bar_map = get_bar_seq_map()
     if active_bar_id not in bar_map:
@@ -785,23 +803,245 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
     rs.EnableRedraw(True)
 
 
-def reset_sequence_colors():
-    """Restore default (by-layer) colour and make all registered bars,
-    joints, and tools visible again."""
+def reset_sequence_colors(respect_stage=True):
+    """Restore default (by-layer) colour, then re-assert the build-stage filter.
+
+    Colours always go back to by-layer and everything is shown again -- but if the
+    document carries a build stage (:func:`get_build_stage`), the last thing this
+    does is hide the unbuilt parts again.  That is what makes ``HideUnbuilt``
+    survive Esc: this function is the shared exit path of RSSequenceEdit,
+    RSShowBarActionPlan and RSIKKeyframe, so all three honour the latch without a
+    per-caller edit.
+
+    Pass ``respect_stage=False`` for a genuine, unconditional "show everything"
+    -- there is currently no such caller, it exists so the intent has to be
+    spelled out rather than assumed.
+    """
     bar_map = get_bar_seq_map()
     tube_index = _tube_index()
-    rs.EnableRedraw(False)
-    for bar_id, (oid, _) in bar_map.items():
-        for obj in _bar_curve_and_tube(oid, tube_index):
-            _reset_obj_color(obj)
-            rs.ShowObject(obj)
-    for joint_oid in _joint_layer_objects():
-        _reset_obj_color(joint_oid)
-        rs.ShowObject(joint_oid)
-    for tool_oid in _tool_layer_objects():
-        _reset_obj_color(tool_oid)
-        rs.ShowObject(tool_oid)
-    rs.EnableRedraw(True)
+    with suspend_redraw():
+        for bar_id, (oid, _) in bar_map.items():
+            for obj in _bar_curve_and_tube(oid, tube_index):
+                _reset_obj_color(obj)
+                rs.ShowObject(obj)
+        for joint_oid in _joint_layer_objects():
+            _reset_obj_color(joint_oid)
+            rs.ShowObject(joint_oid)
+        for tool_oid in _tool_layer_objects():
+            _reset_obj_color(tool_oid)
+            rs.ShowObject(tool_oid)
+        # LAST, inside the same batch: the show pass above just made everything
+        # visible, so the filter has to get the final word or the latch leaks.
+        if respect_stage:
+            apply_build_stage_visibility(verbose=False)
+
+
+# ---------------------------------------------------------------------------
+# Build stage -- the persistent "hide everything after step N" filter
+# ---------------------------------------------------------------------------
+#
+# The saved value and the rule for interpreting it live in ``core.build_stage``
+# (Rhino-free, so pytest can cover the awkward renumber/delete cases).  What is
+# here is the part that needs a document: read/write the key, and do the hiding.
+#
+# The invariant everything else depends on: ``apply_build_stage_visibility`` is
+# the LAST visibility-touching step of any command or refresh pass.  Anything
+# that shows objects afterwards re-opens the leak this feature exists to close.
+
+
+def get_build_stage():
+    """Return the saved ``(bar_id, seq)`` build stage, or ``None`` if not latched.
+
+    Deliberately a bare key read with **no document scan**: this runs on every
+    ``repair_on_entry`` even when the filter is off, so the unlatched cost must
+    stay at one string read.  The *seq* returned here is the one saved at the
+    time -- use :func:`apply_build_stage_visibility` (which re-resolves through
+    ``core.build_stage``) when the bar may since have been renumbered or deleted.
+    """
+    return parse_build_stage(get_doc_string(BUILD_STAGE_KEY))
+
+
+def set_build_stage(bar_id, seq):
+    """Latch the filter at *bar_id* / assembly step *seq*."""
+    set_doc_string(BUILD_STAGE_KEY, format_build_stage(bar_id, seq))
+
+
+def clear_build_stage():
+    """Un-latch the filter.  Clears the key only -- it changes no visibility.
+
+    Every caller repaints immediately afterwards (``show_sequence_colors`` or
+    ``reset_sequence_colors``), so hiding/showing here as well would only paint
+    twice.
+    """
+    set_doc_string(BUILD_STAGE_KEY, "")
+
+
+def apply_build_stage_visibility(caller=None, verbose=True):
+    """Hide every bar, joint and tool later than the saved build stage.
+
+    The one function that enforces the latch.  Call it as the **final**
+    visibility-touching statement of any command or refresh pass.
+
+    Returns ``(bar_id, n_hidden)``, or ``None`` when the filter is not latched
+    (or resolved to "switch off", in which case the key is wiped and the reason
+    printed).
+
+    Visibility only -- never colour.  ``show_sequence_colors`` owns the
+    green/blue/grey palette and still resets on exit; only the hidden state
+    persists.
+
+    The rules, which differ from ``show_sequence_colors`` in one place:
+
+    - **bars + tubes**: hidden when ``seq > stage_seq``.
+    - **joints**: per block half, following that half's own ``parent_bar_id`` --
+      so a joint between built B2 and unbuilt B9 keeps its female half visible
+      and hides its male half.
+    - **tools**: hidden only when the bar owning the tool's joint is unbuilt.
+      ``show_sequence_colors`` instead shows *only the active step's* tool; here
+      every built bar keeps its tools, which is what leaves RSSwapRoboticTool and
+      RSInspectRoboticTool usable while the filter is on.
+    """
+    raw = get_doc_string(BUILD_STAGE_KEY)
+    if not raw:
+        return None  # not latched -- one string read and out
+
+    bar_map = get_bar_seq_map()
+    status, stage_seq, stage_bar_id, message = resolve_build_stage_seq(raw, bar_map)
+    if status == STATUS_OFF:
+        return None
+    if status == STATUS_CLEAR:
+        # The staged bar is gone beyond rescue.  Drop the latch, show everything
+        # and say why -- an empty-looking model with no explanation is exactly
+        # what this feature must not produce.  Visibility only, so the caller's
+        # colour scheme (if any) survives; and not via reset_sequence_colors,
+        # which calls back into this function.
+        clear_build_stage()
+        print(f"{caller or 'RSScaffolding'}: {message}")
+        with suspend_redraw():
+            tube_index = _tube_index()
+            for _bar_id, (oid, _seq) in bar_map.items():
+                for obj in _bar_curve_and_tube(oid, tube_index):
+                    rs.ShowObject(obj)
+            for oid in _joint_layer_objects() + _tool_layer_objects():
+                rs.ShowObject(oid)
+        return None
+    if status == STATUS_FALLBACK:
+        # Re-point the key at the surviving bar so it stops drifting further with
+        # every subsequent delete.
+        set_build_stage(stage_bar_id, stage_seq)
+        print(f"{caller or 'RSScaffolding'}: {message}")
+
+    n_hidden = 0
+    with suspend_redraw():
+        # Bars + their tubes.  One tube-layer scan for the whole pass.
+        tube_index = _tube_index()
+        bar_visible_by_id = {}
+        for bar_id, (oid, seq) in bar_map.items():
+            visible = seq <= stage_seq
+            bar_visible_by_id[bar_id] = visible
+            for obj in _bar_curve_and_tube(oid, tube_index):
+                _set_visible(obj, visible)
+            if not visible:
+                n_hidden += 1
+
+        # Joints, one pass over the three layers.  Iterated per layer rather than
+        # through _joint_layer_objects() because we need to know WHICH layer each
+        # instance came from: only the male/ground halves answer "whose tool is
+        # this?" (see get_active_tool_oids), and the female half would give the
+        # opposite answer for the same joint_id.
+        tool_owner_bar_by_joint_id = {}
+        for layer in (
+            config.LAYER_JOINT_FEMALE_INSTANCES,
+            config.LAYER_JOINT_MALE_INSTANCES,
+            config.LAYER_JOINT_GROUND_INSTANCES,
+        ):
+            if not rs.IsLayer(layer):
+                continue
+            is_tool_side = layer != config.LAYER_JOINT_FEMALE_INSTANCES
+            for joint_oid in rs.ObjectsByLayer(layer) or []:
+                parent_bar_id = rs.GetUserText(joint_oid, "parent_bar_id")
+                # Unknown parent -> leave visible.  An orphaned joint that is also
+                # invisible is one the user can never find and fix.
+                visible = bar_visible_by_id.get(parent_bar_id, True)
+                _set_visible(joint_oid, visible)
+                if not visible:
+                    n_hidden += 1
+                if is_tool_side:
+                    joint_id = rs.GetUserText(joint_oid, "joint_id")
+                    if joint_id:
+                        tool_owner_bar_by_joint_id[joint_id] = parent_bar_id
+
+        # Tools follow the bar owning their male/ground half.
+        for tool_oid in _tool_layer_objects():
+            owner_bar_id = tool_owner_bar_by_joint_id.get(
+                rs.GetUserText(tool_oid, "joint_id")
+            )
+            visible = bar_visible_by_id.get(owner_bar_id, True)
+            _set_visible(tool_oid, visible)
+            if not visible:
+                n_hidden += 1
+
+    if verbose:
+        print(stage_filter_note(caller, stage_bar_id, stage_seq))
+    return (stage_bar_id, n_hidden)
+
+
+def hide_if_beyond_build_stage(object_ids, curve_id):
+    """Hide freshly created *object_ids* if their bar is later than the stage.
+
+    A newly created Rhino object is always visible, so anything baked outside a
+    repair pass would pop back on screen and make the filter look broken -- most
+    visibly a tube floating over its own hidden centerline, since the tube is
+    what you actually see.
+
+    Kept deliberately cheap, because it sits on a creation path: one document
+    string read (nothing at all when the filter is off), then the bar's own
+    ``bar_seq`` user text against the **saved** stage number.  No
+    ``get_bar_seq_map()``, no re-resolution -- if the saved number has drifted
+    (renumber, deleted stage bar) the next ``repair_on_entry`` corrects it with a
+    full :func:`apply_build_stage_visibility`.
+
+    A brand-new bar has no ``bar_seq`` until ``repair_bar_sequences()`` runs, so
+    it stays visible for the rest of the command that created it -- intended:
+    RSCreateBar warns about it instead, rather than hiding the work you just did.
+    """
+    stage = get_build_stage()
+    if stage is None:
+        return
+    _stage_bar_id, stage_seq = stage
+    seq = _parse_bar_seq(rs.GetUserText(curve_id, BAR_SEQ_KEY))
+    if seq is None or seq <= stage_seq:
+        return
+    for oid in as_object_id_list(object_ids):
+        _set_visible(oid, False)
+
+
+def hide_tool_if_beyond_build_stage(tool_oid, joint_block_id, bar_map=None):
+    """Hide a freshly placed tool if the bar holding it is beyond the stage.
+
+    *joint_block_id* is the joint block instance the tool was attached to.  It
+    is always the **male or ground** half -- which is precisely the half whose
+    ``parent_bar_id`` answers "whose tool is this?" (the same rule as
+    :func:`get_active_tool_oids`; the female half would name the other bar).  So
+    the owning bar is one user-text read away, with no layer scan.
+
+    *bar_map* is an optional pre-built :func:`get_bar_seq_map` result.  Pass one
+    when placing tools in a loop: without it each call pays a full document scan
+    to turn that bar id into a sequence number.  Unknown bar -> left visible, so
+    an orphaned tool is never invisible and unfindable.
+    """
+    stage = get_build_stage()
+    if stage is None:
+        return  # not latched -- one string read and out
+    _stage_bar_id, stage_seq = stage
+    parent_bar_id = rs.GetUserText(joint_block_id, "parent_bar_id")
+    if not parent_bar_id:
+        return
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    entry = bar_map.get(parent_bar_id)
+    if entry is not None and entry[1] > stage_seq:
+        _set_visible(tool_oid, False)
 
 
 # ---------------------------------------------------------------------------
@@ -907,6 +1147,14 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
     ``(baked_ids, status)`` where ``status`` is one of ``"reused"``,
     ``"regenerated"``, or ``"created"``.  Pre-existing single-value
     callers that ignore the return are unaffected.
+
+    A newly baked tube is hidden immediately if its bar is beyond the build
+    stage (:func:`hide_if_beyond_build_stage`).  RSCreateBar, RSBarEdit,
+    RSBarSnap, RSBarBrace and RSBarSubfloor all call this outside any repair
+    pass -- and the snap/brace/subfloor trio regenerate tubes for *existing*
+    bars after trimming, so without the hide you get a visible tube floating
+    over a hidden centerline.  The ``"reused"`` path needs nothing: it hands
+    back an object whose hidden state the last filter pass already set.
     """
     # Check for an existing tube
     existing = _find_existing_tube(curve_id)
@@ -956,6 +1204,8 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
         # duplicates: a copy will retain this user text but live under a
         # different object GUID.
         rs.SetUserText(oid, TUBE_SELF_GUID_KEY, str(rs.coerceguid(oid)))
+
+    hide_if_beyond_build_stage(baked_ids, curve_id)
     return baked_ids, status
 
 
@@ -1150,6 +1400,12 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
        preview pass below.
     3. Updates tube previews for every registered bar.
     4. Sanity-checks that the centerline and tube-preview counts match.
+    5. Re-applies the build-stage filter, if the document carries one.
+
+    Step 5 is what makes ``HideUnbuilt`` stick across every command: steps 1 and
+    3 both *show* things (``enforce_managed_layers`` force-shows every managed
+    layer, and a regenerated tube is born visible), so the filter has to run last
+    or the unbuilt parts leak back one command later.
     """
     enforce_managed_layers(caller)
     changed = repair_bar_sequences()
@@ -1188,6 +1444,10 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
             f"{caller} (warning): centerline/tube count mismatch "
             f"({n_centerlines} vs {n_tubes})."
         )
+
+    # LAST statement on purpose -- see the docstring.  No-ops (one string read)
+    # when the document carries no build stage.
+    apply_build_stage_visibility(caller=caller, verbose=True)
 
 
 # ---------------------------------------------------------------------------

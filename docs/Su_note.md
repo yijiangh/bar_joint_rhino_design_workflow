@@ -1057,3 +1057,233 @@ payload = ground.to_dict()                 # normal method: called on an INSTANC
 > Rule of thumb: `@` on its own line above a definition = decorator. `@dataclass` = "write my
 > `__init__`/`__repr__`/`__eq__`, and with `frozen=True` make me read-only". `@classmethod` =
 > "call this on the class, usually to build an instance from raw data".
+
+---
+
+## 19. What is `pytest`? What is `assert`? What is `*args`?
+
+> ⚠️ **Two of these are real Python, one is a tool.** `assert` and `*args` are language
+> features you can use anywhere. `pytest` is a separate program we run from the terminal.
+> Same split as §12: the linter reads your code, pytest *runs* it.
+
+### `assert` — "this must be true, or stop"
+
+Plain Python, one keyword, no imports:
+
+```python
+assert 2 + 2 == 4       # true  -> does absolutely nothing, execution carries on
+assert 2 + 2 == 5       # false -> raises AssertionError and the program stops
+```
+
+That is the entire feature. `assert <expression>` evaluates the expression; if it is
+truthy nothing happens, if it is falsy you get an `AssertionError`. You can add a message
+after a comma, which shows up in the error:
+
+```python
+assert seq is not None, f"bar {bar_id} has no sequence number"
+```
+
+**The trap worth knowing now:** running Python with the `-O` flag (capital letter O, for
+"optimise") deletes every `assert` from the program. So `assert` is only for *"this can
+never happen if my code is correct"* checks. Never use it to validate something a **user**
+typed or a file contained — that needs a real `if ... raise`, which `-O` cannot delete:
+
+```python
+# WRONG - vanishes under python -O, and then bad input sails straight through
+assert bar_radius > 0
+
+# RIGHT - a real check that always runs
+if bar_radius <= 0:
+    raise ValueError(f"bar_radius must be positive, got {bar_radius}")
+```
+
+In this repo you'll mostly meet `assert` inside `tests/`, because a test is literally
+"compute something, then assert what it should equal".
+
+### `pytest` — the thing that runs the tests
+
+`pytest` is a program, installed alongside numpy and scipy in `scaffolding_env`. You run
+it from a terminal (**not** from inside Rhino):
+
+```bash
+python -m pytest -q                          # every test in the repo, quiet output
+python -m pytest tests/test_geometry.py -v   # one file, verbose (one line per test)
+```
+
+Its job is boring and mechanical:
+
+1. look in `tests/` for files named `test_*.py`;
+2. inside those, collect every function named `test_*`;
+3. call each one with no arguments;
+4. if it returns normally → **PASS**. If it raises anything (usually `AssertionError`
+   from a failed `assert`) → **FAIL**, and print what happened.
+
+So a test file is not a special language — it is ordinary Python where the function names
+happen to start with `test_`:
+
+```python
+def test_format_build_stage():
+    assert format_build_stage("B7", 7) == "B7|7"
+```
+
+The one genuinely clever bit: when an assert fails, pytest rewrites it behind the scenes so
+the error shows the **actual values**, not just "it was false":
+
+```
+E       assert 'B7|7' == 'B7-7'
+E         - B7-7
+E         + B7|7
+```
+
+Two pytest extras that appear in our tests:
+
+- **`@pytest.mark.parametrize`** — a decorator (§18) that runs the *same* test once per
+  input, so a failure names the exact input instead of hiding it inside a loop:
+
+  ```python
+  @pytest.mark.parametrize("raw", ["B7", "|", "B7|x", ""])
+  def test_parse_rejects_garbage(raw):
+      assert parse_build_stage(raw) is None
+  ```
+
+  That is **four** tests, reported separately as `test_parse_rejects_garbage[B7]`,
+  `...[|]`, and so on.
+
+- **`monkeypatch`** — an object pytest hands you if you name it as a parameter; it
+  temporarily replaces something and undoes it after the test. `tests/test_rhino_tool_place.py`
+  uses it to fake `rhinoscriptsyntax`, which leads directly to the next point.
+
+### Which of our modules can be tested at all
+
+This is the practical consequence of §12 and the reason `tests/README.md` says the suite
+covers "pure geometry and solver logic" only.
+
+**"Headless"** = running Python in a terminal with Rhino not open. Headlessly,
+`rhinoscriptsyntax`, `Rhino` and `scriptcontext` do not exist — they are modules that live
+*inside* the Rhino process. So:
+
+| module style | example | can pytest reach it? |
+|---|---|---|
+| no Rhino imports at all | `core/geometry.py`, `core/joint_pair.py`, `core/build_stage.py` | **yes**, just import it |
+| Rhino imported *inside* functions (§12) | `core/rhino_tool_place.py` | **yes** for the pure functions |
+| Rhino imported at the **top** of the file | `core/rhino_bar_registry.py` | **no** — `import` fails before you reach any function |
+
+That third row is why `core/build_stage.py` exists as its own file. The rule it holds
+("given the saved stage and the current bars, which step do we hide past?") is pure
+arithmetic with three awkward branches — bar renumbered, bar deleted, nothing resolves.
+Left inside `rhino_bar_registry.py` it would have been untestable and verified only by
+hand in Rhino; split out, `pytest` checks all three in a second.
+
+> Rule of thumb: when you write logic that is *just* data in → answer out, put it in a
+> Rhino-free module and write a test. Keep `rhino_*.py` for the parts that genuinely
+> touch the document.
+
+### `*args` — "collect the leftover arguments into a tuple"
+
+A star in front of a **parameter** means "however many positional arguments follow, gather
+them into one tuple under this name":
+
+```python
+def f(*pairs):
+    print(pairs)
+
+f(("B1", 1), ("B2", 2))     # prints: (('B1', 1), ('B2', 2))
+f()                          # prints: ()
+```
+
+The name `args` is only a convention; `*pairs` above is the same feature. Two stars,
+`**kwargs`, does the same for *keyword* arguments and gathers them into a dict. You have
+already used a function like this without noticing — `print("a", "b", "c")` takes any
+number of arguments because it is defined that way.
+
+A star in front of an **argument at the call site** is the mirror image, "unpack this
+sequence into separate arguments":
+
+```python
+point = [1.0, 2.0, 3.0]
+rs.AddPoint(*point)          # same as rs.AddPoint(1.0, 2.0, 3.0)
+```
+
+> Rule of thumb: only reach for `*args` when the count genuinely varies. If a helper always
+> takes one list, make the parameter a plain list — `_bar_map(pairs)` called as
+> `_bar_map([("B1", 1)])` is clearer than `_bar_map(*pairs)` and costs the reader nothing.
+
+---
+
+## 20. Where does state live? (session vs `sc.sticky` vs document vs object)
+
+This came up building the persistent `HideUnbuilt` filter, where the whole question was
+"remember this — but for how long?". There are **four** places to put a remembered value in
+a Rhino script, and they are easy to mix up because three of them look like a dict.
+
+| where | how you write it | survives the script ending? | survives closing Rhino? | travels with the `.3dm`? |
+|---|---|---|---|---|
+| local / session variable | `self.show_unbuilt = False` | ❌ | ❌ | ❌ |
+| `scriptcontext.sticky` | `sc.sticky["bar_joint:export_root_path"] = p` | ✅ | ❌ | ❌ |
+| **document user text** | `sc.doc.Strings.SetString(key, value)` | ✅ | ✅ | ✅ |
+| **object user text** | `rs.SetUserText(oid, "bar_id", "B7")` | ✅ | ✅ | ✅ (with that object) |
+
+### `sc` is `scriptcontext`, Rhino's module — nothing to do with Python
+
+`import scriptcontext as sc` gives you the running Rhino session. `sc.doc` is the open
+document. Two different stores hang off it and the names are unhelpfully similar:
+
+- **`sc.sticky`** — a plain dict Rhino keeps alive between script runs, so a command can
+  remember something from last time it ran. It is **never written to the file** and it dies
+  when Rhino closes. We use it for throwaway conveniences like the last export folder
+  (`"bar_joint:export_root_path"` in `rs_export_bar_action.py`).
+- **`sc.doc.Strings`** — **document user text**: a `{key: string}` dict serialised *inside
+  the .3dm file*. Close Rhino, reopen the file next week, it is still there; email the file
+  and it goes along. You can see it in Rhino under **Document Properties → User Text**. This
+  is the same store `rs.GetDocumentUserText` / `rs.SetDocumentUserText` reads and writes —
+  two APIs, one dictionary.
+
+Our wrappers for it are `get_doc_string` / `set_doc_string` in `core/rhino_helpers.py`. They
+add two things worth having everywhere: an empty string reads back as `None` (so
+`set_doc_string(key, "")` is a clean "forget this setting"), and they never raise, so a
+script that runs with no document open reports `None` instead of crashing.
+
+Document keys currently in use — note they are all **document-wide preferences**, one value
+for the whole file:
+
+| key | set by | read by |
+|---|---|---|
+| `scaffolding.last_joint_pair` | RSBarBrace | `rhino_bar_pick.resolve_default_pair_index` |
+| `scaffolding.last_brace_length` | RSBarBrace / RSBarSubfloor | both, to seed the length prompt |
+| `scaffolding.last_subfloor_left_pair` / `..._right_pair` | RSBarSubfloor | RSBarSubfloor |
+| `scaffolding.last_robotic_tool` | RSSwapRoboticTool | every tool placement |
+| `scaffolding.build_stage` | RSSequenceEdit `HideUnbuilt` | every command, via `repair_on_entry` |
+
+### Object user text is the different one
+
+`rs.SetUserText(oid, key, value)` attaches the pair to **one object** (§1 uses it for the IK
+results on a bar curve; `bar_id`, `bar_seq`, `joint_id`, `parent_bar_id` all work this way).
+It is saved in the `.3dm` like document user text, but it is *per object*: delete the bar and
+its `bar_id` goes with it; copy-paste the bar and the copy inherits it — which is exactly the
+copy/paste duplicate problem `TUBE_SELF_GUID_KEY` exists to detect.
+
+> Rule of thumb: "which bar is this?" → object user text. "what is this document set to?" →
+> document user text. "what did the user click last time?" → `sc.sticky` if losing it is
+> harmless, document user text if it is not.
+
+### Why `scaffolding.build_stage` stores `"B7|7"` and not just `"B7"`
+
+Because bar ids are **not permanent**. `RSReorderBarID` renumbers the whole model, so after
+a renumber the bar you staged at might be called B4 while a *different* bar is now called
+B7. Saving both gives a primary key and a safety net (`core/build_stage.py`):
+
+1. use bar `B7` if it still exists — and use its **current** step, so a renumber is invisible;
+2. if it was deleted, fall back to the nearest earlier step (6) so the view barely moves;
+3. if neither resolves, switch the filter off, show everything, and print why.
+
+### Which bar does a robotic tool belong to?
+
+A tricky one, because the obvious answer is ambiguous. A joint has two block halves that
+share one `joint_id` but store **different** `parent_bar_id` values — the female half stores
+the LE bar, the male half the LN bar (`core/joint_placement.py`). A tool block stores only
+`joint_id`, no bar at all. So scanning all three joint layers gives two conflicting answers
+per tool and whichever is read last wins.
+
+The repo settled this in `rhino_bar_registry.get_active_tool_oids`: a tool belongs to the bar
+owning the **male (or ground) half** — physically, the bar the gripper is holding. Any new
+code answering "whose tool is this?" must scan male + ground only, and skip the female layer.

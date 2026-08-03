@@ -247,6 +247,7 @@ def place_tool_at_block_instance(
     block_id,
     joint_id: str,
     tool: _robotic_tool.RoboticToolDef,
+    bar_map=None,
 ):
     """Insert *tool*'s block aligned to *block_id*'s frame.
 
@@ -258,6 +259,12 @@ def place_tool_at_block_instance(
     tool-attach frame.  That frame is the block's own world frame for male
     joints and for any ground joint whose ``M_tool_from_block`` is identity,
     which is the historical behaviour.
+
+    If the document carries a build stage and *block_id*'s bar is later than it,
+    the new tool is hidden on the spot -- a block instance is born visible, and
+    this is the single chokepoint every tool placement goes through.  Pass
+    *bar_map* (a ``rhino_bar_registry.get_bar_seq_map()`` result) when placing
+    tools in a loop, or each call pays a document scan to resolve the bar.
 
     Returns the inserted tool's Rhino object id, or ``None`` on failure.
     """

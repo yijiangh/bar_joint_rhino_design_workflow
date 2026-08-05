@@ -86,8 +86,24 @@ DOC_KEY_NODE_EXTRA = "scaffold_json_node_extra"
 DOC_KEY_TOP_EXTRA = "scaffold_json_top_extra"
 
 
+#: ``layer_id`` of the storey that stands on the ground.  A rod there is
+#: the one the ground carries, which is exactly what ``grounded`` means, so
+#: RSSetRodLayer derives one field from the other instead of asking twice.
+GROUND_LAYER_ID = 0
+
+
 class ScaffoldParseError(ValueError):
     """Raised when the source JSON cannot be interpreted at all."""
+
+
+def grounded_for_layer(layer_id):
+    """Return the ``grounded`` flag implied by *layer_id*.
+
+    Layer 0 is the storey standing on the ground; every layer above it is
+    carried by the layer below.  Kept here rather than in the Rhino command
+    so the convention is stated once, next to the schema it belongs to.
+    """
+    return int(layer_id) == GROUND_LAYER_ID
 
 
 # ---------------------------------------------------------------------------

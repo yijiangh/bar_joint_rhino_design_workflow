@@ -75,6 +75,9 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000071" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000071</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000072" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000072</left_macro_id>
+      </tool_bar_item>
     </tool_bar>
     <tool_bar guid="bfbb16e4-2446-4038-8f58-40e8b23981b0" bitmap_id="503909aa-952e-5825-afae-b8a29c91e28d">
       <text>
@@ -411,6 +414,15 @@
         <locale_1033>Export the current bars back to the same node/rod/coupler JSON schema; nodes follow the bars' snapped positions, coupler_list is carried over plus any joints placed in Rhino</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_export_scaffold_json.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000072">
+      <text>
+        <locale_1033>RSSetRodLayer</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Select bars (centerlines or tube previews) and assign their layer_id: 0 also sets grounded true, 1/2/... set grounded false. Both fields go straight into rod_list on the next RSExportScaffoldJSON</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_set_rod_layer.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000b">
       <text>

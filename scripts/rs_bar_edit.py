@@ -1,7 +1,19 @@
 #! python 3
 # venv: scaffolding_env
 # r: numpy==1.24.4
-"""RSBarEdit - Visualize bar lengths and batch resize bars.
+"""RSBarEdit - Visualize bar lengths, batch resize bars, mark staging bars.
+
+Two modes, chosen at the first prompt:
+
+**BarLength** (the default, and everything described below) - the length
+grouping, batch resize and refresh tools.
+
+**FakeBar** - Add / Delete the "fake bar" mark.  A fake bar is real geometry
+that will NOT be fabricated: temporary staging put up by hand so the robot has
+something to mate a real bar against.  It stays a full registered bar - id,
+assembly step, joints and all - because IK derives "what is already standing"
+from exactly those, and a support the robot cannot see is one it will drive
+through.  Only fabrication output and the sequence display treat it differently.
 
 On entry: scans every registered bar, groups bars by length (1mm bins),
 paints each bar centerline+tube preview a distinct color per length group,
@@ -45,9 +57,11 @@ from core.rhino_bar_registry import (
     TUBE_LAYER,
     ensure_bar_preview,
     get_all_bars,
+    is_fake_bar,
     paint_bar,
     repair_on_entry,
     reset_bar_color,
+    set_fake_bar,
 )
 from core.rhino_helpers import curve_endpoints
 
@@ -305,10 +319,98 @@ def _print_summary(groups):
     print("--- End ---\n")
 
 
-def main():
-    importlib.reload(config)
-    repair_on_entry(float(config.BAR_RADIUS), "RSBarEdit")
+def _ask_mode():
+    """Ask for BarLength or FakeBar.  Returns ``"length"`` / ``"fake"`` / None."""
+    go = Rhino.Input.Custom.GetOption()
+    go.SetCommandPrompt("Edit bar lengths, or mark bars as non-fabricated staging")
+    length_idx = go.AddOption("BarLength")
+    fake_idx = go.AddOption("FakeBar")
+    go.SetCommandPromptDefault("BarLength")
+    go.AcceptNothing(True)
+    while True:
+        res = go.Get()
+        if res == Rhino.Input.GetResult.Nothing:
+            return "length"
+        if res == Rhino.Input.GetResult.Option:
+            chosen = go.OptionIndex()
+            if chosen == length_idx:
+                return "length"
+            if chosen == fake_idx:
+                return "fake"
+            continue
+        return None
 
+
+def _pick_bars_for_fake(bar_map, want_fake):
+    """Toggle the fake mark on picked bars until Enter/Esc.  Returns the count.
+
+    *want_fake* True = Add, False = Delete.  Bars already in the wanted state are
+    reported rather than silently re-written, so a mis-pick is visible.
+    """
+    verb = "mark as fake" if want_fake else "unmark"
+    n_changed = 0
+    while True:
+        picked = rs.GetObject(
+            f"Select a bar to {verb}  (Enter when done)",
+            filter=4,  # curves
+            preselect=False,
+            select=False,
+        )
+        if picked is None:
+            return n_changed
+        bar_id = rs.GetUserText(picked, BAR_ID_KEY)
+        if not bar_id or bar_id not in bar_map:
+            print("RSBarEdit: that curve is not a registered bar.")
+            continue
+        curve_id = bar_map[bar_id]
+        if is_fake_bar(curve_id) == want_fake:
+            state = "already fake" if want_fake else "not fake"
+            print(f"RSBarEdit: {bar_id} is {state}; nothing to do.")
+            continue
+        set_fake_bar(curve_id, want_fake)
+        n_changed += 1
+        print(
+            f"RSBarEdit: {bar_id} -> "
+            + ("FAKE (will not be fabricated)" if want_fake else "real")
+        )
+
+
+def _run_fake_bar():
+    """Add / Delete the fake-bar mark.  No geometry is touched either way."""
+    bar_map = get_all_bars()
+    if not bar_map:
+        print("RSBarEdit: No registered bars in the document.")
+        return
+
+    already = [b for b, oid in sorted(bar_map.items()) if is_fake_bar(oid)]
+    print(
+        f"RSBarEdit (FakeBar): {len(already)} of {len(bar_map)} bar(s) marked fake"
+        + (f": {', '.join(already)}." if already else ".")
+    )
+
+    while True:
+        go = Rhino.Input.Custom.GetOption()
+        go.SetCommandPrompt("FakeBar (Esc to exit)")
+        go.AcceptNothing(True)
+        add_idx = go.AddOption("Add")
+        del_idx = go.AddOption("Delete")
+        exit_idx = go.AddOption("Exit")
+
+        res = go.Get()
+        if res != Rhino.Input.GetResult.Option:
+            return  # Enter or Esc
+        opt = go.Option()
+        if opt is None:
+            continue
+        if opt.Index == exit_idx:
+            return
+        if opt.Index in (add_idx, del_idx):
+            n = _pick_bars_for_fake(bar_map, want_fake=opt.Index == add_idx)
+            if n:
+                print(f"RSBarEdit: {n} bar(s) changed.")
+
+
+def _run_bar_length():
     bar_map = get_all_bars()
     if not bar_map:
         print("RSBarEdit: No registered bars in the document.")
@@ -396,6 +498,19 @@ def main():
             if alive:
                 rs.SelectObjects(alive)
         print("RSBarEdit: Done. Display restored; selection preserved.")
+
+
+def main():
+    importlib.reload(config)
+    repair_on_entry(float(config.BAR_RADIUS), "RSBarEdit")
+
+    mode = _ask_mode()
+    if mode is None:
+        return
+    if mode == "fake":
+        _run_fake_bar()
+        return
+    _run_bar_length()
 
 
 if __name__ == "__main__":

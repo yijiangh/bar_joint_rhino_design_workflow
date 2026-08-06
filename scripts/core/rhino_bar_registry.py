@@ -51,6 +51,18 @@ BAR_SEQ_KEY = "bar_seq"
 BAR_SUPPORTED_UNTIL_KEY = "supported_until"
 BAR_TYPE_VALUE = "scaffolding_bar"
 
+# A "fake" bar is real geometry that will NOT be fabricated.  It exists so the
+# robot has something to mate a real bar against -- temporary staging that is
+# put up by hand and taken down again.  It is a full registered bar in every
+# other respect: it keeps a bar id, an assembly step and its joints, because IK
+# derives "what is already standing" from exactly those, and a support the robot
+# cannot see is a support it will drive through.  Only fabrication output and
+# the sequence display treat it differently.
+#
+# Value is "1" when set; the key is removed otherwise, so the common case (a
+# real bar) costs one absent-key read.
+BAR_IS_FAKE_KEY = "scaffolding.fake_bar"
+
 # Layer names are owned by ``core.config`` so the whole toolchain agrees.
 TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
 BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
@@ -523,6 +535,33 @@ def set_supported_until(curve_id, bar_ids):
         rs.SetUserText(curve_id, BAR_SUPPORTED_UNTIL_KEY, "")
 
 
+def is_fake_bar(curve_id):
+    """True when *curve_id* is staging that will not be fabricated.
+
+    See :data:`BAR_IS_FAKE_KEY`.  Marked in ``RSBarEdit > FakeBar``.
+    """
+    return rs.GetUserText(curve_id, BAR_IS_FAKE_KEY) == "1"
+
+
+def set_fake_bar(curve_id, fake):
+    """Mark or unmark *curve_id* as a non-fabricated staging bar."""
+    rs.SetUserText(curve_id, BAR_IS_FAKE_KEY, "1" if fake else "")
+
+
+def get_fake_bar_ids(bar_map=None):
+    """Return the set of bar ids currently marked fake.
+
+    *bar_map* is a :func:`get_bar_seq_map` result; one is fetched when omitted.
+    Returned as ids, not oids, because every consumer -- the export filters, the
+    sequence display, the joint pass -- works in bar ids.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    return {
+        bar_id for bar_id, (oid, _seq) in bar_map.items() if is_fake_bar(oid)
+    }
+
+
 def cleanup_stale_supports():
     """Remove dangling bar-id refs from every ``supported_until`` list.
 
@@ -617,6 +656,11 @@ SEQ_COLOR_UNSTABLE = (40, 170, 160)
 #: Colour used to overlay bars currently selected as supports inside the
 #: ``EditSupports`` toggle-pick mode (dark purple).
 SEQ_COLOR_SUPPORT_PICK = (110, 40, 160)
+#: Non-fabricated staging bar (olive).  Picked to sit clear of every other
+#: meaning in docs/color_preview_reference.md: desaturated so it reads as
+#: "provisional", and in a hue no other state uses -- notably NOT the neutral
+#: grey of an unbuilt bar, which a fake bar is emphatically not.
+SEQ_COLOR_FAKE = (140, 140, 70)
 
 
 def _set_obj_color(oid, color):
@@ -1528,12 +1572,22 @@ def clear_ik_preview():
     Clears the IK overlay left by rs_ik_keyframe_all (and by
     :func:`show_all_ik_preview`). Visibility is untouched -- only color is reset.
 
+    Fake bars keep their :data:`SEQ_COLOR_FAKE` tint.  "Which bars are staging"
+    is a property of the model, not a diagnostic overlay, so clearing the
+    overlay must not clear it -- otherwise the one marker you want on screen
+    permanently is the one that disappears every time you tidy up.
+
     Returns:
-        int: the number of bars reset.
+        int: the number of bars reset (fake bars are not counted).
     """
     n = 0
+    bar_map = get_bar_seq_map()
+    fake_ids = get_fake_bar_ids(bar_map)
     rs.EnableRedraw(False)
-    for _bar_id, (oid, _seq) in get_bar_seq_map().items():
+    for bar_id, (oid, _seq) in bar_map.items():
+        if bar_id in fake_ids:
+            paint_bar(oid, SEQ_COLOR_FAKE)  # re-assert, in case it was overpainted
+            continue
         reset_bar_color(oid)
         n += 1
     rs.EnableRedraw(True)
@@ -1548,16 +1602,25 @@ def show_all_ik_preview():
     the persisted "has IK" state can be shown -- the transient "failed" state is
     not stored on the bar (see the section comment above).
 
+    Fake bars are painted :data:`SEQ_COLOR_FAKE` and excluded from both counts:
+    the robot never assembles them, so "has IK" is not a question that applies,
+    and counting them would make the ratio look worse than it is.
+
     Returns:
-        tuple[int, int]: ``(n_has_ik, n_total)``.
+        tuple[int, int]: ``(n_has_ik, n_total)`` over the fabricated bars only.
     """
     # Lazy import: bar_action is heavy and does its own lazy imports; keep this
     # module import-light and avoid an import cycle (bar_action imports us).
     from core.bar_action import has_ik_keyframe
 
+    bar_map = get_bar_seq_map()
+    fake_ids = get_fake_bar_ids(bar_map)
     n_has_ik = n_total = 0
     rs.EnableRedraw(False)
-    for _bar_id, (oid, _seq) in get_bar_seq_map().items():
+    for bar_id, (oid, _seq) in bar_map.items():
+        if bar_id in fake_ids:
+            paint_bar(oid, SEQ_COLOR_FAKE)
+            continue
         n_total += 1
         if has_ik_keyframe(oid):
             paint_bar(oid, COLOR_HAS_IK)

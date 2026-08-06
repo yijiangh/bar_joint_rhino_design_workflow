@@ -46,7 +46,7 @@ from core import config as _config_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import robot_cell as _robot_cell_module
 from core.rhino_bar_pick import pick_bar
-from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
+from core.rhino_bar_registry import BAR_ID_KEY, is_fake_bar, repair_on_entry
 
 from compas import json_dump
 
@@ -99,6 +99,19 @@ def main() -> None:
     if not bar_id:
         rs.MessageBox(
             "Picked curve is not a registered bar (no 'bar_id' user-text).",
+            0,
+            "RSExportBarAction",
+        )
+        return
+
+    # A fake bar is staging the robot never assembles, so it has no action plan
+    # to export.  Refuse rather than emit a meaningless one -- and say how to
+    # undo the mark, since a bar marked by mistake looks identical otherwise.
+    if is_fake_bar(bar_oid):
+        rs.MessageBox(
+            f"Bar '{bar_id}' is marked as a fake (non-fabricated) staging bar, so "
+            "the robot never assembles it and it has no action plan.\n\n"
+            "Un-mark it in RSBarEdit > FakeBar > Delete if that is wrong.",
             0,
             "RSExportBarAction",
         )

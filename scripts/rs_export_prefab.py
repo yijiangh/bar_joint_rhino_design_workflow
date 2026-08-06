@@ -23,7 +23,12 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core.rhino_helpers import curve_endpoints
-from core.rhino_bar_registry import get_all_bars, BAR_ID_KEY, repair_on_entry
+from core.rhino_bar_registry import (
+    get_all_bars,
+    is_fake_bar,
+    BAR_ID_KEY,
+    repair_on_entry,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -161,9 +166,25 @@ def main():
         print("RSExportPrefab: No registered bars found.")
         return
 
+    # Staging bars are not fabricated -- they are put up by hand so the robot
+    # has something to mate against, and exporting them would have the workshop
+    # build parts nobody needs.  Reported, never silently dropped: a short
+    # export that says nothing is indistinguishable from a broken one.
     bars_by_id = {}  # bar_id -> curve_guid
+    skipped_fake = []
     for bar_id, curve_id in bars.items():
+        if is_fake_bar(curve_id):
+            skipped_fake.append(bar_id)
+            continue
         bars_by_id[bar_id] = curve_id
+    if skipped_fake:
+        print(
+            f"RSExportPrefab: skipping {len(skipped_fake)} fake bar(s) -- "
+            f"{', '.join(sorted(skipped_fake))} (RSBarEdit > FakeBar to change)."
+        )
+    if not bars_by_id:
+        print("RSExportPrefab: every registered bar is marked fake; nothing to export.")
+        return
 
     # 2. Collect joint blocks
     all_joints = _collect_joint_blocks()

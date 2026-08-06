@@ -92,11 +92,27 @@ def main() -> None:
         print("RSExportAllBarActions: aborted (stale collision cell).")
         return
 
-    from core.rhino_bar_registry import get_bar_seq_map
+    from core.rhino_bar_registry import get_bar_seq_map, get_fake_bar_ids
     seq_map = get_bar_seq_map()
     if not seq_map:
         rs.MessageBox("No registered bars found.", 0, "RSExportAllBarActions")
         return
+    # Fake bars are staging the robot never assembles -- no action plan to
+    # export.  Dropped here rather than inside the loop so the count is reported
+    # once, up front: a silently shorter export looks like a partial failure.
+    fake_ids = get_fake_bar_ids(seq_map)
+    if fake_ids:
+        seq_map = {b: v for b, v in seq_map.items() if b not in fake_ids}
+        print(
+            f"RSExportAllBarActions: skipping {len(fake_ids)} fake bar(s) -- "
+            f"{', '.join(sorted(fake_ids))} (RSBarEdit > FakeBar to change)."
+        )
+        if not seq_map:
+            rs.MessageBox(
+                "Every registered bar is marked fake; nothing to export.",
+                0, "RSExportAllBarActions",
+            )
+            return
     # Assembly-sequence order so the build / output order is deterministic.
     ordered = sorted(seq_map.items(), key=lambda kv: kv[1][1])  # [(bar_id, (oid, seq)), ...]
 

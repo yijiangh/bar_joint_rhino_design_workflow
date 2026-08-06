@@ -4,11 +4,22 @@
 # r: scipy==1.13.1
 """RSJointPlace - Place connector blocks on one bar pair.
 
-The user is first prompted to confirm the active joint pair (Enter accepts
-the last-used pair, or pick a different one from the registered list).
-Then select any two registered bars.  The bar with the lower assembly
-sequence number is automatically assigned as the female-joint bar (Le);
-the bar assembled later receives the male joint (Ln).
+Two modes, chosen at the first prompt:
+
+**JointPairAndTool** (the default, and everything below): confirm the active
+joint pair (Enter accepts the last-used pair, or pick a different one from the
+registered list), then select any two registered bars.  The bar with the lower
+assembly sequence number is automatically assigned as the female-joint bar (Le);
+the bar assembled later receives the male joint (Ln).  Both prompts say so,
+because the pick ORDER does not decide it.  That rule is not cosmetic:
+``rs_ik_keyframe._resolve_arm_tools_on_bar`` requires the bar being assembled to
+carry exactly two male/ground halves (they are what hold the grippers), and
+"earlier seq -> female" is what guarantees it.
+
+**ToolOnly**: pick one male or ground joint block and put a tool on it, with
+Flip to swap left/right.  No joint blocks are created and no variant is solved.
+This is the repair path for a joint pair that survived but lost its tool -- the
+normal flow would build a whole new pair, which is not what is wanted.
 
 The optimizer solves all 4 endpoint-reversal variants.  After an initial
 placement you can refine interactively:
@@ -55,6 +66,11 @@ from core.rhino_bar_registry import (
 )
 from core.rhino_block_import import require_block_definition
 from core.rhino_bar_pick import pick_bar, pick_bar_with_pair_option
+from core import robotic_tool as _robotic_tool
+from core.rhino_tool_place import (
+    get_tool_name_for_joint,
+    place_tool_at_block_instance,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +289,109 @@ def _interactive_click_loop(session: _JointSession):
         session.cleanup()
 
 
+# ---------------------------------------------------------------------------
+# ToolOnly mode -- put a tool back on a joint that already exists
+# ---------------------------------------------------------------------------
+
+
+def _tool_bearing_joint_filter(rhino_object, geometry, component_index):
+    """Accept only male / ground joint blocks -- the halves that carry a tool.
+
+    A tool attaches to the male (or ground) half and is tagged with that half's
+    ``joint_id``; the female half plays no part in placing it.  Filtering the
+    pick means a female half simply is not selectable, rather than being
+    accepted and then rejected with an error.
+
+    Matched by LAYER, not by ``JOINT_ROLE_KEY``: that key is written only on the
+    interactive preview blocks (see ``joint_placement.insert_block_instance``),
+    and ``place_joint_blocks`` does not pass a role -- so a committed male block
+    carries no role at all and a role-based filter matches nothing.  Layer is
+    what the rest of the codebase uses to find tool-bearing halves (see
+    ``rhino_tool_place.restore_missing_tools_at_joints``).
+    """
+    return rs.ObjectLayer(rhino_object.Id) in (
+        config.LAYER_JOINT_MALE_INSTANCES,
+        config.LAYER_JOINT_GROUND_INSTANCES,
+    )
+
+
+def _pick_tool_bearing_joint():
+    """Pick one male/ground joint block.  Returns ``(block_id, joint_id)`` or None."""
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("Select the male or ground joint block to put a tool on")
+    go.EnablePreSelect(False, False)
+    go.SetCustomGeometryFilter(_tool_bearing_joint_filter)
+    if go.Get() != Rhino.Input.GetResult.Object:
+        return None
+    block_id = go.Object(0).ObjectId
+    joint_id = rs.GetUserText(block_id, "joint_id")
+    if not joint_id:
+        print(
+            "RSJointPlace: that joint block has no 'joint_id' user text, so a tool "
+            "cannot be tagged to it.  Re-create the joint pair."
+        )
+        return None
+    return block_id, joint_id
+
+
+def _run_tool_only():
+    """Place (or replace) the tool on one existing joint -- no new joint blocks.
+
+    For the case where a joint pair survives but its tool was deleted.  The
+    normal flow would build a whole new pair, which is not what is wanted.
+
+    ``place_tool_at_block_instance`` is idempotent -- it calls
+    ``remove_tool_for_joint`` first -- so Flip and a re-run both replace rather
+    than stack up duplicates.
+    """
+    picked = _pick_tool_bearing_joint()
+    if picked is None:
+        return
+    block_id, joint_id = picked
+
+    try:
+        active = _robotic_tool.get_active_pair()
+    except (RuntimeError, ValueError) as exc:
+        print(f"RSJointPlace: no active tool pair, cannot place a tool: {exc}")
+        return
+
+    # Start on the side the joint already had, so re-tooling a joint whose tool
+    # was deleted restores the bar's original L/R layout without a Flip.
+    previous = get_tool_name_for_joint(joint_id)
+    side = _robotic_tool.arm_side_from_tool_name(previous or "") or "left"
+
+    while True:
+        tool = active[side]
+        if place_tool_at_block_instance(block_id, joint_id, tool) is None:
+            return  # place_tool_at_block_instance already printed why
+        print(f"RSJointPlace: {joint_id} -> {side} tool '{tool.name}'.")
+        rs.Redraw()
+
+        go = Rhino.Input.Custom.GetOption()
+        go.SetCommandPrompt(
+            f"Tool '{tool.name}' placed on {joint_id}  (Enter = Accept)"
+        )
+        accept_idx = go.AddOption("Accept")
+        flip_idx = go.AddOption("Flip")
+        go.SetCommandPromptDefault("Accept")
+        go.AcceptNothing(True)
+
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Nothing:
+            return
+        if result == Rhino.Input.GetResult.Option:
+            chosen = go.OptionIndex()
+            if chosen == accept_idx:
+                return
+            if chosen == flip_idx:
+                side = "right" if side == "left" else "left"
+                continue
+        # Esc -- the tool stays as last placed; it is a valid tool either way,
+        # and deleting it would leave the joint bare again.
+        print("RSJointPlace: left the tool as last placed.")
+        return
+
+
 def _print_variant_info(variant):
     origin_err, z_err = interface_metrics(variant)
     print(
@@ -318,14 +437,59 @@ def _assign_female_male_by_seq(bar_a_id, bar_a_bid, bar_b_id, bar_b_bid):
 # ---------------------------------------------------------------------------
 
 
+def _ask_place_mode():
+    """Ask whether to build a new joint pair or only re-tool an existing joint.
+
+    Returns ``"pair"`` / ``"tool"``, or ``None`` on Esc.  Enter keeps the
+    historical behaviour.
+    """
+    go = Rhino.Input.Custom.GetOption()
+    go.SetCommandPrompt(
+        "Place a new joint pair with its tool, or put a tool on a joint that "
+        "already exists"
+    )
+    pair_idx = go.AddOption("JointPairAndTool")
+    tool_idx = go.AddOption("ToolOnly")
+    go.SetCommandPromptDefault("JointPairAndTool")
+    go.AcceptNothing(True)
+    while True:
+        result = go.Get()
+        if result == Rhino.Input.GetResult.Nothing:
+            return "pair"
+        if result == Rhino.Input.GetResult.Option:
+            chosen = go.OptionIndex()
+            if chosen == pair_idx:
+                return "pair"
+            if chosen == tool_idx:
+                return "tool"
+            continue
+        return None
+
+
+# Both bar prompts say the whole rule, because which bar becomes female is
+# decided by assembly sequence, NOT by the order you click -- and that is
+# invisible otherwise.  It is not a free choice: RSIKKeyframe requires the bar
+# being assembled to carry both male halves (they hold the grippers), which is
+# exactly what "earlier seq -> female" guarantees.
+_SEQ_RULE_NOTE = "(the earlier seq becomes FEMALE joint / the later seq becomes MALE joint)"
+
+
 def main():
     _reload_runtime_modules()
     repair_on_entry(float(config.BAR_RADIUS), "RSJointPlace")
 
     rs.UnselectAllObjects()
 
+    mode = _ask_place_mode()
+    if mode is None:
+        return
+    if mode == "tool":
+        _run_tool_only()
+        return
+
     bar_a_id, pair = pick_bar_with_pair_option(
-        "Select first bar of the joint pair", command_name="RSJointPlace"
+        f"Select first bar of the joint pair {_SEQ_RULE_NOTE}",
+        command_name="RSJointPlace",
     )
     if bar_a_id is None or pair is None:
         return
@@ -335,7 +499,7 @@ def main():
         f"contact={pair.contact_distance_mm:.4f} mm)"
     )
 
-    bar_b_id = pick_bar("Select second bar of the joint pair")
+    bar_b_id = pick_bar(f"Select second bar of the joint pair {_SEQ_RULE_NOTE}")
     if bar_b_id is None:
         return
 

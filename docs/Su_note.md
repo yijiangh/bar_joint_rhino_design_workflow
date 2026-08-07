@@ -1287,3 +1287,174 @@ per tool and whichever is read last wins.
 The repo settled this in `rhino_bar_registry.get_active_tool_oids`: a tool belongs to the bar
 owning the **male (or ground) half** — physically, the bar the gripper is holding. Any new
 code answering "whose tool is this?" must scan male + ground only, and skip the female layer.
+
+---
+
+## 21. "IK failed but InspectCandidates showed no collision" -- reading the failure log
+
+The short version: **`2 hit(s)` in the inspector *is* a collision.** Only a candidate
+printed as `CLEAR (no collision)` counts as clean. In the screenshot below every one of
+the 64 candidates collided, so there was nothing for the solver to use.
+
+### What the solver actually does, in order
+
+`RSIKKeyframe` does not "try IK once". For each movement (M1 -> M2 -> M3) it runs three
+gates in `keyframe/dual_arm_ik.solve_dual_arm_ik_ssik`, and a candidate must pass **all
+three**:
+
+| # | Gate | What it means | Failure line printed |
+|---|------|---------------|----------------------|
+| 1 | **Reachability** | `ssik` (the analytical IK) returns a list of *branches* per arm -- different arm shapes that put the tool on the same target (elbow up / elbow down / wrist flipped...). 0 branches = that arm physically cannot reach. | `... unreachable (ssik returned 0 analytical branches)` |
+| 2 | **Collision** | Every left-branch x right-branch pair is posed and collision-checked. Pairs that collide are dropped. | `no collision-free branch pair among N candidate(s)` |
+| 3 | **Polish** | Survivors get a gradient IK refinement on the calibrated URDF, then are collision-checked *again*. | `no candidate polished cleanly among N collision-free pair(s)` |
+
+So "64 candidates" = 8 left branches x 8 right branches. The number is a product, which is
+why it is always a square-ish number.
+
+### Reading the breakdown from the screenshot
+
+```
+[32x] CC.1 between robot link 'base_link' and robot link 'left_ur_arm_upper_arm_link'
+[18x] CC.4 between attached rigid body 'joint_J2-3_male' and rigid body 'joint_J2-3_female'
+[8x]  CC.1 between robot link 'dual_arm_bulkhead_link' and robot link 'left_ur_arm_upper_arm_link'
+[6x]  CC.3 between robot link 'right_ur_arm_forearm_link' and rigid body 'bar_B3'
+```
+
+32 + 18 + 8 + 6 = **64**. Every candidate is accounted for -> gate 2 killed all of them ->
+`M1 IK failed` -> the whole chain fails -> the base sampler moves the robot and tries
+again -> `all samples exhausted`.
+
+`CC.x` is compas_fab's collision *category* (`pybullet_check_collision.py`):
+
+| Code | Between | Plain English |
+|---|---|---|
+| CC.1 | robot link <-> robot link | the robot hit **itself** |
+| CC.2 | robot link <-> tool | an arm hit a gripper |
+| CC.3 | robot link <-> rigid body | an arm hit a **bar / joint / ground** in the scene |
+| CC.4 | attached rigid body <-> rigid body | something the robot is **carrying** hit the scene |
+| CC.5 | tool <-> rigid body | a gripper hit the scene |
+
+Now each line means something concrete:
+
+- **`[32x] CC.1 base_link <-> left_ur_arm_upper_arm_link`** -- half of all candidates fold
+  the left arm into the robot's own chassis. This is a **base placement** problem: the
+  target is so close/awkward that reaching it forces the arm back into the body. You will
+  never see this in the viewport -- it happens *inside* the robot.
+- **`[8x] CC.1 dual_arm_bulkhead_link <-> ...`** -- same story, against the bulkhead.
+- **`[6x] CC.3 right_ur_arm_forearm_link <-> bar_B3`** -- the forearm passes through an
+  already-built bar. A real obstacle: the robot must approach from another side.
+- **`[18x] CC.4 joint_J2-3_male <-> joint_J2-3_female`** -- the male half the robot is
+  **carrying** overlaps the female it is going to mate with. Note this is **M1**, the
+  *approach* keyframe, where the two halves are still supposed to be `lm_distance_mm`
+  apart. `core/bar_action._apply_movement_touch_policy` whitelists male<->its own female
+  **only in M2** (the mating keyframe), on purpose -- so an overlap at M1 means the
+  approach offset is too small, or the two blocks really are interpenetrating.
+
+### Why the viewport looks fine when it is not
+
+1. Collision uses the **coarse convex collision meshes** (the `.obj` files), not the pretty
+   visual blocks. Two parts with 1-3 mm of visual clearance can overlap in collision mesh.
+   That is exactly why `_apply_movement_touch_policy` whitelists tool<->tube.
+2. **Self-collisions are hidden inside the robot body.** The most common failure here
+   (CC.1) is invisible from outside.
+3. The inspector cycles candidates one at a time. Seeing one that looks fine says nothing
+   about the other 63 -- read the `[Nx]` counts, they cover all of them.
+
+### Also worth knowing: new geometry blocks IK
+
+Every female half and every stub bar that exists in the document becomes collision
+geometry (`core/env_collision.py` registers them as rigid bodies). So placing extra
+females/bars -- e.g. with `RSTempPlaceFemaleJoint` -- **can turn a bar that used to solve
+into one that fails**. In the other screenshot the carried `joint_J49-51_male` hits
+`joint_J8-9_female`: a female belonging to a *different* joint, sitting in the arm's path.
+
+### What to do about it, per dominant reason
+
+| Dominant `CC` line | Meaning | First thing to try |
+|---|---|---|
+| CC.1 (link <-> link) | arm folds into the robot | `RetryNewBase`; if base sampling keeps failing, raise `IK_BASE_SAMPLE_RADIUS` (1000 mm) / `IK_BASE_SAMPLE_MAX_ITER` (10) in `scripts/core/config.py` |
+| CC.3 / CC.5 vs `bar_*` | arm hits built structure | new base, from another side; check the assembly sequence -- should that bar already be up? |
+| CC.4 male <-> its own female at M1 | halves overlap before mating | check the approach offset, and whether the female block sits where the design says |
+| `0 analytical branches` | target out of reach for that arm | modelling problem: tool block pose or base frame, not a search problem |
+
+> Rule of thumb: read the `[Nx]` numbers first. If they add up to the candidate count, the
+> collision gate rejected everything, and no amount of re-running the same base will help.
+
+---
+
+## 22. `git reset --soft`, `HEAD~1`, `ORIG_HEAD` — undoing a commit without losing work
+
+> ⚠️ **Real git behaviour**, not a repo convention. These are built-in commands and built-in
+> names; nothing here is something this project made up, and none of it can be renamed away.
+
+This came up right after committing the visualisation files: the commit was made, then the
+staged files needed to come back. The fix was `git reset --soft HEAD~1`, and the confusion
+afterwards was reasonable — the command *sounds* destructive and the recovery command
+*sounds* like it restores files. Neither is quite true.
+
+### Git has three layers, and every command touches a different subset
+
+| layer | what it is | how you see it |
+|---|---|---|
+| **working tree** | the actual files on disk, what Rhino opens | your editor |
+| **staging area** (a.k.a. *index*) | the snapshot you are building up for the next commit | `git status`, left column |
+| **branch pointer** (`HEAD`) | which commit your branch currently says it is at | `git log -1` |
+
+`git add` copies working tree → staging area. `git commit` turns the staging area into a new
+commit and moves the branch pointer to it. Those are two separate steps, which is why
+"undo the commit" and "lose my files" are two separate things.
+
+`git status --short` prints **two columns**, and this is the single most useful thing to know:
+
+```
+M  scripts/rs_sequence_edit.py    <- 'M' in column 1: staged (in the next commit)
+ M scripts/rs_select_bar.py       <- 'M' in column 2: modified on disk only, NOT staged
+MM scripts/rs_bar_edit.py         <- staged, then edited again afterwards
+?? tasks/persistent-hide-unbuilt.md  <- untracked; git has never seen this file
+```
+
+### `HEAD~1` is just arithmetic on that pointer
+
+`HEAD` = where you are now. `HEAD~1` = one commit before that, `HEAD~2` = two before. So
+`HEAD~1` names the commit you want to *land on*, not the one you want to remove.
+
+### The three `reset` modes differ only in how far down they reach
+
+| flag | branch pointer | staging area | files on disk | what you end up with |
+|---|---|---|---|---|
+| `--soft` | moves back | **untouched** | **untouched** | commit undone, changes still **staged** |
+| `--mixed` (the default) | moves back | reset to new HEAD | **untouched** | commit undone, changes **unstaged** but still there |
+| `--hard` | moves back | reset | **overwritten** | commit undone, changes **destroyed** |
+
+Only `--hard` can lose work. `--soft` is the "I typed `git commit` too early" undo: it
+rewinds the pointer and leaves everything else exactly as it was, so the files that were in
+the commit are sitting in the staging area again, ready to be re-committed.
+
+### `ORIG_HEAD` is a bookmark git leaves for you
+
+Before any move that could disorient you — `reset`, `merge`, `rebase` — git writes down where
+`HEAD` used to be, under the name `ORIG_HEAD`. After the `--soft` above, `ORIG_HEAD` pointed
+at the commit that had just been undone. It is overwritten by the *next* such command, so it
+means "one step ago", not "a safe permanent backup".
+
+`git commit -c ORIG_HEAD` therefore does **not** restore files — the files were never gone.
+It makes a *new* commit out of whatever is staged right now, pre-filling the message from
+that old commit so a long message does not have to be retyped:
+
+| command | what it reuses | opens your editor? |
+|---|---|---|
+| `git commit -c ORIG_HEAD` | message (and author) of that commit | yes, to edit it |
+| `git commit -C ORIG_HEAD` | same | no, uses it as-is |
+
+So the two halves are independent: `--soft` brings the **files** back to the staging area,
+`-c ORIG_HEAD` brings the **prose** back.
+
+### Nothing is actually deleted for a while
+
+Even a commit you "removed" is still in the repo, findable with `git reflog` (a log of every
+position `HEAD` has held, including ones no branch points at any more) for a couple of weeks.
+`git reset --soft <that hash>` puts you back on it.
+
+> Rule of thumb: `--soft` undoes the *commit*, `--mixed` also undoes the *`git add`*, `--hard`
+> also undoes the *editing*. If you are unsure which you want, `--soft` is the one that cannot
+> lose anything — and check the two columns of `git status --short` before and after.

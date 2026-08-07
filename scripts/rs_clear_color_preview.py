@@ -12,8 +12,13 @@ Puts the document back to its plain appearance:
 * the orange marker dots dropped on broken links are deleted;
 * nothing is left selected.
 
-Paint them again with the ``ShowColorsPreview`` option on left-click
-(RSUpdatePreview). Nothing here touches geometry or metadata -- only appearance.
+**Fake bars keep their pink tint.**  Which bars are staging that will not be
+fabricated is a property of the model, not a diagnostic overlay, so clearing the
+overlay must not clear it -- otherwise the one marker you want on screen
+permanently is the one that vanishes every time you tidy up.
+
+Paint the overlay again by left-clicking RSUpdatePreview, which now always ends
+by painting it. Nothing here touches geometry or metadata -- only appearance.
 """
 
 import importlib

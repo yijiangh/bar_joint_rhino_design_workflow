@@ -4,14 +4,16 @@
 # r: scipy==1.13.1
 """RSUpdatePreview - bring the document back in line with the registries.
 
-Left-click offers two jobs on the command line:
+**Left-click** runs the repair pass below, then paints the diagnostic overlay
+(bars by IK status, broken links marked and selected) and pops up one tally of
+everything repaired, everything still broken, and everything checked.
 
-* **UpdatePreview** (default) -- the repair pass described below. It clears every
-  color overlay, so it leaves a clean document.
-* **ShowColorsPreview** -- read-only: color bars by IK status and mark the broken
-  links (orphaned joints/tools, bars with no joint).
+**Right-click** is RSClearColorPreview, which removes the overlay again -- except
+the fake-bar tint, which is a property of the model rather than a diagnostic.
 
-Right-click is RSClearColorPreview, which removes both overlays again.
+There is no job prompt: seeing what a repair pass could not fix is part of
+running it, so what used to be the separate ``ShowColorsPreview`` option now
+always runs.
 
 The repair pass is idempotent: running it twice in a row reports the same and
 changes nothing.
@@ -26,7 +28,7 @@ changes nothing.
    re-snap any tool that drifted off its joint.
 4. Report what it will not touch -- pairs whose halves no longer mate, joints and
    tools that lost their bar, tools no longer on their joint, and bars carrying
-   no joint. Run ShowColorsPreview (or right-click) to see them highlighted.
+   no joint. These are painted, selected and counted in the popup.
 
 This command never moves a joint. Re-deriving a solved placement is not reliable
 enough to do silently; fix a reported joint with RSJointEdit / RSJointPlace /
@@ -46,10 +48,8 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
-from core.rhino_bar_registry import clear_ik_preview, repair_on_entry, update_all_previews
+from core.rhino_bar_registry import repair_on_entry, update_all_previews
 from core.rhino_joint_refresh import (
-    clear_broken_link_marks,
-    find_broken_links,
     refresh_stale_joint_blocks,
     report_unmated_joints,
     show_colors_preview,
@@ -78,14 +78,9 @@ def _run_update_preview():
     else:
         print("RSUpdatePreview: all bar previews already up to date.")
 
-    # Clear every overlay: this is the repair pass, so it leaves a clean document.
-    # The ShowColorsPreview option paints them again on demand.
-    n_cleared = clear_ik_preview()
-    n_marks = clear_broken_link_marks()
-    print(
-        f"RSUpdatePreview: cleared the color preview "
-        f"({n_cleared} bar(s), {n_marks} other object(s) reverted)."
-    )
+    # No overlay clear here: show_colors_preview() at the end of this pass clears
+    # and repaints it anyway (via clear_broken_link_marks + show_all_ik_preview),
+    # so clearing up front would just be a wasted document-wide pass.
 
     # Reload joint blocks whose asset .3dm changed since it was imported. This is
     # the joint-side counterpart of what RSSwapRoboticTool does for tools: every
@@ -105,9 +100,26 @@ def _run_update_preview():
     # lost its tool (every joint block is meant to carry one). Do this BEFORE the
     # drift re-snap: restored tools land exactly on the joint, so the re-snap
     # below then only has to touch genuinely drifted ones.
-    n_restored = restore_missing_tools_at_joints(verbose=False)
-    if n_restored:
-        print(f"RSUpdatePreview: restored {n_restored} missing tool(s) onto their joints.")
+    # Always report, even when nothing was restored: a pass that examined every
+    # joint and changed nothing used to be indistinguishable from a healthy
+    # model, which is the one case you actually need to debug.
+    tool_counts = restore_missing_tools_at_joints(verbose=False)
+    print(
+        "RSUpdatePreview: tools -- {checked} joint(s) checked, "
+        "{already_tooled} already tooled, {restored} restored.".format(**tool_counts)
+    )
+    _broken = {k: v for k, v in tool_counts.items() if v and k in (
+        "no_joint_id", "duplicate_joint_id", "place_failed"
+    )}
+    if _broken:
+        print(
+            "RSUpdatePreview: tools -- NOT restorable: "
+            + ", ".join(f"{v} x {k}" for k, v in _broken.items())
+            + ".\n  no_joint_id / duplicate_joint_id: the joint block's user text is "
+            "wrong, so no tool can be tagged to it.\n"
+            "  If the checked count is lower than the number of joints you expect, "
+            "a joint block is on the wrong layer and this pass never saw it."
+        )
 
     # Every bar carries one LEFT and one RIGHT tool. The restore pass above infers
     # the side from the bar's sibling joint, which makes the outcome depend on
@@ -133,41 +145,75 @@ def _run_update_preview():
             "-- re-run RSJointEdit on them (nothing was moved)."
         )
 
-    # Finally, count what cannot be repaired automatically: joints/tools whose bar
-    # is gone, tools no longer on their joint, and bars carrying no joint. The
-    # repair pass only counts them -- ShowColorsPreview paints and lists them.
-    links = find_broken_links()
-    n_broken = len(links["orphans"]) + len(links["bare_bars"])
-    if n_broken:
-        print(
-            f"RSUpdatePreview: {len(links['orphans'])} orphaned joint/tool(s) and "
-            f"{len(links['bare_bars'])} bar(s) with no joint -- run the "
-            "ShowColorsPreview option (or right-click this button) to see them."
-        )
-    else:
-        print("RSUpdatePreview: no broken bar/joint/tool links.")
+    # Paint the diagnostic overlay and count what could NOT be repaired
+    # automatically: joints/tools whose bar is gone, tools no longer on their
+    # joint, bars carrying no joint. This used to be a separate
+    # ShowColorsPreview option -- repairing and then seeing what is left over is
+    # one job, so it always runs.
+    links = show_colors_preview()
 
+    _show_summary(tool_counts, n_sides, n_tools, unmated, links)
     rs.Redraw()
 
 
-def main():
-    """Ask which of the two jobs to run, then run it.
+def _show_summary(tool_counts, n_sides, n_tools, unmated, links):
+    """Pop up one report covering every pass, in one format.
 
-    Right-click (RSClearColorPreview) removes whatever ShowColorsPreview painted.
+    A popup rather than command-line output because the colour legend and the
+    per-object lists scroll the history away exactly when you need to compare
+    them against what is painted in the viewport.  The full detail still goes to
+    the command line; this is the tally.
+    """
+    n_orphans = len(links["orphans"])
+    n_bare = len(links["bare_bars"])
+    lines = [
+        "Repaired",
+        f"  {tool_counts['restored']} missing tool(s) re-placed",
+        f"  {n_sides} tool(s) had their L/R side corrected",
+        f"  {n_tools} drifted tool(s) re-snapped onto their joint",
+        "",
+        "Needs your attention",
+        f"  {n_orphans} orphaned joint/tool(s) -- parent bar is gone",
+        f"  {n_bare} bar(s) carrying no joint",
+        f"  {len(unmated)} joint(s) whose halves no longer mate -- re-run RSJointEdit",
+    ]
+
+    broken_text = [
+        (tool_counts["no_joint_id"], "joint block(s) with no joint_id user text"),
+        (tool_counts["duplicate_joint_id"], "joint block(s) sharing a joint_id"),
+        (tool_counts["place_failed"], "tool(s) that failed to place"),
+    ]
+    for count, label in broken_text:
+        if count:
+            lines.append(f"  {count} {label}")
+
+    lines += [
+        "",
+        "Checked",
+        f"  {tool_counts['checked']} joint block(s), "
+        f"{tool_counts['already_tooled']} already tooled",
+    ]
+    if tool_counts["checked"] < n_orphans + tool_counts["already_tooled"]:
+        lines.append(
+            "  NOTE: fewer joint blocks were checked than exist -- one is on the "
+            "wrong layer"
+        )
+    lines += [
+        "",
+        "Problems are painted and selected in the viewport.",
+        "Right-click this button (RSClearColorPreview) to remove the overlay.",
+    ]
+    rs.MessageBox("\n".join(lines), 0, "RSUpdatePreview")
+
+
+def main():
+    """Repair the model, paint what is still broken, and report the tally.
+
+    One job, not two: the old ``ShowColorsPreview`` prompt is gone because
+    seeing what a repair pass could not fix is part of running it.  Right-click
+    (RSClearColorPreview) removes the overlay this paints.
     """
     importlib.reload(config)
-
-    choice = rs.GetString(
-        "RSUpdatePreview",
-        "UpdatePreview",
-        ["UpdatePreview", "ShowColorsPreview"],
-    )
-    if choice is None:
-        print("RSUpdatePreview: Cancelled.")
-        return
-    if choice.strip().lower().startswith("s"):
-        show_colors_preview()
-        return
     _run_update_preview()
 
 

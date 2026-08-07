@@ -64,6 +64,10 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000060" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000060</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000061" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000061</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000062</right_macro_id>
+      </tool_bar_item>
     </tool_bar>
     <tool_bar guid="e9f0a1b2-5555-4ddd-b555-000000000001" bitmap_id="352fc154-0f90-54b8-abe0-c6515c86f7cf">
       <text>
@@ -531,6 +535,30 @@
         <locale_1033>Register a typeable command alias for every RS* toolbar macro, so you can type e.g. RSDefineRoboticTool in the command line instead of clicking a button. Run once per machine; re-run after macro changes. Aliases persist across Rhino sessions.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "register_command_aliases.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000061">
+      <text>
+        <locale_1033>RSLamcpBridgeStart</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Let Claude Code drive this Rhino session. Left-click: start the LAMCP bridge, a small local server (http://127.0.0.1:8765) inside Rhino that Claude Code's lamcp MCP tools talk to -- the agent can then run Python here with full RhinoCommon access to test RS* scripts, reload edited modules, and save viewport screenshots to check results itself, instead of asking you to click buttons and report back. Workflow: click once after opening Rhino, then hand Claude Code the task; the server runs quietly until Rhino closes or you right-click Stop. Runs in scaffolding_env, so Claude sees the same packages and sc.sticky state as the other RS* buttons. Replaces the Lamcp_Bridge Grasshopper component -- don't enable both at once (both want port 8765).</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSLamcpBridgeStart</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_lamcp_bridge_start.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000062">
+      <text>
+        <locale_1033>RSLamcpBridgeStop</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Right-click companion of RSLamcpBridgeStart: shut down the LAMCP bridge server and free port 8765. Claude Code can no longer reach this Rhino session until you start the bridge again. If it reports nothing to stop but the port is still busy, the Lamcp_Bridge Grasshopper component owns it -- flip that component's enable toggle to False instead.</locale_1033>
+      </tooltip>
+      <button_text>
+        <locale_1033>RSLamcpBridgeStop</locale_1033>
+      </button_text>
+      <script>! _-ScriptEditor _R "rs_lamcp_bridge_stop.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000030">
       <text>

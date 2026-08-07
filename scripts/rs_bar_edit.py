@@ -14,6 +14,8 @@ something to mate a real bar against.  It stays a full registered bar - id,
 assembly step, joints and all - because IK derives "what is already standing"
 from exactly those, and a support the robot cannot see is one it will drive
 through.  Only fabrication output and the sequence display treat it differently.
+Entering the mode paints every fake bar pink, each Add/Delete repaints the
+picked bar at once, and bars are picked by centerline or tube preview.
 
 On entry: scans every registered bar, groups bars by length (1mm bins),
 paints each bar centerline+tube preview a distinct color per length group,
@@ -21,8 +23,9 @@ and adds a temporary text-dot at the bar midpoint showing
 ``"<bar_id>\\n<length>mm"``.
 
 Interactive options (looped):
-  - SelectByLength : pick a length group; selects every bar (curve+tube)
-    in that group.  Selection is preserved on Exit.
+  - SelectByLength : type a length in mm (``1050``); selects every bar
+    (curve+tube) of that length.  The printed summary lists each length with
+    its bar ids.  Selection is preserved on Exit.
   - ResizeSelected : prompt for a new length; every currently-selected bar
     is shortened/elongated about its midpoint, the tube preview is
     regenerated, and the color/label scheme is refreshed.
@@ -53,6 +56,7 @@ if SCRIPT_DIR not in sys.path:
 from core import config
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
+    SEQ_COLOR_FAKE,
     TUBE_BAR_ID_KEY,
     TUBE_LAYER,
     ensure_bar_preview,
@@ -63,6 +67,7 @@ from core.rhino_bar_registry import (
     reset_bar_color,
     set_fake_bar,
 )
+from core.rhino_bar_pick import bar_or_tube_filter, resolve_picked_to_bar_curve
 from core.rhino_helpers import curve_endpoints
 
 # ---------------------------------------------------------------------------
@@ -110,12 +115,15 @@ def _color_for_index(i, n):
     return sd.Color.FromArgb(int(r * 255), int(g * 255), int(b * 255))
 
 
-def _build_length_groups(bar_map):
+def build_length_groups(bar_map):
     """Return (groups, color_by_bin, length_per_bar).
 
     groups          : ordered list of (length_bin, [bar_id, ...])
     color_by_bin    : {length_bin: System.Drawing.Color}
     length_per_bar  : {bar_id: actual_length_mm}
+
+    Public because ``RSSelectBar > SelectByLength`` groups with it too -- a
+    length group must mean the same thing in both commands.
     """
     length_per_bar = {}
     for bar_id, oid in bar_map.items():
@@ -301,15 +309,12 @@ def _do_resize_selected(bar_map, selected_bar_ids):
 # ---------------------------------------------------------------------------
 
 
-def _format_group_label(length_bin, bar_ids):
-    if len(bar_ids) <= 4:
-        ids = ",".join(bar_ids)
-    else:
-        ids = ",".join(bar_ids[:3]) + f",...(+{len(bar_ids) - 3})"
-    return f"{length_bin:.0f}mm_x{len(bar_ids)}_[{ids}]"
+def print_length_summary(groups):
+    """Print each length group -- the length, the count, and its bar ids.
 
-
-def _print_summary(groups):
+    This is where the bar ids live: SelectByLength asks for a typed length, so
+    the summary is the only place that maps ``1050`` to ``B14,B15``.
+    """
     print("\n--- Bar Length Groups ---")
     total = 0
     for L, bids in groups:
@@ -317,6 +322,33 @@ def _print_summary(groups):
         print(f"  {L:.0f} mm  x{len(bids)}  : {','.join(bids)}")
     print(f"  Total bars: {total}")
     print("--- End ---\n")
+
+
+def pick_length_group(groups, default_mm=None, command="RSBarEdit"):
+    """Ask for a length in mm; return the matching index into *groups*, or None.
+
+    The user types the number they read off the summary (``1050``), rounded to
+    the same 1 mm bin the grouping uses.  A length with no group is reported
+    together with the lengths that do exist and re-prompts, rather than silently
+    selecting the nearest one -- picking the wrong 20 bars is worse than picking
+    none.  ``None`` therefore means the user cancelled, nothing else.
+
+    Shared with ``RSSelectBar > SelectByLength``.
+    """
+    if not groups:
+        return None
+    while True:
+        typed = rs.GetReal(
+            "Length (mm) of the group to select", number=default_mm, minimum=0.0
+        )
+        if typed is None:
+            return None  # Enter / Esc
+        target = _bin_length(float(typed))
+        for i, (length_bin, _bar_ids) in enumerate(groups):
+            if abs(length_bin - target) < _LENGTH_BIN_MM * 0.5:
+                return i
+        available = ", ".join(f"{L:.0f}" for L, _ in groups)
+        print(f"{command}: no bars at {typed:.0f} mm.  Available lengths: {available}.")
 
 
 def _ask_mode():
@@ -341,21 +373,63 @@ def _ask_mode():
         return None
 
 
+def _pick_bar_curve(prompt):
+    """Pick a registered bar by its centerline **or** its tube preview.
+
+    Returns the centerline curve id, or ``None`` on Enter/Esc (which is how the
+    caller's toggle loop ends).  Picking the tube matters here: with the tube
+    preview on, the centerline is buried inside it and effectively unclickable.
+    """
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt(prompt)
+    go.AcceptNothing(True)
+    go.EnablePreSelect(False, True)
+    go.SetCustomGeometryFilter(bar_or_tube_filter)
+    if go.Get() != Rhino.Input.GetResult.Object:
+        return None
+    picked_id = go.Object(0).ObjectId
+    rs.UnselectObject(picked_id)
+    return resolve_picked_to_bar_curve(picked_id)
+
+
+def _show_fake_color(curve_id, fake):
+    """Paint one bar to match its fake state: pink when fake, by-layer when not."""
+    if fake:
+        paint_bar(curve_id, SEQ_COLOR_FAKE)
+    else:
+        reset_bar_color(curve_id)
+    rs.Redraw()
+
+
+def _paint_fake_bars(bar_map):
+    """Paint every currently-fake bar pink.  Returns their sorted bar ids.
+
+    Only fake bars are touched -- a non-fake bar is left with whatever overlay
+    it already carries, so entering FakeBar mode never wipes an IK or sequence
+    preview the user was reading.
+    """
+    fake_ids = [b for b, oid in sorted(bar_map.items()) if is_fake_bar(oid)]
+    rs.EnableRedraw(False)
+    try:
+        for bar_id in fake_ids:
+            paint_bar(bar_map[bar_id], SEQ_COLOR_FAKE)
+    finally:
+        rs.EnableRedraw(True)
+    return fake_ids
+
+
 def _pick_bars_for_fake(bar_map, want_fake):
     """Toggle the fake mark on picked bars until Enter/Esc.  Returns the count.
 
     *want_fake* True = Add, False = Delete.  Bars already in the wanted state are
-    reported rather than silently re-written, so a mis-pick is visible.
+    reported rather than silently re-written, so a mis-pick is visible.  Each
+    change repaints that bar immediately, so the pink set on screen always
+    matches the marks on the model.
     """
     verb = "mark as fake" if want_fake else "unmark"
     n_changed = 0
     while True:
-        picked = rs.GetObject(
-            f"Select a bar to {verb}  (Enter when done)",
-            filter=4,  # curves
-            preselect=False,
-            select=False,
-        )
+        picked = _pick_bar_curve(f"Select a bar to {verb}  (Enter when done)")
         if picked is None:
             return n_changed
         bar_id = rs.GetUserText(picked, BAR_ID_KEY)
@@ -368,6 +442,7 @@ def _pick_bars_for_fake(bar_map, want_fake):
             print(f"RSBarEdit: {bar_id} is {state}; nothing to do.")
             continue
         set_fake_bar(curve_id, want_fake)
+        _show_fake_color(curve_id, want_fake)
         n_changed += 1
         print(
             f"RSBarEdit: {bar_id} -> "
@@ -376,16 +451,22 @@ def _pick_bars_for_fake(bar_map, want_fake):
 
 
 def _run_fake_bar():
-    """Add / Delete the fake-bar mark.  No geometry is touched either way."""
+    """Add / Delete the fake-bar mark.  No geometry is touched either way.
+
+    The pink highlight is painted on entry and *left on* at exit: which bars are
+    staging is a property of the model, not a diagnostic overlay, so it survives
+    the command the same way it survives RSClearColorPreview.
+    """
     bar_map = get_all_bars()
     if not bar_map:
         print("RSBarEdit: No registered bars in the document.")
         return
 
-    already = [b for b, oid in sorted(bar_map.items()) if is_fake_bar(oid)]
+    already = _paint_fake_bars(bar_map)
     print(
         f"RSBarEdit (FakeBar): {len(already)} of {len(bar_map)} bar(s) marked fake"
         + (f": {', '.join(already)}." if already else ".")
+        + "  Fake bars are shown in pink."
     )
 
     while True:
@@ -416,28 +497,20 @@ def _run_bar_length():
         print("RSBarEdit: No registered bars in the document.")
         return
 
-    groups, color_by_bin, length_per_bar = _build_length_groups(bar_map)
+    groups, color_by_bin, length_per_bar = build_length_groups(bar_map)
     _paint_all(bar_map, color_by_bin, length_per_bar)
     dot_ids = _add_length_dots(bar_map, length_per_bar)
-    _print_summary(groups)
+    print_length_summary(groups)
 
-    selected_length_index = 0  # OptionList default
+    last_length_mm = None  # remembered as the default of the next length prompt
 
     try:
         while True:
-            # Recompute group label list every loop so it reflects edits.
-            group_labels = [_format_group_label(L, bids) for L, bids in groups]
-            if selected_length_index >= len(group_labels):
-                selected_length_index = 0
-
             go = Rhino.Input.Custom.GetOption()
             go.SetCommandPrompt("RSBarEdit (Esc to exit)")
             go.AcceptNothing(True)
 
-            sel_idx = (
-                go.AddOptionList("SelectByLength", group_labels, selected_length_index)
-                if group_labels else -1
-            )
+            sel_idx = go.AddOption("SelectByLength")
             resize_idx = go.AddOption("ResizeSelected")
             refresh_idx = go.AddOption("Refresh")
             exit_idx = go.AddOption("Exit")
@@ -455,9 +528,12 @@ def _run_bar_length():
             if opt is None:
                 continue
 
-            if sel_idx != -1 and opt.Index == sel_idx:
-                selected_length_index = int(opt.CurrentListOptionIndex)
-                L_bin, bar_ids = groups[selected_length_index]
+            if opt.Index == sel_idx:
+                group_idx = pick_length_group(groups, default_mm=last_length_mm)
+                if group_idx is None:
+                    continue
+                L_bin, bar_ids = groups[group_idx]
+                last_length_mm = L_bin
                 _select_bars(bar_map, bar_ids)
                 print(f"RSBarEdit: selected {len(bar_ids)} bar(s) at {L_bin:.0f} mm.")
                 continue
@@ -467,22 +543,22 @@ def _run_bar_length():
                 if _do_resize_selected(bar_map, sel_bar_ids):
                     # Recompute everything after geometry changes.
                     bar_map = get_all_bars()
-                    groups, color_by_bin, length_per_bar = _build_length_groups(bar_map)
+                    groups, color_by_bin, length_per_bar = build_length_groups(bar_map)
                     _clear_dots(dot_ids)
                     dot_ids = _add_length_dots(bar_map, length_per_bar)
                     _paint_all(bar_map, color_by_bin, length_per_bar)
-                    _print_summary(groups)
+                    print_length_summary(groups)
                     # Re-select the just-resized bars so the user can iterate.
                     _select_bars(bar_map, [b for b in sel_bar_ids if b in bar_map])
                 continue
 
             if opt.Index == refresh_idx:
                 bar_map = get_all_bars()
-                groups, color_by_bin, length_per_bar = _build_length_groups(bar_map)
+                groups, color_by_bin, length_per_bar = build_length_groups(bar_map)
                 _clear_dots(dot_ids)
                 dot_ids = _add_length_dots(bar_map, length_per_bar)
                 _paint_all(bar_map, color_by_bin, length_per_bar)
-                _print_summary(groups)
+                print_length_summary(groups)
                 continue
 
             if opt.Index == exit_idx:
@@ -492,6 +568,7 @@ def _run_bar_length():
         preserved_selection = list(rs.SelectedObjects() or [])
         _clear_dots(dot_ids)
         _reset_all_colors(bar_map)
+        _paint_fake_bars(bar_map)  # re-assert: the fake mark outlives the overlay
         rs.UnselectAllObjects()
         if preserved_selection:
             alive = [oid for oid in preserved_selection if rs.IsObject(oid)]

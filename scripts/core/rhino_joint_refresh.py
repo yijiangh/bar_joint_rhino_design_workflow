@@ -499,9 +499,9 @@ def print_broken_links(links: dict, cap: int = 20) -> None:
 def show_colors_preview() -> dict:
     """Paint every diagnostic overlay at once: IK status + broken links.
 
-    The read-only counterpart of the RSUpdatePreview repair pass, reached through
-    that command's ``ShowColorsPreview`` option.  RSClearColorPreview (right-click)
-    removes everything this paints.
+    Runs at the end of every RSUpdatePreview pass, so what the repair could not
+    fix is always on screen next to what it did.  RSClearColorPreview
+    (right-click) removes everything this paints.
 
     Bars are colored by IK status (``show_all_ik_preview`` reverts stale bar
     colors itself), then the broken links are painted and selected on top --

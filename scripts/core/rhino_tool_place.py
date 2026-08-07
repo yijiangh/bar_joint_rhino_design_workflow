@@ -247,7 +247,6 @@ def place_tool_at_block_instance(
     block_id,
     joint_id: str,
     tool: _robotic_tool.RoboticToolDef,
-    bar_map=None,
 ):
     """Insert *tool*'s block aligned to *block_id*'s frame.
 
@@ -259,12 +258,6 @@ def place_tool_at_block_instance(
     tool-attach frame.  That frame is the block's own world frame for male
     joints and for any ground joint whose ``M_tool_from_block`` is identity,
     which is the historical behaviour.
-
-    If the document carries a build stage and *block_id*'s bar is later than it,
-    the new tool is hidden on the spot -- a block instance is born visible, and
-    this is the single chokepoint every tool placement goes through.  Pass
-    *bar_map* (a ``rhino_bar_registry.get_bar_seq_map()`` result) when placing
-    tools in a loop, or each call pays a document scan to resolve the bar.
 
     Returns the inserted tool's Rhino object id, or ``None`` on failure.
     """
@@ -821,7 +814,7 @@ def _restore_side_tool(block_id, joint_id, active, default_tool):
     return default_tool
 
 
-def restore_missing_tools_at_joints(verbose: bool = False) -> int:
+def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
     """Re-place the active-pair tool on any joint block that lost its tool.
 
     Every male (``J*``) and ground (``G*``) joint block is auto-tooled the
@@ -840,33 +833,69 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> int:
     re-appears on the joint's current frame with the L/R layout preserved.
     Joints that already carry a tool are left untouched.
 
-    Returns the number of tools restored.
+    Returns a dict of counts::
+
+        checked             joint blocks looked at
+        already_tooled      had a tool -> left alone (the normal case)
+        no_joint_id         block has no joint_id user text  -> BROKEN
+        duplicate_joint_id  a second block claims the same id -> BROKEN
+        restored            a tool was re-placed
+        place_failed        placement was attempted and failed
+
+    Every way this pass can decline to act on a joint gets its own counter.  A
+    bare "restored N" made a pass that looked at every joint and did nothing
+    look exactly like a pass that found nothing wrong -- which is precisely the
+    case that is impossible to debug from outside.
+
+    Note what ``checked`` does NOT include: this pass only reads the male and
+    ground layers, so a joint block that ended up on some other layer (a stray
+    swept to ``Default``) is never reached and cannot be counted as broken.  It
+    just goes missing from the total -- 10 male joints in the model but
+    ``checked: 9`` means one block is not on the layer it should be on.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
+    n = {
+        "checked": 0,
+        "already_tooled": 0,
+        "no_joint_id": 0,
+        "duplicate_joint_id": 0,
+        "restored": 0,
+        "place_failed": 0,
+    }
+
     active = _get_active_pair_or_none()
     if active is None:
-        return 0  # no resolvable pair -> nothing to restore with (already noted)
+        # Already printed why.  Every count stays 0, so the caller's summary
+        # reads "0 joints checked" right next to that message.
+        return n
     default_tool = _resolve_default_active_tool(active)
 
-    n_placed = 0
     seen_joint_ids: set = set()
     for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
         if not rs.IsLayer(layer):
             continue
         for block_id in list(rs.ObjectsByLayer(layer) or []):
+            n["checked"] += 1
             joint_id = rs.GetUserText(block_id, "joint_id")
-            if not joint_id or joint_id in seen_joint_ids:
+            if not joint_id:
+                n["no_joint_id"] += 1
+                continue
+            if joint_id in seen_joint_ids:
+                n["duplicate_joint_id"] += 1
                 continue
             seen_joint_ids.add(joint_id)
             if find_tool_for_joint(joint_id) is not None:
-                continue  # already tooled -- leave it alone
+                n["already_tooled"] += 1
+                continue
             tool = _restore_side_tool(block_id, joint_id, active, default_tool)
-            if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
-                n_placed += 1
-                if verbose:
-                    print(f"  [tool] {joint_id}: restored missing tool '{tool.name}'.")
-    return n_placed
+            if place_tool_at_block_instance(block_id, joint_id, tool) is None:
+                n["place_failed"] += 1  # place_tool_at_block_instance printed why
+                continue
+            n["restored"] += 1
+            if verbose:
+                print(f"  [tool] {joint_id}: restored missing tool '{tool.name}'.")
+    return n
 
 
 def _joint_position_mm(block_id) -> float:

@@ -151,19 +151,15 @@ This is the canonical Rhino entrypoint reference for this repository.
 
 ### RSUpdatePreview (`rs_update_preview.py`)
 
-Left-click offers two jobs on the command line:
-
-- **UpdatePreview** (default) — the repair pass below.
-- **ShowColorsPreview** — read-only: paints the diagnostic overlay
-  (`core.rhino_joint_refresh.show_colors_preview`) — bars by IK status, plus the
-  broken links. Right-click (RSClearColorPreview) removes it again.
+**Left-click** repairs the model, paints the diagnostic overlay, and pops up a
+tally. **Right-click** (RSClearColorPreview) removes the overlay again. There is
+no longer a job prompt: seeing what a repair pass could *not* fix is part of
+running it, so the old `ShowColorsPreview` option is now always-on.
 
 The repair pass is idempotent: running it twice in a row reports the same and
 changes nothing. In order:
 
 1. Rebuilds missing or stale tube previews for all registered bars.
-2. Clears both overlays (IK colors + broken-link marks) — the repair pass leaves a
-   clean document; the color previews re-apply them on demand.
 3. **Reloads joint block definitions whose `asset/*.3dm` changed** since they were
    imported (`core.rhino_joint_refresh.refresh_stale_joint_blocks`). This is the
    joint-side counterpart of what RSSwapRoboticTool does for tools: every joint
@@ -209,9 +205,9 @@ changes nothing. In order:
    single-sided by design and exempt), a tool that lost its joint or is no longer
    on it, and a registered bar carrying no joint. Detached tools come from
    `core.rhino_tool_place.find_detached_tools`, which shares `is_tool_on_joint`
-   with the re-snap pass — so "attached" means one thing everywhere. The repair
-   pass only prints the counts; ShowColorsPreview / right-click paints and lists
-   them. Fix them with RSJointPlace / RSGroundPlace, or delete the orphan.
+   with the re-snap pass — so "attached" means one thing everywhere. They are
+   painted, selected and listed in the popup tally at the end of every run. Fix
+   them with RSJointPlace / RSGroundPlace, or delete the orphan.
 
 ### RSClearColorPreview (`rs_clear_color_preview.py`)
 
@@ -219,6 +215,11 @@ Right-click companion of RSUpdatePreview: removes every diagnostic overlay and
 unselects. Bar colors (IK status and the bare-bar color) revert to by-layer on both
 the centre-line and its tube, joint/tool instances revert, and the marker dots are
 deleted. Appearance only — no geometry or metadata is touched.
+
+**Fake bars keep their pink tint.** Which bars are staging is a property of the
+model, not a diagnostic, so clearing the overlay must not clear it — otherwise
+the one marker you want on screen permanently is the one that vanishes every
+time you tidy up.
 
 **How the marking works**, since no single channel covers everything:
 

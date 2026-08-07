@@ -62,8 +62,10 @@ from core.rhino_bar_pick import (
 )
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
+    clear_build_stage,
     get_bar_seq_map,
     reset_sequence_colors,
+    set_build_stage,
     show_sequence_colors,
 )
 from core.rhino_block_import import has_block_definition
@@ -356,7 +358,21 @@ class _PreviewSession:
         self.refresh()
 
     def toggle_unbuilt(self):
+        """Toggle unbuilt visibility AND the persistent build-stage latch.
+
+        Only this explicit user toggle writes the latch.  ``__init__``'s
+        ``show_unbuilt = False`` default and ``refresh()``'s re-assert are
+        deliberately left alone: both run with no user involvement, so if
+        either wrote the latch, merely opening this viewer would hide the
+        model permanently.
+        """
         self.show_unbuilt = not self.show_unbuilt
+        if self.show_unbuilt:
+            clear_build_stage()
+        elif self.active_bar_id is not None:
+            entry = get_bar_seq_map().get(self.active_bar_id)
+            if entry is not None:
+                set_build_stage(self.active_bar_id, entry[1])
         if self.active_bar_id is not None:
             show_sequence_colors(self.active_bar_id, self.show_unbuilt)
 

@@ -29,6 +29,7 @@ boundary inside this module.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import time
@@ -650,9 +651,16 @@ def _live_assembly_fingerprint():
     swap, its fingerprint is already current and no prompt appears. Used only
     for the staleness (outdate) warning. Rhino-only -> lazy imports.
 
+    It also carries a NAMES hash: an md5 over the sorted bar ids plus every
+    joint block's (joint_id, subtype, parent_bar_id) user text -- the exact
+    inputs the canonical collision-body names are built from. Renaming or
+    renumbering bars/joints (RSReorderBarID, relink, hand edits) changes no
+    count and no coordinate, so without this hash the cached cell would keep
+    serving phantom body names after a rename with no warning at all.
+
     Returns:
         tuple: ``(n_bars, n_joint_instances, n_env_meshes,
-        rounded_endpoint_sum, (left_tool, right_tool))``.
+        rounded_endpoint_sum, (left_tool, right_tool), names_md5)``.
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_bar_seq_map
@@ -667,13 +675,27 @@ def _live_assembly_fingerprint():
         except Exception:
             pass
     n_joints = 0
+    # The naming inputs of `env_collision.collect_assembly_geometry`: bar ids
+    # plus each joint block's id / subtype-or-type / parent bar. Plain user-text
+    # reads, no meshes -- cheap enough for the every-command staleness probe.
+    name_parts = sorted(str(bid) for bid in seq_map)
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
         config.LAYER_JOINT_GROUND_INSTANCES,
     ):
         if rs.IsLayer(layer):
-            n_joints += len(rs.ObjectsByLayer(layer) or [])
+            joint_oids = rs.ObjectsByLayer(layer) or []
+            n_joints += len(joint_oids)
+            for joint_oid in joint_oids:
+                jid = rs.GetUserText(joint_oid, "joint_id") or ""
+                subtype = (
+                    rs.GetUserText(joint_oid, "joint_subtype")
+                    or rs.GetUserText(joint_oid, "joint_type")
+                    or ""
+                )
+                parent = rs.GetUserText(joint_oid, "parent_bar_id") or ""
+                name_parts.append(f"{jid}:{subtype}:{parent}")
     n_env = (
         len(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or [])
         if rs.IsLayer(config.LAYER_ENVIRONMENT)
@@ -689,7 +711,10 @@ def _live_assembly_fingerprint():
         active_sig = (names["left"], names["right"])
     except Exception:
         active_sig = ("<unresolved>", "<unresolved>")
-    return (len(seq_map), n_joints, n_env, round(coord_sum, 3), active_sig)
+    # Deterministic digest of the sorted naming inputs (see docstring). Sorted so
+    # document order / layer scan order cannot flip the fingerprint.
+    names_md5 = hashlib.md5("|".join(sorted(name_parts)).encode("utf-8")).hexdigest()
+    return (len(seq_map), n_joints, n_env, round(coord_sum, 3), active_sig, names_md5)
 
 
 def rebuild_assembly_cell(robot_cell, planner):

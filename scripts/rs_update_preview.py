@@ -51,6 +51,7 @@ from core import config
 from core.rhino_bar_registry import repair_on_entry, update_all_previews
 from core.rhino_joint_refresh import (
     refresh_stale_joint_blocks,
+    report_joint_usertext_issues,
     report_unmated_joints,
     show_colors_preview,
 )
@@ -145,6 +146,18 @@ def _run_update_preview():
             "-- re-run RSJointEdit on them (nothing was moved)."
         )
 
+    # Stale / copied joint user text. The IK collision scene names bodies from
+    # the joint_id USER TEXT (not the visible object name), so a Rhino-copied
+    # block with donor user text makes IK report phantom joint names and lose
+    # its whitelists. Detect it here; the repair is RSReorderBarID -> Relink.
+    usertext_issues = report_joint_usertext_issues(verbose=True)
+    if usertext_issues:
+        print(
+            f"RSUpdatePreview: {len(usertext_issues)} joint user-text issue(s) -- "
+            "run RSReorderBarID -> Relink (review its plan before applying), then "
+            "RSRebuildRobotCell."
+        )
+
     # Paint the diagnostic overlay and count what could NOT be repaired
     # automatically: joints/tools whose bar is gone, tools no longer on their
     # joint, bars carrying no joint. This used to be a separate
@@ -152,11 +165,11 @@ def _run_update_preview():
     # one job, so it always runs.
     links = show_colors_preview()
 
-    _show_summary(tool_counts, n_sides, n_tools, unmated, links)
+    _show_summary(tool_counts, n_sides, n_tools, unmated, usertext_issues, links)
     rs.Redraw()
 
 
-def _show_summary(tool_counts, n_sides, n_tools, unmated, links):
+def _show_summary(tool_counts, n_sides, n_tools, unmated, usertext_issues, links):
     """Pop up one report covering every pass, in one format.
 
     A popup rather than command-line output because the colour legend and the
@@ -176,6 +189,8 @@ def _show_summary(tool_counts, n_sides, n_tools, unmated, links):
         f"  {n_orphans} orphaned joint/tool(s) -- parent bar is gone",
         f"  {n_bare} bar(s) carrying no joint",
         f"  {len(unmated)} joint(s) whose halves no longer mate -- re-run RSJointEdit",
+        f"  {len(usertext_issues)} joint user-text issue(s) (stale/copied ids) -- "
+        "RSReorderBarID > Relink",
     ]
 
     broken_text = [

@@ -258,6 +258,91 @@ def report_unmated_joints(verbose: bool = False) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Stale / copied joint user text (the phantom-collision-name detector)
+# ---------------------------------------------------------------------------
+
+
+def report_joint_usertext_issues(verbose: bool = False) -> list:
+    """Scan every joint block's user text for stale-copy signatures.  Read-only.
+
+    The IK collision pipeline names bodies from the ``joint_id`` USER TEXT, not
+    the visible object name. A block created by Rhino-copying an existing joint
+    silently carries the donor's user text, so the collision scene then reports
+    phantom names (e.g. ``joint_J40-53_female``) while the viewport shows a
+    block named ``J26-41_female`` -- and every whitelist keyed on the fresh id
+    misses. This pass surfaces exactly that:
+
+    - **name mismatch**: object name != ``<joint_id>_<role>`` (role from the
+      layer: female / male / ground) -- the decisive copied-user-text signal;
+    - **duplicate id**: two blocks on the same layer sharing a ``joint_id``;
+    - **missing user text**: no ``joint_id`` or no ``parent_bar_id``.
+
+    The repair for wrong-but-existing ids is the geometric re-derivation in
+    ``RSReorderBarID -> Relink`` (review its printed plan before applying).
+
+    Args:
+        verbose (bool): print each issue plus the repair pointer.
+
+    Returns:
+        list[tuple]: ``(oid, kind, message)`` per issue, ``kind`` in
+        ``{"name_mismatch", "duplicate_id", "missing_usertext"}``.
+    """
+    role_by_layer = {
+        config.LAYER_JOINT_FEMALE_INSTANCES: "female",
+        config.LAYER_JOINT_MALE_INSTANCES: "male",
+        config.LAYER_JOINT_GROUND_INSTANCES: "ground",
+    }
+    issues = []
+    # (layer, joint_id) -> [(oid, object_name), ...] for the duplicate check.
+    seen: dict = {}
+    for oid, layer, joint_id, _block_name in _joint_block_instances():
+        role = role_by_layer.get(layer, "joint")
+        obj_name = rs.ObjectName(oid) or ""
+        if not joint_id:
+            issues.append((
+                oid, "missing_usertext",
+                f"'{obj_name or oid}' ({role}): no joint_id user text.",
+            ))
+        else:
+            seen.setdefault((layer, joint_id), []).append((oid, obj_name))
+            expected = f"{joint_id}_{role}"
+            if obj_name != expected:
+                issues.append((
+                    oid, "name_mismatch",
+                    f"'{obj_name or '<unnamed>'}' ({role}): joint_id user text says "
+                    f"'{joint_id}' (expected object name '{expected}') -- likely "
+                    f"COPIED user text; the collision scene calls this body "
+                    f"'joint_{joint_id}_{role}'.",
+                ))
+        if not rs.GetUserText(oid, "parent_bar_id"):
+            issues.append((
+                oid, "missing_usertext",
+                f"'{obj_name or oid}' ({role}): no parent_bar_id user text.",
+            ))
+
+    for (layer, jid), entries in sorted(seen.items(), key=lambda kv: str(kv[0])):
+        if len(entries) < 2:
+            continue
+        role = role_by_layer.get(layer, "joint")
+        names = ", ".join(name or str(o) for o, name in entries)
+        issues.append((
+            entries[0][0], "duplicate_id",
+            f"{len(entries)} {role} block(s) share joint_id '{jid}': {names}.",
+        ))
+
+    if verbose:
+        for _oid, kind, message in issues:
+            print(f"  [usertext:{kind}] {message}")
+        if issues:
+            print(
+                "  Repair: run RSReorderBarID -> Relink to re-derive ids from "
+                "geometry (review its printed plan before applying), then "
+                "RSRebuildRobotCell."
+            )
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Broken links: joints/tools with no bar, bars with no joint, detached tools
 # ---------------------------------------------------------------------------
 

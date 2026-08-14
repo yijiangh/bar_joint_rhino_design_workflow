@@ -172,14 +172,23 @@ _STICKY[_STICKY_ASSEMBLY_SNAPSHOT]    = {"collision_bodies": collision_bodies,
 _STICKY[_STICKY_ASSEMBLY_FINGERPRINT] = _live_assembly_fingerprint()
 ```
 
-`_live_assembly_fingerprint()` (line 1593) is a cheap tuple:
-`(n_bars, n_joint_instances, n_env_layer_objects, round(sum_of_bar_endpoint_coords, 3))`.
+`_live_assembly_fingerprint()` is a cheap tuple:
+`(n_bars, n_joint_instances, n_env_layer_objects, round(sum_of_bar_endpoint_coords, 3),
+(left_tool, right_tool), names_md5)`.
 
-This is only a coarse change signal. It does **not** include joint transforms,
-environment-mesh vertices/transforms, or the individual bar endpoints. Therefore
-it can miss moved joints, edited/moved environment meshes, and bar edits whose
-summed endpoint coordinates happen to cancel. It can also react to a non-mesh
-object on the environment layer even though the collector skips that object.
+`names_md5` is an md5 over the sorted bar ids plus every joint block's
+`(joint_id, subtype, parent_bar_id)` user text — the exact inputs the canonical
+collision-body names are built from. Renaming/renumbering bars or joints
+(RSReorderBarID, relink, hand edits) changes no count and no coordinate, so this
+hash is what makes a rename trip the stale prompt instead of silently serving
+phantom body names from the cached snapshot.
+
+Beyond names, this is still a coarse change signal. It does **not** include
+joint transforms, environment-mesh vertices/transforms, or the individual bar
+endpoints. Therefore it can miss moved joints, edited/moved environment meshes,
+and bar edits whose summed endpoint coordinates happen to cancel. It can also
+react to a non-mesh object on the environment layer even though the collector
+skips that object.
 
 - `ensure_assembly_cell(robot_cell, planner)` (line 1771) — called by
   `RSIKKeyframe` on every run. If no snapshot exists it rebuilds once; otherwise it
@@ -540,6 +549,17 @@ Example: inserting `bar_B9` with male `joint_J35-9_male`, whose mate
 `touch_bodies`. This is the same kind of mesh-coarseness workaround as the
 bar↔tool whitelist, scoped to the one movement where the two actually approach.
 
+**Cradle mates (subfloor receivers).** A female half flagged `bar_cradle` in
+`joint_pairs.json` (the `T20SubLeft/Right_Female` blocks) is a big cradle the
+incoming bar physically rests INSIDE at the assembled pose — and its ~60 mm deep
+mouth already wraps the bar/male at the 15 mm approach pose. For males whose
+mate is a cradle, the mate whitelist therefore applies in **M1 as well as M2**,
+and the **bar** additionally whitelists every cradle mate in M1/M2 (on top of
+the two tools). Cradle detection keys on the live Rhino block-definition name
+carried in `env_geom` (`block_name`), not on `joint_id` user text, so stale or
+copied user text cannot misroute it. Clamp-style females (default
+`bar_cradle: false`) keep the exact pre-existing policy.
+
 ### 6.3 The per-movement matrix
 
 | Movement | Class | Start config | Attach: bar + females | Attach: each male | Detach to world | `male.touch_bodies` | `female.touch_bodies` | `bar.touch_bodies` | `target_ee` |
@@ -684,9 +704,10 @@ remain important:
 |---|---|
 | Startup | `RSPBStart` auto-builds Stage 1 after loading the low-level bare cell; `RSRebuildRobotCell` is a refresh/fallback, not a mandatory second startup click. |
 | Ground anchors | Implemented: `_classify_ground_joints_per_arm` routes grasped grounds to their own arms (attachment + male-minus-mate ACM + M3 retreat via ground block −Z); insertion runs along the Walkable Ground normal. Mixed male+ground bars untargeted; the floor is still not collision geometry. |
+| Subfloor cradle mates | Implemented: females flagged `bar_cradle` in `joint_pairs.json` (T20Sub*) get the male↔mate whitelist in M1 too, and the bar whitelists its cradle mates in M1/M2. Detection uses the live block-definition name, immune to stale `joint_id` user text. |
 | Missing joint OBJ cache | `None` is stored but not recognized as a hit, so the missing path is probed again. |
 | Bar cache | Pure movement reuses the local mesh; the world frame changes only after a scene rebuild. |
-| Staleness fingerprint | Counts plus one summed endpoint scalar; it can miss joint/environment edits and cancelling bar edits. |
+| Staleness fingerprint | Counts + summed endpoints + active tool pair + a names hash over bar ids and joint `(joint_id, subtype, parent_bar_id)` user text — renames/renumbers now trip the stale prompt. Still misses moved joints/environment meshes and cancelling bar edits. |
 | M2 mate whitelist | A matching female name is enough; the code does not itself verify that the female's parent bar is already built. |
 | IK cold solve | Analytical branch enumeration under default `ssik`; random restarts only under `gradient`. |
 | Base sampling heading | Preserves a heading point, not a constant heading vector. |

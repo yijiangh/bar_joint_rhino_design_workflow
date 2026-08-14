@@ -106,6 +106,9 @@ from rs_data_structure.bar_action import (  # noqa: E402  (path-prepend gate abo
 
 # Single home of the L/R tool-name suffix rule (Rhino-free).
 from core.robotic_tool import arm_side_from_tool_name  # noqa: E402
+# Joint-half registry (Rhino-free): used to spot cradle-style mate females
+# (`bar_cradle` in joint_pairs.json) that the incoming bar rests inside.
+from core.joint_pair import load_joint_registry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -661,7 +664,7 @@ def _detach_active_to_assembled_world(state, active_keys, env_geom: dict) -> Non
 
 def _apply_movement_touch_policy(
     state, movement: str, active_keys, env_geom: dict, arm_to_male: dict,
-    arm_to_ground: dict, bar_key: str, tool_ids: dict,
+    arm_to_ground: dict, bar_key: str, tool_ids: dict, cradle_female_keys=frozenset(),
 ) -> None:
     """Set per-movement allowed contacts (``touch_bodies``) on the grasped bodies.
 
@@ -684,6 +687,12 @@ def _apply_movement_touch_policy(
       todos.md): ``{its arm tool, bar}`` in M1/M2, ``{its arm tool}`` in M3.
       A tool-less ground joint follows the carried-female policy (``[bar]``
       while held).
+    - **Cradle mate females** (``cradle_female_keys``; subfloor receivers with
+      ``bar_cradle`` set in joint_pairs.json): the incoming bar physically rests
+      INSIDE these blocks at the assembled pose, and the ~60 mm deep cradle
+      mouth already wraps the bar/male at the 15 mm approach pose. So in M1 AND
+      M2 the bar whitelists every cradle mate, and each male whose mate is a
+      cradle whitelists it in M1 too (M2 already allows the mate for all males).
 
     The male<->mate whitelist is recorded on the male / carried-female side (one
     side is enough). The bar tube additionally whitelists BOTH gripper tools while
@@ -707,6 +716,9 @@ def _apply_movement_touch_policy(
             (tool-bearing) ground joints; empty for a normal bar.
         bar_key (str): canonical name of the grasped bar (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
+        cradle_female_keys (set): canonical names of this bar's mate females
+            that are cradle blocks (``bar_cradle`` halves); empty for a bar
+            with only clamp-style mates.
 
     Returns:
         None: mutates ``state``.
@@ -731,6 +743,13 @@ def _apply_movement_touch_policy(
             if tool:
                 partners.append(tool)
             partners.append(bar_key)
+            # A cradle mate's ~60 mm deep mouth already wraps the male at the
+            # 15 mm approach pose, so allow male<->cradle female in M1 too
+            # (clamp-style mates only get the mate whitelist in M2 below).
+            if movement == "M1":
+                female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+                if female_key in cradle_female_keys:
+                    partners.append(female_key)
             if movement == "M2":
                 # M2 is the mate: the male seats into the already-built female of
                 # the SAME joint_id, so allow that contact too (when it exists).
@@ -806,7 +825,14 @@ def _apply_movement_touch_policy(
     bar_rb = state.rigid_body_states.get(bar_key)
     if bar_rb is not None:
         if movement in ("M1", "M2", "M3"):
-            bar_rb.touch_bodies = sorted({t for t in tool_ids.values() if t})
+            allowed = {t for t in tool_ids.values() if t}
+            # The incoming bar rests INSIDE its cradle mate females (subfloor
+            # receivers) at the assembled pose and is already in their mouths at
+            # the approach pose -- allow bar<->cradle while approaching/inserting.
+            # Not in M3: the bar is released/static there (auto-skipped anyway).
+            if movement in ("M1", "M2"):
+                allowed |= set(cradle_female_keys)
+            bar_rb.touch_bodies = sorted(allowed)
         else:
             bar_rb.touch_bodies = []
 
@@ -820,6 +846,7 @@ def _build_m1(
     arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -845,6 +872,8 @@ def _build_m1(
             joints (ground bars); empty for a normal bar.
         bar_key (str): canonical grasped-bar name (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
+        cradle_female_keys (set): canonical names of this bar's cradle mate
+            females (see :func:`_apply_movement_touch_policy`); empty otherwise.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm
             flange poses at the assembled keyframe.
         base_frame_world_mm (ndarray): 4x4 mm robot base frame.
@@ -868,7 +897,7 @@ def _build_m1(
     )
     _apply_movement_touch_policy(
         state, "M1", active_keys, env_geom, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
     )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
         tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
@@ -908,6 +937,7 @@ def _build_m2(
     arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -942,7 +972,7 @@ def _build_m2(
     )
     _apply_movement_touch_policy(
         state, "M2", active_keys, env_geom, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
     )
     return EndEffectorConstrainedDualArmLinearMovement(
         movement_id=f"{bar_id}_J_M5_LM_insert",
@@ -980,6 +1010,7 @@ def _build_m3(
     arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -1008,7 +1039,7 @@ def _build_m3(
     # is static<->static (compas_fab auto-skips).
     _apply_movement_touch_policy(
         state, "M3", active_keys, env_geom, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
     )
 
     retreat_axes_world = {}
@@ -1078,6 +1109,7 @@ def _build_m4(
     arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     base_frame_world_mm,
     home_left,
     home_right,
@@ -1102,7 +1134,7 @@ def _build_m4(
     # Fully released, tools retreated: no special allowed contacts.
     _apply_movement_touch_policy(
         state, "M4", active_keys, env_geom, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
     )
 
     home_cfg = _build_home_configuration(
@@ -1130,6 +1162,7 @@ def _build_m0(
     arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     base_frame_world_mm,
 ) -> IndependentDualArmFreeMovement:
     """Build M0: current pose -> M1 start (free joint-space motion, live-planned).
@@ -1174,7 +1207,7 @@ def _build_m0(
     # M1/M2/M3 branches, same as M4).
     _apply_movement_touch_policy(
         state, "M0", active_keys, env_geom, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
     )
     return IndependentDualArmFreeMovement(
         movement_id=f"{bar_id}_J_M0_free_to_load",
@@ -1331,6 +1364,25 @@ def build_split_assembly_movements(
         ]
         approach_dir_mm = ground_insertion_normal_mm(bar_map[bar_id][0], ground_points_mm)
 
+    # * Subfloor cradle mates: a cradle-style female (`bar_cradle` in
+    # joint_pairs.json, e.g. the T20Sub* receivers) is a big block the incoming
+    # bar physically rests INSIDE at the assembled pose. Collect which of this
+    # bar's mate females are cradles so the touch policy can allow bar/male <->
+    # cradle contact during approach + insert. Detection keys on the live Rhino
+    # block-definition name in env_geom (immune to stale joint_id user text).
+    registry_halves = load_joint_registry().halves
+    cradle_female_keys = set()
+    for jid in arm_to_male:
+        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        female_info = env_geom.get(female_key)
+        if female_info is None:
+            continue
+        half = registry_halves.get(female_info.get("block_name") or "")
+        if half is not None and half.bar_cradle:
+            cradle_female_keys.add(female_key)
+    if cradle_female_keys:
+        print(f"core.bar_action: cradle mate females for '{bar_id}': {sorted(cradle_female_keys)}")
+
     # The active bar/joint frames in the template are the assembled-pose world
     # frames; every Mi rewrites them (M1/M2 attach to tool0, M3/M4 detach to
     # world). Clear them so a missed re-class surfaces as a None-frame error.
@@ -1344,14 +1396,14 @@ def build_split_assembly_movements(
     # so the build order among M0-M4 does not matter (see module docstring).
     m0 = _build_m0(
         template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
         base_frame_world_mm,
     )
     # M1's start config is planner-computed (left None); it needs no HOME values
     # or planning-group names, unlike M4 which targets the fixed home pose.
     m1 = _build_m1(
         template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         config.LM_DISTANCE,
@@ -1360,7 +1412,7 @@ def build_split_assembly_movements(
     )
     m2 = _build_m2(
         template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         approach_groups,
@@ -1370,7 +1422,7 @@ def build_split_assembly_movements(
     )
     m3 = _build_m3(
         template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         assembled_groups,
@@ -1383,7 +1435,7 @@ def build_split_assembly_movements(
     m4 = _build_m4(
         template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
         arm_to_ground,
-        bar_key, tool_ids,
+        bar_key, tool_ids, cradle_female_keys,
         base_frame_world_mm,
         config.HOME_CONF_LEFT_6, config.HOME_CONF_RIGHT_6,
         config.LEFT_GROUP, config.RIGHT_GROUP,

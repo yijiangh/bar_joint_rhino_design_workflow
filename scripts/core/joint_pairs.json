@@ -77,6 +77,7 @@
       ],
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20SubLeft_Female.obj",
+      "bar_cradle": true,
       "M_block_from_bar": [
         [
           9.547918011776346e-15,
@@ -142,6 +143,7 @@
       ],
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20SubRight_Female.obj",
+      "bar_cradle": true,
       "M_block_from_bar": [
         [
           9.547918011776346e-15,

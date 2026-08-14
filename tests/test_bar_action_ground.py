@@ -224,7 +224,7 @@ def test_touch_policy_male_path_unchanged():
 def _build_m3(arm_to_male, arm_to_ground):
     return bar_action._build_m3(
         _FakeState(ACTIVE_KEYS), "B20", ENV_GEOM, ACTIVE_KEYS,
-        arm_to_male, arm_to_ground, BAR_KEY, TOOL_IDS,
+        arm_to_male, arm_to_ground, BAR_KEY, TOOL_IDS, frozenset(),
         TOOL0_LEFT, TOOL0_RIGHT, np.eye(4),
         assembled_groups=None, lm_distance_mm=LM,
     )
@@ -260,7 +260,7 @@ def test_build_m3_no_anchor_prints_note_and_keeps_assembled(capsys):
 def _build_m1(approach_dir_mm):
     return bar_action._build_m1(
         _FakeState(ACTIVE_KEYS), "B20", ENV_GEOM, ACTIVE_KEYS,
-        {}, ARM_TO_GROUND, BAR_KEY, TOOL_IDS,
+        {}, ARM_TO_GROUND, BAR_KEY, TOOL_IDS, frozenset(),
         TOOL0_LEFT, TOOL0_RIGHT, np.eye(4),
         lm_distance_mm=LM, approach_dir_mm=approach_dir_mm,
     )

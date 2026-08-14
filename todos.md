@@ -59,6 +59,10 @@ Debatable
   logic will need to change -> It doesn't need to solve for goal conf, and the start
   conf's
 
+# Assembly robot IK
+- The verticle bar's assembly insertion direction seems to be the avg of the two retreat direction, not right.
+- When showing the reuse/repick with bubble for assembly ik, show the right scene with holding robot (if ik solved).
+
 # Support robot IK
 
 ## Finetuning

@@ -319,7 +319,9 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
     bars of the same length+radius). compas_fab's PyBullet backend creates
     a separate PB body per name, so sharing is safe.
 
-    Skips the active bar AND its joints by default.
+    Skips the active bar AND its joints by default. Also skips every FAKE bar
+    and the joint halves mounted on it: a fake bar is a modeling artifact that
+    only poses a real bar's male half, so nothing physical stands there.
 
     Args:
         active_bar_id (str): the step whose scene is being built.
@@ -332,6 +334,7 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
             so its tube would always false-positive).
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_bar_registry import get_fake_bar_ids
 
     deps = _import_deps_for_rb()
 
@@ -339,12 +342,17 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
         return {}
     _active_oid, active_seq = bar_seq_map[active_bar_id]
     excluded = set(exclude_bar_ids or [])
+    # * Fake bars are modeling artifacts, not physical objects: they only exist
+    # to pose a real bar's male half. Drop them and (via built_bar_ids below)
+    # every joint half mounted on them from the collision scene.
+    fake_bar_ids = get_fake_bar_ids(bar_seq_map)
 
     built_bar_ids = {
         bid: oid
         for bid, (oid, seq) in bar_seq_map.items()
         if (seq < active_seq or (include_active and seq == active_seq))
         and bid not in excluded
+        and bid not in fake_bar_ids
     }
     if not built_bar_ids:
         return {}
@@ -418,6 +426,12 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
                 "block_name": block_name,
                 "subtype": subtype,
             }
+    if fake_bar_ids:
+        print(
+            f"core.env_collision.collect_built_geometry: excluded "
+            f"{len(fake_bar_ids)} fake bar(s) + their joint halves from the "
+            f"collision scene: {', '.join(sorted(fake_bar_ids))}"
+        )
     if orphan_parents:
         # ! These blocks are in NO collision scene at all -- not "not built yet",
         # but unreachable, so nothing will ever check against them.
@@ -447,6 +461,11 @@ def collect_assembly_geometry(bar_seq_map):
     ``body_info`` carries ``parent_bar_id`` so the state builder can classify
     built / active / future by assembly sequence.
 
+    FAKE bars and the joint halves mounted on them are left out entirely: a
+    fake bar is a modeling artifact that only poses a real bar's male half, so
+    nothing physical stands there to collide with. The real bar's male half is
+    parented to the REAL bar and is unaffected.
+
     Args:
         bar_seq_map (dict): ``{bar_id: (oid, seq)}`` for every registered bar.
 
@@ -455,12 +474,19 @@ def collect_assembly_geometry(bar_seq_map):
         ``{rigid_body, frame_world_mm, kind, source_oid, parent_bar_id, ...}``.
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_bar_registry import get_fake_bar_ids
 
     deps = _import_deps_for_rb()
     t_total = time.perf_counter()
     out = {}
+    # * Fake bars are modeling artifacts that only pose a real bar's male half;
+    # nothing physical stands there, so neither the tube nor the joint halves
+    # mounted on it belong in any collision scene.
+    fake_bar_ids = get_fake_bar_ids(bar_seq_map)
     bar_hits = bar_misses = 0
     for bid, (oid, _seq) in bar_seq_map.items():
+        if bid in fake_bar_ids:
+            continue
         length_mm, frame_mm = _bar_world_frame_mm(oid)
         if length_mm <= 0.0:
             continue
@@ -490,6 +516,10 @@ def collect_assembly_geometry(bar_seq_map):
             continue
         for joint_oid in rs.ObjectsByLayer(layer) or []:
             parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
+            # A half mounted on a fake bar (its female) goes out with the bar;
+            # the real bar's male is parented to the REAL bar and stays.
+            if parent_bar in fake_bar_ids:
+                continue
             if parent_bar not in bar_seq_map:
                 orphan_parents.append(
                     f"{rs.ObjectName(joint_oid) or joint_oid}"
@@ -522,6 +552,12 @@ def collect_assembly_geometry(bar_seq_map):
                 "subtype": subtype,
                 "parent_bar_id": parent_bar,
             }
+    if fake_bar_ids:
+        print(
+            f"core.env_collision.collect_assembly_geometry: excluded "
+            f"{len(fake_bar_ids)} fake bar(s) + their joint halves from the "
+            f"collision scene: {', '.join(sorted(fake_bar_ids))}"
+        )
     if orphan_parents:
         print(
             f"core.env_collision.collect_assembly_geometry: NOTE - "

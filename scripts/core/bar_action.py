@@ -1319,6 +1319,19 @@ def build_split_assembly_movements(
     from core import config
     from core import ik_collision_setup
     from core import robot_cell
+    from core.rhino_bar_registry import get_bar_seq_map as _get_bar_seq_map, is_fake_bar
+
+    # ! A fake bar is a modeling artifact (it only poses a real bar's male
+    # half), so it is excluded from every collision scene -- there would be no
+    # bar_<id> body to grasp and the movements would come out empty. Say so
+    # instead of building a nonsense action.
+    _bar_map_check = _get_bar_seq_map()
+    if bar_id in _bar_map_check and is_fake_bar(_bar_map_check[bar_id][0]):
+        raise RuntimeError(
+            f"Bar '{bar_id}' is marked as a FAKE (non-fabricated) staging bar, so "
+            "the robot never assembles it and it carries no collision geometry. "
+            "Un-mark it in RSBarEdit > FakeBar > Delete if that is wrong."
+        )
 
     # Build the full static-cell template state. `prepare_assembly_collision_state`
     # calls `ensure_assembly_cell` (registers the full canonical assembly + env

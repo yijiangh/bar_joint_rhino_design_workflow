@@ -51,13 +51,18 @@ BAR_SEQ_KEY = "bar_seq"
 BAR_SUPPORTED_UNTIL_KEY = "supported_until"
 BAR_TYPE_VALUE = "scaffolding_bar"
 
-# A "fake" bar is real geometry that will NOT be fabricated.  It exists so the
-# robot has something to mate a real bar against -- temporary staging that is
-# put up by hand and taken down again.  It is a full registered bar in every
-# other respect: it keeps a bar id, an assembly step and its joints, because IK
-# derives "what is already standing" from exactly those, and a support the robot
-# cannot see is a support it will drive through.  Only fabrication output and
-# the sequence display treat it differently.
+# A "fake" bar is a MODELING ARTIFACT that will not be fabricated and is not
+# physically present.  It exists only to give a real bar's male joint something
+# to be modeled against, so the male the robot grasps sits at the right pose.
+# It stays a full registered bar in most respects (bar id, assembly step, its
+# joint halves) so the joint math and the sequence display keep working.
+#
+# ! It is NOT collision geometry: the fake bar and every joint half mounted on
+# it (its females) are excluded from every collision scene -- assembly and
+# support alike -- by `core.env_collision`.  Only the real bar's male half,
+# which is parented to the real bar, survives.  Toggling this mark therefore
+# changes the collision scene, so it is part of the cell staleness fingerprint
+# (`core.robot_cell._live_assembly_fingerprint`).
 #
 # Value is "1" when set; the key is removed otherwise, so the common case (a
 # real bar) costs one absent-key read.

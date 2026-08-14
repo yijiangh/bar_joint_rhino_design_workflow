@@ -678,7 +678,15 @@ def _live_assembly_fingerprint():
     # The naming inputs of `env_collision.collect_assembly_geometry`: bar ids
     # plus each joint block's id / subtype-or-type / parent bar. Plain user-text
     # reads, no meshes -- cheap enough for the every-command staleness probe.
-    name_parts = sorted(str(bid) for bid in seq_map)
+    # The FAKE mark rides along because a fake bar (and its joint halves) is
+    # dropped from the collision scene, so toggling it changes the scene while
+    # changing no count and no coordinate.
+    from core.rhino_bar_registry import get_fake_bar_ids
+
+    fake_bar_ids = get_fake_bar_ids(seq_map)
+    name_parts = sorted(
+        f"{bid}{':fake' if bid in fake_bar_ids else ''}" for bid in seq_map
+    )
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,

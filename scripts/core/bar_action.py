@@ -693,6 +693,13 @@ def _apply_movement_touch_policy(
       mouth already wraps the bar/male at the 15 mm approach pose. So in M1 AND
       M2 the bar whitelists every cradle mate, and each male whose mate is a
       cradle whitelists it in M1 too (M2 already allows the mate for all males).
+      The mating male's own ARM TOOL is whitelisted against that cradle in M1,
+      M2 and M3 as well: PyBullet loads each collision OBJ as its convex hull,
+      and the cradle mesh is ~82% solid inside its 60x72x80 mm box, so the hull
+      is effectively a solid brick that the tool head gripping a seated male
+      cannot avoid overlapping. M3 is included because the retreat backs off
+      only ``LM_DISTANCE`` (15 mm) while the brick is 60-80 mm deep, so the
+      peeling tool is still inside it at the retreat target.
 
     The male<->mate whitelist is recorded on the male / carried-female side (one
     side is enough). The bar tube additionally whitelists BOTH gripper tools while
@@ -775,6 +782,25 @@ def _apply_movement_touch_policy(
                 partners.append(tool)
         # M0/M4 (bar not / no longer held): partners stays empty -> no allow-list.
         male_rb.touch_bodies = sorted(set(partners))
+
+    # (1c) Each CRADLE mate female vs the arm tool of the male seating into it.
+    # The cradle's convex hull is a solid ~60x72x80 mm brick, so the tool head
+    # holding a seated male overlaps it by construction -- in the approach (M1),
+    # the insert (M2) and still at the 15 mm retreat (M3). Written on the female
+    # (a static, already-built body) because CC5 reads the rigid-body side.
+    for jid, arm in arm_to_male.items():
+        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        if female_key not in cradle_female_keys:
+            continue
+        cradle_rb = state.rigid_body_states.get(female_key)
+        tool = tool_ids.get(arm)
+        if cradle_rb is None or not tool:
+            continue
+        existing = set(cradle_rb.touch_bodies or [])
+        if movement in ("M1", "M2", "M3"):
+            cradle_rb.touch_bodies = sorted(existing | {tool})
+        else:
+            cradle_rb.touch_bodies = sorted(existing - {tool})
 
     # (1b) Each grasped GROUND joint half with its own tool (ground bars): the
     # male policy MINUS the M2 mate extras -- the ground joint "mates" with the

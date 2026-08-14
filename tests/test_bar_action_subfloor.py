@@ -119,6 +119,34 @@ def test_bar_allows_cradles_in_m1_m2_only():
     assert _policy("M4", CRADLE_KEYS).rigid_body_states[BAR_KEY].touch_bodies == []
 
 
+def test_cradle_allows_the_mating_arm_tool_in_m1_m2_m3():
+    """The cradle's convex hull is a solid brick -- the seating tool must be allowed."""
+    for movement in ("M1", "M2", "M3"):
+        st = _policy(movement, CRADLE_KEYS)
+        # Left male J26-41 is gripped by AT3L, so ITS cradle allows AT3L only.
+        assert st.rigid_body_states[CRADLE_L].touch_bodies == ["AT3L"]
+        assert st.rigid_body_states[CRADLE_R].touch_bodies == ["AT3R"]
+
+
+@pytest.mark.parametrize("movement", ["M0", "M4"])
+def test_cradle_tool_whitelist_cleared_when_not_at_the_joint(movement):
+    """M0/M4: the tool is away, so the entry is actively removed, not left over."""
+    st = _FakeState(set(ENV_GEOM))
+    st.rigid_body_states[CRADLE_L].touch_bodies = ["AT3L"]  # stale entry
+    bar_action._apply_movement_touch_policy(
+        st, movement, ACTIVE_KEYS, ENV_GEOM, ARM_TO_MALE, {}, BAR_KEY, TOOL_IDS,
+        CRADLE_KEYS,
+    )
+    assert st.rigid_body_states[CRADLE_L].touch_bodies == []
+
+
+def test_non_cradle_female_never_gets_the_tool():
+    """A clamp-style mate keeps an empty whitelist -- the relaxation is cradle-only."""
+    st = _policy("M2", frozenset())
+    assert st.rigid_body_states[CRADLE_L].touch_bodies == []
+    assert st.rigid_body_states[CRADLE_R].touch_bodies == []
+
+
 def test_clamp_style_bar_policy_unchanged():
     """Regression: with no cradle mates, today's exact whitelists are reproduced."""
     m1 = _policy("M1", frozenset())

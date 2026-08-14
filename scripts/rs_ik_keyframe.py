@@ -2324,9 +2324,15 @@ def _run_support_flow(bar_id: str, bar_oid):
         # later needs a different moment's scene.
         env_union = hold_action_builder.get_env_union(bar_map)
         hold_action_builder.ensure_support_env_registered(sr_cell, sr_planner, env_union)
-        # Visible now: bars built strictly BEFORE this step (the held bar itself is
-        # excluded — the gripper wraps around it).
-        env_scene = env_collision.collect_built_geometry(bar_id, bar_map)
+        # Visible: the RELEASE-time built set -- every stabilizing bar that will
+        # exist before this hold ends (the held bar itself is excluded, since the
+        # gripper wraps around it). The hold pose has to clear the whole window,
+        # not just grasp time: a pose that only fits the grasp-time world can sit
+        # exactly where a later stabilizing bar must go, and then block the very
+        # bars the hold exists to enable.
+        env_scene = hold_action_builder.collect_hold_window_geometry(
+            bar_id, hold_plan, bar_map=bar_map
+        )
         template_state = hold_action_builder.build_support_scene_state(
             robot_name, env_union, env_scene
         )

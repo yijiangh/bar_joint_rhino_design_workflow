@@ -240,6 +240,40 @@ def ensure_support_env_registered(sr_cell, planner, env_union):
             planner.set_robot_cell(sr_cell)
 
 
+def collect_hold_window_geometry(held_bar_id: str, hold_plan: dict, bar_map=None):
+    """The built geometry a hold must clear: the RELEASE-time scene.
+
+    A holding pose is not judged against the world at grasp time. It has to
+    survive the WHOLE hold window, and the binding moment is its end: by then
+    every stabilizing bar (and every joint on them) has been installed around
+    the frozen arm. Solving against the grasp-time scene would happily accept a
+    pose sitting exactly where a later stabilizing bar must go -- the hold would
+    look fine when made and then block the very bars it exists to enable.
+
+    Bars only ACCUMULATE during the window, so this release-time set is a
+    superset of every intermediate moment: one scene covers the whole window.
+    The held bar itself is excluded (the gripper is wrapped around it, so its
+    tube would always false-positive).
+
+    Args:
+        held_bar_id (str): the bar being held.
+        hold_plan (dict): a ``derive_hold_plan`` result (must contain the bar).
+        bar_map (dict): a ``get_bar_seq_map`` result; fetched when omitted.
+
+    Returns:
+        dict: ``{name: payload}`` for the release-time built bodies.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    entry = hold_plan[held_bar_id]
+    return env_collision.collect_built_geometry(
+        entry["release_after_bar_id"],
+        bar_map,
+        include_active=True,      # the last stabilizing bar IS built by then
+        exclude_bar_ids=[held_bar_id],
+    )
+
+
 def build_support_scene_state(robot_name: str, env_union: dict, visible_geom: dict):
     """A support state with the whole env placed, and only one scene visible.
 
@@ -373,12 +407,7 @@ def build_release_scene_state(
     entry = hold_plan[held_bar_id]
     release_seq = entry["release_after_seq"]
 
-    release_geom = env_collision.collect_built_geometry(
-        entry["release_after_bar_id"],
-        bar_map,
-        include_active=True,
-        exclude_bar_ids=[held_bar_id],
-    )
+    release_geom = collect_hold_window_geometry(held_bar_id, hold_plan, bar_map=bar_map)
     state = build_support_scene_state(robot_name, env_union, release_geom)
 
     skipped = []
@@ -507,6 +536,10 @@ def resolve_support_keyframe_noninteractive(
     means the user should re-pick interactively). Writes the complete split
     keys on success. Never auto-picks a grasp — grasps are hand-picked.
 
+    Solved against the RELEASE-time scene (see
+    :func:`collect_hold_window_geometry`), so the pose must clear every
+    stabilizing bar that will be installed before the hold ends.
+
     Args:
         bar_id (str): the held bar.
         bar_oid: its Rhino object id.
@@ -542,7 +575,10 @@ def resolve_support_keyframe_noninteractive(
 
     _client, planner, sr_cell = robot_cell_support.ensure_support_cell_pushed(robot_name)
     ensure_support_env_registered(sr_cell, planner, env_union)
-    scene_geom = env_collision.collect_built_geometry(bar_id, bar_map)
+    # Solve against the RELEASE-time scene: the pose must clear every
+    # stabilizing bar that will exist before the hold ends, not just what is
+    # built at grasp time (see collect_hold_window_geometry).
+    scene_geom = collect_hold_window_geometry(bar_id, hold_plan, bar_map=bar_map)
     template = build_support_scene_state(robot_name, env_union, scene_geom)
     robot_obstacles.configure_robot_obstacle(
         template,
@@ -681,9 +717,12 @@ def _read_hold_build_inputs(bar_id: str, bar_oid, hold_plan: dict):
 def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None, env_union=None):
     """Build one held bar's ``BarHoldingAction`` from its stored keyframe.
 
-    Scene = the held bar's own step: bars built before it visible, the held
-    bar itself excluded (the gripper wraps it), Cindy frozen at her assembled
-    pose, any other holding robot frozen at its held pose, the rest parked.
+    Scene = the RELEASE-time built set (every stabilizing bar this hold waits
+    for, see :func:`collect_hold_window_geometry`), the held bar itself
+    excluded (the gripper wraps it), Cindy frozen at her assembled pose, any
+    other holding robot frozen at its held pose, the rest parked. This is the
+    same scene the keyframe was solved against, so the exported states cannot
+    permit a pose the solve would have rejected.
 
     Args:
         bar_id (str): the held bar.
@@ -706,8 +745,9 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
     sr_cell = robot_cell_support.get_or_load_support_cell(robot_name)
     ensure_support_env_registered(sr_cell, None, env_union)
 
-    # Scene at the hold moment.
-    scene_geom = env_collision.collect_built_geometry(bar_id, bar_map)
+    # Scene the hold must clear: release-time (every stabilizing bar built),
+    # the same one the keyframe was solved against.
+    scene_geom = collect_hold_window_geometry(bar_id, hold_plan, bar_map=bar_map)
     scene = build_support_scene_state(robot_name, env_union, scene_geom)
     assembled = load_assembly_payload(bar_oid)
     robot_obstacles.configure_robot_obstacle(

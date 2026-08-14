@@ -582,6 +582,13 @@ def _world_from_base_doc_xform(origin_doc, normal_doc, heading_doc_vec):
     return xform
 
 
+# Context previews (holding robots at their frozen held poses) that must stay
+# on screen through the base pick. Set by the assembly flow while it runs; read
+# by `_bake_robot_meshes_at_zero`, because harvesting ghost meshes hides the
+# whole IK cache layer and would otherwise take the context down with it.
+_ACTIVE_CONTEXT_LAYER_KEYS = []
+
+
 def _bake_robot_meshes_at_zero():
     """Return Rhino meshes for every robot link at zero config (for the ghost preview).
 
@@ -589,8 +596,25 @@ def _bake_robot_meshes_at_zero():
     :func:`ik_viz.get_robot_link_meshes_at_zero` -- baking only happens on the
     first call and is shared with the rest of the IK preview pipeline (so the
     bake cost is amortized rather than thrown away).
+
+    The harvest hides the whole IK cache layer on exit (it assumes the ghost
+    should be the only robot on screen). When context previews are active --
+    support robots frozen holding a bar during this step -- the cache root is
+    turned back on and only the assembly bundle is hidden, so the ghost still
+    reads as the only MOVING robot while the frozen ones stay visible. Same
+    treatment ``support_grasp_pick.support_robot_ghost_meshes`` gives the frozen
+    Cindy backdrop in the support flow.
     """
-    return ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+    meshes = ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+    if _ACTIVE_CONTEXT_LAYER_KEYS:
+        if rs.IsLayer(config.LAYER_IK_CACHE):
+            rs.LayerVisible(config.LAYER_IK_CACHE, True)
+        # Hide the static zero-pose bake the ghost was harvested from; the
+        # conduit draws the moving copy.
+        ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
+        for layer_key in _ACTIVE_CONTEXT_LAYER_KEYS:
+            ik_viz.set_layer_visible(layer_key, True)
+    return meshes
 
 
 def _reach_sphere_meshes(rcell):
@@ -1322,7 +1346,9 @@ def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm, clip_curves=None,
     """
     rs.EnableRedraw(True)
     if robot_meshes is None:
-        robot_meshes = ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+        # Via the shared helper so any active context previews (frozen holding
+        # robots) survive the harvest's cache-layer hide.
+        robot_meshes = _bake_robot_meshes_at_zero()
     scale_from_mm = 1.0 / doc_unit_scale_to_mm()
     arrow_len_mm = max(50.0, 0.4 * float(sample_radius_mm))
     origin_doc, x_axis_doc, z_axis_doc = _frame_mm_to_doc_marker(seed_base_frame_mm)
@@ -2371,6 +2397,17 @@ def _run_support_flow(bar_id: str, bar_oid):
         except Exception as exc:
             print(f"RSIKKeyframe(support): dual-arm context preview failed ({exc}); proceeding without.")
 
+        # The OTHER support robot, if one is frozen holding a bar during this
+        # step: it is in this solve's collision scene (frozen just above), so
+        # draw it too rather than leaving it an invisible obstacle.
+        try:
+            hold_action_builder.show_frozen_holders_context(
+                hold_plan, entry["hold_start_seq"], ik_viz.get_mesh_mode(),
+                bar_map=bar_map, exclude_robot=robot_name,
+            )
+        except Exception as exc:  # noqa: BLE001 -- context viz must not block the pick
+            print(f"RSIKKeyframe(support): holding-robot context preview failed ({exc}).")
+
         # * ---- 4. Grasp pick (persisted immediately).
         grasp_mm, tool0_mm = support_grasp_pick.pick_grasp_frame_on_bar(bar_curve)
         if grasp_mm is None:
@@ -2662,6 +2699,25 @@ def main():
             return
         include_self, include_env, mesh_mode = collision_opts
 
+        # * Draw the support robots that are frozen holding a bar during THIS
+        # step, at the same held poses the collision scene uses. They are real
+        # obstacles for this solve, so the base pick has to be able to see them.
+        # Purely visual -- the collision side was already stamped onto the
+        # movement states by build_split_assembly_movements.
+        try:
+            ctx_bar_map = get_bar_seq_map()
+            ctx_bar_seq, ctx_supported = collect_hold_inputs(ctx_bar_map)
+            ctx_hold_plan = hold_schedule.derive_hold_plan(
+                ctx_bar_seq, ctx_supported, config.SUPPORT_ROBOT_NAMES
+            )
+            _ACTIVE_CONTEXT_LAYER_KEYS[:] = hold_action_builder.show_frozen_holders_context(
+                ctx_hold_plan, int(ctx_bar_seq[target_bar_id]), mesh_mode,
+                bar_map=ctx_bar_map,
+            )
+        except Exception as exc:  # noqa: BLE001 -- context viz must not block the solve
+            _ACTIVE_CONTEXT_LAYER_KEYS[:] = []
+            print(f"RSIKKeyframe: holding-robot context preview skipped ({exc}).")
+
         seed_base_frame = None
         brep_id = None
         heading_mm = None
@@ -2912,6 +2968,11 @@ def main():
     finally:
         rs.EnableRedraw(True)
         ik_viz.end_session()
+        # The holding-robot context previews go down with end_session (it hides
+        # the whole cache layer), but this module stays loaded between runs --
+        # so forget them, or the next run's ghost harvest would try to re-show
+        # context that belongs to another bar's step.
+        _ACTIVE_CONTEXT_LAYER_KEYS[:] = []
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)
         # Base guide lines are transient: gone on EVERY exit -- solved, ESC at any

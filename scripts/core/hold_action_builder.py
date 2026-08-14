@@ -367,6 +367,92 @@ def freeze_holding_robots(state, hold_plan, at_seq, *, exclude_robot=None,
     return skipped
 
 
+# ik_viz sub-layer prefix for holding robots drawn as context in the ASSEMBLY
+# flow (mirror of support_grasp_pick.DUAL_ARM_CONTEXT_LAYER_KEY, which draws
+# frozen Cindy as context in the SUPPORT flow). One bundle per robot, so
+# showing/hiding them never touches the assembly robot's own preview.
+HOLDER_CONTEXT_LAYER_PREFIX = "AssemblyHolder"
+
+
+def holder_context_layer_key(robot_name: str) -> str:
+    """The ik_viz sub-layer key one holding robot's context preview draws on."""
+    return f"{HOLDER_CONTEXT_LAYER_PREFIX} {robot_name}"
+
+
+def show_frozen_holders_context(hold_plan: dict, at_seq: int, mesh_mode, *,
+                                bar_map=None, exclude_robot=None) -> list:
+    """Draw every support robot holding during step ``at_seq`` at its held pose.
+
+    The VIZ twin of :func:`freeze_holding_robots`: that one puts the holding
+    robots into the collision scene, this one puts the same poses on screen, so
+    picking an assembly base frame is done against the scene the IK will
+    actually be solved in (a frozen arm can be the reason a base fails, and
+    without this it is invisible).
+
+    A hold with no solved keyframe cannot be drawn (there is no pose yet); it is
+    reported rather than skipped silently, since the collision scene leaves it
+    out too and the user should know a robot is missing from the picture.
+
+    Args:
+        hold_plan (dict): a ``derive_hold_plan`` result.
+        at_seq (int): the step being planned (the bar about to be assembled).
+        mesh_mode: ik_viz mesh mode ("visual" / "collision") to draw with.
+        bar_map (dict): a ``get_bar_seq_map`` result; fetched when omitted.
+        exclude_robot (str): a robot to leave undrawn (the acting robot).
+
+    Returns:
+        list: the ik_viz layer keys drawn, for :func:`hide_frozen_holders_context`.
+    """
+    # Lazy import: ik_viz is Rhino-display machinery, and this module is also
+    # imported by the (display-free) export path.
+    from core import ik_viz
+
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    drawn = []
+    for robot_name, held_bar_id in robots_holding_at_step(hold_plan, at_seq).items():
+        if robot_name == exclude_robot:
+            continue
+        payload = read_bar_support_keyframe(bar_map[held_bar_id][0])
+        if payload is None:
+            print(
+                f"core.hold_action_builder: NOTE - {robot_name} holds bar "
+                f"{held_bar_id} during this step but that hold is UNSOLVED, so it "
+                "is drawn nowhere and collides with nothing. Solve it "
+                "(RSIKKeyframe on that bar) to see it in the scene."
+            )
+            continue
+        sr_cell = robot_cell_support.get_or_load_support_cell(robot_name)
+        state = robot_cell_support.default_support_cell_state(robot_name)
+        state.robot_base_frame = _mm4_to_frame(payload["base_frame_world_mm"])
+        held = payload["held"]
+        for name, value in zip(held["joint_names"], held["joint_values"]):
+            state.robot_configuration[name] = float(value)
+
+        layer_key = holder_context_layer_key(robot_name)
+        ik_viz.update_state(
+            state, robot_cell=sr_cell, mesh_mode=mesh_mode, layer_key=layer_key,
+        )
+        drawn.append(layer_key)
+        print(
+            f"core.hold_action_builder: {robot_name} drawn holding bar "
+            f"{held_bar_id} (frozen in this step's collision scene)."
+        )
+    return drawn
+
+
+def hide_frozen_holders_context(layer_keys) -> None:
+    """Hide the context previews drawn by :func:`show_frozen_holders_context`.
+
+    Args:
+        layer_keys (list): the keys that function returned.
+    """
+    from core import ik_viz
+
+    for layer_key in layer_keys or []:
+        ik_viz.set_layer_visible(layer_key, False)
+
+
 def build_release_scene_state(
     robot_name: str,
     held_bar_id: str,

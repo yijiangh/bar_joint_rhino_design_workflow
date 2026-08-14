@@ -6,14 +6,16 @@
 Left-click (this script): pick ONE bar. Right-click
 (``rs_clear_ik_keyframe_all.py``): every registered bar.
 
-Either way it then asks WHAT to erase via two toggles, both defaulting to Erase:
+Either way it then asks WHAT to erase via three toggles, all defaulting to Erase:
 
-  - ``Keyframe``     -- the M1-M3 arm IK configs (approach / assembled / retreat,
+  - ``Keyframe``     -- the arm IK configs (approach / assembled / retreat,
                         plus the legacy bundled blob).
   - ``BasePosition`` -- the mobile base frame (so the bar reverts toward "no IK").
+  - ``Support``      -- the support robot's hold keyframe (robot name + base +
+                        grasp + approach/held configs, plus the legacy blob).
 
 Untick a toggle to KEEP that part (e.g. keep the base to re-solve at the same
-spot, or keep the keyframe and only drop the base). M4's home config is a
+spot, or keep the keyframe and only drop the base). The home config is a
 constant, not stored per bar, so it is always left untouched. No PyBullet needed
 -- this only edits user-text on the bar curves.
 """
@@ -38,26 +40,30 @@ from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 
 
 def _ask_what_to_erase(scope_label: str):
-    """Two-toggle prompt: erase the Keyframe and/or the Base position?
+    """Three-toggle prompt: erase the Keyframe / Base position / Support hold?
 
-    Both toggles default to Erase (True), matching the common "wipe it all" case.
+    All toggles default to Erase (True), matching the common "wipe it all" case.
 
     Args:
         scope_label (str): describes what the clear applies to, e.g.
             ``"bar 'B6'"`` or ``"all 12 bar(s)"`` (shown in the prompt).
 
     Returns:
-        tuple[bool, bool] | None: ``(erase_keyframe, erase_base)``, or ``None`` if
-        the user cancelled (Esc).
+        tuple[bool, bool, bool] | None: ``(erase_keyframe, erase_base,
+        erase_support)``, or ``None`` if the user cancelled (Esc).
     """
     choices = rs.GetBoolean(
         f"Choose what to erase on {scope_label}, then press Enter (Esc to cancel)",
-        (("Keyframe", "Keep", "Erase"), ("BasePosition", "Keep", "Erase")),
-        (True, True),
+        (
+            ("Keyframe", "Keep", "Erase"),
+            ("BasePosition", "Keep", "Erase"),
+            ("Support", "Keep", "Erase"),
+        ),
+        (True, True, True),
     )
     if choices is None:
         return None
-    return bool(choices[0]), bool(choices[1])
+    return bool(choices[0]), bool(choices[1]), bool(choices[2])
 
 
 def clear_ik(all_bars: bool) -> None:
@@ -97,23 +103,27 @@ def clear_ik(all_bars: bool) -> None:
         targets = [(bar_id, bar_oid)]
         scope_label = f"bar '{bar_id}'"
 
-    # 2) What to erase -- two toggles, both default Erase.
+    # 2) What to erase -- three toggles, all default Erase.
     answer = _ask_what_to_erase(scope_label)
     if answer is None:
         print(f"{title}: cancelled at the erase prompt.")
         return
-    clear_keyframe, clear_base = answer
-    if not clear_keyframe and not clear_base:
-        rs.MessageBox("Nothing selected to erase (both toggles set to Keep).", 0, title)
+    clear_keyframe, clear_base, clear_support = answer
+    if not clear_keyframe and not clear_base and not clear_support:
+        rs.MessageBox("Nothing selected to erase (all toggles set to Keep).", 0, title)
         return
 
     # 3) Clear each target and tally what actually changed.
     n_changed = 0
     total_removed = 0
     for bar_id, oid in targets:
-        removed = registry.clear_assembly_ik_keyframe(
-            oid, clear_keyframe=clear_keyframe, clear_base_frame=clear_base,
-        )
+        removed = []
+        if clear_keyframe or clear_base:
+            removed += registry.clear_assembly_ik_keyframe(
+                oid, clear_keyframe=clear_keyframe, clear_base_frame=clear_base,
+            )
+        if clear_support:
+            removed += registry.clear_support_ik_keyframe(oid)
         if removed:
             n_changed += 1
             total_removed += len(removed)
@@ -122,13 +132,17 @@ def clear_ik(all_bars: bool) -> None:
             print(f"{title}: bar '{bar_id}' had nothing matching to clear.")
 
     what = " + ".join(
-        label for label, on in (("Keyframe", clear_keyframe), ("Base position", clear_base))
+        label for label, on in (
+            ("Keyframe", clear_keyframe),
+            ("Base position", clear_base),
+            ("Support hold", clear_support),
+        )
         if on
     )
     summary = (
         f"Erased {what} on {n_changed}/{len(targets)} bar(s) "
         f"({total_removed} user-text key(s) removed).\n"
-        "M4 home config is a constant and was left untouched."
+        "Home config is a constant and was left untouched."
     )
     print(f"{title}: {summary}")
     rs.MessageBox(summary, 0, title)

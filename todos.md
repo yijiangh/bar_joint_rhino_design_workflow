@@ -53,6 +53,14 @@ Debatable
   conf's
 
 # Support robot IK
+
+## Finetuning
+
+- the unbuilt structure should be hiden in ik keyframe for holding robot
+- I want the same sampling radius viz for holding ik
+- toggle thru solved keyframes at the end of hold ik
+
+## Initial prompt
 now we are trying to add the support robot back into the ik keyframe. I would like to keep using one ik keyframe button, since only a few bars that has this "unstable" 
 state in the sequence would be eligible for the support robot ik.
 But there are some complications on the scene modeling. Right now, we only have BarAction class that models the process of assembly actions for the dual arm robot.

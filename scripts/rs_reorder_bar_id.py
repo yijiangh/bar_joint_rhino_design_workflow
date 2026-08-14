@@ -36,7 +36,6 @@ Storage locations rewritten (all inside the Rhino doc):
 - Bar centerline curve: ``bar_id`` user-text, ObjectName, ``bar_seq``
 - Tube preview Brep: ``tube_bar_id`` user-text
 - Bar centerline curve: ``supported_until`` comma-list (per-token remap)
-- Bar centerline curve: ``ik_support`` JSON blob -> ``linked_assembled_bar_id``
 - Joint female/male block instance: ``parent_bar_id``, ``connected_bar_id``,
   ``female_parent_bar``, ``male_parent_bar``, ``joint_id``, ObjectName
 - Ground block instance: ``parent_bar_id``, ``joint_id``, ObjectName
@@ -44,7 +43,6 @@ Storage locations rewritten (all inside the Rhino doc):
 """
 
 import importlib
-import json
 import os
 import sys
 
@@ -72,7 +70,6 @@ from core.rhino_helpers import suspend_redraw
 
 
 _PRINT_CAP = 30
-_IK_SUPPORT_KEY = config.IK_SUPPORT_KEY  # "ik_support"
 
 
 # ---------------------------------------------------------------------------
@@ -270,34 +267,15 @@ def _remap_supported_until(curve_oid, bar_rename):
     return True
 
 
-def _remap_ik_support_blob(curve_oid, bar_rename):
-    raw = rs.GetUserText(curve_oid, _IK_SUPPORT_KEY)
-    if not raw:
-        return False
-    try:
-        data = json.loads(raw)
-    except Exception as exc:
-        print(f"  WARNING: could not parse '{_IK_SUPPORT_KEY}' on {curve_oid}: {exc}")
-        return False
-    linked = data.get("linked_assembled_bar_id")
-    if not linked:
-        return False
-    new_linked = bar_rename.get(linked)
-    if new_linked is None:
-        print(
-            f"  WARNING: 'ik_support.linked_assembled_bar_id' = '{linked}' on "
-            f"{curve_oid} doesn't match any current bar; left as-is."
-        )
-        return False
-    if new_linked == linked:
-        return False
-    data["linked_assembled_bar_id"] = new_linked
-    rs.SetUserText(curve_oid, _IK_SUPPORT_KEY, json.dumps(data))
-    return True
+# NOTE the split KEY_SUPPORT_* support keyframe needs NO remap on renumber:
+# it stores a robot name, frames, and joint configs — no bar-id references
+# (its validity vs the sequence is re-checked against a fresh
+# core.hold_schedule.derive_hold_plan on every read instead). The old
+# ``ik_support`` blob's linked_assembled_bar_id remap is gone with the blob.
 
 
 def _apply_rename(bar_rename, jid_remap, seq_map):
-    n_bars = n_tubes = n_supp = n_ik = n_joints = n_grounds = n_tools = 0
+    n_bars = n_tubes = n_supp = n_joints = n_grounds = n_tools = 0
 
     bar_oids = {bid: oid for bid, (oid, _) in seq_map.items()}
 
@@ -327,12 +305,10 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
                     rs.SetUserText(oid, "reference_label", new_label)
                 n_tubes += 1
 
-        # 3 + 4. supported_until + ik_support live on the bar curves themselves.
+        # 3. supported_until lives on the bar curves themselves.
         for oid in bar_oids.values():
             if _remap_supported_until(oid, bar_rename):
                 n_supp += 1
-            if _remap_ik_support_blob(oid, bar_rename):
-                n_ik += 1
 
         # 5. Joint female/male instances.
         for oid in _iter_joint_block_oids():
@@ -380,7 +356,7 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
     sc.doc.Views.Redraw()
     print(
         f"RSReorderBarID: applied. bars={n_bars}, tubes={n_tubes}, "
-        f"supported_until={n_supp}, ik_support={n_ik}, "
+        f"supported_until={n_supp}, "
         f"joints={n_joints}, grounds={n_grounds}, tools={n_tools}"
     )
 

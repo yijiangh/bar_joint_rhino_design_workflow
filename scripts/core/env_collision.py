@@ -264,7 +264,7 @@ def _block_instance_xform_mm(oid):
     return matrix
 
 
-def collect_built_geometry(active_bar_id, bar_seq_map):
+def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exclude_bar_ids=None):
     """Walk ``bar_seq_map`` and build env-collision payloads for every bar with seq < active_seq.
 
     Returns ``{rb_name: {rigid_body, frame_world_mm, kind, source_oid, ...}}``:
@@ -279,7 +279,17 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
     bars of the same length+radius). compas_fab's PyBullet backend creates
     a separate PB body per name, so sharing is safe.
 
-    Skips the active bar AND its joints.
+    Skips the active bar AND its joints by default.
+
+    Args:
+        active_bar_id (str): the step whose scene is being built.
+        bar_seq_map (dict): a ``get_bar_seq_map`` result.
+        include_active (bool): also include the active bar + its joints —
+            used for AFTER-the-step scenes (e.g. the support robot's
+            release-time check runs after the last stabilizing bar is built).
+        exclude_bar_ids (list): bar ids to leave out regardless (e.g. the
+            HELD bar in a release check — the gripper is wrapped around it,
+            so its tube would always false-positive).
     """
     import rhinoscriptsyntax as rs
 
@@ -288,9 +298,13 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
     if active_bar_id not in bar_seq_map:
         return {}
     _active_oid, active_seq = bar_seq_map[active_bar_id]
+    excluded = set(exclude_bar_ids or [])
 
     built_bar_ids = {
-        bid: oid for bid, (oid, seq) in bar_seq_map.items() if seq < active_seq
+        bid: oid
+        for bid, (oid, seq) in bar_seq_map.items()
+        if (seq < active_seq or (include_active and seq == active_seq))
+        and bid not in excluded
     }
     if not built_bar_ids:
         return {}

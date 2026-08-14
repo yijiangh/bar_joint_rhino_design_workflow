@@ -8,12 +8,14 @@
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
 # r: txaio
-"""RSPBStart - Start the shared PyBullet client for IK / FK workflows.
+"""RSPBStart - Start the per-robot PyBullet sessions for IK / FK workflows.
 
-Left-click starts a Direct (headless) connection; the RSPBStartGUI right-click
-entry starts a GUI connection. Either way the dual-arm Husky robot cell is
-loaded into a cached PyBullet planner. Subsequent IK scripts (RSIKKeyframe,
-RSShowIK) reuse this same client via `sc.sticky`.
+Left-click starts Direct (headless) connections; the RSPBStartGUI right-click
+entry gives Cindy (the assembly robot) a GUI window instead. Three persistent
+sessions come up — Cindy plus the Alice/Belle support robots (support sessions
+are always headless; PyBullet allows one GUI per process). Cindy's dual-arm
+cell is loaded right away; the support cells load lazily on their first
+support-IK use. Subsequent IK scripts reuse these sessions via `sc.sticky`.
 
 After the client is up, this also auto-builds the static assembly collision
 cell (the same work as the RSRebuildRobotCell button, including the
@@ -42,7 +44,7 @@ from core.robot_cell import (
     get_or_load_robot_cell,
     is_pb_running,
     rebuild_assembly_cell,
-    start_pb_client,
+    start_pb_sessions,
 )
 from core.rhino_bar_registry import repair_on_entry
 from core.rhino_walkable_ground import rebuild_summary_after_assign
@@ -50,12 +52,12 @@ from core.rhino_walkable_ground import rebuild_summary_after_assign
 
 def main(use_gui: bool = False) -> None:
     if is_pb_running():
-        print("RSPBStart: PyBullet client already running. Run RSPBStop first if you want to restart.")
+        print("RSPBStart: PyBullet sessions already running. Run RSPBStop first if you want to restart.")
         return
 
-    print(f"RSPBStart: Starting PyBullet ({'GUI' if use_gui else 'Direct'}) and loading robot cell...")
-    client, planner = start_pb_client(use_gui=use_gui)
-    print(f"RSPBStart: Robot cell loaded. Client id={client.client_id}.")
+    print(f"RSPBStart: Starting PyBullet sessions ({'GUI' if use_gui else 'Direct'} for Cindy; support robots headless)...")
+    client, planner = start_pb_sessions(use_gui=use_gui)
+    print(f"RSPBStart: Robot cell loaded. Cindy client id={client.client_id}.")
 
     # ! Build the static assembly cell right after startup so the user doesn't
     # ! have to click RSRebuildRobotCell manually before the first IK command.

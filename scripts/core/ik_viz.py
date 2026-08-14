@@ -994,13 +994,15 @@ def _resolve_cell_for_robot_model(robot_model):
             return rcell
     except Exception:
         pass
-    try:
-        from core import robot_cell_support
-        scell = robot_cell_support.get_or_load_support_cell()
-        if scell.robot_model is robot_model:
-            return scell
-    except Exception:
-        pass
+    # Try each support robot's cell (one per robot now).
+    for support_name in config.SUPPORT_ROBOT_NAMES:
+        try:
+            from core import robot_cell_support
+            scell = robot_cell_support.get_or_load_support_cell(support_name)
+            if scell.robot_model is robot_model:
+                return scell
+        except Exception:
+            pass
     return None
 
 

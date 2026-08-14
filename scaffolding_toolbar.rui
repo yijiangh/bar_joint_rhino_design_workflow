@@ -119,6 +119,9 @@
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000016</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000044</right_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000046" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000046</left_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000021" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000021</left_macro_id>
       </tool_bar_item>
@@ -145,6 +148,9 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000051" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000051</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000053" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000053</left_macro_id>
       </tool_bar_item>
     </tool_bar>
   </tool_bars>
@@ -239,6 +245,15 @@
       </tooltip>
       <script>! _-ScriptEditor _R "rs_show_bar_action_plan.py"</script>
     </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000046">
+      <text>
+        <locale_1033>RSShowAssemblyPlan</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Step through the WHOLE assembly movement by movement: every bar's poses concatenated in assembly-sequence order (approach, assembled, hold, retreat, home, then each hold's release after its last stabilizing bar). Enter=next, Prev, Jump, GoToBar, or click a bar to jump there; MeshMode and CheckCollision as in RSShowBarActionPlan.</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_show_assembly_plan.py"</script>
+    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000044">
       <text>
         <locale_1033>RSShowBarActionPlanMotion</locale_1033>
@@ -301,6 +316,15 @@
         <locale_1033>Type a bar id like B4 (case-insensitive; a bare number works too) to select and zoom to that bar's centerline + tube preview. Comma-separate ids (B4,B7) to select several; the prompt loops so you can jump between bars. Read-only.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_select_bar.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000053">
+      <text>
+        <locale_1033>RSSelectJoint</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Type a joint id like J40-53_female (case-insensitive) to select and zoom to that placed joint block. Drop the suffix (J40-53) to select both halves; ground ids like G4-floor-0 and pasted PyBullet body keys like joint_J25-26_male work too. Comma-separate ids to select several; the prompt loops so you can jump between joints. Read-only.</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_select_joint.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001d">
       <text>

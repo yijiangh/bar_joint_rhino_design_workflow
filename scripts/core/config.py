@@ -250,13 +250,38 @@ BAR_GRASP_TO_TOOL0 = _sanitize_bar_grasp_to_tool0(
 
 
 # ---------------------------------------------------------------------------
-# Support (single-arm) robot
+# Robot roster (one assembly robot + two support robots)
 # ---------------------------------------------------------------------------
+# Cindy is the dual-arm assembly robot (constants near the top of this file:
+# ROBOT_ID, HUSKY_URDF_*). Alice and Belle are the single-arm support robots.
+# They are functionally equivalent but each has its OWN calibrated URDF with
+# different kinematic numbers, so a keyframe solved for one is invalid for the
+# other. When a support robot is needed and both are free, the alphabetically
+# first one is picked (Alice before Belle) -- see core.hold_schedule.
 
-SUPPORT_ROBOT_ID = "single-arm_husky_Alice"
+ASSEMBLY_ROBOT_NAME = "Cindy"
+SUPPORT_ROBOT_NAMES = ("Alice", "Belle")  # alphabetical = assignment priority
+
+# Per-support-robot identity and asset locations. All support robots share the
+# same URDF package, planning group, and gripper tool below.
+SUPPORT_ROBOTS = {
+    "Alice": {
+        "robot_id": "single-arm_husky_Alice",
+        "urdf_filename": "husky_ur5_e_no_base_joint_Alice_Calibrated.urdf",
+        "srdf_rel_path": os.path.join("config", "husky.srdf"),
+    },
+    "Belle": {
+        "robot_id": "single-arm_husky_Belle",
+        "urdf_filename": "husky_ur5_e_no_base_joint_Belle_Calibrated.urdf",
+        "srdf_rel_path": os.path.join("config", "belle.srdf"),
+    },
+}
+
+# Robot name -> compas_fab robot id, for every robot in the roster.
+ROBOT_IDS = {ASSEMBLY_ROBOT_NAME: ROBOT_ID}
+ROBOT_IDS.update({name: SUPPORT_ROBOTS[name]["robot_id"] for name in SUPPORT_ROBOT_NAMES})
+
 SUPPORT_URDF_PKG_NAME = "mt_husky_moveit_config"
-SUPPORT_URDF_FILENAME = "husky_ur5_e_no_base_joint_Alice_Calibrated.urdf"
-SUPPORT_SRDF_REL_PATH = os.path.join("config", "husky.srdf")
 SUPPORT_GROUP = "manipulator"  # arm-only chain (ur_arm_base_link -> ur_arm_tool0)
 SUPPORT_TOOL_NAME = "SupportGripper"
 SUPPORT_TOOL_TOUCH_LINKS = ["ur_arm_wrist_3_link"]
@@ -265,13 +290,55 @@ SUPPORT_TOOL_TOUCH_LINKS = ["ur_arm_wrist_3_link"]
 ROBOTIQ_GRIPPER_BLOCK = "Robotiq_Gripper"
 ROBOTIQ_GRIPPER_TOOL_MESH = os.path.join(REPO_ROOT, "asset", "Robotiq_Gripper_m.obj")
 
-# Dual-arm robot loaded as a static articulated tool (collision obstacle) on the support cell
-DUAL_ARM_OBSTACLE_TOOL_NAME = "DualArm"
+# ---------------------------------------------------------------------------
+# Frozen-robot obstacles (multi-robot scenes on a single-robot planner)
+# ---------------------------------------------------------------------------
+# The compas_fab pybullet backend plans for ONE robot per client. Every OTHER
+# robot present in a scene is frozen as a static articulated ToolModel
+# obstacle. These are the fixed lookup names of each frozen robot: the key
+# under which its ToolModel is registered in `rcell.tool_models[...]` at cell
+# build, and the key under which its per-step base frame + arm configuration
+# are set in `state.tool_states[...]` at query time. One name per robot, so
+# scene code can always find "the frozen copy of robot X" no matter whose
+# planning session it lives in.
+OBSTACLE_TOOL_NAMES = {
+    "Cindy": "ObstacleRobotCindy",
+    "Alice": "ObstacleRobotAlice",
+    "Belle": "ObstacleRobotBelle",
+}
 
-# IK persistence on supported bar (legacy single-key blob written by
-# rs_ik_support_keyframe; will be split into the KEY_SUPPORT_* keys below
-# in a follow-up). Keep for backward compat.
-IK_SUPPORT_KEY = "ik_support"
+# Flange (tool0) link each robot's end-effector tool is WELDED to when that
+# robot is frozen as an obstacle inside another robot's cell. The tools are
+# separate ToolModels in a robot's own cell, so without this weld a frozen
+# robot would appear (and collide) bare-armed -- and its gripper/tools sit
+# exactly where the other robot is working.
+SUPPORT_TOOL0_LINK = "ur_arm_tool0"
+ASSEMBLY_TOOL0_LINKS = {
+    "left": "left_ur_arm_tool0",
+    "right": "right_ur_arm_tool0",
+}
+
+# Where a robot that is NOT in the scene gets parked: far away, on the ground,
+# identity rotation. Used for a support robot before its first deployment or
+# after its release, and for Cindy in release-time scenes (she is assumed to
+# have finished assembly and driven away). Parking -- never hiding -- keeps
+# collision checking on while making it geometrically impossible to trigger.
+ROBOT_PARKED_BASE_FRAME_MM = [
+    [1.0, 0.0, 0.0, 50000.0],
+    [0.0, 1.0, 0.0, 50000.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+]
+
+# How far the support gripper backs off from the grasp pose along the gripper
+# tool0 -Z axis (mm). The hold's linear approach starts here and the release's
+# linear retreat ends here (same line, reversed).
+SUPPORT_LM_DISTANCE_MM = 100.0
+
+# NOTE the legacy `ik_support` / `ik_assembly` single-key blobs are gone:
+# everything is written to (and read from) the split KEY_ASSEMBLY_* /
+# KEY_SUPPORT_* keys below. RSClearIKKeyframe still scrubs the legacy keys
+# off old bars.
 
 # ---------------------------------------------------------------------------
 # IK keyframe user-text keys (written on the bar curve).
@@ -294,6 +361,19 @@ KEY_ASSEMBLY_IK_RETREAT = "assembly_ik_retreat"
 KEY_SUPPORT_BASE_FRAME = "support_robot_base_frame_world_mm"
 KEY_SUPPORT_IK_APPROACH = "support_ik_approach"
 KEY_SUPPORT_IK_HELD = "support_ik_held"
+# Which support robot this bar's hold keyframe was solved FOR ("Alice"/"Belle").
+# The keyframe is only valid for that robot's calibrated URDF. Always validated
+# against a fresh core.hold_schedule.derive_hold_plan() on read -- a mismatch
+# means the sequence was edited after solving and the hold must be re-solved.
+KEY_SUPPORT_ROBOT = "support_robot_name"
+# The manually picked grasp frame on the held bar (4x4 list, world mm). Stored
+# so the support IK can be re-solved non-interactively against a changed scene
+# without re-picking, and so the exported holding action can rebuild its
+# Cartesian targets.
+KEY_SUPPORT_GRASP_FRAME = "support_grasp_frame_world_mm"
+# NOTE the support keys hold ONE arm's config: {"joint_names": [...],
+# "joint_values": [...]} -- deliberately NOT the assembly keys' {left, right}
+# wrapper, since support robots have a single arm.
 
 # Dynamic preview / committed preview layer
 SUPPORT_PREVIEW_LAYER = "IKSupportPreview"

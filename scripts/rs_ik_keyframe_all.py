@@ -34,6 +34,10 @@ Flow
 6. On Continue: solve each bar's approach/assembled/retreat chain ONCE at its placed
    base (no base sampling). Solved bars turn ``COLOR_HAS_IK`` (same as already-solved),
    failed bars turn ``COLOR_FAILED``; a popup tallies the outcome.
+7. Support pass: every bar in the hold plan whose grasp + base picks are already
+   stored gets its support keyframe re-solved NON-interactively at the stored
+   base; bars without picks are listed for the single-bar interactive flow
+   (grasps are hand-picked, never auto-generated).
 
 Base guides + preview cleanup
 -----------------------------
@@ -213,12 +217,20 @@ def _solve_one(planner, rcell, ctx, include_self, include_env):
     tool0_left = ikf._block_instance_xform_mm(left_tool_oid)
     tool0_right = ikf._block_instance_xform_mm(right_tool_oid)
     try:
-        movements, _env_geom = ikf.bar_action.build_assembly_movements(
+        jointing_mvts, release_mvts, _env_geom = ikf.bar_action.build_split_assembly_movements(
             rcell, planner, bar_id, base_frame, tool0_left, tool0_right,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"RSIKKeyframeAll: {bar_id}: could not build movements ({exc}).")
         return False
+    # Same solver-facing role map as the single-bar command: approach = the
+    # bar-held transfer's goal (J_M3), assembled = the insert's goal (J_M5),
+    # retreat = the per-arm retreat's goal (R_M2).
+    movements = {
+        "M1": jointing_mvts["M3"],
+        "M2": jointing_mvts["M5"],
+        "M3": release_mvts["M2"],
+    }
 
     # brep_id=None => sampling disabled: exactly one attempt at the placed base.
     solved, used_base = ikf._solve_chain_with_sampling(
@@ -233,10 +245,64 @@ def _solve_one(planner, rcell, ctx, include_self, include_env):
     ikf._write_assembly_keyframes(
         curve, solved["M1"], solved["M2"], solved["M3"], rcell
     )
-    ikf._write_legacy_assembly_blob(
-        curve, used_base, solved["M2"], solved["M1"], rcell
-    )
     return True
+
+
+def _support_resolve_pass(include_self, include_env):
+    """Re-solve support keyframes for held bars whose picks are stored.
+
+    Runs after the assembly loop. For every bar in the hold plan (in
+    hold-start order): if its assembly keyframe + stored grasp/base picks
+    exist, its support IK is re-solved NON-interactively at the stored base;
+    otherwise it is listed for the single-bar interactive flow. Grasps are
+    never auto-picked.
+
+    Returns:
+        tuple: ``(resolved_ids, need_pick_ids, failed)`` where ``failed`` is
+        ``[(bar_id, reason)]``.
+    """
+    from core import hold_action_builder
+    from core.hold_schedule import derive_hold_plan
+    from core.rhino_bar_registry import collect_hold_inputs, get_bar_seq_map
+
+    bar_map = get_bar_seq_map()
+    try:
+        bar_seq, supported = collect_hold_inputs(bar_map)
+        hold_plan = derive_hold_plan(bar_seq, supported, ikf.config.SUPPORT_ROBOT_NAMES)
+    except RuntimeError as exc:
+        print(f"RSIKKeyframeAll: hold plan derivation failed ({exc}); support pass skipped.")
+        return [], [], [("<hold plan>", str(exc))]
+    if not hold_plan:
+        return [], [], []
+
+    resolved, need_pick, failed = [], [], []
+    env_union = hold_action_builder.get_env_union(bar_map)
+    for bar_id in sorted(hold_plan, key=lambda b: hold_plan[b]["hold_start_seq"]):
+        oid = bar_map[bar_id][0]
+        has_picks = bool(
+            rs.GetUserText(oid, ikf.config.KEY_SUPPORT_GRASP_FRAME)
+            and rs.GetUserText(oid, ikf.config.KEY_SUPPORT_BASE_FRAME)
+        )
+        if not ikf.bar_action.has_ik_keyframe(oid) or not has_picks:
+            need_pick.append(bar_id)
+            continue
+        robot_name = hold_plan[bar_id]["robot_name"]
+        print(f"RSIKKeyframeAll: re-solving {robot_name}'s hold on {bar_id} ...")
+        try:
+            skipped = hold_action_builder.resolve_support_keyframe_noninteractive(
+                bar_id, oid, hold_plan, bar_map=bar_map, env_union=env_union,
+                check_collision=bool(include_self or include_env),
+            )
+            for other_robot, other_bar in skipped:
+                print(
+                    f"RSIKKeyframeAll: {bar_id}: release check skipped {other_robot} "
+                    f"(bar {other_bar} not solved yet)."
+                )
+            resolved.append(bar_id)
+        except RuntimeError as exc:
+            failed.append((bar_id, str(exc)))
+            print(f"RSIKKeyframeAll: {bar_id}: support re-solve FAILED ({exc}).")
+    return resolved, need_pick, failed
 
 
 def _ambiguous_ids(placed):
@@ -591,17 +657,37 @@ def main():
                 paint_bar(curve, COLOR_FAILED)
                 print(f"RSIKKeyframeAll: {bar_id} ({i}/{total}) -> FAILED.")
 
+        # Support pass: re-solve every hold whose grasp/base picks are stored;
+        # list the rest for the single-bar interactive flow.
+        support_resolved, support_need_pick, support_failed = _support_resolve_pass(
+            include_self, include_env,
+        )
+
         # Calculation finished: drop the transient preview BEFORE the modal summary
         # so the per-bar solved/failed colors are the only thing left on screen.
         # (The finally below repeats this for every other exit path; both are
         # idempotent.) Only the preview goes -- the saved base frames stay.
         _clear_base_preview(base_frame_viz)
 
-        rs.MessageBox(
-            _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped,
-                     solved_run=True),
-            0, "RSIKKeyframeAll",
-        )
+        msg = _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped,
+                       solved_run=True)
+        support_lines = []
+        if support_resolved:
+            support_lines.append(f"Support holds re-solved: {len(support_resolved)}"
+                                 f"  {', '.join(support_resolved)}")
+        if support_need_pick:
+            support_lines.append(
+                f"Bars still needing an interactive support pick: "
+                f"{', '.join(support_need_pick)}\n"
+                "  (run RSIKKeyframe on each: assembly first if unsolved, then "
+                "re-click for the support flow.)"
+            )
+        if support_failed:
+            support_lines.append("Support re-solve failed:\n" + "\n".join(
+                f"  {b}: {e}" for b, e in support_failed))
+        if support_lines:
+            msg += "\n\n" + "\n".join(support_lines)
+        rs.MessageBox(msg, 0, "RSIKKeyframeAll")
     finally:
         _clear_base_preview(base_frame_viz)
 

@@ -196,10 +196,40 @@ def get_all_bars():
     return bars
 
 
-# Legacy bundled IK blob key (written by older RSIKKeyframe builds before the
-# solution was split into the KEY_ASSEMBLY_* keys in core.config). Cleared for
-# back-compat so an old bar can't keep a stale IK record.
+# Legacy bundled IK blob keys (written by older builds before the solutions
+# were split into the KEY_ASSEMBLY_* / KEY_SUPPORT_* keys in core.config).
+# Cleared for back-compat so an old bar can't keep a stale IK record.
 LEGACY_IK_ASSEMBLY_KEY = "ik_assembly"
+LEGACY_IK_SUPPORT_KEY = "ik_support"
+
+
+def clear_support_ik_keyframe(bar_oid):
+    """Delete a bar's saved support-robot hold keyframe (all split keys).
+
+    The support keyframe is all-or-nothing (robot name + base + grasp +
+    approach + held), so there are no partial-clear switches — everything
+    goes, including the legacy ``ik_support`` blob from older builds.
+
+    Args:
+        bar_oid: Rhino object id of the held bar's curve.
+
+    Returns:
+        list[str]: the user-text keys that were present and removed.
+    """
+    keys = [
+        config.KEY_SUPPORT_ROBOT,
+        config.KEY_SUPPORT_BASE_FRAME,
+        config.KEY_SUPPORT_GRASP_FRAME,
+        config.KEY_SUPPORT_IK_APPROACH,
+        config.KEY_SUPPORT_IK_HELD,
+        LEGACY_IK_SUPPORT_KEY,
+    ]
+    removed = []
+    for key in keys:
+        if rs.GetUserText(bar_oid, key):
+            rs.SetUserText(bar_oid, key)  # 2-arg form deletes the key/value pair
+            removed.append(key)
+    return removed
 
 
 def clear_assembly_ik_keyframe(bar_oid, clear_keyframe=True, clear_base_frame=True):
@@ -638,6 +668,32 @@ def get_unstable_bars(active_bar_id, bar_map=None):
                 unstable.add(bar_id)
                 break
     return unstable
+
+
+def collect_hold_inputs(bar_map=None):
+    """Read the two inputs ``core.hold_schedule.derive_hold_plan`` needs.
+
+    The one Rhino-side gateway into the (Rhino-free) hold derivation, so
+    every consumer — the IK button, the exporters, the schedule builder —
+    reads the SAME document data the same way.
+
+    Args:
+        bar_map (dict): a :func:`get_bar_seq_map` result; fetched when omitted.
+
+    Returns:
+        tuple: ``(bar_seq, supported_until)`` where ``bar_seq`` is
+        ``{bar_id: step int}`` and ``supported_until`` is
+        ``{bar_id: [stabilizing bar ids]}`` (only bars with a non-empty list).
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    bar_seq = {bar_id: seq for bar_id, (_oid, seq) in bar_map.items()}
+    supported_until = {}
+    for bar_id, (oid, _seq) in bar_map.items():
+        deps = get_supported_until(oid)
+        if deps:
+            supported_until[bar_id] = deps
+    return bar_seq, supported_until
 
 
 # ---------------------------------------------------------------------------

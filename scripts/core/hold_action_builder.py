@@ -326,6 +326,10 @@ def freeze_holding_robots(state, hold_plan, at_seq, *, exclude_robot=None,
             payload["held"]["joint_values"],
             payload["held"]["joint_names"],
         )
+        # The frozen gripper is physically clamped around its held bar -- allow
+        # that one contact, or every IK candidate in this scene is vetoed by a
+        # collision no arm configuration can change.
+        robot_obstacles.whitelist_frozen_contact(state, robot_name, [held_bar_id])
     return skipped
 
 
@@ -399,6 +403,12 @@ def build_release_scene_state(
             other_payload["base_frame_world_mm"],
             other_payload["held"]["joint_values"],
             other_payload["held"]["joint_names"],
+        )
+        # Same rule as freeze_holding_robots: the other robot's gripper is
+        # clamped around ITS held bar (present in this release scene), so that
+        # one frozen contact must be allowed.
+        robot_obstacles.whitelist_frozen_contact(
+            state, other["robot_name"], [other_bar_id]
         )
     return state, skipped
 

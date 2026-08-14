@@ -27,6 +27,10 @@ import os
 import numpy as np
 
 from core import config
+# The two bar-body naming schemes a frozen robot's held bar may live under:
+# canonical `bar_<id>` in the dual-arm assembly cell, `env_bar_<id>` in the
+# single-arm support cells.
+from core.env_collision import CANONICAL_BAR_PREFIX, ENV_RB_BAR_PREFIX
 # Session/sticky plumbing + unit converters come from robot_cell. That module
 # lazily imports THIS one inside two functions (base state + cell rebuild), so
 # importing robot_cell at our top level is safe (no import cycle at load time).
@@ -329,6 +333,64 @@ def configure_robot_obstacle(
         joint_names=cfg_joint_names,
     )
     return state
+
+
+def whitelist_frozen_contact(state, robot_name: str, bar_ids) -> list:
+    """Allow a frozen robot obstacle to touch the bar(s) it is clamped onto.
+
+    A frozen robot is an UNATTACHED ToolModel, so compas_fab's CC5 checks it
+    against every rigid body in the scene. The one contact that is real BY
+    CONSTRUCTION — its gripper physically clamped around a held bar — must be
+    allowed, or every IK candidate in the scene is vetoed by a collision that
+    no arm configuration can change (the frozen robot and the held bar are
+    both static, so the pair fails identically in every candidate).
+
+    The allow-list entry goes on the BAR's rigid-body state (`touch_bodies` is
+    the side compas_fab consults for tool<->body pairs), appended without
+    clobbering whatever is already there. Because per-movement touch policies
+    only rewrite the ACTIVE bar's bodies and a held bar is always an earlier
+    static bar, the entry written on a scene template survives into every
+    movement state forked from it.
+
+    Args:
+        state (RobotCellState): the scene state to mutate.
+        robot_name (str): whose obstacle tool to allow (e.g. "Alice").
+        bar_ids (list): plain bar ids the robot is clamped onto, e.g. ["B21"].
+
+    Returns:
+        list: the rigid-body keys that received the entry.
+    """
+    tool_name = config.OBSTACLE_TOOL_NAMES[robot_name]
+    touched = []
+    for bar_id in bar_ids:
+        # The same bar is `bar_<id>` in the assembly cell and `env_bar_<id>`
+        # in a support cell; probe both.
+        key = None
+        for candidate in (
+            f"{CANONICAL_BAR_PREFIX}{bar_id}",
+            f"{ENV_RB_BAR_PREFIX}{bar_id}",
+        ):
+            if candidate in state.rigid_body_states:
+                key = candidate
+                break
+        if key is None:
+            # ! No silent skip: a scene may legitimately exclude the bar (the
+            # acting robot's own held bar is left out because the gripper wraps
+            # it), but say so, since a genuinely missing body means the frozen
+            # contact stays forbidden and IK will veto every candidate.
+            print(
+                f"core.robot_obstacles: NOTE - frozen {robot_name} is clamped "
+                f"onto bar {bar_id}, but this scene has no rigid body "
+                f"'{CANONICAL_BAR_PREFIX}{bar_id}' or '{ENV_RB_BAR_PREFIX}{bar_id}' "
+                "to whitelist (bar excluded from the scene?)."
+            )
+            continue
+        rb = state.rigid_body_states[key]
+        existing = list(rb.touch_bodies or [])
+        if tool_name not in existing:
+            rb.touch_bodies = sorted(set(existing) | {tool_name})
+        touched.append(key)
+    return touched
 
 
 def park_robot_obstacle(state, robot_name: str):

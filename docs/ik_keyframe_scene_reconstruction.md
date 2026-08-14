@@ -676,8 +676,8 @@ to red-highlight real offenders.
 
 ## 8. ACM management — summary
 
-"ACM" (allowed-collision matrix) in this pipeline is authored in exactly **two**
-places, at two levels:
+"ACM" (allowed-collision matrix) in this pipeline is authored in exactly **three**
+places, at three levels:
 
 1. **Tool self-contact (`touch_links`)** — set once per template in
    `base_assembly_cell_state`: each arm tool may touch its own `wrist_2` + `wrist_3`
@@ -685,6 +685,15 @@ places, at two levels:
 2. **Grasp/mate contacts (`touch_bodies`)** — set per movement in
    `_apply_movement_touch_policy`: which body↔body / body↔tool contacts are expected
    while the bar is gripped, mating, or peeling off. Dynamic across M0–M4.
+3. **Frozen-robot contacts (`touch_bodies`)** — set at scene-build time by
+   `robot_obstacles.whitelist_frozen_contact`, called wherever a holding robot is
+   frozen into a scene (`freeze_holding_robots` and the release-scene builder): the
+   frozen robot's obstacle tool is allowed against exactly the held bar its gripper
+   is clamped around (`bar_<id>` in the assembly cell, `env_bar_<id>` in support
+   cells). The pair is static↔static during the solve, so the allowance removes a
+   constant physical-contact veto without losing any configuration-dependent check.
+   It lives only in the states of steps inside the hold window — every template
+   starts back at `touch_bodies=[]`.
 
 Everything else — arm↔arm and link↔link self-collision — is **not** managed here; it
 comes from the robot SRDF's disabled-collision pairs (compas_fab's CC1). The

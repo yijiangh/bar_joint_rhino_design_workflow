@@ -431,20 +431,35 @@ Setup shared by all five (lines 949–968):
 - `template_state, env_geom = prepare_assembly_collision_state(...)`.
 - `arm_to_male = _classify_male_joints_per_arm(bar_id)` — `{joint_id: 'left'|'right'}`,
   routed by each male's tool's L/R suffix (`AT3L`→left, `AT3R`→right).
+- `arm_to_ground = _classify_ground_joints_per_arm(bar_id)` — same map for
+  tool-bearing ground joints (ground bars); empty for a normal bar.
 - `active_keys` = every `env_geom` name whose `parent_bar_id == bar_id`.
 - `bar_key = f"bar_{bar_id}"`; `tool_ids = {"left":"AT3L","right":"AT3R"}`.
 - `bar_arm_side = "left"` (default) — the bar tube + all carried females ride the
   **left** arm; each male rides the arm whose tool grips it.
 
-**Known ground-anchor gap.** `RSIKKeyframe` and
-`ik_collision_setup.resolve_arm_tools_on_bar` accept tool-bearing ground joints as
-arm anchors, including male+ground and two-ground bars. However,
-`_classify_male_joints_per_arm` currently scans only the male-instance layer. An
-active `joint_<jid>_ground` consequently falls through the non-male attachment
-branch (normally attaching to `bar_arm_side`), receives no male/tool
-`touch_bodies` policy, and does not supply that arm's M3 retreat axis. The
-per-arm claims below therefore describe the regular two-male path, not the
-currently incomplete ground-anchor path.
+**Ground-anchor path (ground bars).** A ground bar has no male halves: the arm
+tools grasp its ground joints directly, and each ground joint behaves like a
+female half permanently bonded to the bar (rides with it while gripped, stays in
+world after release). `_classify_ground_joints_per_arm` mirrors the male
+classifier over the ground-instance layer, so a tool-bearing
+`joint_<jid>_ground`:
+
+- attaches to **its own arm's** tool0 (a tool-less ground rides `bar_arm_side`
+  like a carried female);
+- gets the male `touch_bodies` policy **minus the M2 mate extras** (a ground
+  joint mates with the floor, which is not collision geometry — see todos.md):
+  `{its arm tool, bar}` in M1/M2, `{its arm tool}` in M3;
+- supplies that arm's M3 retreat axis via the same `_retreat_tool0_target_mm`
+  ground-block −Z rule.
+
+Ground bars also override the **insertion axis**: the M1 approach offset runs
+along the bar's assigned Walkable Ground normal
+(`rhino_walkable_ground.ground_insertion_normal_mm`, which raises clearly when
+the bar has no assignment or the per-joint normals disagree), so the M2 linear
+insert drops the ground feet perpendicular onto the ground instead of along
+−avg(tool z). Mixed male+ground bars remain untargeted (no special handling and
+no exclusion).
 
 ### 6.1 Attachments — `_set_active_attachments()` (line 489)
 
@@ -457,7 +472,12 @@ if key.startswith("bar_"):                       # bar tube -> bar_arm_side flan
     _attach_body_to_arm_tool0(state, body_world, bar_tool0, bar_arm_side, key)
 elif key is a joint:
     jid, sub = tag.rsplit("_", 1)
-    arm = arm_to_male.get(jid, bar_arm_side) if sub == "male" else bar_arm_side
+    if sub == "male":
+        arm = arm_to_male.get(jid, bar_arm_side)
+    elif sub == "ground":
+        arm = arm_to_ground.get(jid, bar_arm_side)   # grasped ground -> its own arm
+    else:
+        arm = bar_arm_side                           # carried female -> bar's arm
     _attach_body_to_arm_tool0(state, body_world, tool0_arm, arm, key)
 ```
 
@@ -663,7 +683,7 @@ remain important:
 | Area | Current implementation status |
 |---|---|
 | Startup | `RSPBStart` auto-builds Stage 1 after loading the low-level bare cell; `RSRebuildRobotCell` is a refresh/fallback, not a mandatory second startup click. |
-| Ground anchors | Accepted by the picker/tool resolver but not by `_classify_male_joints_per_arm`; attachment, ACM, and M3 retreat are incomplete for `_ground` anchors. |
+| Ground anchors | Implemented: `_classify_ground_joints_per_arm` routes grasped grounds to their own arms (attachment + male-minus-mate ACM + M3 retreat via ground block −Z); insertion runs along the Walkable Ground normal. Mixed male+ground bars untargeted; the floor is still not collision geometry. |
 | Missing joint OBJ cache | `None` is stored but not recognized as a hit, so the missing path is probed again. |
 | Bar cache | Pure movement reuses the local mesh; the world frame changes only after a scene rebuild. |
 | Staleness fingerprint | Counts plus one summed endpoint scalar; it can miss joint/environment edits and cancelling bar edits. |
@@ -675,7 +695,8 @@ remain important:
 These are documentation-visible facts, not claims that every item is necessarily
 wrong for the current project data. In particular, the M2 mate check is safe only
 while the assembly-data invariant guarantees that the same-ID female is already
-built. The ground-anchor and negative-cache items are direct implementation gaps.
+built. The negative-cache item remains a direct implementation gap; the former
+ground-anchor gap is closed (see the ground-anchor path in §6).
 
 ---
 

@@ -11,6 +11,13 @@
 
 - [] disable arm-arm collision when first solving for left (since right is at whatever warm start position at that moment), but when solving for the right arm enable everything.
 
+- [] ground-bar collision realism: the floor is NOT collision geometry today, so a
+  ground bar's approach/insert can dip a tool below the slab without any collision
+  report. Convert the Walkable Ground breps to meshes so they get picked up as
+  environment collision obstacles automatically; when that lands, the assembled/mate
+  poses will need a ground-joint<->floor `touch_bodies` whitelist (mirroring the
+  M2 male<->female-bar rule in `_apply_movement_touch_policy`).
+
 #### Longer term
 
 - [] the ik workflow should allow user to pick male and female joint to grasp. this will require an additional male-joint_from_tool0 transformation.

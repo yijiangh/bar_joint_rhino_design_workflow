@@ -148,15 +148,24 @@ def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, lm_distance_mm:
     return out, axis_world
 
 
-def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm: float):
+def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm: float, approach_dir_mm=None):
     """Approach: both tool0 origins translated by -avg(tool_z) * lm_distance.
 
     This is the single source of the approach offset; ``rs_ik_keyframe`` reads it
     back off ``M1.target_ee_frames`` rather than recomputing it. Tool block local
     +Z points out of the flange toward the joint, so -Z is the retreat direction.
+
+    Args:
+        approach_dir_mm (ndarray | None): when given, use this world direction
+            for the approach offset instead of -avg(tool z). Ground bars pass the
+            walkable-ground normal here, so the approach hovers straight above the
+            ground and the M2 linear insert runs perpendicular onto it.
     """
-    z_avg = (tool0_left_assembled_mm[:3, 2] + tool0_right_assembled_mm[:3, 2]) / 2.0
-    approach_dir = _unit(-z_avg)
+    if approach_dir_mm is not None:
+        approach_dir = _unit(approach_dir_mm)
+    else:
+        z_avg = (tool0_left_assembled_mm[:3, 2] + tool0_right_assembled_mm[:3, 2]) / 2.0
+        approach_dir = _unit(-z_avg)
     offset = approach_dir * float(lm_distance_mm)
     left = np.array(tool0_left_assembled_mm, dtype=float, copy=True)
     right = np.array(tool0_right_assembled_mm, dtype=float, copy=True)
@@ -322,6 +331,40 @@ def _classify_male_joints_per_arm(bar_id: str) -> dict:
         if rs.GetUserText(moid, "parent_bar_id") != bar_id:
             continue
         jid = rs.GetUserText(moid, "joint_id")
+        if not jid:
+            continue
+        toid = find_tool_for_joint(jid)
+        if toid is None:
+            continue
+        tname = rs.GetUserText(toid, "tool_name") or ""
+        side = arm_side_from_tool_name(tname)
+        if side is not None:
+            out[jid] = side
+    return out
+
+
+def _classify_ground_joints_per_arm(bar_id: str) -> dict:
+    """Return ``{joint_id: 'left' | 'right'}`` for every TOOL-BEARING ground joint on `bar_id`.
+
+    # * Ground-bar semantics: a ground joint is a female-like half permanently
+    # bonded to the bar, EXCEPT the arm tools grasp the ground joints directly
+    # (a ground bar has no male halves). This is the mirror of
+    # `_classify_male_joints_per_arm` over the ground-instance layer, matching
+    # the anchor resolution in `ik_collision_setup.resolve_arm_tools_on_bar`.
+    # A tool-less ground joint is simply absent from the result and keeps the
+    # carried-female behavior downstream (rides the bar's arm).
+    """
+    import rhinoscriptsyntax as rs
+    from core import config
+    from core.rhino_tool_place import find_tool_for_joint
+
+    out = {}
+    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
+        return out
+    for goid in rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or []:
+        if rs.GetUserText(goid, "parent_bar_id") != bar_id:
+            continue
+        jid = rs.GetUserText(goid, "joint_id")
         if not jid:
             continue
         toid = find_tool_for_joint(jid)
@@ -525,6 +568,7 @@ def _set_active_attachments(
     active_keys,
     env_geom: dict,
     arm_to_male: dict,
+    arm_to_ground: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     bar_arm_side: str = "left",
@@ -535,6 +579,9 @@ def _set_active_attachments(
     - Canonical male joint (``joint_<jid>_male``) attaches to its classified arm.
     - Canonical female joint (``joint_<jid>_female``) attaches to ``bar_arm_side``
       (rigidly bonded to the bar).
+    - Canonical ground joint (``joint_<jid>_ground``) attaches to its classified
+      arm when a tool grasps it (ground bars: the tools grasp the ground joints
+      directly); a tool-less ground rides ``bar_arm_side`` like a carried female.
 
     Each ``attachment_frame`` = ``inv(tool0_<arm>_assembled_world) @
     body_world_at_assembled`` (i.e. ``tool0_from_body``).
@@ -544,6 +591,8 @@ def _set_active_attachments(
         active_keys (set): canonical names of the grasped bar + its joint halves.
         env_geom (dict): ``{name: body_info}`` with ``frame_world_mm`` world poses.
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        arm_to_ground (dict): ``{joint_id: 'left' | 'right'}`` for the grasped
+            (tool-bearing) ground joints; empty for a normal bar.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm flange
             poses at the assembled keyframe.
         bar_arm_side (str): arm the bar + carried females attach to (default
@@ -566,7 +615,7 @@ def _set_active_attachments(
         # * Only the bar + its joint halves are grasped; skip anything else.
         if not key.startswith(CANONICAL_JOINT_PREFIX):
             continue
-        # Parse the canonical joint key "joint_<jid>_<sub>" (sub = male|female);
+        # Parse the canonical joint key "joint_<jid>_<sub>" (sub = male|female|ground);
         # skip anything that doesn't split cleanly.
         tag = key[len(CANONICAL_JOINT_PREFIX):]
         if "_" not in tag:
@@ -577,6 +626,11 @@ def _set_active_attachments(
         # bar, so it rides the bar's arm.
         if sub == "male":
             arm = arm_to_male.get(jid, bar_arm_side)
+        elif sub == "ground":
+            # * Ground bars: a tool-bearing ground joint is grasped directly, so
+            # it rides ITS OWN arm's flange; a tool-less ground behaves like a
+            # carried female (bonded to the bar -> the bar's arm).
+            arm = arm_to_ground.get(jid, bar_arm_side)
         else:
             arm = bar_arm_side  # females rigidly bonded to bar -> bar's gripper
         # Attach to that arm's assembled flange pose (stores tool0_from_body).
@@ -607,7 +661,7 @@ def _detach_active_to_assembled_world(state, active_keys, env_geom: dict) -> Non
 
 def _apply_movement_touch_policy(
     state, movement: str, active_keys, env_geom: dict, arm_to_male: dict,
-    bar_key: str, tool_ids: dict,
+    arm_to_ground: dict, bar_key: str, tool_ids: dict,
 ) -> None:
     """Set per-movement allowed contacts (``touch_bodies``) on the grasped bodies.
 
@@ -624,6 +678,12 @@ def _apply_movement_touch_policy(
     - **M3** (released, tool peeling off): ``male<->tool`` only -- everything else
       is detached/static, so compas_fab auto-skips it.
     - **M4** (gone): nothing.
+    - **Grasped ground joints** (ground bars: the tool grips the ground joint
+      directly) follow the male policy MINUS the M2 mate extras -- a ground
+      joint mates with the floor, which is not collision geometry today (see
+      todos.md): ``{its arm tool, bar}`` in M1/M2, ``{its arm tool}`` in M3.
+      A tool-less ground joint follows the carried-female policy (``[bar]``
+      while held).
 
     The male<->mate whitelist is recorded on the male / carried-female side (one
     side is enough). The bar tube additionally whitelists BOTH gripper tools while
@@ -643,13 +703,15 @@ def _apply_movement_touch_policy(
             ``joint_<jid>_female`` exists for M2, and to read that female's
             ``parent_bar_id`` so the male can whitelist the female's bar).
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        arm_to_ground (dict): ``{joint_id: 'left' | 'right'}`` for the grasped
+            (tool-bearing) ground joints; empty for a normal bar.
         bar_key (str): canonical name of the grasped bar (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
 
     Returns:
         None: mutates ``state``.
     """
-    # The three blocks below write per-body ``touch_bodies`` allow-lists -- the
+    # The blocks below write per-body ``touch_bodies`` allow-lists -- the
     # only ACM this pipeline authors. compas_fab consumes them ONLY in its CC4
     # (attached body vs other rigid body) and CC5 (tool vs rigid body) checks.
     # They do NOT affect arm<->arm self-collision (that is CC1, driven by the
@@ -695,6 +757,27 @@ def _apply_movement_touch_policy(
         # M0/M4 (bar not / no longer held): partners stays empty -> no allow-list.
         male_rb.touch_bodies = sorted(set(partners))
 
+    # (1b) Each grasped GROUND joint half with its own tool (ground bars): the
+    # male policy MINUS the M2 mate extras -- the ground joint "mates" with the
+    # floor, which is not collision geometry today (see todos.md).
+    #   M1/M2 (held):  {its arm tool, bar}  (the tool grips it; bonded to the bar)
+    #   M3 (peel-off): {its arm tool}
+    #   M0/M4:         []  (always assigned, never left over)
+    for jid, arm in arm_to_ground.items():
+        ground_rb = state.rigid_body_states.get(f"{CANONICAL_JOINT_PREFIX}{jid}_ground")
+        if ground_rb is None:
+            continue
+        tool = tool_ids.get(arm)
+        partners = []
+        if movement in ("M1", "M2"):
+            if tool:
+                partners.append(tool)
+            partners.append(bar_key)
+        elif movement == "M3":
+            if tool:
+                partners.append(tool)
+        ground_rb.touch_bodies = sorted(set(partners))
+
     # (2) Each carried FEMALE joint half is rigidly bonded to the bar while it is
     # gripped, so allow female<->bar contact during M1/M2; clear once released.
     for key in active_keys:
@@ -703,6 +786,19 @@ def _apply_movement_touch_policy(
         frb = state.rigid_body_states.get(key)
         if frb is not None:
             frb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
+
+    # (2b) A tool-LESS ground joint (not in arm_to_ground) is carried exactly
+    # like a bonded female: allow ground<->bar while held, clear otherwise.
+    # Grasped grounds were already set by (1b) -- skip them here.
+    for key in active_keys:
+        if not (key.startswith(CANONICAL_JOINT_PREFIX) and key.endswith("_ground")):
+            continue
+        jid = key[len(CANONICAL_JOINT_PREFIX):].rsplit("_", 1)[0]
+        if jid in arm_to_ground:
+            continue
+        grb = state.rigid_body_states.get(key)
+        if grb is not None:
+            grb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
 
     # (3) The two gripper tools overlap the grasped tube by a few mm on the coarse
     # collision meshes (see note above). Whitelist tool<->bar while the arms are
@@ -721,6 +817,7 @@ def _build_m1(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
     tool0_left_assembled_mm,
@@ -728,6 +825,7 @@ def _build_m1(
     base_frame_world_mm,
     lm_distance_mm: float,
     bar_arm_side: str = "left",
+    approach_dir_mm=None,
 ) -> EndEffectorConstrainedDualArmFreeMovement:
     """Build M1: bar loading position -> approach, gripping the bar (constrained dual-arm).
 
@@ -743,6 +841,8 @@ def _build_m1(
         env_geom (dict): ``{name: body_info}`` with world frames.
         active_keys (set): canonical names of the grasped bar + its joint halves.
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}``.
+        arm_to_ground (dict): ``{joint_id: 'left' | 'right'}`` for grasped ground
+            joints (ground bars); empty for a normal bar.
         bar_key (str): canonical grasped-bar name (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm
@@ -750,6 +850,8 @@ def _build_m1(
         base_frame_world_mm (ndarray): 4x4 mm robot base frame.
         lm_distance_mm (float): approach offset distance.
         bar_arm_side (str): arm the bar attaches to (default ``"left"``).
+        approach_dir_mm (ndarray | None): world direction for the approach offset
+            (ground bars: the walkable-ground normal); ``None`` -> -avg(tool z).
 
     Returns:
         EndEffectorConstrainedDualArmFreeMovement: the M1 movement (start config
@@ -760,15 +862,17 @@ def _build_m1(
     # Start config is planner-computed (see docstring); leave it unset here.
     state.robot_configuration = None
     _set_active_attachments(
-        state, active_keys, env_geom, arm_to_male,
+        state, active_keys, env_geom, arm_to_male, arm_to_ground,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
     )
     _apply_movement_touch_policy(
-        state, "M1", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M1", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids,
     )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
         tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
+        approach_dir_mm=approach_dir_mm,
     )
     return EndEffectorConstrainedDualArmFreeMovement(
         movement_id=f"{bar_id}_J_M3_CDFM_transfer_to_approach",
@@ -782,6 +886,12 @@ def _build_m1(
         notes={
             "constraint": "fixed_relative_ee_transform",
             "approach_offset_mm": float(lm_distance_mm),
+            # Ground bars approach along the walkable-ground normal (hover
+            # straight above); normal bars along -avg(tool z).
+            "approach_axis": (
+                "walkable_ground_normal" if approach_dir_mm is not None
+                else "neg_avg_tool0_z"
+            ),
             "bar_arm_side": bar_arm_side,
             "start_config_is_none": True,
             "planner_fills": "start_state.robot_configuration",
@@ -795,6 +905,7 @@ def _build_m2(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
     tool0_left_assembled_mm,
@@ -803,10 +914,13 @@ def _build_m2(
     approach_groups: dict,
     lm_distance_mm: float,
     bar_arm_side: str = "left",
+    approach_dir_mm=None,
 ) -> EndEffectorConstrainedDualArmLinearMovement:
     """Build M2: approach -> assembled (linear mate), still gripping the bar.
 
-    Shared args are as in :func:`_build_m1`.
+    Shared args are as in :func:`_build_m1` (``approach_dir_mm`` is only used to
+    label the insert axis in the notes -- the linear path itself is implied by
+    start (approach) -> target (assembled)).
 
     Args:
         approach_groups (dict): per-arm approach-keyframe joint config
@@ -822,12 +936,13 @@ def _build_m2(
     _set_robot_base_frame(state, base_frame_world_mm)
     _apply_groups_to_config(state, approach_groups)
     _set_active_attachments(
-        state, active_keys, env_geom, arm_to_male,
+        state, active_keys, env_geom, arm_to_male, arm_to_ground,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
     )
     _apply_movement_touch_policy(
-        state, "M2", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M2", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids,
     )
     return EndEffectorConstrainedDualArmLinearMovement(
         movement_id=f"{bar_id}_J_M5_LM_insert",
@@ -843,7 +958,12 @@ def _build_m2(
         # switching back to plain joint tracking.
         controller=CONTROLLER_CARTESIAN_COMPLIANT,
         notes={
-            "lm_axis": "per_tool0_z_avg",
+            # Ground bars insert perpendicular to the walkable ground; normal
+            # bars along the averaged tool z (the path itself is start->target).
+            "lm_axis": (
+                "walkable_ground_normal" if approach_dir_mm is not None
+                else "per_tool0_z_avg"
+            ),
             "lm_distance_mm": float(lm_distance_mm),
             "bar_arm_side": bar_arm_side,
             "ends_on": "tool_stall_signal",
@@ -857,6 +977,7 @@ def _build_m3(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
     tool0_left_assembled_mm,
@@ -886,20 +1007,40 @@ def _build_m3(
     # tool is still peeling off the male, so allow male<->tool; everything else
     # is static<->static (compas_fab auto-skips).
     _apply_movement_touch_policy(
-        state, "M3", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M3", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids,
     )
 
     retreat_axes_world = {}
     target_left_mm = tool0_left_assembled_mm
     target_right_mm = tool0_right_assembled_mm
     for arm, tool0_assembled in (("left", tool0_left_assembled_mm), ("right", tool0_right_assembled_mm)):
-        # Find this arm's male joint OCF.
+        # Find this arm's anchor joint OCF: its male joint, or -- on a ground
+        # bar -- its grasped ground joint. Same retreat rule either way: the
+        # assembled flange origin shifted along the joint block's world -Z.
         jid = next((j for j, a in arm_to_male.items() if a == arm), None)
-        if jid is None:
+        joint_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male" if jid is not None else None
+        if joint_key is None:
+            gjid = next((j for j, a in arm_to_ground.items() if a == arm), None)
+            if gjid is not None:
+                joint_key = f"{CANONICAL_JOINT_PREFIX}{gjid}_ground"
+        if joint_key is None:
+            # ! This arm has no classified male OR ground joint, so its retreat
+            # target stays at the assembled pose (zero retreat). Say so loudly
+            # instead of silently degrading.
+            print(
+                f"core.bar_action._build_m3: NOTE - arm '{arm}' has no classified "
+                f"male/ground joint on bar '{bar_id}'; its retreat target stays "
+                "at the assembled pose."
+            )
             continue
-        joint_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
         joint_body_info = env_geom.get(joint_key)
         if joint_body_info is None:
+            print(
+                f"core.bar_action._build_m3: NOTE - '{joint_key}' has no cached "
+                f"geometry on bar '{bar_id}'; arm '{arm}' retreat target stays "
+                "at the assembled pose."
+            )
             continue
         target_mm, axis_world = _retreat_tool0_target_mm(
             tool0_assembled, joint_body_info["frame_world_mm"], lm_distance_mm,
@@ -934,6 +1075,7 @@ def _build_m4(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
     base_frame_world_mm,
@@ -959,7 +1101,8 @@ def _build_m4(
     _detach_active_to_assembled_world(state, active_keys, env_geom)
     # Fully released, tools retreated: no special allowed contacts.
     _apply_movement_touch_policy(
-        state, "M4", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M4", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids,
     )
 
     home_cfg = _build_home_configuration(
@@ -984,6 +1127,7 @@ def _build_m0(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
     base_frame_world_mm,
@@ -1029,7 +1173,8 @@ def _build_m0(
     # No grasp, arms independent -> no allowed-touch whitelist (falls through the
     # M1/M2/M3 branches, same as M4).
     _apply_movement_touch_policy(
-        state, "M0", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M0", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids,
     )
     return IndependentDualArmFreeMovement(
         movement_id=f"{bar_id}_J_M0_free_to_load",
@@ -1075,9 +1220,12 @@ def build_split_assembly_movements(
 
     Everything each movement needs is known here without IK:
       - tool0 at the assembled pose = the placed tool block world transforms,
-      - the approach EE targets = a pure geometric offset of those,
-      - the retreat EE targets = the male-joint OCF offset,
-      - attachments / allowed-touch policy = cell geometry + arm classification.
+      - the approach EE targets = a pure geometric offset of those (ground bars:
+        along the assigned walkable ground's normal instead of -avg tool z),
+      - the retreat EE targets = the anchor-joint (male or grasped ground) OCF offset,
+      - attachments / allowed-touch policy = cell geometry + arm classification
+        (males AND tool-bearing ground joints -- ground bars are grasped at their
+        ground joints).
     Only ``robot_configuration`` is movement-state data that IK supplies.
 
     The manual / tool movements are timeline events (no arm motion) whose
@@ -1153,6 +1301,12 @@ def build_split_assembly_movements(
 
     arm_to_male = _classify_male_joints_per_arm(bar_id)
 
+    # * Ground bars: the arm tools grasp the GROUND joints directly (no male
+    # halves on the bar). Classified additively so the male path stays untouched.
+    arm_to_ground = _classify_ground_joints_per_arm(bar_id)
+    if arm_to_ground:
+        print(f"core.bar_action: ground-grasp classification for '{bar_id}': {arm_to_ground}")
+
     # * The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
     active_keys = {
         name for name, body_info in env_geom.items()
@@ -1160,6 +1314,22 @@ def build_split_assembly_movements(
     }
     bar_key = f"{CANONICAL_BAR_PREFIX}{bar_id}"
     tool_ids = robot_cell.arm_tool_ids()
+
+    # * Ground bars insert perpendicular to their assigned walkable ground: the
+    # approach (M1 target) hovers straight above the assembled pose along the
+    # ground's normal, so the linear insert (M2) drops the ground feet onto it.
+    # Contact points = every ground-joint block origin on this bar (grasped or
+    # carried). The helper raises a clear error when the bar has no assigned
+    # walkable ground or the per-joint normals disagree (no silent fallback).
+    approach_dir_mm = None
+    if arm_to_ground:
+        from core.rhino_walkable_ground import ground_insertion_normal_mm
+        ground_points_mm = [
+            np.asarray(env_geom[k]["frame_world_mm"], dtype=float)[:3, 3]
+            for k in sorted(active_keys)
+            if k.startswith(CANONICAL_JOINT_PREFIX) and k.endswith("_ground")
+        ]
+        approach_dir_mm = ground_insertion_normal_mm(bar_map[bar_id][0], ground_points_mm)
 
     # The active bar/joint frames in the template are the assembled-pose world
     # frames; every Mi rewrites them (M1/M2 attach to tool0, M3/M4 detach to
@@ -1173,31 +1343,33 @@ def build_split_assembly_movements(
     # the code reads in movement order; it forks the same template independently,
     # so the build order among M0-M4 does not matter (see module docstring).
     m0 = _build_m0(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
         bar_key, tool_ids,
         base_frame_world_mm,
     )
     # M1's start config is planner-computed (left None); it needs no HOME values
     # or planning-group names, unlike M4 which targets the fixed home pose.
     m1 = _build_m1(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
         bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         config.LM_DISTANCE,
         bar_arm_side=bar_arm_side,
+        approach_dir_mm=approach_dir_mm,
     )
     m2 = _build_m2(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
         bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         approach_groups,
         config.LM_DISTANCE,
         bar_arm_side=bar_arm_side,
+        approach_dir_mm=approach_dir_mm,
     )
     m3 = _build_m3(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
         bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
@@ -1210,6 +1382,7 @@ def build_split_assembly_movements(
     # the actual home the user authored.
     m4 = _build_m4(
         template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
+        arm_to_ground,
         bar_key, tool_ids,
         base_frame_world_mm,
         config.HOME_CONF_LEFT_6, config.HOME_CONF_RIGHT_6,

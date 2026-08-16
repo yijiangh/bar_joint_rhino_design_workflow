@@ -1458,3 +1458,632 @@ position `HEAD` has held, including ones no branch points at any more) for a cou
 > Rule of thumb: `--soft` undoes the *commit*, `--mixed` also undoes the *`git add`*, `--hard`
 > also undoes the *editing*. If you are unsure which you want, `--soft` is the one that cannot
 > lose anything — and check the two columns of `git status --short` before and after.
+
+---
+
+## 23. Which module do I put a preview in? (the four viz mechanisms)
+
+> ⚠️ **Naming, not Python.** Nothing here is enforced by the language. It is a house split
+> by *how the preview reaches the screen*, and the module names have drifted away from it,
+> so the table is the real map.
+
+I wanted to show a marker during RSJointEdit → MoveJoint and could not tell which module it
+belonged in — there are five files with "viz" or "preview" in the name. They are not five
+flavours of the same thing. They are **four different mechanisms**, and picking the wrong one
+is what makes previews get left behind in the document:
+
+| module | mechanism | lives where | cleaned up by |
+|---|---|---|---|
+| `core/dynamic_preview.py` | **display conduit** | nowhere — painted per frame by Rhino's display pipeline | setting `Enabled = False` (the `with` block's `finally`) |
+| `core/ik_viz.py` | **compas scene objects** | a cached scene, one drawing object per robot/tool/body | rebuilding or clearing the cache |
+| `core/base_guide_viz.py`, `core/base_frame_viz.py` | **baked geometry** | real Rhino objects on a dedicated preview layer | deleting the layer's contents wholesale |
+| `core/highlight_env.py`, `rhino_bar_registry.paint_bar` | **color override** | no new objects — recolors geometry that already exists | resetting `ObjectColorSource` back to by-layer |
+
+### Why the split matters more than the naming
+
+**A conduit cannot be left behind.** It never becomes a document object, so there is nothing
+to delete, no layer to purge, and the `.3dm` is untouched. Escaping the command runs the
+`with` block's `finally`, the conduit switches off, and the screen is clean. That is why
+MoveJoint's markers are a conduit: the command can be cancelled at four different prompts.
+
+**Baked geometry is the opposite** — it is in the document the moment you draw it, so every
+exit path has to remember to clear it, and a crash leaves junk on the preview layer for the
+next session to find. Worth it when you need the preview to be *pickable* (the base guides
+are — you click one to choose a base position). You cannot click a conduit.
+
+**Color overrides** touch geometry you did not create, so the only thing to restore is the
+override itself, and it must be restored from a recorded list of what you touched — see
+`highlight_env.highlight_env_for_ik`, which returns a token of every oid it painted.
+
+### The name that lies
+
+`core/dynamic_preview.py` is named after its *first* conduit (`MeshPreviewConduit`, the
+half-transparent mesh that follows the cursor). It now holds four, and only that one follows
+the cursor. Read the module as "the display conduits", not as "the dynamic preview".
+
+> Rule of thumb: does the preview need to be **clicked**? Bake it on a preview layer. Does it
+> only need to be **seen**? Conduit — nothing to clean up. Is the thing already an object in
+> the document? Recolor it and keep a list so you can put it back.
+
+---
+
+## 24. `BeginUndoRecord` — making one Ctrl+Z undo a whole command
+
+Before this, no script in `scripts/` opened an undo record, and MoveJoint carried a comment
+promising "Ctrl+Z undoes the whole move". It did not. Rhino creates **one undo record per
+document operation**, and a single MoveJoint iteration performs about fifteen of them — move
+the bar, delete the old tube, add a new one, delete four block instances, insert four, delete
+and re-insert two tools. Ctrl+Z peeled off the *last* one and left the model worse than
+either end state.
+
+`sc.doc.BeginUndoRecord(name)` opens a bracket; everything until `EndUndoRecord` collapses
+into one entry in Rhino's undo stack:
+
+```python
+undo = sc.doc.BeginUndoRecord("RSJointEdit MoveJoint")
+try:
+    ...                       # any number of document edits
+finally:
+    sc.doc.EndUndoRecord(undo)   # finally: an exception must not leave it open
+```
+
+This is **real Rhino API** (`RhinoDoc.BeginUndoRecord`), not a repo convention. Two things I
+got wrong first:
+
+**It is not a rollback.** The record only groups edits so the *user* can undo them later. It
+does nothing when the user presses Esc mid-command — at that moment the command is still
+running and the record is still open. Cancelling has to actively put things back, which is
+what `_restore()` in `_run_move_joint` does: transform the bar's endpoints back onto the ones
+captured before the first edit, then rebuild the joints from the flags they started with.
+
+**Open it after the cosmetics.** MoveJoint colors bars before it edits anything, and resets
+those colors in its `finally`. Color changes are undoable operations too, so opening the
+record *before* the painting would fold them in and make Ctrl+Z fight the reset. The record
+is opened after the paint and closed before the reset, so it brackets the geometry only.
+
+> Rule of thumb: `BeginUndoRecord` is for *after* the command ends. Cancelling *during* the
+> command is your own job — capture what you need to restore before the first edit.
+---
+
+## 25. Grasshopper components — what is different from a Rhino command
+
+Everything before this section was about `scripts/rs_*.py`: a file Rhino runs top to
+bottom when you click a toolbar button. A **Grasshopper component** is a different
+animal, and several of its habits will bite you if you assume otherwise. This came up
+building `RSGHSequencePreview` / `RSGHCameraControl` (see
+[grasshopper_animation.md](grasshopper_animation.md)).
+
+Labelled as always: **convention** = a name this repo or Grasshopper chose, **real
+Python** = language syntax you can look up.
+
+### `ghenv` is injected, not imported — *(Grasshopper convention)*
+
+In a normal script you `import` everything you use. In a GH script component there is a
+variable called `ghenv` that you never defined and never imported: Grasshopper puts it in
+the script's namespace before running it. `ghenv.Component` is the component itself — the
+box on the canvas — and from it you can reach its parameters, its GUID, and the GH
+document it lives in.
+
+You will not find `ghenv` in any `import` line, and your editor will flag it as an
+undefined name. That is expected; it only exists at runtime inside Grasshopper. This repo
+already relies on it in
+[GH_init_pb.py:7](../support_materials/gh_keyframe_demos/python/GH_init_pb.py#L7).
+
+### Inputs and outputs are free variables — *(Grasshopper convention)*
+
+A component's inputs arrive as bare variables. If the component has an input named
+`enable`, then `enable` simply *exists* when your code runs, with no assignment anywhere.
+Outputs work the same way in reverse: assign to a variable named after an output param and
+GH reads it back out afterwards.
+
+This is why a GH script looks like it is full of undefined names. It is a real
+language-level oddity, not a style choice — the host is injecting them into the module
+globals, the same mechanism as `ghenv`.
+
+### Script mode vs SDK mode — *(Grasshopper convention)*
+
+Rhino 8's Python 3 component has two ways of writing the same thing.
+
+| | Script mode (the default) | SDK mode |
+| --- | --- | --- |
+| shape of the file | bare statements, top to bottom | a class deriving from `Grasshopper.Kernel.GH_ScriptInstance` |
+| where inputs come from | free variables, as above | arguments of `def RunScript(self, ...)` |
+| creating params | you zoom in on the component and click `+` for each one, then type its nickname | **generated from the signature** |
+| type hint | set per-param in the UI | the annotation: `enable: bool` |
+| List Access | right-click the param → List Access | inferred from `poses: List[str]` |
+| outputs | assign to named variables | `return a, b` — order matters |
+
+You get SDK mode by clicking **Convert To GH_ScriptInstance** on the Script Editor
+dashboard. Our two components are written that way, purely so that pasting one file
+produces a fully wired component. Four things to know:
+
+- **The argument name becomes the parameter NickName.** `gh_bridge.ensure_int_slider(ghenv,
+  "step", ...)` finds the right input only because the argument is called `step`. Rename
+  the argument and you silently rename the parameter.
+- **Sync goes both ways, and the editor wins.** Editing the signature rebuilds the params;
+  adding a param on the canvas rewrites the signature. You do not own that line of code —
+  the editor does, and it edits it in place while you watch. Two ways that surprises you,
+  both of which cost an afternoon here:
+  - it converts Python type hints to **.NET** ones, so `poses: List[str]` comes back as
+    `poses: System.Collections.Generic.List[object]`. If the file has no `import System`
+    the component then dies with `undefined name 'System'` — so ship the import even
+    though nothing you wrote uses it. Items also arrive wrapped (`GH_String` rather than
+    `str`), which is why `normalize_poses` unwraps `.Value` before reading them;
+  - the rewrite can **dedent `def RunScript` out of the class**, which surfaces as
+    `unindent does not match any outer indentation level` pointing straight at the def.
+    The file on disk is fine; the editor's copy is not. Re-indent the def to 4 spaces
+    under the `class` line and leave the signature text exactly as the editor wrote it.
+    Never delete the `class` line — a module-level `def RunScript(self, ...)` is not a
+    component.
+- **The class is instantiated fresh on every solve.** `self.anything = x` is gone by the
+  next solve. Anything that must persist goes in `sc.sticky` (see §20).
+- **A Button is not a parameter setting.** SDK mode can generate a boolean input but not
+  the Button component that feeds it; wire one yourself.
+
+### An unconnected input is `None`, not your default — *(Grasshopper convention)*
+
+This one looks like a Python question and is not. Given
+
+```python
+def run(ghenv, enable=False, step=0, show_unbuilt=True):
+```
+
+a Python caller that omits `step` gets `0`. **Grasshopper never omits it.** The host passes
+every parameter explicitly, and an unwired input is passed as `None` — so the default in the
+signature never fires. The symptom in the smoke test was
+`TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'` from a bare `b + 1`.
+
+Left alone this is quietly wrong rather than loud: every unwired boolean reads as falsy, so a
+component comes up with its whole legend switched off and nothing explains why. Normalise the
+inputs once at the top of the function instead of trusting the signature:
+
+```python
+def _flag(value, default):
+    return default if value is None else bool(value)
+```
+
+The defaults in the signature then serve as documentation, and `_flag(x, True)` is what
+actually decides.
+
+### `sc.doc` points at the wrong document — *(Grasshopper convention, and the nastiest one)*
+
+Inside a GH component, `scriptcontext.doc` is the **Grasshopper** document, not the open
+`.3dm`. Everything in §20 about `sc.doc` still holds — it just points somewhere else.
+
+So a call like `rs.ObjectColor(oid, color)` or `rs.LayerVisible(name, False)` runs, returns
+without error, and changes nothing you can see, because it addressed the GH document.
+There is no exception and no warning; the viewport simply does not update, which sends you
+looking for a bug in the colour logic that is not there.
+
+The fix is to swap it for the length of your code and swap it back —
+`core.gh_bridge.rhino_doc()`:
+
+```python
+with gh_bridge.rhino_doc():        # sc.doc = Rhino.RhinoDoc.ActiveDoc
+    show_sequence_colors(...)      # now actually paints the model
+# sc.doc restored here, even if the body raised
+```
+
+`with` is real Python (see the context-manager section earlier) — the restore sits in a
+`finally`, so an exception mid-solve cannot leave the GH document pointing at the `.3dm`.
+
+### You may not edit the GH document while it is solving — *(Grasshopper rule)*
+
+`RSGHSequencePreview` creates its own `step` slider. But adding an object to the canvas
+means mutating the GH document, and you are being *called by* that document mid-solution.
+Doing it directly is illegal and Grasshopper will complain or crash.
+
+The way round it is to hand GH a function to run in a moment, once the current solution is
+finished:
+
+```python
+ghdoc.ScheduleSolution(1, Grasshopper.Kernel.GH_Document.GH_ScheduleDelegate(_edit))
+```
+
+"In 1 millisecond, start a fresh solution, and call `_edit` first." The practical
+consequence for the caller is that **the slider does not exist yet when the function
+returns** — you get its value on the *next* solve. That is why slider creation is bound to
+a button rather than run on every pass.
+
+### Two copies of the same pasted code — *(why `gh_bridge.state()` exists)*
+
+Nothing stops you pasting the same component twice. If both copies wrote their remembered
+values to one fixed sticky key — say `"bar_joint:gh:seq_preview"` — they would quietly
+corrupt each other:
+
+| shared value | what goes wrong |
+| --- | --- |
+| recorded layer visibility | A records "centerlines were visible" and hides them. B finds a record already there so records nothing. Disable A → it pops the record and restores. B is now hiding layers with no record of the original state, and disabling B restores nothing. Your layers stay hidden with nothing on the canvas explaining why. |
+| button edge (`reload`) | A's press is stored under the key B reads; B's next solve overwrites it with `False`. The press is swallowed, or fires twice. |
+| "session opened" flag | Disabling A ends the `ik_viz` session B thinks is still open, and B silently stops updating. |
+| render-skip fingerprint | Each overwrites the other's, so the skip never matches and both re-pose the robot on every tick. |
+
+`gh_bridge.state(ghenv)` keys the sticky slot by `ghenv.Component.InstanceGuid` — the GUID
+Grasshopper gives each *instance* on the canvas — so each copy gets its own dict.
+
+What that does **not** fix: two simultaneously enabled copies still fight over one Rhino
+document (same colours, same layers, one globally cached `ik_viz` bundle), and GH's solve
+order decides who wins. Per-component state only guarantees each copy can cleanly undo
+what it did. Enable one at a time.
+
+### Why the components re-import themselves every solve — *(real Python)*
+
+```python
+importlib.reload(_gh_bridge_module)
+module = importlib.reload(_gh_seq_preview_module)
+```
+
+`importlib.reload` re-reads a module's source and re-executes it, replacing the functions
+in the already-imported module object. Without it, Python's import cache would hold the
+first version of `core.gh_seq_preview` for the whole Rhino session, and editing the file
+would change nothing until you restarted Rhino. Same trick as `_reload()` at the top of
+every `rs_*.py`.
+
+The side effect: **module-level variables reset on every solve.** That is the other half of
+why persistent state has to live in `sc.sticky` rather than in a module global.
+
+### `idx // n` and `idx % n` — one slider, two dimensions *(real Python)*
+
+`RSGHSequencePreview` has one integer slider, but a frame is really a pair: *which bar* and
+*which of the robot's four movements*. The two are pulled back out with integer division
+and remainder — the same arithmetic as reading a two-digit odometer.
+
+With 20 bars and `poses = ["M1", "M4"]`:
+
+```
+idx        0        1        2        3        4        5      ...
+bar     bar[0]   bar[0]   bar[1]   bar[1]   bar[2]   bar[2]
+pose      M1       M4       M1       M4       M1       M4
+```
+
+- `idx // len(poses)` — `//` is **floor division**: divide and throw the remainder away.
+  It answers "how many complete bars have I passed". `3 // 2 == 1` → `bar[1]`.
+- `idx % len(poses)` — `%` is **modulo**, the remainder. It answers "how far into the
+  current bar am I". `3 % 2 == 1` → `poses[1]` == `"M4"`.
+
+`%` cycles `0,1,0,1,…` forever, which is exactly the repeating pose row; `//` ticks up once
+per full cycle, which is exactly the bar row. The bar is the slow digit, so the ordering is
+called **bar-major**.
+
+---
+
+## 26. `git add -p` — committing *part* of a file, and the everyday git commands
+
+> ⚠️ **Real git behaviour**, not a repo convention. Every command here is built into git;
+> nothing was invented by this project. Builds on [§22](#22-git-reset---soft-head1-orig_head--undoing-a-commit-without-losing-work),
+> which explains the three layers (working tree / staging area / branch pointer) these all move
+> things between.
+
+### The problem it solves
+
+One commit should be one idea. But a file often ends up holding **two unrelated edits at once**,
+because you were working on both in the same session.
+
+That happened exactly here. `scripts/rs_ik_keyframe.py` had **15 changed regions**:
+
+- **1** of them renamed `LM_DISTANCE` to `LM_APPROACH_DISTANCE` in the docstring — that belongs
+  with the config/bar_action commit, because shipping the rename without it leaves a docstring
+  naming a constant that no longer exists.
+- **14** of them were base-guide, pose-preview and joint-flag work — a completely different topic.
+
+`git add scripts/rs_ik_keyframe.py` stages **the whole file**, so it would drag all 14 into a
+commit about renaming a constant. `git add -p` stages the file *piece by piece* instead.
+
+### What a "hunk" is
+
+A **hunk** is one contiguous block of changed lines plus a few unchanged lines above and below
+for context. Git splits every diff into hunks automatically and labels each with an `@@` header:
+
+```
+@@ -23,7 +23,7 @@ origins are tool0 (the robot flange frame) for IK. The script then:
+    Brep face.
+ 4. Previews the robot via ``core.ik_viz``.
+ 5. Repeats 3-4 for the approach pose, offset along
+-   ``-unit(avg(tool_z_L, tool_z_R)) * LM_DISTANCE``.
++   ``-unit(avg(tool_z_L, tool_z_R)) * LM_APPROACH_DISTANCE``.
+ 6. On accept, writes ``ik_assembly`` user-text (JSON payload) on the bar
+```
+
+Read `@@ -23,7 +23,7 @@` as "7 lines starting at line 23, before and after". Lines starting
+with `-` are being removed, `+` added, and a leading space means unchanged context.
+
+### Using it
+
+```bash
+git add -p scripts/rs_ik_keyframe.py     # one file
+git add -p                               # every changed file, in turn
+```
+
+Git shows one hunk and waits. You answer per hunk:
+
+| key | meaning |
+|---|---|
+| `y` | **yes** — stage this hunk |
+| `n` | **no** — skip it (stays in the working tree, just not in this commit) |
+| `s` | **split** — chop this hunk into smaller ones, when one hunk covers two ideas |
+| `e` | **edit** — hand-edit the hunk, when even `s` cannot separate them |
+| `q` | **quit** — stop here; whatever you already answered `y` to stays staged |
+| `d` | skip this hunk **and all remaining hunks in this file** |
+| `a` | stage this hunk **and all remaining hunks in this file** |
+| `?` | print this list |
+
+`n` is not destructive and does not undo anything. It only means "not in *this* commit" — the
+change is still on disk, and shows up in the second column of `git status --short` (§22).
+
+**`s` is the one worth remembering.** If a hunk contains both a rename and a real change, `s`
+splits it at the blank/context lines. It only works when there is unchanged context between the
+two parts; when there is not, `e` drops you into an editor where you delete the `+` lines you do
+not want and turn the `-` lines you do not want back into context lines (replace the leading `-`
+with a space).
+
+### The same `-p` works on other commands
+
+| command | what it does hunk-by-hunk |
+|---|---|
+| `git add -p` | stage part of your changes |
+| `git restore -p` | **throw away** part of your changes (destructive — the only dangerous one) |
+| `git restore --staged -p` | unstage part of what you staged |
+| `git stash -p` | stash part of your changes, keep the rest |
+| `git diff -p` | just show the diff (`-p` is the default here, so you rarely type it) |
+
+### When you cannot use the interactive prompt
+
+`git add -p` needs a live terminal to type `y`/`n` into. Some environments cannot give it one —
+an editor's task runner, CI, or an AI agent driving a shell. The non-interactive equivalent is
+to write the hunk to a `.patch` file and apply it **to the staging area only**:
+
+```bash
+git diff -U3 -- scripts/rs_ik_keyframe.py > full.patch
+# keep the 4 header lines (diff/index/---/+++) plus the one @@ hunk you want,
+# save as one.patch, then:
+git apply --cached one.patch
+```
+
+`--cached` means "apply to the staging area, not to the files on disk", so the working tree is
+untouched — exactly what `git add -p` + `y` does. Verify with
+`git diff --cached -- <file>`: it should show only the hunk you kept.
+
+### The everyday commands, grouped by what you are trying to do
+
+**Where am I?**
+
+| command | answers |
+|---|---|
+| `git status --short` | what is changed, and is it staged? (the two columns — see §22) |
+| `git diff` | what have I changed but **not** staged? |
+| `git diff --cached` | what exactly is going into the next commit? |
+| `git diff --stat` | same, but just a per-file line count — good for a quick overview |
+| `git log --oneline -10` | the last 10 commits, one line each |
+| `git branch --show-current` | which branch am I on |
+
+> Habit worth building: run `git diff --cached` **before** every `git commit`. It is the only
+> way to see the commit you are actually about to make, rather than the one you think you are.
+
+**Staging**
+
+| command | does |
+|---|---|
+| `git add <file>` | stage the whole file |
+| `git add -p <file>` | stage selected hunks (above) |
+| `git restore --staged <file>` | unstage it; the file on disk is untouched |
+| `git add -u` | stage every *tracked* file that changed (not new files) |
+
+**Undoing** (see §22 for the commit-level ones)
+
+| command | undoes |
+|---|---|
+| `git restore <file>` | your edits to that file — **destructive**, the edits are gone |
+| `git restore --staged <file>` | the `git add`, not the edits — safe |
+| `git reset --soft HEAD~1` | the last commit, keeping everything staged — safe |
+| `git stash` / `git stash pop` | park all changes, then bring them back |
+
+**History**
+
+| command | shows |
+|---|---|
+| `git log --oneline --follow -- <file>` | that file's history, across renames |
+| `git log -1 --format='%h %ad %s' --date=short <hash>` | one commit's hash, date and subject |
+| `git show <hash>` | the full diff of one commit |
+| `git blame <file>` | which commit last touched each line |
+| `git reflog` | every position `HEAD` has held — the rescue log (§22) |
+
+> Rule of thumb: `add` and `restore --staged` move things between the **staging area** and the
+> **working tree** and can always be redone. Only `restore <file>` (no `--staged`) and
+> `reset --hard` touch the files on disk destructively. If a command has `--staged` or `--cached`
+> in it, it is not going to lose your edits.
+
+---
+
+## 27. `jp`, `jr`, LE and LN — where exactly is a joint measured from?
+
+> ⚠️ **Repo convention**, not Python. These four names are this project's own; the maths
+> behind them is in `core/joint_pair.py`. Related: [§11](#11-the-m_target_from_source-naming-system)
+> on `M_<target>_from_<source>`, and [§17](#17-why-is-everything-a-4x4-matrix-and-what--does)
+> on why everything is a 4x4.
+
+Everything hangs off the **bar frame**, built by `canonical_bar_frame_from_line(bar_start,
+bar_end)` (`core/joint_pair.py:235`):
+
+- **origin** = `bar_start` — *one end of the bar*, not its middle
+- **Z** = along the bar, pointing at `bar_end`
+- **X** = `orthogonal_to(Z)` — *a* perpendicular, picked deterministically from Z
+- **Y** = Z x X
+
+A half is then placed with two numbers, `jp` and `jr` (`fk_half_from_bar_frame`, `:257`)::
+
+    block_frame = bar_frame @ T_z(jp) @ R_z(jr) @ M_block_from_bar
+    screw_frame = block_frame @ M_screw_from_block
+
+### `jp` = joint position — a slide ALONG the bar
+
+```
+   bar_start                                                   bar_end
+   (bar_frame origin)
+        *=========================*=========================*
+        |<------- jp (mm) ------->|
+        |                      station                Z ----->
+        |                       point             (along the bar)
+```
+
+**From** `bar_start`, **to** the station point, **along** the bar axis.
+`jp = 0` is at `bar_start`; `jp = bar length` is at `bar_end`. It can go negative or past the
+end — the solver's bounds allow 100 mm of overhang either side by default.
+
+### `jr` = joint rotation — a spin ABOUT the bar
+
+```
+   LOOKING DOWN THE BAR, from bar_start toward bar_end
+
+                   Y
+                   ^
+                   |        / the half, spun by jr
+                   |      /
+                   |    /
+                   |  /  )
+          ---------O----+------> X
+                   |   jr, measured from X toward Y
+                   |
+              O = the bar axis, coming at you
+```
+
+**Axis of rotation** = the bar's own centre-line. **Measured from** the bar frame's X.
+
+> Trap: X is only *a* perpendicular derived from the bar direction — it means nothing
+> physically. So **`jr = 0` is not a meaningful pose**; only *differences* in `jr` are.
+
+### LE and LN — which bar is which
+
+The letters are never spelled out anywhere in this repo (I looked). What is defined is the
+mapping:
+
+| name | is | carries |
+|---|---|---|
+| **LE bar** | `female_parent_bar` user-text | the **female** half |
+| **LN bar** | `male_parent_bar` user-text | the **male** half |
+
+```
+        LE bar  =  the bar carrying the FEMALE half
+        ===========================================
+                        | female
+                        O  <- screw: both halves must meet here
+                        | male
+        -------------------------------------------
+        LN bar  =  the bar carrying the MALE half
+```
+
+### `le_rev` / `ln_rev` — and why flipping MOVES a joint
+
+They do **not** spin a block. They say "measure this bar from its *other* end":
+
+```
+le_rev = False :  *---------------->     bar_start here, Z this way
+le_rev = True  :     <---------------*   bar_start at the OTHER end, Z reversed
+```
+
+Four combinations, numbered `variant_index` 0-3 (`variant_index(le_rev, ln_rev)`).
+
+Reversing changes **three things at once**: the origin jumps to the far end, Z reverses, and
+`X = orthogonal_to(Z)` becomes a different vector. The half now hangs off a completely
+different frame — it is **mirrored, not rotated**. Its screw ends up on the other side of the
+bar axis, and since the two halves must meet at the screw, the whole pair shifts.
+
+Measured on a T20 pair, all four variants mate perfectly (0.000 mm error) but the mate point
+sits at either `+30` or `-30` mm across the bar — a **60 mm jump** when you flip. The male's
+`jp` did not change at all (975.0 in every variant): it is not sliding along its bar, its
+screw is being mirrored across it.
+
+> Rule of thumb: RSJointEdit's FlipJoint moving the pair is **not a bug**. A "flip" selects a
+> different one of the four assemblies, and they genuinely mate in different places. Bar
+> length and solver bounds make no difference — the 60 mm comes from the joint's own geometry.
+> If a stub bar is too short to contain that movement, lengthen the bar, not the bounds.
+
+---
+
+## 28. Parked — understood, measured, NOT built yet
+
+> 🚧 **NOTHING IN THIS SECTION IS IMPLEMENTED.** Both items were worked out and then
+> deferred at a deadline. The point of writing them down is so the work can restart from
+> here instead of re-deriving it. Each says what is known, what is *not* known, and what to
+> learn first.
+
+### a) Flipping a joint is ~50x slower than it needs to be — **NEED TO LEARN**
+
+**Status:** measured, understood, not implemented.
+
+**What happens today.** RSJointEdit's flip re-solves the pair with
+`optimize_pair_placement`, which drops **48 starting guesses** and runs a local optimiser
+from each, keeping whichever lands best:
+
+- **36 grid seeds** — the two `jp` values fixed at the bars' closest-approach point, and the
+  two `jr` angles swept every 60 degrees: 6 x 6 combinations.
+- **12 random seeds** — the same `jp` +/- 50 mm, random `jr`. `np.random.default_rng(0)` is
+  seeded with 0, so the "random" 12 are *the same 12 every run*.
+
+**Measured** on a T20 pair, flipping the male side:
+
+| approach | mate error | time |
+|---|---|---|
+| 48 blind seeds (what runs today) | 0.000000 mm | **772 ms** |
+| 1 seed, taken from the pose it is already in | 0.000003 mm | **15.6 ms** |
+
+Same answer, 50x faster. Both far inside the 0.05 mm acceptance tolerance.
+
+**The proposed change.** Seed from the current pose instead of from nothing: for the side
+being flipped map `jp -> bar_length - jp` and `jr -> -jr` (measure from the other end, spin
+the other way), run **one** optimisation, and check `is_variant_acceptable`. If it passes,
+done. If not, fall back to today's 48-seed sweep. The acceptance gate is unchanged, so
+quality cannot drop; it is only ever faster.
+
+**What to learn first**, in order:
+
+1. What a **local optimiser** is, and why L-BFGS-B finds the bottom of *a* valley rather than
+   the lowest one. A ball rolling downhill from wherever you drop it.
+2. What a **seed / starting guess** is, and why a problem with several valleys needs more
+   than one.
+3. Why 48 and not 5 or 500 — read the comment on `_seed_grid`: 60-degree spokes are chosen so
+   every valley has a seed within one spoke.
+4. Then [§27](#27-jp-jr-le-and-ln--where-exactly-is-a-joint-measured-from) for what `jp` and
+   `jr` mean, which is what the seed mapping is doing.
+
+**Known risk.** The `jp -> L - jp, jr -> -jr` mapping is a *heuristic*. It gave the identical
+answer in the one case measured, but it is not proven for every geometry — which is exactly
+why the fallback is part of the design, not an afterthought.
+
+### b) Four spellings of "pick an option" — **NEED TO DO**
+
+**Status:** agreed, not implemented (deferred at a deadline).
+
+Eight prompts across the repo ask the user to pick an option after a button is clicked. Each
+is hand-written, about 20 lines, and there are **four different shapes**:
+
+| shape | how Enter behaves | where |
+|---|---|---|
+| Enter takes a default | `SetCommandPromptDefault` + `AcceptNothing(True)` | RSBarEdit, RSJointEdit, RSJointPlace, RSSelectBar |
+| must choose | `AcceptNothing(False)`, no default line | RSReorderBarID x2, RSTempPlace |
+| default set but never *shown* | `AcceptNothing(True)` but **no** `SetCommandPromptDefault` | `rs_ik_keyframe._ask_reuse_saved_base` |
+| default, but Esc returns `"cancel"` not `None` | | `rs_ik_keyframe._ask_save_base_or_continue` |
+
+Four spellings of one idea is what makes the pattern hard to copy correctly.
+
+**The proposed change.** One helper, `core/rhino_prompts.ask_option(prompt, options,
+default=None)`, where `default=None` means must-choose. Every command keeps its own
+`_ask_mode()` wrapper so no call site moves; the wrapper's body shrinks to a call plus a
+label-to-internal-string mapping:
+
+```python
+def _ask_mode():
+    """BarLength or FakeBar.  Returns "length" / "fake" / None."""
+    choice = ask_option("Edit bar lengths, or mark bars as non-fabricated staging",
+                        ["BarLength", "FakeBar"], default="BarLength")
+    return {"BarLength": "length", "FakeBar": "fake"}.get(choice)
+```
+
+About 160 lines of near-duplicate code become one helper plus eight three-line wrappers, and
+the only thing that varies between commands is whether they pass `default=`.
+
+**Do it in this order**, so a mistake is cheap: write the helper, migrate ONE command, click
+it through in Rhino, then do the rest. Migrating `_ask_reuse_saved_base` also fixes its
+missing default line for free.
+
+**Also worth tidying at the same time:** three wrappers are called `_ask_mode`, one is
+`_ask_place_mode`.

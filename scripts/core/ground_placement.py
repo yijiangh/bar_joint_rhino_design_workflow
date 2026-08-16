@@ -77,7 +77,7 @@ GROUND_INSTANCES_LAYER = config.LAYER_JOINT_GROUND_INSTANCES
 JOINT_ROLE_GROUND = "ground"
 
 # UserText `joint_type` value for ground joints (parallels female/male types
-# written by `core.joint_placement._write_joint_user_text`).
+# written by `core.joint_placement.write_joint_user_text`).
 GROUND_JOINT_TYPE = "ground"
 
 # Single preview color (no variant cycling for ground joints).

@@ -266,12 +266,12 @@ def _bar_unit_direction(curve_id):
     return direction / norm
 
 
-def _block_orientation_tag(block_x_world, bar_dir):
+def block_orientation_tag(block_x_world, bar_dir):
     """``"P"`` if the block's local +X axis points toward the bar end, ``"N"`` otherwise."""
     return "P" if float(np.dot(block_x_world, bar_dir)) > 0 else "N"
 
 
-def _write_joint_user_text(
+def write_joint_user_text(
     obj_id,
     *,
     joint_id,
@@ -340,8 +340,8 @@ def place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id, *, pair):
 
     le_dir = _bar_unit_direction(le_id)
     ln_dir = _bar_unit_direction(ln_id)
-    female_ori = _block_orientation_tag(female_frame[:3, 0], le_dir)
-    male_ori = _block_orientation_tag(male_frame[:3, 0], ln_dir)
+    female_ori = block_orientation_tag(female_frame[:3, 0], le_dir)
+    male_ori = block_orientation_tag(male_frame[:3, 0], ln_dir)
 
     var_idx = int(result.get("variant_index", 0))
     le_rev_val, ln_rev_val = variant_flags(var_idx)
@@ -357,7 +357,7 @@ def place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id, *, pair):
         rs.ObjectName(female_id, f"{joint_id}_female")
         rs.ObjectName(male_id, f"{joint_id}_male")
 
-        _write_joint_user_text(
+        write_joint_user_text(
             female_id,
             joint_id=joint_id,
             block_type=female_type,
@@ -374,7 +374,7 @@ def place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id, *, pair):
             ln_rev=ln_rev_val,
             var_idx=var_idx,
         )
-        _write_joint_user_text(
+        write_joint_user_text(
             male_id,
             joint_id=joint_id,
             block_type=male_type,
@@ -422,6 +422,8 @@ __all__ = [
     "variant_index",
     "variant_flags",
     "insert_block_instance",
+    "block_orientation_tag",
+    "write_joint_user_text",
     "compute_variant",
     "interface_metrics",
     "is_variant_acceptable",

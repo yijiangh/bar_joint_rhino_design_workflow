@@ -120,25 +120,30 @@ def _grasp_frame_in_tool0(tool0_world_mm, body_world_mm) -> Frame:
     return _mm4_to_frame(grasp_mm)
 
 
-def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, lm_distance_mm: float):
-    """tool0 frame at retreat = assembled rotation, origin shifted by -joint_z * d."""
+def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, retreat_distance_mm: float):
+    """tool0 frame at retreat = assembled rotation, origin shifted by -joint_z * d.
+
+    Distance is ``config.LM_RETREAT_DISTANCE`` -- a separate knob from the approach
+    offset below, since the released arms pull clear further than they pushed in.
+    """
     j = np.asarray(joint_world_mm, dtype=float)
     axis_world = _unit(-j[:3, 2])  # joint local -Z
     out = np.array(tool0_assembled_mm, dtype=float, copy=True)
-    out[:3, 3] = out[:3, 3] + axis_world * float(lm_distance_mm)
+    out[:3, 3] = out[:3, 3] + axis_world * float(retreat_distance_mm)
     return out, axis_world
 
 
-def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm: float):
-    """Approach: both tool0 origins translated by -avg(tool_z) * lm_distance.
+def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, approach_distance_mm: float):
+    """Approach: both tool0 origins translated by -avg(tool_z) * approach_distance.
 
-    This is the single source of the approach offset; ``rs_ik_keyframe`` reads it
-    back off ``M1.target_ee_frames`` rather than recomputing it. Tool block local
-    +Z points out of the flange toward the joint, so -Z is the retreat direction.
+    Distance is ``config.LM_APPROACH_DISTANCE``. This is the single source of the
+    approach offset; ``rs_ik_keyframe`` reads it back off ``M1.target_ee_frames``
+    rather than recomputing it. Tool block local +Z points out of the flange toward
+    the joint, so -Z is the retreat direction.
     """
     z_avg = (tool0_left_assembled_mm[:3, 2] + tool0_right_assembled_mm[:3, 2]) / 2.0
     approach_dir = _unit(-z_avg)
-    offset = approach_dir * float(lm_distance_mm)
+    offset = approach_dir * float(approach_distance_mm)
     left = np.array(tool0_left_assembled_mm, dtype=float, copy=True)
     right = np.array(tool0_right_assembled_mm, dtype=float, copy=True)
     left[:3, 3] = left[:3, 3] + offset
@@ -693,7 +698,7 @@ def _build_m1(
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
-    lm_distance_mm: float,
+    approach_distance_mm: float,
     bar_arm_side: str = "left",
 ) -> EndEffectorConstrainedDualArmFreeMovement:
     """Build M1: bar loading position -> approach, gripping the bar (constrained dual-arm).
@@ -715,7 +720,8 @@ def _build_m1(
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm
             flange poses at the assembled keyframe.
         base_frame_world_mm (ndarray): 4x4 mm robot base frame.
-        lm_distance_mm (float): approach offset distance.
+        approach_distance_mm (float): approach offset distance
+            (``config.LM_APPROACH_DISTANCE``).
         bar_arm_side (str): arm the bar attaches to (default ``"left"``).
 
     Returns:
@@ -735,7 +741,7 @@ def _build_m1(
         state, "M1", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
     )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
-        tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
+        tool0_left_assembled_mm, tool0_right_assembled_mm, approach_distance_mm,
     )
     return EndEffectorConstrainedDualArmFreeMovement(
         movement_id=f"{bar_id}_M1_CDFM_bar_loading_to_approach",
@@ -748,7 +754,7 @@ def _build_m1(
         target_configuration=None,
         notes={
             "constraint": "fixed_relative_ee_transform",
-            "approach_offset_mm": float(lm_distance_mm),
+            "approach_offset_mm": float(approach_distance_mm),
             "bar_arm_side": bar_arm_side,
             "start_config_is_none": True,
             "planner_fills": "start_state.robot_configuration",
@@ -768,7 +774,7 @@ def _build_m2(
     tool0_right_assembled_mm,
     base_frame_world_mm,
     approach_groups: dict,
-    lm_distance_mm: float,
+    approach_distance_mm: float,
     bar_arm_side: str = "left",
 ) -> EndEffectorConstrainedDualArmLinearMovement:
     """Build M2: approach -> assembled (linear mate), still gripping the bar.
@@ -807,7 +813,9 @@ def _build_m2(
         target_configuration=None,
         notes={
             "lm_axis": "per_tool0_z_avg",
-            "lm_distance_mm": float(lm_distance_mm),
+            # Key name kept as-is for downstream consumers; the value is the
+            # APPROACH distance -- M2 travels back over M1's offset.
+            "lm_distance_mm": float(approach_distance_mm),
             "bar_arm_side": bar_arm_side,
         },
     )
@@ -825,7 +833,7 @@ def _build_m3(
     tool0_right_assembled_mm,
     base_frame_world_mm,
     assembled_groups: dict,
-    lm_distance_mm: float,
+    retreat_distance_mm: float,
 ) -> IndependentDualArmLinearMovement:
     """Build M3: assembled -> retreated (per-arm linear), bar released.
 
@@ -864,7 +872,7 @@ def _build_m3(
         if joint_body_info is None:
             continue
         target_mm, axis_world = _retreat_tool0_target_mm(
-            tool0_assembled, joint_body_info["frame_world_mm"], lm_distance_mm,
+            tool0_assembled, joint_body_info["frame_world_mm"], retreat_distance_mm,
         )
         if arm == "left":
             target_left_mm = target_mm
@@ -883,7 +891,9 @@ def _build_m3(
         target_configuration=None,
         notes={
             "lm_axis": "per_joint_neg_z",
-            "lm_distance_mm": float(lm_distance_mm),
+            # Key name kept as-is for downstream consumers; the value is the
+            # RETREAT distance (config.LM_RETREAT_DISTANCE), not M1/M2's approach.
+            "lm_distance_mm": float(retreat_distance_mm),
             "retreat_axes_world": retreat_axes_world,
         },
     )
@@ -1114,7 +1124,7 @@ def build_assembly_movements(
         bar_key, tool_ids,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
-        config.LM_DISTANCE,
+        config.LM_APPROACH_DISTANCE,
         bar_arm_side=bar_arm_side,
     )
     m2 = _build_m2(
@@ -1123,7 +1133,7 @@ def build_assembly_movements(
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         approach_groups,
-        config.LM_DISTANCE,
+        config.LM_APPROACH_DISTANCE,
         bar_arm_side=bar_arm_side,
     )
     m3 = _build_m3(
@@ -1132,7 +1142,7 @@ def build_assembly_movements(
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         assembled_groups,
-        config.LM_DISTANCE,
+        config.LM_RETREAT_DISTANCE,
     )
     # M4 returns the arms to the fixed dual-arm home pose. Use the real saved
     # home split (HUSKY_DUAL_ARM_HOME_CONF_12) rather than the zero

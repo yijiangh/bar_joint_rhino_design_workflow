@@ -134,8 +134,20 @@ HUSKY_URDF_PKG_NAME = "mt_husky_dual_ur5_e_moveit_config"
 HUSKY_URDF_FILENAME = "husky_dual_ur5_e_no_base_joint_All_Calibrated.urdf"
 HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
 
-# Approach distance: tool0 translated by -avg(male z) * LM_DISTANCE before final
-LM_DISTANCE = 15.0  # mm
+# Linear-mate (LM) offsets, in mm. Two knobs rather than one, because approach
+# and retreat want different clearances: the approach is a short, well-conditioned
+# straight push into the mate, while the retreat has to pull the tools fully clear
+# of the just-mated joint before the free move home.
+#
+# Approach (M1 target = M2 start): BOTH tool0 frames translated by
+# ``-unit(avg(male z)) * LM_APPROACH_DISTANCE`` off the assembled pose -- one
+# shared axis, so the bar stays rigid between the arms
+# (`core.bar_action._compute_approach_targets_mm`).
+LM_APPROACH_DISTANCE = 15.0  # mm
+# Retreat (M3 target): bar released, so each arm pulls back INDEPENDENTLY along
+# its OWN male joint's world -Z by this distance
+# (`core.bar_action._retreat_tool0_target_mm`).
+LM_RETREAT_DISTANCE = 50.0  # mm
 
 # Fixed dual-arm "home" configuration used by Plan M4 (return-to-home after
 # bar placement). Order matches the canonical left-then-right arm joint order
@@ -288,7 +300,7 @@ KEY_ASSEMBLY_BASE_FRAME = "assembly_robot_base_frame_world_mm"
 KEY_ASSEMBLY_IK_APPROACH = "assembly_ik_approach"
 KEY_ASSEMBLY_IK_ASSEMBLED = "assembly_ik_assembled"
 # Retreat = the M3 target pose (bar released, both arms pull back along the
-# joint -Z by LM_DISTANCE). rs_ik_keyframe now solves this third keyframe and
+# joint -Z by LM_RETREAT_DISTANCE). rs_ik_keyframe now solves this third keyframe and
 # saves its per-arm config here, next to approach/assembled.
 KEY_ASSEMBLY_IK_RETREAT = "assembly_ik_retreat"
 KEY_SUPPORT_BASE_FRAME = "support_robot_base_frame_world_mm"

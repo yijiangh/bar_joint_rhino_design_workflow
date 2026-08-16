@@ -23,7 +23,7 @@ origins are tool0 (the robot flange frame) for IK. The script then:
    Brep face.
 4. Previews the robot via ``core.ik_viz``.
 5. Repeats 3-4 for the approach pose, offset along
-   ``-unit(avg(tool_z_L, tool_z_R)) * LM_DISTANCE``.
+   ``-unit(avg(tool_z_L, tool_z_R)) * LM_APPROACH_DISTANCE``.
 6. On accept, writes ``ik_assembly`` user-text (JSON payload) on the bar
    curve; robot meshes are cleared.
 

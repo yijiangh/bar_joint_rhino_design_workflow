@@ -527,15 +527,18 @@ bar↔tool whitelist, scoped to the one movement where the two actually approach
 | **M0** | IndependentDualArmFreeMovement | `None` (live current) | — | — | ✔ | `[]` | `[]` | `[]` | `None` (goal back-filled from M1 start) |
 | **M1** | EndEffectorConstrainedDualArmFreeMovement | `None` (planner-filled, seeded from M0 end) | left `tool0` | its-arm `tool0` | — | `{tool, bar}` | `[bar]` | `{AT3L, AT3R}` | approach = −avg(tool z)·15 mm |
 | **M2** | EndEffectorConstrainedDualArmLinearMovement | approach config | left `tool0` | its-arm `tool0` | — | `{tool, bar, female(jid) + female's bar if key exists}` | `[bar]` | `{AT3L, AT3R}` | assembled `tool0` frames |
-| **M3** | IndependentDualArmLinearMovement | assembled config | — | — | ✔ | `{tool}` | `[]` | `{AT3L, AT3R}` | per-arm retreat = joint −Z·15 mm |
+| **M3** | IndependentDualArmLinearMovement | assembled config | — | — | ✔ | `{tool}` | `[]` | `{AT3L, AT3R}` | per-arm retreat = joint −Z·50 mm |
 | **M4** | IndependentDualArmFreeMovement | `None` → retreat config | — | — | ✔ | `[]` | `[]` | `[]` | `None`; `target_configuration` = HOME |
 
 - `tool` for a male = its own arm's tool (`AT3L` if left-classified, `AT3R` if
   right-classified).
-- `LM_DISTANCE = 15.0` mm. Approach targets: `_compute_approach_targets_mm` (line
-  129) shifts both assembled flanges by `−unit(avg(left z, right z)) · LM`. Retreat
-  targets: `_retreat_tool0_target_mm` (line 120) shifts each assembled flange along
-  its joint's local −Z by `LM`.
+- Two LM offsets, both in `core.config`: `LM_APPROACH_DISTANCE = 15.0` mm and
+  `LM_RETREAT_DISTANCE = 50.0` mm. Approach targets: `_compute_approach_targets_mm`
+  shifts both assembled flanges by `−unit(avg(left z, right z)) · LM_APPROACH`.
+  Retreat targets: `_retreat_tool0_target_mm` shifts each assembled flange along
+  its joint's local −Z by `LM_RETREAT`. The retreat is longer on purpose: the bar
+  is already released, so the arms pull fully clear of the mated joint before the
+  free move home.
 - Only **M1, M2, M3** are IK-solved. M0 and M4 are free moves whose goals are a
   config (HOME for M4) or back-filled at deploy time (M0), not EE frames.
 

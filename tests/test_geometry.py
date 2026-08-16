@@ -6,6 +6,7 @@ from core.geometry import (
     closest_params_finite_segments,
     closest_params_infinite_lines,
     distance_infinite_lines,
+    points_on_line_at_distance,
 )
 
 
@@ -266,3 +267,70 @@ class TestFrameFromXAndYHint:
 
         with pytest.raises(ValueError):
             frame_from_x_and_y_hint((0, 0, 0), (1.0, 0.0, 0.0), (-4.0, 0.0, 0.0))
+
+
+class TestPointsOnLineAtDistance:
+    """Sphere-cuts-line, the constraint behind RSJointEdit -> MoveJoint.
+
+    The far joint must stay on its own host bar (the line) while staying the
+    same distance from the joint being moved (the sphere), because the bar
+    between them is rigid.
+    """
+
+    LINE_START = np.array([0.0, 0.0, 0.0])
+    LINE_END = np.array([10.0, 0.0, 0.0])
+
+    def test_two_crossings_when_sphere_cuts_the_line(self):
+        # Centre 3 above the line, radius 5 -> crossings at x = 5 +/- 4.
+        found = points_on_line_at_distance(
+            np.array([5.0, 3.0, 0.0]), 5.0, self.LINE_START, self.LINE_END
+        )
+        assert len(found) == 2
+        assert sorted(round(float(p[0]), 9) for p in found) == [1.0, 9.0]
+        for point in found:
+            assert abs(float(point[1])) < TOL and abs(float(point[2])) < TOL
+
+    def test_every_crossing_is_exactly_the_requested_distance_away(self):
+        centre = np.array([2.5, -4.0, 1.5])
+        found = points_on_line_at_distance(
+            centre, 7.0, self.LINE_START, self.LINE_END
+        )
+        assert found
+        for point in found:
+            assert abs(float(np.linalg.norm(point - centre)) - 7.0) < 1e-9
+
+    def test_one_crossing_when_the_sphere_grazes_the_line(self):
+        # Radius equals the perpendicular distance: a tangent, so a single root.
+        found = points_on_line_at_distance(
+            np.array([4.0, 2.0, 0.0]), 2.0, self.LINE_START, self.LINE_END
+        )
+        assert len(found) == 1
+        assert abs(float(found[0][0]) - 4.0) < TOL
+
+    def test_no_crossing_when_out_of_reach(self):
+        # This is the "the bar cannot reach that far" case MoveJoint reports
+        # instead of moving anything.
+        assert (
+            points_on_line_at_distance(
+                np.array([5.0, 50.0, 0.0]), 5.0, self.LINE_START, self.LINE_END
+            )
+            == []
+        )
+
+    def test_crossings_are_found_beyond_the_given_endpoints(self):
+        # The solve is against the INFINITE line: a joint may legitimately land
+        # past the segment the caller happened to pass in.
+        found = points_on_line_at_distance(
+            np.array([50.0, 0.0, 0.0]), 5.0, self.LINE_START, self.LINE_END
+        )
+        assert sorted(round(float(p[0]), 9) for p in found) == [45.0, 55.0]
+
+    def test_degenerate_line_returns_nothing_rather_than_raising(self):
+        # A collapsed bar is a document problem the command reports, not a
+        # programming error to crash on.
+        assert (
+            points_on_line_at_distance(
+                np.array([1.0, 1.0, 1.0]), 2.0, self.LINE_START, self.LINE_START
+            )
+            == []
+        )

@@ -219,6 +219,63 @@ def are_lines_parallel(
     return float(cross_norm / (norm_i * norm_j)) < tol
 
 
+def points_on_line_at_distance(
+    centre: Iterable[float],
+    distance: float,
+    line_start: Iterable[float],
+    line_end: Iterable[float],
+) -> list:
+    """Where on a line is a point exactly *distance* away from *centre*?
+
+    A sphere of radius *distance* around *centre* cut by the infinite line
+    through *line_start* / *line_end*: 0, 1 or 2 crossings.
+
+    RSJointEdit's MoveJoint is the caller.  When one joint on a bar is slid to
+    a new spot, the bar's other joint has to stay on its own host bar (the
+    LINE) while staying exactly as far from the first as it is now (the
+    SPHERE, because the bar between them is rigid).  The crossings are the
+    positions that satisfy both.
+
+    Every point on the line is ``line_start + t * unit_dir`` for some distance
+    ``t`` along it, so ``t`` is the only unknown.  Writing "that point is
+    *distance* from *centre*" and squaring away the square root leaves an
+    ordinary quadratic in ``t``::
+
+        t^2 + 2(v . u)t + (|v|^2 - distance^2) = 0
+
+    with ``u`` the line's unit direction and ``v`` the vector from *centre* to
+    the line's start.  Its discriminant is the geometry: negative means the
+    sphere misses the line entirely -- the bar cannot reach that far -- zero
+    means it just grazes it, positive gives the two crossings.
+
+    Returns the crossing points as numpy 3-vectors, in no particular order;
+    the caller picks.  A degenerate (zero-length) line returns no crossings
+    rather than raising, because a collapsed bar is a document problem the
+    caller reports rather than a programming error.
+    """
+    line_start = np.asarray(line_start, dtype=float)
+    direction = np.asarray(line_end, dtype=float) - line_start
+    direction_len = float(np.linalg.norm(direction))
+    if direction_len <= 1e-9:
+        return []
+    unit_dir = direction / direction_len
+    centre_to_start = line_start - np.asarray(centre, dtype=float)
+
+    # There is no "a" term because unit_dir has length 1, making it exactly 1.
+    b = 2.0 * float(np.dot(centre_to_start, unit_dir))
+    c = float(np.dot(centre_to_start, centre_to_start)) - float(distance) ** 2
+    discriminant = b * b - 4.0 * c
+
+    if discriminant < -1e-9:
+        return []  # sphere misses the line -- out of reach
+    root = max(discriminant, 0.0) ** 0.5
+    if root <= 1e-9:
+        distances_along = [-b / 2.0]  # tangent: one crossing
+    else:
+        distances_along = [(-b + root) / 2.0, (-b - root) / 2.0]
+    return [line_start + t * unit_dir for t in distances_along]
+
+
 def _wrap_angle(angle: float) -> float:
     return float(math.atan2(math.sin(angle), math.cos(angle)))
 

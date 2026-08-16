@@ -488,6 +488,69 @@ def reach_circle_viz():
         sc.doc.Views.Redraw()
 
 
+class MarkerConduit(Rhino.Display.DisplayConduit):
+    """Labelled point + line markers in doc units -- "here is what will move".
+
+    Callers replace the whole marker set at once with :meth:`set_markers`;
+    there is no incremental add, because the markers track a state that is
+    recomputed wholesale on every repick anyway.
+
+    A marker is ``(Point3d, label, (r, g, b))`` -- a dot with the label beside
+    it.  A line is ``(Point3d, Point3d, (r, g, b))``.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._markers = []
+        self._lines = []
+
+    def set_markers(self, markers=None, lines=None):
+        self._markers = list(markers or [])
+        self._lines = list(lines or [])
+        _force_redraw()
+
+    def CalculateBoundingBox(self, e):
+        for point, _label, _rgb in self._markers:
+            e.IncludeBoundingBox(Rhino.Geometry.BoundingBox(point, point))
+        for start, end, _rgb in self._lines:
+            e.IncludeBoundingBox(Rhino.Geometry.BoundingBox(start, end))
+
+    def PostDrawObjects(self, e):
+        for start, end, rgb in self._lines:
+            e.Display.DrawLine(start, end, _color_from_rgb(*rgb), 2)
+        for point, label, rgb in self._markers:
+            color = _color_from_rgb(*rgb)
+            e.Display.DrawPoint(
+                point, Rhino.Display.PointStyle.RoundControlPoint, 9, color
+            )
+            if label:
+                e.Display.DrawDot(point, label, color, _color_from_rgb(255, 255, 255))
+
+
+# Last MarkerConduit handed out, so a conduit stranded by a hard script abort
+# (which skips the with-block's finally) gets switched off the next time a
+# command opens one.  Esc, an early return and an exception are all already
+# handled by that finally; this only covers the case Python never gets to run.
+_ACTIVE_MARKER_CONDUIT = None
+
+
+@contextlib.contextmanager
+def marker_viz():
+    """Enable a MarkerConduit for the duration of the with-block."""
+    global _ACTIVE_MARKER_CONDUIT
+    if _ACTIVE_MARKER_CONDUIT is not None:
+        _ACTIVE_MARKER_CONDUIT.Enabled = False
+    conduit = MarkerConduit()
+    conduit.Enabled = True
+    _ACTIVE_MARKER_CONDUIT = conduit
+    try:
+        yield conduit
+    finally:
+        conduit.Enabled = False
+        _ACTIVE_MARKER_CONDUIT = None
+        sc.doc.Views.Redraw()
+
+
 def block_definition_meshes(block_name):
     """Return a list of Rhino meshes (at the block's local frame) for all
     mesh-bearing geometry in the named block definition.

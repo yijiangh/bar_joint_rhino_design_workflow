@@ -71,12 +71,26 @@ from core import robot_cell as _robot_cell_module
 from husky_assembly_tamp.keyframe import dual_arm_ik as _dual_arm_ik_module
 from husky_assembly_tamp.keyframe import ik_keyframe as _ik_keyframe_module
 from core.rhino_bar_pick import pick_bar
-from core.rhino_bar_registry import (
+# Reload BEFORE the from-import below, not in _reload_runtime_modules().  A
+# `from X import name` resolves against whatever copy of X is already in
+# sys.modules, so the first run after a new helper is added to
+# rhino_bar_registry would raise ImportError at THIS line -- long before any
+# reload inside main() could run, and the only cure would be restarting Rhino.
+# Reloading first re-executes the file from disk, so the names below are always
+# the ones on disk.  Same reload-then-use order as rs_clear_color_preview.
+from core import rhino_bar_registry as _rhino_bar_registry_module
+
+importlib.reload(_rhino_bar_registry_module)
+
+from core.rhino_bar_registry import (  # noqa: E402 -- must follow the reload
     BAR_ID_KEY,
+    COLOR_FAILED,
     get_bar_seq_map,
     repair_on_entry,
     reset_sequence_colors,
+    restore_object_colors,
     show_sequence_colors,
+    snapshot_object_colors,
 )
 from core.rhino_frame_io import doc_unit_scale_to_mm
 from core.rhino_helpers import suspend_redraw
@@ -293,10 +307,27 @@ def _resolve_arm_tools_on_bar(bar_oid):
 
     males = _males_on_bar(bar_id)
     if len(males) != 2:
-        return None, (
-            f"Bar '{bar_id}' has {len(males)} tool-bearing joint(s) (male+ground); "
-            "need exactly 2 (single-joint flow not yet supported)."
+        # Name them: the count says the bar is wrong, the ids say which joints
+        # to go and look at.
+        found = [rs.GetUserText(oid, "joint_id") or "<no joint_id>" for oid in males]
+        listed = ", ".join(sorted(found)) if found else "none"
+        message = (
+            f"Bar '{bar_id}' has {len(males)} tool-bearing joint block(s) "
+            f"(male+ground) -- {listed}; need exactly 2 (single-joint flow not "
+            "yet supported)."
         )
+        # This counts BLOCKS, not distinct joints, so a duplicated block
+        # instance makes an otherwise-fine bar fail the check.  Say so, because
+        # "3 joints" on a bar that visibly has 2 is otherwise baffling.
+        repeated = sorted({j for j in found if found.count(j) > 1})
+        if repeated:
+            message += (
+                f"  NOTE: {', '.join(repeated)} appears more than once -- that is "
+                "a duplicate block instance (copy/paste, or a re-place that left "
+                "the old one behind), not a real extra joint.  Delete the extra "
+                "block and the bar should pass."
+            )
+        return None, message
 
     left = right = None
     for moid in males:
@@ -335,26 +366,68 @@ def _resolve_arm_tools_on_bar(bar_oid):
 def _pick_bar_with_arm_tools():
     """Loop until the user picks a bar that satisfies the L/R tool layout,
     or cancels. Returns ``(bar_id, bar_oid, left_tuple, right_tuple)`` or None.
+
+    On rejection the bar's tool-bearing JOINT blocks are painted
+    :data:`COLOR_FAILED` (the same pink as a failed IK solve, and as a fake bar
+    -- all three mean "the robot will not be building this one").  The joints,
+    not the bar: you just clicked the bar, so you already know which one it is;
+    what you cannot see is which joint blocks are on it, which is exactly what
+    the count is complaining about.  A bar with NO tool-bearing joints is the
+    one exception -- there is nothing to point at, so the bar itself is marked.
+
+    Only one pick is marked at a time: picking another bar clears the previous
+    mark, and so does leaving the command, because a rejection is a fact about
+    the pick you just made, not a lasting property of the model.
     """
     seq_map = get_bar_seq_map()
-    while True:
-        bar_oid = pick_bar(
-            "Pick the Ln bar to assemble (must have 2 tool-bearing joints with L/R tools placed)"
-        )
-        if bar_oid is None:
-            return None
-        result, err = _resolve_arm_tools_on_bar(bar_oid)
-        if err is not None:
-            print(f"RSIKKeyframe: {err} Pick another bar or press Esc to cancel.")
-            continue
-        bar_id, left, right = result
-        if bar_id not in seq_map:
-            print(
-                f"RSIKKeyframe: bar '{bar_id}' is not in the bar registry. "
-                "Pick another bar or press Esc to cancel."
+    flag_token = None
+
+    def _clear_flag():
+        """Put the last rejected pick back to whatever colors it had before."""
+        nonlocal flag_token
+        if flag_token is not None:
+            restore_object_colors(flag_token)
+            flag_token = None
+
+    def _flag(bar_oid, bar_id, message):
+        """Mark the offending joints (or the bar, if it has none) and say why."""
+        nonlocal flag_token
+        _clear_flag()
+        # Snapshot rather than reset-to-by-layer on the way out: these blocks
+        # may already carry a sequence color or a broken-link mark, and this
+        # flag must not swallow it.
+        targets = _males_on_bar(bar_id) if bar_id else []
+        targets = [oid for oid in targets if rs.IsObject(oid)]
+        if not targets:
+            targets = [bar_oid]
+        flag_token = snapshot_object_colors(targets)
+        for oid in targets:
+            rs.ObjectColorSource(oid, 1)  # by object, so the flag beats the layer
+            rs.ObjectColor(oid, COLOR_FAILED)
+        rs.Redraw()
+        print(f"RSIKKeyframe: {message} Pick another bar or press Esc to cancel.")
+
+    try:
+        while True:
+            bar_oid = pick_bar(
+                "Pick the Ln bar to assemble (must have 2 tool-bearing joints "
+                "with L/R tools placed)"
             )
-            continue
-        return bar_id, bar_oid, left, right
+            if bar_oid is None:
+                return None
+            bar_id = rs.GetUserText(bar_oid, BAR_ID_KEY)
+            result, err = _resolve_arm_tools_on_bar(bar_oid)
+            if err is not None:
+                _flag(bar_oid, bar_id, err)
+                continue
+            bar_id, left, right = result
+            if bar_id not in seq_map:
+                _flag(bar_oid, bar_id, f"bar '{bar_id}' is not in the bar registry.")
+                continue
+            return bar_id, bar_oid, left, right
+    finally:
+        _clear_flag()
+        rs.Redraw()
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +624,7 @@ def _reach_sphere_meshes(rcell):
 
 
 def _draw_base_guides_for_bar(bar_oid, bar_id, joint_a_mm, joint_b_mm,
-                              standoff_mm=None):
+                              standoff_mm=None, flip=False):
     """Bake the 5 base-placement guide lines for one bar; return its diag or None.
 
     Drawn right after the bar pick so the guides are on screen through the
@@ -559,6 +632,16 @@ def _draw_base_guides_for_bar(bar_oid, bar_id, joint_a_mm, joint_b_mm,
     375 / 500 / 625 mm standoffs straight off the ground and drop the base on the
     yellow extension line. Bars with no assigned / meshable WalkableGround are
     skipped with a note rather than blocking the pick.
+
+    Args:
+        flip (bool): negate the resolved heading, putting the guides -- and so
+            the base that follows them -- on the OTHER side of the bar. There
+            are exactly two sensible sides (see
+            ``base_guide_geom.perpendicular_headings``) and
+            ``resolve_bar_heading`` picks one automatically, so this is the
+            user's override when it picks the awkward one. The returned diag
+            carries the flipped heading, which keeps the L/R tool assignment
+            downstream consistent with what is drawn.
     """
     standoff = float(config.IK_BASE_STANDOFF_MM if standoff_mm is None else standoff_mm)
     try:
@@ -579,6 +662,10 @@ def _draw_base_guides_for_bar(bar_oid, bar_id, joint_a_mm, joint_b_mm,
             bar_oid, bar_id, soups, ground_point, ground_normal, standoff,
             verbose=True,
         )
+        if flip and diag.get("heading") is not None:
+            # The two sides are +n / -n about the bar, so the flip is a straight
+            # negation -- no need to re-resolve anything.
+            diag["heading"] = -np.asarray(diag["heading"], dtype=float)
         guides = base_guide_geom.build_base_guides(
             soups, joint_a_mm, joint_b_mm, diag["heading"]
         )
@@ -1085,25 +1172,37 @@ def _ask_accept_with_pose_preview(
 
 
 def _ask_reuse_saved_base():
-    """Prompt 'Reuse saved base frame?' with [Reuse|NewPick]; default = Reuse.
+    """Prompt 'Reuse saved base frame?' with [Reuse|NewPick|Flip]; default = Reuse.
 
-    Returns True to reuse, False to pick a new base, or None on Esc.
+    ``Flip`` stands the robot on the OTHER side of the bar. The side is normally
+    decided for you by ``resolve_bar_heading`` (it averages the anchor insertion
+    axes), and until now the only way to overrule it was to run RSIKKeyframeAll
+    and use its FlipOne -- this is the single-bar equivalent.
+
+    Returns:
+        str: ``"reuse"`` / ``"new"`` / ``"flip"``, or ``None`` on Esc.
     """
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Saved base frame found on this bar; press Enter to reuse")
+    go.SetCommandPrompt(
+        "Saved base frame found on this bar; press Enter to reuse, or Flip to "
+        "stand on the other side of the bar"
+    )
     reuse_idx = go.AddOption("Reuse")
     new_idx = go.AddOption("NewPick")
+    flip_idx = go.AddOption("Flip")
     go.AcceptNothing(True)
     while True:
         result = go.Get()
         if result == Rhino.Input.GetResult.Nothing:
-            return True
+            return "reuse"
         if result == Rhino.Input.GetResult.Option:
             chosen = go.OptionIndex()
             if chosen == reuse_idx:
-                return True
+                return "reuse"
             if chosen == new_idx:
-                return False
+                return "new"
+            if chosen == flip_idx:
+                return "flip"
             continue
         return None
 
@@ -1119,16 +1218,22 @@ def _ask_save_base_or_continue():
     reads exactly this saved base). Enter / the default is ``Continue`` so the
     normal solve-in-Rhino path is unchanged for anyone who just presses Enter.
 
+    ``Repick`` is the way back: the base you just placed is the one thing you
+    cannot re-judge until you see the robot standing at it, and before this the
+    only escape was Esc and re-running the whole command.
+
     Returns:
         str: ``"continue"`` to solve the IK chain in Rhino now, ``"save_and_exit"``
-        to keep the already-saved base and stop, or ``"cancel"`` on Esc.
+        to keep the already-saved base and stop, ``"repick"`` to go back and
+        choose another base, or ``"cancel"`` on Esc.
     """
     go = Rhino.Input.Custom.GetOption()
     go.SetCommandPrompt(
-        "Base frame set -- Continue to the in-Rhino IK solve, or save the base "
-        "and exit (to solve the keyframes headlessly)"
+        "Base frame set -- Continue to the in-Rhino IK solve, Repick the base, "
+        "or save the base and exit (to solve the keyframes headlessly)"
     )
     continue_idx = go.AddOption("Continue")
+    repick_idx = go.AddOption("Repick")
     save_exit_idx = go.AddOption("SaveBaseAndExit")
     go.SetCommandPromptDefault("Continue")
     go.AcceptNothing(True)
@@ -1140,6 +1245,8 @@ def _ask_save_base_or_continue():
             chosen = go.OptionIndex()
             if chosen == continue_idx:
                 return "continue"
+            if chosen == repick_idx:
+                return "repick"
             if chosen == save_exit_idx:
                 return "save_and_exit"
             continue
@@ -1589,6 +1696,10 @@ def _resolve_seed_base_frame(
     heading_mm,
     allow_saved_base_prompt,
     reach_meshes=None,
+    bar_oid=None,
+    bar_id=None,
+    joint_a_mm=None,
+    joint_b_mm=None,
 ):
     """Decide which robot base frame to seed the IK solve with.
 
@@ -1613,6 +1724,12 @@ def _resolve_seed_base_frame(
             set False on retries so the prompt does not reappear.
         reach_meshes: Arm reach-volume spheres shown with the ghost robot
             during the pick (see :func:`_reach_sphere_meshes`).
+        bar_oid: The bar centerline curve id, needed only by the ``Flip``
+            answer to re-place the base on the other side. Omit and Flip
+            degrades to a normal new pick.
+        bar_id (str): The bar id, same purpose as *bar_oid*.
+        joint_a_mm, joint_b_mm: The two anchor-joint centers (mm), used to
+            re-draw the guide lines on the flipped side.
 
     Returns:
         The tuple ``(seed_base_frame, brep_id, heading_mm,
@@ -1625,33 +1742,79 @@ def _resolve_seed_base_frame(
     if allow_saved_base_prompt and saved_base is not None:
         # Default mesh-mode for the preview matches the user's last choice.
         preview_mode = ik_viz.get_mesh_mode()
-        _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
-        # Reach circle at the saved base, clipped against obstacles + the nearest
-        # walkable brep's edge (the reuse path never picks a brep of its own).
-        with dynamic_preview.reach_circle_viz() as _reach:
-            try:
-                reuse_brep_id = _resolve_sampling_brep_for_base(saved_base, None)
-                reuse_brep = _as_brep(reuse_brep_id) if reuse_brep_id is not None else None
-                clip_curves = _gather_reach_clip_curves(
-                    _plane_from_frame_mm(saved_base), reuse_brep
-                )
-                radius_doc = float(config.IK_BASE_SAMPLE_RADIUS) / doc_unit_scale_to_mm()
-                origin_doc, _x, z_axis_doc = _frame_mm_to_doc_marker(saved_base)
-                _reach.set_reach_outline(
-                    *dynamic_preview.compute_reach_outline(
-                        origin_doc, z_axis_doc, radius_doc, clip_curves,
-                        sc.doc.ModelAbsoluteTolerance,
+        # Flip does NOT leave this prompt: it moves the candidate base to the
+        # other side, redraws the ghost + guides there, and asks again -- so you
+        # can look at both sides before committing, and a second Flip puts you
+        # back. `flip_state` is what makes that toggle: the base is always
+        # re-derived from the bar, never mirrored from the previous answer, so
+        # repeated flips cannot drift.
+        flip_state = False
+        while True:
+            _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
+            # Reach circle at the candidate base, clipped against obstacles + the
+            # nearest walkable brep's edge (this path never picks a brep of its own).
+            with dynamic_preview.reach_circle_viz() as _reach:
+                try:
+                    reuse_brep_id = _resolve_sampling_brep_for_base(saved_base, None)
+                    reuse_brep = _as_brep(reuse_brep_id) if reuse_brep_id is not None else None
+                    clip_curves = _gather_reach_clip_curves(
+                        _plane_from_frame_mm(saved_base), reuse_brep
                     )
+                    radius_doc = float(config.IK_BASE_SAMPLE_RADIUS) / doc_unit_scale_to_mm()
+                    origin_doc, _x, z_axis_doc = _frame_mm_to_doc_marker(saved_base)
+                    _reach.set_reach_outline(
+                        *dynamic_preview.compute_reach_outline(
+                            origin_doc, z_axis_doc, radius_doc, clip_curves,
+                            sc.doc.ModelAbsoluteTolerance,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 -- preview must not break the prompt
+                    print(f"RSIKKeyframe: reach preview failed ({exc}).")
+                answer = _ask_reuse_saved_base()
+
+            if answer != "flip":
+                break
+
+            if bar_oid is None:
+                print("RSIKKeyframe: cannot flip -- this run has no bar geometry "
+                      "in hand; use NewPick instead.")
+                continue
+            # Re-derive from the bar with the heading negated rather than
+            # mirroring the matrix: default_base_frame_for_bar also re-snaps the
+            # origin onto the ground, which a mirrored matrix would not do (the
+            # two sides of a bar are rarely at the same height).
+            flip_diag = {}
+            flipped = rhino_walkable_ground.default_base_frame_for_bar(
+                bar_oid, bar_id, flip=not flip_state,
+                diag_out=flip_diag, verbose=True,
+            )
+            if flipped is None:
+                print("RSIKKeyframe: cannot flip -- no assigned/meshable "
+                      "WalkableGround on the other side; the base is unchanged.")
+                continue
+            flip_state = not flip_state
+            saved_base = flipped
+            side = "the other side" if flip_state else "the original side"
+            print(f"RSIKKeyframe: base moved to {side} of the bar. "
+                  "Flip again to go back, or Enter to use it.")
+            # Keep the guides on the side the base now stands, so what is on
+            # screen matches where the robot is.
+            if joint_a_mm is not None and joint_b_mm is not None:
+                _draw_base_guides_for_bar(
+                    bar_oid, bar_id, joint_a_mm, joint_b_mm, flip=flip_state
                 )
-            except Exception as exc:  # noqa: BLE001 -- preview must not break the prompt
-                print(f"RSIKKeyframe: reach preview failed ({exc}).")
-            answer = _ask_reuse_saved_base()
+
         if answer is None:
             print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
             ik_viz.end_session()
             return None
-        if answer:
-            print("RSIKKeyframe: reusing saved base frame (skipping walkable-ground pick).")
+        if answer == "reuse":
+            if flip_state:
+                print("RSIKKeyframe: using the flipped base (skipping "
+                      "walkable-ground pick).")
+            else:
+                print("RSIKKeyframe: reusing saved base frame (skipping "
+                      "walkable-ground pick).")
             seed_base_frame = saved_base
             heading_mm = _heading_mm_from_base_frame(saved_base)
             # brep_id stays None -> sampling fallback is disabled in this run.
@@ -2065,6 +2228,10 @@ def main():
                 heading_mm,
                 allow_saved_base_prompt,
                 reach_meshes=reach_meshes,
+                bar_oid=target_bar_oid,
+                bar_id=target_bar_id,
+                joint_a_mm=joint_a_mm,
+                joint_b_mm=joint_b_mm,
             )
             if base_resolution is None:
                 return
@@ -2113,6 +2280,21 @@ def main():
                     print("RSIKKeyframe: cancelled at the base save/continue "
                           "prompt (base frame still saved on the bar).")
                     return
+                if decision == "repick":
+                    # Straight back to the top of this loop, which re-resolves a
+                    # base whenever seed_base_frame is None.  Unlike the
+                    # RetryNewBase paths below, allow_saved_base_prompt stays
+                    # TRUE on purpose: Repick means "take me back to the
+                    # Reuse / NewPick / Flip prompt", and the base just placed
+                    # becomes the candidate there -- so Flip can move it to the
+                    # other side without re-picking from scratch.
+                    print("RSIKKeyframe: back to the base-frame prompt.")
+                    saved_base = seed_base_frame
+                    seed_base_frame = None
+                    heading_mm = None
+                    brep_id = None
+                    allow_saved_base_prompt = True
+                    continue
                 if decision == "save_and_exit":
                     print(
                         f"RSIKKeyframe: base frame saved on bar '{target_bar_id}'; "

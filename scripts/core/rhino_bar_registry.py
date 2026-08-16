@@ -1594,6 +1594,40 @@ def reset_bar_color(curve_id):
             rs.ObjectColorSource(tube, 0)
 
 
+def snapshot_object_colors(object_ids):
+    """Capture the color state of any objects so it can be put back exactly.
+
+    :func:`reset_bar_color` (and ``highlight_env._reset_obj_color``) always
+    revert to by-layer, which is the wrong "undo" for something that was
+    ALREADY carrying a meaning: ``COLOR_HAS_IK`` on a solved bar,
+    :data:`SEQ_COLOR_FAKE` on a staging bar, a sequence color on a joint block.
+    A command that paints objects temporarily -- to flag them, highlight them,
+    mark them -- should snapshot first and restore after, so it cannot erase
+    state it did not set.
+
+    Works on bars, joint blocks, tools, anything: it only reads and writes
+    object color.  Returns an opaque token for :func:`restore_object_colors`.
+    """
+    entries = []
+    for oid in object_ids or []:
+        if oid is None or not rs.IsObject(oid):
+            continue
+        entries.append((oid, rs.ObjectColorSource(oid), rs.ObjectColor(oid)))
+    return entries
+
+
+def restore_object_colors(token):
+    """Put back exactly what :func:`snapshot_object_colors` captured."""
+    for oid, source, color in token or []:
+        if not rs.IsObject(oid):
+            continue
+        # Color first: setting it flips the source to by-object, so the source
+        # has to be written afterwards or a by-layer object comes back
+        # by-object and keeps the flag color forever.
+        rs.ObjectColor(oid, color)
+        rs.ObjectColorSource(oid, source)
+
+
 # ---------------------------------------------------------------------------
 # IK color preview (shared single source of truth)
 # ---------------------------------------------------------------------------

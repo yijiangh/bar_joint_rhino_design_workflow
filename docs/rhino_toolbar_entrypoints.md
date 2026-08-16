@@ -104,9 +104,13 @@ This is the canonical Rhino entrypoint reference for this repository.
 
 ### RSSelectBar (`rs_select_bar.py`)
 
-- Type a bar id at the command line — `B4`, `b4`, or a bare `4` all resolve to bar `B4` — and it selects that bar's centerline curve **and** tube preview, then `ZoomSelected` frames it. Handy for finding one bar in a crowded model.
+Two modes, chosen at the first prompt: **SelectByName** (the default — press Enter) or **SelectByLength**.
+
+- **SelectByName.** Type a bar id at the command line — `B4`, `b4`, or a bare `4` all resolve to bar `B4` — and it selects that bar's centerline curve **and** tube preview, then `ZoomSelected` frames it. Handy for finding one bar in a crowded model.
 - Comma-separate ids (`B4,B7`) to select several at once. The prompt loops so you can jump from bar to bar; each entry **replaces** the selection. Enter on an empty prompt (or Esc) ends the command.
-- **Read-only** — reads each bar's stored `bar_id` as-is and never heals / renumbers / moves anything, so it is safe to run any time. No PyBullet needed. On the RSDesign toolbar.
+- **SelectByLength.** Type a length in mm (`1050`) and it selects every bar of that length **plus the male and ground joint blocks sitting on them** — the halves that belong to those bars, the way their tube previews do. The *female* half of a joint belongs to the bar on the other side of the pair and is deliberately left alone. A summary of every length, its bar count and its bar ids is printed on entry, and the prompt loops with your last length as the default.
+- The grouping, the length prompt and that summary are RSBarEdit's own (`build_length_groups` / `pick_length_group` / `print_length_summary`), so a length means the **same set of bars** in both commands. Only the selecting is this command's.
+- **Read-only** — reads each bar's stored `bar_id` as-is and never heals / renumbers / moves anything, so it is safe to run any time. Note RSBarEdit reaches the same groups through `get_all_bars`, which *does* heal bar ids as it goes; this command does not. No PyBullet needed. On the RSDesign toolbar.
 
 ### RSDefineJointHalf (`rs_define_joint_half.py`)
 

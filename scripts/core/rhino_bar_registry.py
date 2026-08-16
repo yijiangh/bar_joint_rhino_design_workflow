@@ -870,9 +870,11 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
     fake_ids = get_fake_bar_ids(bar_map)
 
     # Built once here and reused by the joint pass below, so the two can never
-    # disagree about what colour a bar is.
+    # disagree about what colour a bar is -- nor about whether it is painted at
+    # all, which is why the ``paint`` decision is recorded alongside the colour.
     bar_visible_by_id = {}
     bar_color_by_id = {}
+    bar_paint_by_id = {}
 
     # One tube-layer scan for the whole pass (see _tube_index).
     tube_index = _tube_index()
@@ -882,24 +884,36 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
         if seq < active_seq:
             color = SEQ_COLOR_UNSTABLE if bar_id in unstable_ids else SEQ_COLOR_BUILT
             visible = True
+            paint = flags["built"]
         elif seq == active_seq:
             color = SEQ_COLOR_ACTIVE
             visible = True
+            paint = flags["active"]
         else:
             color = SEQ_COLOR_UNBUILT
             visible = show_unbuilt
+            paint = flags["unbuilt"]
         # Precedence, loosest to tightest: sequence state, then fake, then
         # support.  The active bar keeps its blue either way -- it is excluded
-        # from support_ids, and skipped here.
+        # from support_ids, and skipped here.  ``paint`` follows the same
+        # precedence as ``color``: whichever rule wins the colour also decides
+        # whether it is applied, so a class switched off can never inherit
+        # another class's tint.
         if bar_id in fake_ids and bar_id != active_bar_id:
             color = SEQ_COLOR_FAKE
+            paint = True  # never silenced -- see the docstring
         if bar_id in support_ids:
             color = SEQ_COLOR_SUPPORT_PICK
             visible = True
+            paint = flags["support"]
         bar_visible_by_id[bar_id] = visible
         bar_color_by_id[bar_id] = color
+        bar_paint_by_id[bar_id] = paint
         for obj in _bar_curve_and_tube(oid, tube_index):
-            _set_obj_color(obj, color)
+            if paint:
+                _set_obj_color(obj, color)
+            else:
+                _reset_obj_color(obj)
             _set_visible(obj, visible)
 
     # Joints follow their parent bar's visibility AND color.  Setting
@@ -910,15 +924,25 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
         visible = bar_visible_by_id.get(parent_bar_id, True)
         color = bar_color_by_id.get(parent_bar_id)
         if color is not None:
-            _set_obj_color(joint_oid, color)
+            # Follow the parent bar's paint decision, not just its colour, so a
+            # switched-off class does not leave its joints tinted.
+            if bar_paint_by_id.get(parent_bar_id, True):
+                _set_obj_color(joint_oid, color)
+            else:
+                _reset_obj_color(joint_oid)
         _set_visible(joint_oid, visible)
 
-    # Tools: hide all, then show + color the active step's tool(s).
+    # Tools: hide all, then show + color the active step's tool(s).  The tint is
+    # the ACTIVE blue, so it is gated on the same switch as the active bar --
+    # visibility is not, the active step's tool is shown either way.
     active_tool_oids = set(get_active_tool_oids(active_bar_id))
     for tool_oid in _tool_layer_objects():
         is_active = tool_oid in active_tool_oids
         if is_active:
-            _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+            if flags["active"]:
+                _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+            else:
+                _reset_obj_color(tool_oid)
         _set_visible(tool_oid, is_active)
 
     rs.EnableRedraw(True)

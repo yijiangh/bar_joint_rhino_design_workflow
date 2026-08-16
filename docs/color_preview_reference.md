@@ -16,15 +16,15 @@ Two things to know when reading it:
 
 ## RSSequenceEdit — assembly sequence
 
-Defined in [rhino_bar_registry.py:609-619](scripts/core/rhino_bar_registry.py#L609-L619),
-applied by `show_sequence_colors` ([:715](scripts/core/rhino_bar_registry.py#L715)).
+Defined in [rhino_bar_registry.py:648-661](scripts/core/rhino_bar_registry.py#L648-L661),
+applied by `show_sequence_colors` ([:776](scripts/core/rhino_bar_registry.py#L776)).
 
 | Colour | RGB | Meaning | Defined at |
 | --- | --- | --- | --- |
-| green | `60, 179, 60` | built — earlier than the active step | [rhino_bar_registry.py:609](scripts/core/rhino_bar_registry.py#L609) |
-| blue | `30, 100, 220` | the active step | [rhino_bar_registry.py:611](scripts/core/rhino_bar_registry.py#L611) |
-| grey | `160, 160, 160` | unbuilt — later than the active step | [rhino_bar_registry.py:613](scripts/core/rhino_bar_registry.py#L613) |
-| teal | `40, 170, 160` | built but still unstable (its supports are not up yet) | [rhino_bar_registry.py:616](scripts/core/rhino_bar_registry.py#L616) |
+| green | `60, 179, 60` | built — earlier than the active step | [rhino_bar_registry.py:648](scripts/core/rhino_bar_registry.py#L648) |
+| blue | `30, 100, 220` | the active step | [rhino_bar_registry.py:650](scripts/core/rhino_bar_registry.py#L650) |
+| grey | `160, 160, 160` | unbuilt — later than the active step | [rhino_bar_registry.py:652](scripts/core/rhino_bar_registry.py#L652) |
+| teal | `40, 170, 160` | built but still unstable (its supports are not up yet) | [rhino_bar_registry.py:655](scripts/core/rhino_bar_registry.py#L655) |
 | purple | `110, 40, 160` | support bar of the active step — shown in the normal view, and while the EditSupports picker is open | [rhino_bar_registry.py:658](scripts/core/rhino_bar_registry.py#L658) |
 | pink | `230, 115, 150` | fake bar — staging that will not be fabricated (same pink as IK-failed, deliberately) | [rhino_bar_registry.py:661](scripts/core/rhino_bar_registry.py#L661) |
 
@@ -34,6 +34,27 @@ support. The active bar always keeps its blue.
 The fake pink is also what `RSBarEdit > FakeBar` paints: entering the mode highlights every bar
 already marked fake, and each Add / Delete repaints that bar immediately, so the pink on screen
 is always the current mark set. It is left on at exit, and survives RSClearColorPreview.
+
+### Turning individual tints off — `color_flags`
+
+`show_sequence_colors(..., color_flags={...})` gates the tints per class, keys `"built"` /
+`"active"` / `"unbuilt"` / `"support"`. A `False` entry leaves that class **ByLayer** — the
+tint is dropped, the object stays exactly as visible as the rules above make it. `None` (the
+default) paints everything, so every toolbar command is unaffected.
+
+Written for the Grasshopper animation component
+([grasshopper_animation.md](grasshopper_animation.md)), where you switch legend colours off
+to film a clean frame. Two tints are deliberately not switchable:
+
+- **teal** is a *variant of built*, not a class of its own, so it rides on `"built"`;
+- **pink (fake)** is always painted, matching `clear_ik_preview`, which re-asserts it rather
+  than resetting it. A staging bar that renders like a real one is a fabrication error
+  waiting to happen, so it is never silenced.
+
+Joints follow their parent bar's *paint decision*, not just its colour, and the active step's
+tool follows `"active"` — so switching a class off never leaves its joints or tools tinted.
+Visibility is untouched in every case; to actually hide unbuilt bars use the separate
+`show_unbuilt` argument.
 
 ## RSUpdatePreview — model health
 
@@ -51,8 +72,9 @@ carry baked colours.
 
 | Colour | RGB | Meaning | Defined at |
 | --- | --- | --- | --- |
-| grey-blue | `75, 120, 150` | bar has a solved IK keyframe | [rhino_bar_registry.py:1612](scripts/core/rhino_bar_registry.py#L1612) |
-| pink | `230, 115, 150` | IK attempted at the placed base and failed — and, by design, also the fake-bar tint | [rhino_bar_registry.py:1613](scripts/core/rhino_bar_registry.py#L1613) |
+| grey-blue | `75, 120, 150` | bar has a solved IK keyframe | [rhino_bar_registry.py:1670](scripts/core/rhino_bar_registry.py#L1670) |
+| pink | `230, 115, 150` | IK attempted at the placed base and failed — and, by design, also the fake-bar tint | [rhino_bar_registry.py:1671](scripts/core/rhino_bar_registry.py#L1671) |
+| pink **(transient)** | `230, 115, 150` | RSIKKeyframe **rejected the bar you picked** — painted on its tool-bearing joint blocks (or on the bar, if it has none), cleared on the next pick and on exit | [rs_ik_keyframe.py:406](scripts/rs_ik_keyframe.py#L406) |
 | red **(inline)** | `255, 40, 40` | collision highlight | [rs_ik_keyframe.py:1849](scripts/rs_ik_keyframe.py#L1849) |
 | red **(inline)** | `255, 40, 40` | collision highlight | [rs_show_bar_action_plan.py:758](scripts/rs_show_bar_action_plan.py#L758) |
 
@@ -164,7 +186,13 @@ red for "collision / blocked", one for "failed", and stop writing the collision 
 The IK-failed / fake-bar overlap is deliberate rather than drift — both read as "the robot is not
 building this one" — and the two cannot co-occur, because the IK overlay skips fake bars. The two
 literals are declared separately though ([:661](scripts/core/rhino_bar_registry.py#L661),
-[:1613](scripts/core/rhino_bar_registry.py#L1613)), so changing one silently splits them.
+[:1671](scripts/core/rhino_bar_registry.py#L1671)), so changing one silently splits them.
+
+RSIKKeyframe's rejected-pick flag is a third user of the same pink, reading the same way. It is the
+one case painted on **joint blocks** rather than bars, and the only one that is undone rather than
+cleared: it snapshots each block's colour first and puts it back
+([rhino_bar_registry.py:1621](scripts/core/rhino_bar_registry.py#L1621)), because the blocks it
+marks may already carry a sequence colour or a broken-link mark that a reset-to-ByLayer would eat.
 
 ### 5. The three inline literals
 

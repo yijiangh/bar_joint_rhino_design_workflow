@@ -4,9 +4,18 @@ Adapted from the Grasshopper prototype scripts under
 `support_materials/gh_keyframe_demos/python/`:
 
 - `GH_create_robot_model.py` + `GH_create_robot_cell.py` → `get_or_load_robot_cell`
-- `GH_init_pb.py` → `start_pb_client`
+- `GH_init_pb.py` → `start_pb_sessions`
 - `GH_disconnect_pb.py` → `stop_pb_client`
 - `GH_set_cell_state.py` → `set_cell_state`
+
+Multi-robot model: ONE persistent PyBullet session per robot (Cindy the
+dual-arm assembly robot + the Alice/Belle support robots), all cached in
+sticky under `_STICKY_PB_SESSIONS`. Each planner permanently owns its one
+robot's cell; the OTHER robots appear in a cell only as frozen articulated
+ToolModel obstacles (see `core.robot_obstacles`). Never use the
+pybullet_planning `pp.*` helpers here — they bind a module-global client id
+and silently talk to the wrong session in a multi-client process; use raw
+`pybullet.X(..., physicsClientId=client.client_id)` instead.
 
 The dual-arm IK solvers themselves (`solve_dual_arm_ik` and friends) moved to
 `husky_assembly_tamp.keyframe.dual_arm_ik` so the offline planner and Rhino
@@ -20,6 +29,7 @@ boundary inside this module.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import time
@@ -49,9 +59,14 @@ except ImportError:
 
 
 _STICKY_ROBOT_CELL = "bar_joint:robot_cell"
-_STICKY_PB_CLIENT = "bar_joint:pb_client"
-_STICKY_PB_PLANNER = "bar_joint:pb_planner"
-_STICKY_CURRENT_CELL_KIND = "bar_joint:current_cell_kind"  # "dual_arm" | "support"
+# One persistent PyBullet session PER ROBOT, all living in one sticky dict:
+#   {robot_name: {"client": PyBulletClient, "planner": PyBulletPlanner,
+#                 "cell_loaded": bool}}
+# Cindy (assembly) gets her dual-arm cell pushed at start; the support robots'
+# cells are built + pushed lazily on their first use ("cell_loaded" tracks
+# that). Each planner permanently owns ONE robot's cell -- there is no cell
+# swapping anymore.
+_STICKY_PB_SESSIONS = "bar_joint:pb_sessions"
 _STICKY_ENV_GEOM = "bar_joint:env_geom"
 # Static-cell snapshot: the full canonical assembly (bars + joints + obstacles)
 # + tool models, built once by `rebuild_assembly_cell` (RSRebuildRobotCell) and
@@ -152,10 +167,6 @@ _frame_to_m_matrix = frame_to_m_matrix
 _apply_base_frame_mm = apply_base_frame_mm
 
 
-def _pose_from_frame(frame):
-    return (list(frame.point), list(frame.quaternion.xyzw))
-
-
 # ---------------------------------------------------------------------------
 # Robot cell loading
 # ---------------------------------------------------------------------------
@@ -219,70 +230,113 @@ def default_cell_state():
 # ---------------------------------------------------------------------------
 
 
-def start_pb_client(use_gui: bool = False, verbose: bool = True):
-    """Start PyBullet, load the robot cell into the planner, cache in sticky.
+def start_pb_sessions(use_gui: bool = False, verbose: bool = True):
+    """Start one PyBullet client per robot and cache all sessions in sticky.
 
-    Note: `verbose=True` by default. Setting it to False triggers
-    `compas_fab.backends.pybullet.utils.redirect_stdout`, which calls
-    `os.dup(fd)` on stdout — that raises inside Rhino's ScriptEditor
-    (Rhino's stdout is not a normal OS file descriptor). Keep verbose on
-    unless you are running outside Rhino.
+    Three persistent sessions come up: Cindy (assembly, gui or direct per
+    ``use_gui``) plus one DIRECT session per support robot (PyBullet allows
+    only one GUI window per process, so Alice/Belle are always headless).
+    Cindy's dual-arm cell is pushed into her planner right away; the support
+    cells are built + pushed lazily on their first support-flow use (see
+    ``core.robot_cell_support.ensure_support_cell_pushed``) so startup does
+    not pay for URDFs that may never be needed.
+
+    Args:
+        use_gui (bool): Open the GUI window for Cindy's session only.
+        verbose (bool): Keep True inside Rhino. Setting it to False triggers
+            `compas_fab.backends.pybullet.utils.redirect_stdout`, which calls
+            `os.dup(fd)` on stdout — that raises inside Rhino's ScriptEditor
+            (Rhino's stdout is not a normal OS file descriptor).
+
+    Returns:
+        tuple: Cindy's ``(client, planner)`` (the assembly session).
     """
-    if _STICKY.get(_STICKY_PB_CLIENT) is not None:
+    if _STICKY.get(_STICKY_PB_SESSIONS):
         raise RuntimeError(
-            "PyBullet client already running. Call stop_pb_client() first."
+            "PyBullet sessions already running (or partially running). "
+            "Call stop_pb_client() / RSPBStop first."
         )
 
-    # Defensive: re-run the submodule purge-and-reload every RSPBStart, so
-    # edits to this file or a stale sys.modules entry from a sibling repo
-    # cannot cause a silent shadowing. Does nothing when our copy is
-    # already the resolved one.
+    # Defensive: re-run the submodule check every RSPBStart, so a stale
+    # sys.modules entry from a sibling repo cannot cause a silent shadowing.
     _ensure_submodule_compas_fab_loaded(verbose=True)
 
     deps = _import_compas_stack()
+    sessions = {}
+
+    # ---- Cindy (assembly robot) first, so the one allowed GUI is hers.
+    cindy = config.ASSEMBLY_ROBOT_NAME
     client = deps["PyBulletClient"](
         connection_type="gui" if use_gui else "direct",
         verbose=verbose,
     )
-    print("core.robot_cell.start_pb_client: PyBulletClient.__enter__()")
+    print(f"core.robot_cell.start_pb_sessions: {cindy} PyBulletClient.__enter__()")
     client.__enter__()
     planner = deps["PyBulletPlanner"](client)
-
     robot_cell = get_or_load_robot_cell()
-    print("core.robot_cell.start_pb_client: planner.set_robot_cell(<dual-arm>)")
+    print(f"core.robot_cell.start_pb_sessions: planner.set_robot_cell(<dual-arm>) for {cindy}")
     planner.set_robot_cell(robot_cell)
+    sessions[cindy] = {"client": client, "planner": planner, "cell_loaded": True}
 
-    _STICKY[_STICKY_PB_CLIENT] = client
-    _STICKY[_STICKY_PB_PLANNER] = planner
-    _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
-    return client, planner
+    # ---- Support robots: always DIRECT, cells lazy.
+    for name in config.SUPPORT_ROBOT_NAMES:
+        sr_client = deps["PyBulletClient"](connection_type="direct", verbose=verbose)
+        print(f"core.robot_cell.start_pb_sessions: {name} PyBulletClient.__enter__() (direct)")
+        sr_client.__enter__()
+        sr_planner = deps["PyBulletPlanner"](sr_client)
+        sessions[name] = {"client": sr_client, "planner": sr_planner, "cell_loaded": False}
+
+    _STICKY[_STICKY_PB_SESSIONS] = sessions
+    ids = {name: s["client"].client_id for name, s in sessions.items()}
+    print(f"core.robot_cell.start_pb_sessions: client ids {ids}")
+    return sessions[cindy]["client"], sessions[cindy]["planner"]
 
 
 def stop_pb_client():
-    """Disconnect PyBullet; always clear sticky entries, even on disconnect failure.
+    """Disconnect ALL PyBullet sessions; always clear sticky, even on failure.
 
-    Robust against the case where PyBullet is already disconnected (user
-    closed the GUI window, or a prior stop partially succeeded): we swallow
-    the disconnect error and still clear our sticky cache, so the next
-    RSPBStart sees a clean slate.
+    Robust against sessions that already died (user closed the GUI window, or
+    a prior stop partially succeeded): each disconnect error is swallowed and
+    the sticky cache is cleared regardless, so the next RSPBStart sees a
+    clean slate.
     """
     # Shut the ssik sidecar (if the "ssik" backend spawned one) down first, so a
-    # stray Python 3.11 process never outlives the PyBullet session.
+    # stray Python 3.11 process never outlives the PyBullet sessions.
     try:
         _tamp_ssik_client.shutdown()
     except Exception as exc:
         print(f"stop_pb_client: ssik sidecar shutdown raised ({exc}); continuing.")
 
     try:
-        deps = _import_compas_stack()
-        print("core.robot_cell.stop_pb_client: pp.disconnect()")
-        deps["pp"].disconnect()
-    except Exception as exc:
-        print(f"stop_pb_client: disconnect raised ({exc}); clearing sticky anyway.")
+        sessions = _STICKY.get(_STICKY_PB_SESSIONS) or {}
+        # Per-client disconnects (NOT the global pp.disconnect(), which only
+        # knows one module-global client id and would miss the other two).
+        for name, session in sessions.items():
+            try:
+                print(f"core.robot_cell.stop_pb_client: {name} client.disconnect()")
+                # verbose=True on purpose: verbose=False routes through
+                # compas_fab's redirect_stdout, whose os.dup(fd) raises inside
+                # Rhino BEFORE pybullet.disconnect runs — leaking the connection.
+                session["client"].disconnect(verbose=True)
+            except Exception as exc:
+                print(f"stop_pb_client: {name} disconnect raised ({exc}); continuing.")
     finally:
-        _STICKY.pop(_STICKY_PB_CLIENT, None)
-        _STICKY.pop(_STICKY_PB_PLANNER, None)
+        _STICKY.pop(_STICKY_PB_SESSIONS, None)
         _STICKY.pop(_STICKY_ENV_GEOM, None)
+        # Per-robot caches tied to the cells that were loaded into those
+        # sessions: the support cells and the frozen-robot obstacle ToolModels
+        # (prefix-keyed, see core.robot_obstacles / core.robot_cell_support).
+        # Dropped here so RSPBStop + RSPBStart genuinely rebuilds them -- a
+        # stale obstacle model would otherwise outlive an edit to how it is
+        # built and quietly keep the old geometry.
+        for key in [
+            k for k in list(_STICKY.keys())
+            if isinstance(k, str) and k.startswith((
+                "bar_joint:obstacle_tool_model:",
+                "bar_joint:support_cell:",
+            ))
+        ]:
+            _STICKY.pop(key, None)
         # Static-cell snapshot is tied to this PB session's registered bodies.
         _STICKY.pop(_STICKY_ASSEMBLY_SNAPSHOT, None)
         _STICKY.pop(_STICKY_ASSEMBLY_FINGERPRINT, None)
@@ -297,43 +351,87 @@ def stop_pb_client():
         _STICKY.pop("bar_joint:env_joint_obj_path_map", None)
 
 
+def get_session(robot_name: str = None):
+    """Return one robot's cached `(client, planner)` pair, or raise.
+
+    Args:
+        robot_name (str): "Cindy", "Alice", or "Belle". None means Cindy.
+
+    Raises:
+        RuntimeError: if sessions were never started, the name is unknown,
+            or that robot's session died (e.g. the GUI window was closed).
+    """
+    name = robot_name or config.ASSEMBLY_ROBOT_NAME
+    sessions = _STICKY.get(_STICKY_PB_SESSIONS)
+    if not sessions:
+        raise RuntimeError("PyBullet sessions not started. Run RSPBStart first.")
+    if name not in config.ROBOT_IDS:
+        raise RuntimeError(
+            f"Unknown robot name {name!r}. Known robots: {sorted(config.ROBOT_IDS)}."
+        )
+    session = sessions.get(name)
+    if session is None or not _pybullet_connected(session["client"]):
+        raise RuntimeError(
+            f"PyBullet session for {name} is not alive (GUI closed or crashed). "
+            "Run RSPBStop, then RSPBStart to restart all sessions."
+        )
+    return session["client"], session["planner"]
+
+
 def get_planner():
-    """Return the cached `(client, planner)` tuple or raise if not started."""
+    """Cindy's cached `(client, planner)` tuple, or raise if not started.
+
+    Kept under its old name so the many assembly-side call sites keep working;
+    support-robot code uses ``get_session(robot_name)`` instead.
+    """
     if not is_pb_running():
         raise RuntimeError("PyBullet client not started. Run RSPBStart first.")
-    client = _STICKY.get(_STICKY_PB_CLIENT)
-    planner = _STICKY.get(_STICKY_PB_PLANNER)
-    return client, planner
+    return get_session(config.ASSEMBLY_ROBOT_NAME)
 
 
-def _pybullet_connected() -> bool:
-    """Whether PyBullet itself reports an active connection."""
+def _pybullet_connected(client) -> bool:
+    """Whether ONE client's connection is alive, scoped by its physics client id.
+
+    Deliberately raw ``pybullet.getConnectionInfo`` and not
+    ``pybullet_planning.is_connected`` — the pp helpers read a module-global
+    client id and answer for the wrong session in a multi-client process.
+
+    Args:
+        client: a compas_fab PyBulletClient.
+    """
     try:
-        import pybullet_planning as pp
-        return bool(pp.is_connected())
+        import pybullet
+        info = pybullet.getConnectionInfo(physicsClientId=client.client_id)
+        return bool(info.get("isConnected"))
     except Exception:
         return False
 
 
-def is_pb_running() -> bool:
-    """Authoritative "is the PB client usable right now?" check.
+def is_pb_running(robot_name: str = None) -> bool:
+    """Authoritative "is this robot's PB session usable right now?" check.
 
-    Cross-references our sticky cache against PyBullet's own connection
-    state and self-heals on mismatch:
+    ``robot_name=None`` asks about Cindy (the assembly session), matching the
+    many existing call sites. Cross-references the sticky session registry
+    against PyBullet's own per-client connection state and self-heals:
 
-    - sticky populated, PB connected  → True
-    - sticky populated, PB disconnected (user closed GUI)  → clean sticky, return False
-    - sticky empty                    → False (regardless of PB state)
+    - session cached + connected  → True
+    - session cached + disconnected (user closed GUI) → drop the dead session,
+      return False. If EVERY session is dead the whole registry is cleared so
+      the next RSPBStart starts clean.
+    - no sessions cached          → False
     """
-    sticky_has = _STICKY.get(_STICKY_PB_CLIENT) is not None
-    if not sticky_has:
+    name = robot_name or config.ASSEMBLY_ROBOT_NAME
+    sessions = _STICKY.get(_STICKY_PB_SESSIONS)
+    if not sessions or name not in sessions:
         return False
-    if _pybullet_connected():
+    if _pybullet_connected(sessions[name]["client"]):
         return True
-    # Sticky thinks we're running but PyBullet is not — stale state; clean it.
-    _STICKY.pop(_STICKY_PB_CLIENT, None)
-    _STICKY.pop(_STICKY_PB_PLANNER, None)
-    print("is_pb_running: stale sticky detected (PyBullet no longer connected); cleared cache.")
+    # Sticky thinks this session runs but PyBullet says no — stale; drop it.
+    sessions.pop(name, None)
+    print(f"is_pb_running: stale session for {name} (PyBullet no longer connected); dropped it.")
+    if not any(_pybullet_connected(s["client"]) for s in sessions.values()):
+        _STICKY.pop(_STICKY_PB_SESSIONS, None)
+        print("is_pb_running: no live sessions remain; cleared the session registry.")
     return False
 
 
@@ -343,60 +441,17 @@ def is_pb_running() -> bool:
 
 
 def set_cell_state(planner, robot_cell_state):
-    """Push a robot cell state into PyBullet (matches GH_set_cell_state.py).
+    """Push a robot cell state into PyBullet.
 
-    If a different cell kind is currently loaded into the planner (e.g. the
-    support cell from a prior `RSIKSupportKeyframe` run), swap back to the
-    dual-arm cell first so the IK / collision check operates against the
-    right RobotCell.
+    Each planner permanently owns one robot's cell now (no cell-kind
+    swapping), so this is a plain state push. The robot base pose is part of
+    the state: compas_fab's ``set_robot_cell_state`` pushes it per-client via
+    ``client._set_base_frame`` — the old extra ``pp.set_pose`` call here was
+    redundant AND unsafe with multiple clients (pp helpers read a
+    module-global client id).
     """
-    deps = _import_compas_stack()
-    if _STICKY.get(_STICKY_CURRENT_CELL_KIND) != "dual_arm":
-        print("core.robot_cell.set_cell_state: cell-kind swap -> planner.set_robot_cell(<dual-arm>)")
-        planner.set_robot_cell(get_or_load_robot_cell())
-        _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
-    print("core.robot_cell.set_cell_state: planner.set_robot_cell_state(state) + pp.set_pose(robot_base)")
+    print("core.robot_cell.set_cell_state: planner.set_robot_cell_state(state)")
     planner.set_robot_cell_state(robot_cell_state)
-    base_frame = robot_cell_state.robot_base_frame
-    deps["pp"].set_pose(planner.client.robot_puid, _pose_from_frame(base_frame))
-
-
-def ensure_dual_arm_cell(planner):
-    """Swap the planner's robot cell to the dual-arm cell if a different
-    kind (e.g. the support cell from a prior RSIKSupportKeyframe run) is
-    currently active. Symmetric counterpart to
-    `core.robot_cell_support._ensure_support_cell_loaded`.
-
-    Rhino commands call this ONCE before invoking the (tamp) dual-arm solvers:
-    the solvers themselves are cache-free -- they only read the cell already on
-    the planner -- so this cell-kind swap is the caller's job now. Headless
-    runs never need it (they push the JSON-loaded cell onto the planner via
-    ``planner.set_robot_cell`` and never swap kinds).
-
-    This restores an *already-built* dual-arm cell; it never builds one. If no
-    dual-arm cell has been registered (empty cache), it raises instead of quietly
-    cold-loading a bare, tool-less cell -- that fallback would clobber the
-    planner and surface later as a cryptic "tools do not match" IK error.
-
-    Raises:
-        RuntimeError: if a cell-kind swap is needed but no dual-arm cell is
-            cached to swap in.
-    """
-    if _STICKY.get(_STICKY_CURRENT_CELL_KIND) == "dual_arm":
-        return
-    cached = _STICKY.get(_STICKY_ROBOT_CELL)
-    if cached is None:
-        raise RuntimeError(
-            "No dual-arm RobotCell is registered, so IK cannot run. This usually "
-            "means the cell was never built/loaded for this session.\n"
-            "  - In Rhino: run RSPBStart then RSRebuildRobotCell first.\n"
-            "  - Headless: load RobotCell.json and push it with "
-            "planner.set_robot_cell(rcell) before solving.\n"
-            "(Refusing to cold-load a bare, tool-less cell here -- that would "
-            "clobber the planner and fail later with a 'tools do not match' error.)"
-        )
-    planner.set_robot_cell(cached)
-    _STICKY[_STICKY_CURRENT_CELL_KIND] = "dual_arm"
 
 
 def ensure_env_registered(robot_cell, env_geom, planner):
@@ -556,7 +611,10 @@ def base_assembly_cell_state():
     state = robot_cell.default_cell_state()
 
     arm_group = {"left": config.LEFT_GROUP, "right": config.RIGHT_GROUP}
+    obstacle_names = set(config.OBSTACLE_TOOL_NAMES.values())
     for tid in robot_cell.tool_models:
+        if tid in obstacle_names:
+            continue  # frozen-robot obstacles are handled below, not arm tools
         side = arm_side_from_tool_name(tid)
         if side is None:
             continue
@@ -569,6 +627,15 @@ def base_assembly_cell_state():
         ts.attachment_frame = Frame.worldXY()
         ts.frame = None
         ts.is_hidden = False
+
+    # ! Support robots default to PARKED (far away, collisions on). Any state
+    # ! that wants a support robot IN the scene must call
+    # ! robot_obstacles.configure_robot_obstacle on top of this base state.
+    # Local import: robot_obstacles imports from this module (circular at top).
+    from core import robot_obstacles
+    for robot_name, tool_name in config.OBSTACLE_TOOL_NAMES.items():
+        if tool_name in robot_cell.tool_models:
+            robot_obstacles.park_robot_obstacle(state, robot_name)
     return state
 
 
@@ -584,9 +651,16 @@ def _live_assembly_fingerprint():
     swap, its fingerprint is already current and no prompt appears. Used only
     for the staleness (outdate) warning. Rhino-only -> lazy imports.
 
+    It also carries a NAMES hash: an md5 over the sorted bar ids plus every
+    joint block's (joint_id, subtype, parent_bar_id) user text -- the exact
+    inputs the canonical collision-body names are built from. Renaming or
+    renumbering bars/joints (RSReorderBarID, relink, hand edits) changes no
+    count and no coordinate, so without this hash the cached cell would keep
+    serving phantom body names after a rename with no warning at all.
+
     Returns:
         tuple: ``(n_bars, n_joint_instances, n_env_meshes,
-        rounded_endpoint_sum, (left_tool, right_tool))``.
+        rounded_endpoint_sum, (left_tool, right_tool), names_md5)``.
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_bar_seq_map
@@ -601,13 +675,35 @@ def _live_assembly_fingerprint():
         except Exception:
             pass
     n_joints = 0
+    # The naming inputs of `env_collision.collect_assembly_geometry`: bar ids
+    # plus each joint block's id / subtype-or-type / parent bar. Plain user-text
+    # reads, no meshes -- cheap enough for the every-command staleness probe.
+    # The FAKE mark rides along because a fake bar (and its joint halves) is
+    # dropped from the collision scene, so toggling it changes the scene while
+    # changing no count and no coordinate.
+    from core.rhino_bar_registry import get_fake_bar_ids
+
+    fake_bar_ids = get_fake_bar_ids(seq_map)
+    name_parts = sorted(
+        f"{bid}{':fake' if bid in fake_bar_ids else ''}" for bid in seq_map
+    )
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
         config.LAYER_JOINT_MALE_INSTANCES,
         config.LAYER_JOINT_GROUND_INSTANCES,
     ):
         if rs.IsLayer(layer):
-            n_joints += len(rs.ObjectsByLayer(layer) or [])
+            joint_oids = rs.ObjectsByLayer(layer) or []
+            n_joints += len(joint_oids)
+            for joint_oid in joint_oids:
+                jid = rs.GetUserText(joint_oid, "joint_id") or ""
+                subtype = (
+                    rs.GetUserText(joint_oid, "joint_subtype")
+                    or rs.GetUserText(joint_oid, "joint_type")
+                    or ""
+                )
+                parent = rs.GetUserText(joint_oid, "parent_bar_id") or ""
+                name_parts.append(f"{jid}:{subtype}:{parent}")
     n_env = (
         len(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or [])
         if rs.IsLayer(config.LAYER_ENVIRONMENT)
@@ -623,7 +719,10 @@ def _live_assembly_fingerprint():
         active_sig = (names["left"], names["right"])
     except Exception:
         active_sig = ("<unresolved>", "<unresolved>")
-    return (len(seq_map), n_joints, n_env, round(coord_sum, 3), active_sig)
+    # Deterministic digest of the sorted naming inputs (see docstring). Sorted so
+    # document order / layer scan order cannot flip the fingerprint.
+    names_md5 = hashlib.md5("|".join(sorted(name_parts)).encode("utf-8")).hexdigest()
+    return (len(seq_map), n_joints, n_env, round(coord_sum, 3), active_sig, names_md5)
 
 
 def rebuild_assembly_cell(robot_cell, planner):
@@ -672,9 +771,11 @@ def rebuild_assembly_cell(robot_cell, planner):
     # tool swap (which changes the tool NAMES, e.g. AT3_E1L -> AT4_E3_L) leaves the
     # OLD ToolModels attached to the arms alongside the new ones, so PyBullet
     # collides against BOTH and the preview draws BOTH. Mirrors the rigid-body
-    # eviction below.
+    # eviction below. The frozen-robot obstacle tools are NOT part of the
+    # active pair -- exempt them from eviction.
     new_tools = build_arm_tool_models()
-    stale_tools = set(robot_cell.tool_models.keys()) - set(new_tools)
+    obstacle_names = set(config.OBSTACLE_TOOL_NAMES.values())
+    stale_tools = set(robot_cell.tool_models.keys()) - set(new_tools) - obstacle_names
     for stale_tool in stale_tools:
         robot_cell.tool_models.pop(stale_tool, None)
     for tid, tm in new_tools.items():
@@ -684,6 +785,15 @@ def rebuild_assembly_cell(robot_cell, planner):
             f"core.robot_cell.rebuild_assembly_cell: evicted stale tool(s) "
             f"{sorted(stale_tools)} (no longer in the active pair)."
         )
+
+    # ! Register the two support robots as frozen articulated obstacles in
+    # ! Cindy's cell, so a robot holding a bar shows up (and collides) in every
+    # ! later assembly step's planning scene. Their per-step pose/configuration
+    # ! is set on the STATE (configure_robot_obstacle / park_robot_obstacle);
+    # ! here we only register the geometry once.
+    # Local import: robot_obstacles imports from this module (circular at top).
+    from core import robot_obstacles
+    robot_obstacles.attach_obstacle_robot_tools(robot_cell, list(config.SUPPORT_ROBOT_NAMES))
 
     # Canonical bar/joint/obstacle rigid-body registry: replace the managed set.
     managed_prefixes = (

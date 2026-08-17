@@ -10,21 +10,29 @@
 """RSShowBarActionPlan - View a bar's solved assembly plan (IK keyframes or motion).
 
 Left-click (``main``): the IK KEYFRAME viewer. Pick a bar, then Enter (or
-``TogglePose``) cycles the four assembly movements' start states (M1 home -> M2
-approach -> M3 assembled -> M4 retreat), each with its solved IK config + per-
-movement collision context, plus the M4-home target. The active bar's base frame
-is drawn (axis triad + footprint). When ``RSLoadSolvedBarAction`` has loaded solved
-bars, it auto-starts on them, draws every base frame, and offers NextBar/PrevBar.
+``TogglePose``) cycles the bar's timeline: approach -> assembled -> hold (held
+bars only: the support robot grips while the arms still hold) -> retreat ->
+home, each with its solved IK config + per-movement collision context. Support
+robots appear per pose exactly as the schedule says: holders from earlier bars
+stand frozen in every pose, the bar's own holder joins from the hold pose
+onward, and when the viewed bar is the LAST stabilizer of a hold the cycle
+continues into that hold's release pose (its robot retreated, the assembly
+robot parked far away). The active bar's base frame is drawn (axis triad +
+footprint).
+When ``RSLoadSolvedBarAction`` has loaded solved bars, it auto-starts on them,
+draws every base frame, and offers NextBar/PrevBar.
 
 Right-click (``main_motion``): the MOTION viewer. Pick a bar; if its planned
 trajectory isn't cached yet it loads ``<bar>.solved_motion.json`` from the export
-root, then steps through the concatenated M1..M4 trajectory from the COMMAND LINE
-(Enter/Next/Prev/Jump) -- a prompt, not a modal dialog, so the viewport stays free
-to zoom/orbit. The held bar follows the arm through M1/M2; FK-only rendering.
+root, then steps through the concatenated planned trajectory (transfer -> insert
+-> retreat -> home) from the COMMAND LINE (Enter/Next/Prev/Jump) -- a prompt, not
+a modal dialog, so the viewport stays free to zoom/orbit. The held bar follows
+the arm while gripped; FK-only rendering.
 
-Both run until Esc / close. Legacy `ik_support` records are still shown alongside
-the dual-arm when present. The preview is non-baked: everything is cleaned up on
-exit and the sequence display is restored.
+Both run until Esc / close. A bar with a solved support keyframe (the split
+KEY_SUPPORT_* keys) also shows the holding robot alongside the dual-arm. The
+preview is non-baked: everything is cleaned up on exit and the sequence display
+is restored.
 """
 
 from __future__ import annotations
@@ -68,14 +76,9 @@ from core.rhino_bar_registry import (
     set_build_stage,
     show_sequence_colors,
 )
-from core.rhino_block_import import has_block_definition
-from core.rhino_frame_io import doc_unit_scale_to_mm
-from core.rhino_helpers import set_objects_layer, suspend_redraw
+from core.rhino_helpers import suspend_redraw
 
 
-# Legacy support-side single-blob key (KEY_SUPPORT_* split is not yet wired
-# in `rs_ik_support_keyframe.py`).
-IK_SUPPORT_KEY = "ik_support"
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
 RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 
@@ -85,16 +88,148 @@ RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 # blue bar-selection color and the red collision highlight).
 WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 
-# Cycle order -- the four assembly movements plus a final "M4 target" preview.
-# TogglePose steps through each movement's START state with its solved config +
-# per-movement collision context:
-#   M1 = home/gripped, M2 = approach/gripped, M3 = assembled/released,
-#   M4 = retreat (bar released; M4's own start config is None, so the saved
-#        retreat keyframe is applied to view it).
-# The extra final step "M4-home" is not a movement start -- it shows M4's TARGET
-# configuration (the home pose the arms return to at the end of the free motion).
-M4_TARGET_POSE = "M4-home"
-POSES = ("M1", "M2", "M3", "M4", M4_TARGET_POSE)
+# Pose taxonomy -- TogglePose steps through the bar's timeline. Which poses a
+# bar gets depends on the hold plan (see _PreviewSession._rebuild_hold_context):
+#
+#   approach  = arms at the approach keyframe, bar gripped         (J_M5 start)
+#   assembled = bar inserted, arms still gripping                  (R_M0 start)
+#   hold      = the bar's own support robot grips too (handover)   [held bars]
+#   retreat   = arms pulled back, bar released                     (R_M3 start)
+#   home      = arms at the fixed home pose                        (R_M3 target)
+#   release X = a hold whose LAST stabilizing bar is THIS bar lets go: its
+#               robot shown retreated at the approach conf, the assembly robot
+#               parked far away                         [last-stabilizer bars]
+#
+# Support-robot presence per pose: holders that arrived at earlier steps are
+# frozen in EVERY pose; the bar's own holder is absent through approach +
+# assembled (it only arrives after the insert) and present from hold onward.
+HOLD_POSE = "hold"
+RELEASE_POSE_PREFIX = "release"
+BASE_POSES = ("approach", "assembled", "retreat", "home")
+
+
+def _pose_label(pose) -> str:
+    """Human-readable name of a pose (release poses are tuples)."""
+    if isinstance(pose, tuple):
+        return f"{pose[0]} {pose[1]}"
+    return str(pose)
+
+
+def derive_hold_plan_safe(label: str = "RSShowBarActionPlan") -> dict:
+    """The derived hold plan, or ``{}`` with a printed note if it cannot derive.
+
+    A viewer must never die because the sequence data is momentarily
+    inconsistent -- without a plan it simply shows the assembly poses only.
+
+    Args:
+        label (str): command name used in the printed note.
+
+    Returns:
+        dict: a ``core.hold_schedule.derive_hold_plan`` result (may be empty).
+    """
+    from core.hold_schedule import derive_hold_plan
+    from core.rhino_bar_registry import collect_hold_inputs
+
+    try:
+        bar_seq, supported = collect_hold_inputs()
+        return derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+    except RuntimeError as exc:
+        print(f"{label}: hold plan unavailable ({exc}); assembly poses only.")
+        return {}
+
+
+def poses_for_bar(bar_id, bar_oid, hold_plan, quiet: bool = False) -> list:
+    """The ordered pose cycle for one bar (see the pose taxonomy above).
+
+    The single definition of "what steps does this bar have", shared by the
+    per-bar viewer and the whole-assembly stepper.
+
+    Args:
+        bar_id (str): the bar.
+        bar_oid: its Rhino object id.
+        hold_plan (dict): a ``derive_hold_plan`` result.
+        quiet (bool): suppress the "needs holding but unsolved" note (the
+            whole-assembly stepper reports those once, up front).
+
+    Returns:
+        list: poses -- strings, plus ``(RELEASE_POSE_PREFIX, held_bar_id)``
+        tuples for every hold that releases right after this bar.
+    """
+    poses = ["approach", "assembled"]
+    if bar_id in hold_plan:
+        if _load_support_payload(bar_oid) is not None:
+            poses.append(HOLD_POSE)
+        elif not quiet:
+            print(
+                f"RSShowBarActionPlan: bar {bar_id} needs holding but has no solved "
+                "support keyframe — the hold pose is skipped."
+            )
+    poses += ["retreat", "home"]
+    releasing_here = sorted(
+        (b for b, e in hold_plan.items() if e["release_after_bar_id"] == bar_id),
+        key=lambda b: hold_plan[b]["hold_start_seq"],
+    )
+    poses += [(RELEASE_POSE_PREFIX, b) for b in releasing_here]
+    return poses
+
+
+def build_global_timeline(hold_plan=None, bar_map=None):
+    """Every step of the WHOLE assembly, in sequence order.
+
+    Concatenates each bar's pose cycle (:func:`poses_for_bar`) following the
+    assembly sequence, so stepping the result walks the build from the first
+    bar to the last -- the same order ``ActionSchedule.json`` records.
+
+    Bars that are fake (never assembled) or have no solved assembly keyframe
+    contribute no ASSEMBLY steps; they are returned separately so the caller
+    can say so out loud rather than silently skipping them. Their attached
+    RELEASE steps are kept, though — a hold whose last stabilizing bar
+    happens to be unsolved must still play its release (the release scene
+    needs only the held bars' support keyframes, not that bar's assembly
+    keyframe), otherwise the holding robots would silently vanish between
+    two steps.
+
+    Args:
+        hold_plan (dict | None): a ``derive_hold_plan`` result; derived when omitted.
+        bar_map (dict | None): a ``get_bar_seq_map`` result; fetched when omitted.
+
+    Returns:
+        tuple: ``(steps, skipped)`` where ``steps`` is a list of
+        ``(bar_id, bar_oid, pose)`` and ``skipped`` is ``[(bar_id, reason)]``.
+    """
+    from core.rhino_bar_registry import get_fake_bar_ids
+
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    if hold_plan is None:
+        hold_plan = derive_hold_plan_safe()
+    fake_ids = get_fake_bar_ids(bar_map)
+
+    steps = []
+    skipped = []
+    for bar_id in sorted(bar_map, key=lambda b: bar_map[b][1]):
+        bar_oid = bar_map[bar_id][0]
+        reason = None
+        if bar_id in fake_ids:
+            reason = "fake bar (never assembled)"
+        elif not bar_action.has_ik_keyframe(bar_oid):
+            reason = "no solved IK keyframe"
+        if reason is None:
+            for pose in poses_for_bar(bar_id, bar_oid, hold_plan, quiet=True):
+                steps.append((bar_id, bar_oid, pose))
+            continue
+        # Skipped bar: keep only its attached release steps (if any).
+        releases = [
+            pose for pose in poses_for_bar(bar_id, bar_oid, hold_plan, quiet=True)
+            if isinstance(pose, tuple)
+        ]
+        for pose in releases:
+            steps.append((bar_id, bar_oid, pose))
+        if releases:
+            held = ", ".join(pose[1] for pose in releases)
+            reason += f" — its release step(s) for {held} are kept"
+        skipped.append((bar_id, reason))
+    return steps, skipped
 
 
 def _reload():
@@ -126,89 +261,45 @@ def _apply_groups(state, groups):
             state.robot_configuration[name] = float(value)
 
 
-def _np_mm_to_rhino_xform(matrix: np.ndarray):
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    doc_matrix = np.array(matrix, dtype=float, copy=True)
-    doc_matrix[:3, 3] *= scale_from_mm
-    xform = Rhino.Geometry.Transform(1.0)
-    for i in range(4):
-        for j in range(4):
-            xform[i, j] = float(doc_matrix[i, j])
-    return xform
-
-
-def _cleanup_ids(oids):
-    if not oids:
-        return
-    with suspend_redraw():
-        for oid in oids:
-            try:
-                rs.DeleteObject(oid)
-            except Exception:
-                pass
-
-
-# Sub-layer keys under ``config.LAYER_IK_CACHE`` for the two coexisting cells.
+# Sub-layer keys under ``config.LAYER_IK_CACHE``. The assembly robot has one;
+# each support robot gets its OWN sub-layer bundle (two of them can be on
+# screen at once, e.g. the viewed bar's holder plus an earlier bar's holder).
 IK_LAYER_KEY_ASSEMBLY = "Assembly"
-IK_LAYER_KEY_SUPPORT = "Support"
 
 
-def _show_support_state(
-    planner,
-    assembly_base_mm,
-    assembled_groups,
-    support_payload,
-    mesh_modes,
-    deps,
-):
-    """Update the support-cell preview at the saved support pose.
+def _support_layer_key(robot_name: str) -> str:
+    """The ik_viz sub-layer key for one support robot's preview bundle."""
+    return f"Support {robot_name}"
 
-    Routed through the new cached ``ik_viz.update_state``: the support cell's
-    meshes live on their own sub-layer (``IK_LAYER_KEY_SUPPORT``) so they
-    coexist with the dual-arm bake without either side wiping the other.
-    PyBullet is also swapped to the support cell so collision queries match.
+
+def _render_support_robot(robot_name, base_frame_mm, cfg, mesh_modes, mesh_mode, deps):
+    """Draw one support robot at a base + arm config on its own sub-layer.
+
+    Routed through the cached ``ik_viz.update_state``; the robot's attached
+    SupportGripper tool rides along, so the gripper shows at the grasp
+    without inserting any block. Other robots inside this robot's cell state
+    stay PARKED (default), so nothing is drawn twice. Pure mesh preview —
+    nothing is pushed into any PyBullet session.
+
+    Args:
+        robot_name (str): "Alice" or "Belle".
+        base_frame_mm: the hold's 4x4 base frame, world mm.
+        cfg (dict): ``{"joint_names", "joint_values"}`` arm config to show.
+        mesh_modes: both ik_viz mesh modes (pre-baked for cheap toggling).
+        mesh_mode (str): the currently visible mode.
+        deps (dict): the imported compas stack.
     """
-    cell = robot_cell_support.get_or_load_support_cell()
-    state = robot_cell_support.default_support_cell_state()
-
-    # DualArm tool obstacle: always configure at the assembled pose - the
-    # support keyframe was solved against assembled regardless of which
-    # pose the user is currently viewing on the assembly side.
-    state = robot_cell_support.configure_dual_arm_obstacle(
-        state,
-        base_frame_world_mm=np.asarray(assembly_base_mm, dtype=float),
-        joint_values_left=assembled_groups["left"]["joint_values"],
-        joint_values_right=assembled_groups["right"]["joint_values"],
-        joint_names_left=assembled_groups["left"]["joint_names"],
-        joint_names_right=assembled_groups["right"]["joint_names"],
+    cell = robot_cell_support.get_or_load_support_cell(robot_name)
+    state = robot_cell_support.default_support_cell_state(robot_name)
+    state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(
+        deps["Frame"], np.asarray(base_frame_mm, dtype=float)
     )
-
-    support_base_mm = np.asarray(support_payload["base_frame_world_mm"], dtype=float)
-    state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(deps["Frame"], support_base_mm)
-    final_support = support_payload["final"]
-    for name, value in zip(final_support["joint_names"], final_support["joint_values"]):
+    for name, value in zip(cfg["joint_names"], cfg["joint_values"]):
         state.robot_configuration[name] = float(value)
 
-    robot_cell_support.set_cell_state(planner, state)
-    ik_viz.update_state(
-        state,
-        robot_cell=cell,
-        mesh_modes=mesh_modes,
-        layer_key=IK_LAYER_KEY_SUPPORT,
-    )
-
-
-def _insert_support_gripper(tool0_mm: np.ndarray):
-    block_name = config.ROBOTIQ_GRIPPER_BLOCK
-    if not has_block_definition(block_name):
-        raise RuntimeError(f"Missing required Rhino block definition '{block_name}'.")
-    with suspend_redraw():
-        oid = rs.InsertBlock(block_name, [0, 0, 0])
-        if oid is None:
-            raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
-        rs.TransformObject(oid, _np_mm_to_rhino_xform(tool0_mm))
-        set_objects_layer(oid, config.SUPPORT_PREVIEW_LAYER)
-    return [oid]
+    key = _support_layer_key(robot_name)
+    ik_viz.update_state(state, robot_cell=cell, mesh_modes=mesh_modes, layer_key=key)
+    ik_viz.set_active_mesh_mode(key, mesh_mode)
 
 
 def _tool0_world_mm(planner, link_name: str) -> np.ndarray:
@@ -220,14 +311,35 @@ def _tool0_world_mm(planner, link_name: str) -> np.ndarray:
     returns translations in doc units rather than meters. PyBullet keeps
     its own URDF-native (meters) state, so the link pose query here is
     immune to that scaling.
+
+    Raw ``pybullet`` calls scoped by ``physicsClientId`` on purpose: the
+    ``pp.*`` helpers read a module-global client id and would silently talk
+    to the wrong session now that one PyBullet client runs per robot.
     """
-    deps = robot_cell.import_compas_stack()
-    pp = deps["pp"]
+    import pybullet
+
+    client_id = planner.client.client_id
     robot_puid = planner.client.robot_puid
-    link_id = pp.link_from_name(robot_puid, link_name)
-    pose = pp.get_link_pose(robot_puid, link_id)
-    matrix = np.asarray(pp.tform_from_pose(pose), dtype=float)
-    matrix[:3, 3] *= 1000.0  # m -> mm
+
+    # Find the link index by scanning each joint's child-link name (link i is
+    # joint i's child in pybullet).
+    link_id = None
+    for j in range(pybullet.getNumJoints(robot_puid, physicsClientId=client_id)):
+        info = pybullet.getJointInfo(robot_puid, j, physicsClientId=client_id)
+        if info[12].decode("utf-8") == link_name:
+            link_id = j
+            break
+    if link_id is None:
+        raise RuntimeError(f"Link {link_name!r} not found on the planner's robot.")
+
+    # Indices 4/5 = the URDF link frame in world (what pp.get_link_pose read).
+    link_state = pybullet.getLinkState(robot_puid, link_id, physicsClientId=client_id)
+    pos, quat = link_state[4], link_state[5]
+    matrix = np.eye(4)
+    matrix[:3, :3] = np.asarray(
+        pybullet.getMatrixFromQuaternion(quat), dtype=float
+    ).reshape(3, 3)
+    matrix[:3, 3] = np.asarray(pos, dtype=float) * 1000.0  # m -> mm
     return matrix
 
 
@@ -262,14 +374,27 @@ def _load_assembly_payload(bar_oid):
 
 
 def _load_support_payload(bar_oid):
-    raw = rs.GetUserText(bar_oid, IK_SUPPORT_KEY)
-    if not raw:
-        return None
+    """Read the split KEY_SUPPORT_* keys into the viewer's display shape.
+
+    Returns:
+        dict | None: ``{"robot_name", "base_frame_world_mm", "held",
+        "approach"}`` (held/approach = arm configs), or None when the bar has
+        no support keyframe (partial keys are reported + skipped).
+    """
+    from core import hold_action_builder
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        print(f"RSShowBarActionPlan: malformed '{IK_SUPPORT_KEY}' on bar ({exc}); skipping support preview.")
+        payload = hold_action_builder.read_bar_support_keyframe(bar_oid)
+    except RuntimeError as exc:
+        print(f"RSShowBarActionPlan: {exc} Skipping support preview.")
         return None
+    if payload is None:
+        return None
+    return {
+        "robot_name": payload["robot_name"],
+        "base_frame_world_mm": payload["base_frame_world_mm"],
+        "held": payload["held"],
+        "approach": payload["approach"],
+    }
 
 
 def _build_assembly_state(base_mm, groups, deps):
@@ -299,17 +424,35 @@ class _PreviewSession:
         self.deps = robot_cell.import_compas_stack()
         self.active_bar_id = None
         self.active_bar_oid = None
-        self.pose = POSES[0]
+        # Pose cycle for the ACTIVE bar; rebuilt per bar by
+        # _rebuild_hold_context (held bars gain "hold", last-stabilizer bars
+        # gain the release poses).
+        self.poses = list(BASE_POSES)
+        self.pose = self.poses[0]
+        # The derived hold plan (who holds which bar until when).
+        self.hold_plan = {}
+        # Support sub-layer keys currently visible, so pose changes can hide
+        # robots that left the scene.
+        self._shown_support_keys = set()
+        # Per-bar movement cache: {bar_id: (token, jointing, release, env_geom)}
+        # where token = the bar's raw keyframe user-text strings, so a bar
+        # re-solved mid-session is rebuilt instead of served stale. Building
+        # the movements forks the full template state ten times — far too
+        # heavy to redo on every pose step.
+        self._movements_cache = {}
+        # {bar_id: (oid, seq)}, refreshed on bar switch (presence lookups
+        # would otherwise re-scan the whole document every render).
+        self._bar_map = {}
+        # What show_sequence_colors last painted, so pose steps skip the
+        # full-document recolor when nothing changed.
+        self._seq_colored_for = None
         self.show_unbuilt = False
         self.mesh_mode = ik_viz.MESH_MODE_VISUAL
-        # Doc oids the session owns directly (Robotiq gripper block etc).
-        self._support_block_ids = []
         self._session_started = False
         # State produced by the most recent _render(); reused by check_collision.
         self._last_assembly_state = None
         self._last_env_geom = {}
         self._last_assembly_payload = None
-        self._last_support_payload = None
         # Highlight bookkeeping: {oid: prev_color_source_or_None}
         self._highlight_oids = []
         # WalkableGround brep(s) temporarily colored to show the active bar's
@@ -329,19 +472,25 @@ class _PreviewSession:
 
     # ---- mutations -----------------------------------------------------
 
-    def set_active_bar(self, bar_id, bar_oid):
-        # Switching bars changes the env_geom (different built-before set) and
-        # may also change which arm tools are attached. Both mutate
-        # ``rcell.rigid_body_models`` whose keys are baked into the cached
-        # ``RobotCellObject._rigid_body_scene_objects`` dict at first draw -- so
-        # the cache must be torn down when the bar changes.
-        if self.active_bar_id is not None and bar_id != self.active_bar_id and self._session_started:
-            ik_viz.discard_cache()
-            self._session_started = False
+    def set_active_bar(self, bar_id, bar_oid, hold_plan=None, pose=None):
+        # ! No cache teardown on a bar switch. The cell is a STATIC canonical
+        # registry now (every bar/joint registered once, per-step visibility
+        # via is_hidden), so the baked meshes stay valid across bars — and
+        # ``ik_viz.update_state`` reconciles any body-set drift itself
+        # (_sync_rb_keyset). The old ``discard_cache()`` here re-baked the
+        # whole cell on every switch, which made the whole-assembly stepper
+        # (RSShowAssemblyPlan) unusably slow.
         self.active_bar_id = bar_id
         self.active_bar_oid = bar_oid
-        # Start from the first movement (M1) on a bar switch, back in keyframe view.
-        self.pose = POSES[0]
+        # Cached per-bar data (bar map for presence lookups; movements are
+        # cached separately, keyed by bar + keyframe token).
+        self._bar_map = get_bar_seq_map()
+        # This bar's pose cycle depends on the hold plan (own hold? releases
+        # attached here?); start from its first pose, back in keyframe view.
+        # ``pose`` lets a caller land on a specific step in one render (the
+        # whole-assembly stepper walking backwards into a bar's last pose).
+        self._rebuild_hold_context(hold_plan)
+        self.pose = pose if pose in self.poses else self.poses[0]
         self.motion_mode = False
         self.motion_wps = []
         self.motion_idx = 0
@@ -349,12 +498,28 @@ class _PreviewSession:
         # Show which WalkableGround brep(s) this bar's robot base stands on.
         self._show_walkable_grounds()
 
+    def _rebuild_hold_context(self, hold_plan=None):
+        """Derive the hold plan and this bar's pose cycle.
+
+        The "hold" pose is added only when the bar itself needs holding AND
+        its support keyframe is solved; a release pose is appended for every
+        hold whose LAST stabilizing bar is this bar (that is when the release
+        physically happens — right after this bar's assembly).
+
+        Args:
+            hold_plan (dict | None): a pre-derived plan to reuse (the
+                whole-assembly stepper derives it once for the run); ``None``
+                derives it fresh from the document.
+        """
+        self.hold_plan = derive_hold_plan_safe() if hold_plan is None else hold_plan
+        self.poses = poses_for_bar(self.active_bar_id, self.active_bar_oid, self.hold_plan)
+
     def cycle_pose(self):
-        """Advance to the next preview step (M1 -> M2 -> M3 -> M4 -> M4-home -> M1)."""
+        """Advance to the next pose in this bar's cycle (wraps around)."""
         if self.active_bar_id is None:
             return
-        idx = POSES.index(self.pose) if self.pose in POSES else -1
-        self.pose = POSES[(idx + 1) % len(POSES)]
+        idx = self.poses.index(self.pose) if self.pose in self.poses else -1
+        self.pose = self.poses[(idx + 1) % len(self.poses)]
         self.refresh()
 
     def toggle_unbuilt(self):
@@ -375,6 +540,7 @@ class _PreviewSession:
                 set_build_stage(self.active_bar_id, entry[1])
         if self.active_bar_id is not None:
             show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+            self._seq_colored_for = (self.active_bar_id, self.show_unbuilt)
 
     def cycle_mesh_mode(self):
         """Flip visual<->collision (cheap layer-visibility toggle, no rebake)."""
@@ -387,7 +553,8 @@ class _PreviewSession:
         self._revert_highlight()
         if self._session_started:
             ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
-            ik_viz.set_active_mesh_mode(IK_LAYER_KEY_SUPPORT, self.mesh_mode)
+        for key in self._shown_support_keys:
+            ik_viz.set_active_mesh_mode(key, self.mesh_mode)
         print(f"RSShowBarActionPlan: mesh_mode={self.mesh_mode}")
 
     # ---- motion view ---------------------------------------------------
@@ -416,16 +583,18 @@ class _PreviewSession:
         """Flatten the active bar's per-movement trajectories into one waypoint list.
 
         Each entry is ``(role, movement, wp12)`` -- the movement supplies that
-        phase's attachments (bar held in M1/M2, released in M3/M4) so the held bar
-        follows the arm as it scrubs. M0 (unplanned) and movements with no
-        trajectory are skipped.
+        phase's attachments (bar held through the transfer + insert, released
+        from the retreat on) so the held bar follows the arm as it scrubs.
+        The unplanned lead-in and movements with no trajectory are skipped.
         """
         self.motion_wps = []
         self.motion_idx = 0
         action = self._active_motion_action()
         if action is None:
             return
-        for role in ("M1", "M2", "M3", "M4"):
+        # The planned arm movements in timeline order (tool/manual events and
+        # the unplanned J_M0 lead-in carry no trajectory).
+        for role in ("J_M3", "J_M5", "R_M2", "R_M3"):
             mv = bar_action._movement_by_role(action, role)
             traj = getattr(mv, "trajectory", None) if mv is not None else None
             if not traj:
@@ -477,125 +646,280 @@ class _PreviewSession:
 
     def refresh(self):
         self._revert_highlight()
-        self._clear_preview()
         self._last_assembly_state = None
         self._last_env_geom = {}
         self._last_assembly_payload = None
-        self._last_support_payload = None
         if self.active_bar_id is None:
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
-            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
+            self._hide_support_layers()
             return
 
-        show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+        # Recoloring walks every bar/joint/tool in the document — only worth
+        # it when the active bar or the unbuilt toggle actually changed
+        # (pose steps within one bar repaint nothing).
+        wanted_coloring = (self.active_bar_id, self.show_unbuilt)
+        if self._seq_colored_for != wanted_coloring:
+            show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+            self._seq_colored_for = wanted_coloring
 
         payload = _load_assembly_payload(self.active_bar_oid)
-        if payload is None:
+        if payload is None and not isinstance(self.pose, tuple):
+            # No assembly keyframe -> no arm pose to draw. Release poses are
+            # the exception: they need only the held bars' SUPPORT keyframes
+            # (the assembly robot is parked far away), so they render even on
+            # an unsolved host bar.
             print(
                 f"RSShowBarActionPlan: bar {self.active_bar_id} has no "
                 f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}' record; showing geometry only."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
-            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
+            self._hide_support_layers()
             return
 
         self._render(payload)
 
+    def _keyframe_token(self):
+        """The active bar's raw keyframe user-text — the movement-cache key.
+
+        Cheap (four user-text reads); changes exactly when the bar is
+        re-solved, so the cache below can never serve a stale build.
+        """
+        return tuple(
+            rs.GetUserText(self.active_bar_oid, key) or ""
+            for key in (
+                config.KEY_ASSEMBLY_BASE_FRAME,
+                config.KEY_ASSEMBLY_IK_APPROACH,
+                config.KEY_ASSEMBLY_IK_ASSEMBLED,
+                config.KEY_ASSEMBLY_IK_RETREAT,
+            )
+        )
+
     def _build_movements(self, payload):
-        """Build the M1-M4 assembly movements for the active bar from its keyframes.
+        """Build (or reuse) the split jointing/release movements for the active bar.
 
         The single source of the viewer's collision context, shared with
-        RSIKKeyframe (both call ``bar_action.build_assembly_movements``). Each
-        movement's ``start_state`` carries that movement's solved config +
-        per-movement attachments: M1 = home/gripped, M2 = approach/gripped,
-        M3 = assembled/released.
+        RSIKKeyframe (both call ``bar_action.build_split_assembly_movements``).
+        Each movement's ``start_state`` carries that movement's solved config
+        + per-movement attachments. Cached per bar for the session (invalidated
+        by the keyframe token when a bar is re-solved), because the build forks
+        the full template state per movement — far too heavy per pose step.
 
         Args:
-            payload (dict): the bar's keyframe record -- ``base_frame_world_mm``
-                plus the ``approach`` / ``assembled`` per-arm configs.
+            payload (dict | None): the bar's keyframe record --
+                ``base_frame_world_mm`` plus the ``approach`` / ``assembled``
+                / ``retreat`` per-arm configs. ``None`` builds with a
+                placeholder base and no configs — enough for the release
+                poses of an unsolved host bar (they only need the body
+                layout; the robot is parked far away anyway).
 
         Returns:
-            tuple: ``(movements, env_geom)`` -- ``{"M1".."M4": Movement}`` and the
-            collision-body dict.
+            tuple: ``(jointing_mvts, release_mvts, env_geom)``.
 
         Raises:
             RuntimeError: if the bar's two arm tools can't be resolved.
         """
+        token = self._keyframe_token()
+        cached = self._movements_cache.get(self.active_bar_id)
+        if cached is not None and cached[0] == token:
+            return cached[1], cached[2], cached[3]
+
         rcell = robot_cell.get_or_load_robot_cell()
         arm_tools, err = ik_collision_setup.resolve_arm_tools_on_bar(self.active_bar_id)
         if err is not None:
             raise RuntimeError(err)
         tool0_left = env_collision._block_instance_xform_mm(arm_tools["left"])
         tool0_right = env_collision._block_instance_xform_mm(arm_tools["right"])
-        movements, env_geom = bar_action.build_assembly_movements(
-            rcell, self.planner, self.active_bar_id,
-            payload["base_frame_world_mm"],
-            tool0_left, tool0_right,
-            approach_groups=payload.get("approach"),
-            assembled_groups=payload.get("assembled"),
+        base_mm = (
+            payload["base_frame_world_mm"] if payload is not None
+            else np.eye(4, dtype=float)
         )
-        return movements, env_geom
+        jointing_mvts, release_mvts, env_geom = bar_action.build_split_assembly_movements(
+            rcell, self.planner, self.active_bar_id,
+            base_mm,
+            tool0_left, tool0_right,
+            approach_groups=payload.get("approach") if payload else None,
+            assembled_groups=payload.get("assembled") if payload else None,
+            retreat_groups=payload.get("retreat") if payload else None,
+        )
+        self._movements_cache[self.active_bar_id] = (token, jointing_mvts, release_mvts, env_geom)
+        return jointing_mvts, release_mvts, env_geom
+
+    def _assembly_state_for_pose(self, payload, jointing_mvts, release_mvts):
+        """The assembly robot's cell state for the current pose.
+
+        Args:
+            payload (dict): the bar's keyframe record.
+            jointing_mvts (dict): ``{"M0".."M5"}`` jointing movements.
+            release_mvts (dict): ``{"M0".."M3"}`` release movements.
+
+        Returns:
+            RobotCellState: the state to draw.
+
+        Raises:
+            RuntimeError: when the pose needs a keyframe the bar lacks.
+        """
+        # ! Always hand out COPIES: the movements are cached for the session,
+        # and the collision-jog dialog mutates the rendered state in place —
+        # a shared object would quietly corrupt the cached movement.
+        if isinstance(self.pose, tuple):
+            # Release pose: the assembly robot has finished this bar and
+            # driven away. The structure on screen IS the assembly bundle's
+            # baked rigid bodies, so hiding that sub-layer would take every
+            # bar with it — instead the robot is drawn at its PARKED base far
+            # away, the same convention the collision scenes use. Arms at
+            # home; the released-bar body layout comes from the free-home
+            # movement's snapshot.
+            movement = release_mvts["M3"]
+            state = movement.start_state.copy()
+            home_cfg = movement.target_configuration
+            if home_cfg is not None:
+                state.robot_configuration = home_cfg.copy()
+            elif state.robot_configuration is None:
+                state.robot_configuration = (
+                    release_mvts["M2"].start_state.robot_configuration.copy()
+                )
+            state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(
+                self.deps["Frame"],
+                np.asarray(config.ROBOT_PARKED_BASE_FRAME_MM, dtype=float),
+            )
+            print(
+                f"RSShowBarActionPlan: {_pose_label(self.pose)} -- assembly robot "
+                "parked far away; the support robot lets go and retreats."
+            )
+            return state
+        if self.pose == "approach":
+            # Arms at the approach keyframe, bar gripped.
+            movement = jointing_mvts["M5"]
+            state = movement.start_state.copy()
+        elif self.pose in ("assembled", HOLD_POSE):
+            # Bar inserted, arms still gripping (the release action's first
+            # tool event carries exactly this snapshot).
+            movement = release_mvts["M0"]
+            state = movement.start_state.copy()
+        elif self.pose == "retreat":
+            # Arms pulled back, bar released (the free-home movement starts
+            # at the retreat keyframe when it is saved).
+            movement = release_mvts["M3"]
+            state = movement.start_state.copy()
+            if state.robot_configuration is None:
+                retreat = payload.get("retreat")
+                if retreat is None:
+                    raise RuntimeError("bar has no saved retreat keyframe")
+                state.robot_configuration = (
+                    release_mvts["M2"].start_state.robot_configuration.copy()
+                )
+                _apply_groups(state, retreat)
+        elif self.pose == "home":
+            # The fixed home pose the arms return to; bar released.
+            movement = release_mvts["M3"]
+            target_cfg = movement.target_configuration
+            if target_cfg is None:
+                raise RuntimeError("release action has no home target configuration")
+            state = movement.start_state.copy()
+            state.robot_configuration = target_cfg.copy()
+        else:
+            raise RuntimeError(f"unknown pose {self.pose!r}")
+        print(
+            f"RSShowBarActionPlan: {_pose_label(self.pose)} -- "
+            f"{movement.movement_id} | {movement.tag}"
+        )
+        return state
+
+    def _support_presence(self):
+        """Which support robots stand where for the CURRENT pose.
+
+        Presence rules (mirrors the schedule semantics):
+        - holders that arrived at EARLIER steps are frozen in every pose;
+        - the bar's OWN holder is absent through approach + assembled (it
+          only arrives after the insert) and present from hold onward;
+        - in a release pose (assembly robot parked far away) the releasing
+          robot shows retreated at its approach config, holds released just
+          before it are gone, and other spanning holds stay at their held
+          configs.
+
+        Returns:
+            dict: ``{robot_name: (base_frame_mm, cfg)}``.
+        """
+        entries = {}
+        # Cached on bar switch: a full-document re-scan per pose step is
+        # wasted work (the registry cannot change while the viewer runs).
+        bar_map = self._bar_map or get_bar_seq_map()
+        active = bar_map.get(self.active_bar_id)
+        if active is None or not self.hold_plan:
+            return entries
+
+        def _payload_for(held_bar_id):
+            held = bar_map.get(held_bar_id)
+            p = _load_support_payload(held[0]) if held is not None else None
+            if p is None:
+                print(
+                    f"RSShowBarActionPlan: hold on {held_bar_id} has no solved "
+                    "support keyframe; its robot is not drawn."
+                )
+            return p
+
+        if isinstance(self.pose, tuple):
+            releasing_bar = self.pose[1]
+            release_seq = self.hold_plan[releasing_bar]["release_after_seq"]
+            # Releases attached to this bar fire in hold-start order; holds
+            # earlier in that order have already let go and driven away.
+            release_order = [p[1] for p in self.poses if isinstance(p, tuple)]
+            for held_bar_id, e in self.hold_plan.items():
+                if not (e["hold_start_seq"] <= release_seq <= e["release_after_seq"]):
+                    continue
+                if (held_bar_id in release_order
+                        and release_order.index(held_bar_id) < release_order.index(releasing_bar)):
+                    continue
+                p = _payload_for(held_bar_id)
+                if p is None:
+                    continue
+                cfg = p["approach"] if held_bar_id == releasing_bar else p["held"]
+                entries[p["robot_name"]] = (p["base_frame_world_mm"], cfg)
+            return entries
+
+        from core.hold_schedule import robots_holding_at_step
+        for _robot_name, held_bar_id in robots_holding_at_step(self.hold_plan, active[1]).items():
+            p = _payload_for(held_bar_id)
+            if p is not None:
+                entries[p["robot_name"]] = (p["base_frame_world_mm"], p["held"])
+        if self.pose in (HOLD_POSE, "retreat", "home") and self.active_bar_id in self.hold_plan:
+            p = _load_support_payload(self.active_bar_oid)
+            if p is not None:
+                entries[p["robot_name"]] = (p["base_frame_world_mm"], p["held"])
+        return entries
 
     def _render(self, payload):
         modes = (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION)
         ik_viz.set_mesh_mode(self.mesh_mode)
 
         rcell = robot_cell.get_or_load_robot_cell()
-        # Build the movements and show the CURRENT movement's start state (its solved
-        # config + per-movement collision context -- exactly what RSIKKeyframe used).
-        # On failure (e.g. the bar's tools can't be resolved), hide the IK preview.
+        # Build the movements and the current pose's assembly state (solved
+        # config + per-movement collision context -- exactly what RSIKKeyframe
+        # used). On failure (e.g. the bar's tools can't be resolved), hide the
+        # IK preview.
         env_geom = {}
         try:
-            movements, env_geom = self._build_movements(payload)
-            # The final "M4-home" step is not a movement start; it reuses the M4
-            # movement but renders its TARGET configuration instead of the start.
-            movement_key = "M4" if self.pose == M4_TARGET_POSE else self.pose
-            movement = movements[movement_key]
-            state = movement.start_state
-            if self.pose == "M4":
-                # M4 (free home) has start_state.robot_configuration = None -- the
-                # planner fills it from M3's end (the retreat keyframe). Apply the
-                # saved retreat config so M4 shows the retreat pose (bar released).
-                retreat = payload.get("retreat")
-                if retreat is None:
-                    raise RuntimeError("bar has no saved retreat keyframe (M4)")
-                state = movement.start_state.copy()
-                if state.robot_configuration is None:
-                    state.robot_configuration = movements["M3"].start_state.robot_configuration.copy()
-                _apply_groups(state, retreat)
-            elif self.pose == M4_TARGET_POSE:
-                # M4's target is the HOME configuration the arms return to at the
-                # end of the free motion. The rigid bodies are already the released
-                # (bar-detached) M4 layout, so only swap in the target config.
-                target_cfg = movement.target_configuration
-                if target_cfg is None:
-                    raise RuntimeError("M4 has no target configuration (home)")
-                state = movement.start_state.copy()
-                state.robot_configuration = target_cfg.copy()
-            print(
-                f"RSShowBarActionPlan: {self.pose} state -- {movement.movement_id} | {movement.tag}"
-            )
+            jointing_mvts, release_mvts, env_geom = self._build_movements(payload)
+            state = self._assembly_state_for_pose(payload, jointing_mvts, release_mvts)
         except Exception as exc:
             print(
                 f"RSShowBarActionPlan: movement build failed "
                 f"({type(exc).__name__}: {exc}); hiding IK preview."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
+            self._hide_support_layers()
             return
 
-        # Some movements carry no start configuration (e.g. M1, whose start config
-        # is planner-computed and left None). There is no robot pose to draw, so
-        # warn and hide the robot preview -- but keep the movement in the cycle so
-        # the user can still step past it. `refresh()` already reset the
-        # _last_* fields, so leave them None (check_collision then reports "no
-        # active IK pose" instead of acting on a config-less state).
+        # A pose whose start configuration is planner-computed (left None) has
+        # no robot to draw -- warn and show geometry only, but keep the pose in
+        # the cycle so the user can still step past it.
         if getattr(state, "robot_configuration", None) is None:
             print(
-                f"RSShowBarActionPlan: {self.pose} has no start configuration "
-                f"(planner-computed); showing geometry only, no robot preview."
+                f"RSShowBarActionPlan: {_pose_label(self.pose)} has no start "
+                "configuration (planner-computed); showing geometry only."
             )
             ik_viz.set_layer_visible(IK_LAYER_KEY_ASSEMBLY, False)
-            ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
+            self._hide_support_layers()
             return
 
         rs.EnableRedraw(False)
@@ -619,65 +943,50 @@ class _PreviewSession:
             )
             # Make sure the active mode's sub-layer is the visible one.
             ik_viz.set_active_mesh_mode(IK_LAYER_KEY_ASSEMBLY, self.mesh_mode)
-
             self._last_assembly_state = state
             self._last_env_geom = env_geom
             self._last_assembly_payload = payload
 
-            support_payload = _load_support_payload(self.active_bar_oid)
-            self._last_support_payload = support_payload
-            if support_payload is not None:
+            # Support robots, per the presence rules for this pose. Each robot
+            # draws on its own sub-layer; robots that left the scene since the
+            # last pose are hidden.
+            entries = self._support_presence()
+            shown = set()
+            for robot_name in sorted(entries):
+                base_mm, cfg = entries[robot_name]
                 try:
-                    _show_support_state(
-                        self.planner,
-                        payload["base_frame_world_mm"],
-                        payload["assembled"],
-                        support_payload,
-                        modes,
-                        self.deps,
+                    _render_support_robot(
+                        robot_name, base_mm, cfg, modes, self.mesh_mode, self.deps
                     )
-                    ik_viz.set_active_mesh_mode(IK_LAYER_KEY_SUPPORT, self.mesh_mode)
-                    tool0_support_mm = np.asarray(
-                        support_payload["tool0_frame_world_mm"], dtype=float
-                    )
-                    try:
-                        self._support_block_ids = _insert_support_gripper(tool0_support_mm)
-                    except Exception as exc:
-                        print(
-                            f"RSShowBarActionPlan: SupportGripper preview skipped "
-                            f"({type(exc).__name__}: {exc})."
-                        )
-                    stored_support = support_payload.get("robot_id", "<unknown>")
-                    print(
-                        f"RSShowBarActionPlan: also showing 'ik_support' for bar "
-                        f"{self.active_bar_id} (robot_id={stored_support})."
-                    )
+                    shown.add(_support_layer_key(robot_name))
                 except Exception as exc:
                     print(
-                        f"RSShowBarActionPlan: ik_support display failed "
-                        f"({type(exc).__name__}: {exc})."
+                        f"RSShowBarActionPlan: support preview for {robot_name} "
+                        f"failed ({type(exc).__name__}: {exc})."
                     )
-            else:
-                # Active bar has no support payload; hide stale support arm
-                # left over from a previously-active bar.
-                ik_viz.set_layer_visible(IK_LAYER_KEY_SUPPORT, False)
+            for key in self._shown_support_keys - shown:
+                ik_viz.set_layer_visible(key, False)
+            self._shown_support_keys = shown
+            if entries:
+                print(
+                    "RSShowBarActionPlan: support robot(s) in scene: "
+                    + ", ".join(sorted(entries)) + "."
+                )
 
             print(
-                f"RSShowBarActionPlan: showing {self.pose} state for bar "
-                f"{self.active_bar_id} (mesh_mode={self.mesh_mode})"
+                f"RSShowBarActionPlan: showing {_pose_label(self.pose)} state for "
+                f"bar {self.active_bar_id} (mesh_mode={self.mesh_mode})"
             )
         finally:
             rs.EnableRedraw(True)
 
     # ---- cleanup -------------------------------------------------------
 
-    def _clear_preview(self):
-        # Clean up the inserted Robotiq gripper block (not part of the cached
-        # cell scene).  The cached robot/tool meshes stay in place; the next
-        # _render() call will delta-transform them to the new pose, or
-        # refresh() will hide their sub-layers if no payload exists.
-        _cleanup_ids(self._support_block_ids)
-        self._support_block_ids = []
+    def _hide_support_layers(self):
+        """Hide every currently shown support robot's preview sub-layer."""
+        for key in self._shown_support_keys:
+            ik_viz.set_layer_visible(key, False)
+        self._shown_support_keys = set()
 
     # ---- collision diagnostic ------------------------------------------
 
@@ -932,7 +1241,7 @@ class _PreviewSession:
     def cleanup(self):
         self._revert_highlight()
         self._revert_walkable_grounds()
-        self._clear_preview()
+        self._hide_support_layers()
         if self._session_started:
             ik_viz.end_session()
             self._session_started = False

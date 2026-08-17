@@ -22,10 +22,12 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSDesign | RSJointEdit | `rs_joint_edit.py` | Re-edit orientation of a previously placed joint pair | Workshop participants |
 | RSDesign | RSBarEdit | `rs_bar_edit.py` | Color, filter, and resize bars by length | Workshop participants |
 | RSDesign | RSSelectBar | `rs_select_bar.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: type a length in mm to select every bar of that length plus their male/ground joints, grouped exactly as RSBarEdit groups them. Both loop. Read-only. | Workshop participants |
+| RSDesign | RSSelectJoint | `rs_select_joint.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
 | RSDesign | RSTempPlace | `rs_temp_place.py` | **Temporary, mock-up only.** For every male/ground joint with no female yet, create a 200 mm stub bar centred under where its female belongs: **PlaceFemaleJointBar** adds the mating female half too, **PlaceBar** adds the bar only. Ground joints have no mate frame in `joint_pairs.json`, so you pick which pair's male plug they mate like. Stub bars are marked **fake** — they sequence and the IK sees their joints, but the prefab / bar-action / robot-cell exports skip them. | Workshop participants |
-| RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | Dual-arm IK keyframe solve and save on Ln bar | Advanced IK users |
-| RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's IK keyframes (cycle M1-M4 + base frame). Right-click, **RSShowBarActionPlanMotion** (`rs_show_bar_action_plan_motion.py`): load the bar's planned motion if needed and scrub the trajectory with a slider. | Advanced IK users |
-| RSDesign | ~~RSIKSupportKeyframe~~ | `rs_ik_support_keyframe.py` | Single-arm support IK keyframe workflow — **removed from the toolbar; script archived in `scripts/`** | Advanced IK users |
+| RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
+| RSDesign | RSShowAssemblyPlan | `rs_show_assembly_plan.py` | Step through the WHOLE assembly movement by movement: every bar's poses concatenated in sequence order, with support robots appearing/leaving per the hold schedule. Enter=next, Prev/Jump/GoToBar, or click a bar to jump there. | Advanced IK users |
+| RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's timeline (approach / assembled / hold / retreat / home + base frame), with support robots appearing per pose exactly as the hold schedule says; the last stabilizer of a hold also plays that hold's release pose. Right-click (`rs_show_bar_action_plan_motion.py`): load the bar's planned motion if needed and scrub the trajectory with a slider. | Advanced IK users |
+| RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
 | RSSetup | RSDefineJointHalf | `rs_define_joint_half.py` | Define one joint half (Male/Female/Ground) and collision mesh | Joint-library authors |
 | RSSetup | RSDefineJointMate | `rs_define_joint_mate.py` | Define mate between existing joint halves | Joint-library authors |
 | RSSetup | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite lines | Workshop participants |
@@ -115,6 +117,15 @@ Two modes, chosen at the first prompt: **SelectByName** (the default — press E
 - **SelectByLength.** Type a length in mm (`1050`) and it selects every bar of that length **plus the male and ground joint blocks sitting on them** — the halves that belong to those bars, the way their tube previews do. The *female* half of a joint belongs to the bar on the other side of the pair and is deliberately left alone. A summary of every length, its bar count and its bar ids is printed on entry, and the prompt loops with your last length as the default.
 - The grouping, the length prompt and that summary are RSBarEdit's own (`build_length_groups` / `pick_length_group` / `print_length_summary`), so a length means the **same set of bars** in both commands. Only the selecting is this command's.
 - **Read-only** — reads each bar's stored `bar_id` as-is and never heals / renumbers / moves anything, so it is safe to run any time. Note RSBarEdit reaches the same groups through `get_all_bars`, which *does* heal bar ids as it goes; this command does not. No PyBullet needed. On the RSDesign toolbar.
+
+### RSSelectJoint (`rs_select_joint.py`)
+
+- Type a joint id at the command line — `J40-53_female`, `j40-53_male`, or `G4-floor-0_ground` (all case-insensitive) — and it selects that placed joint block instance, then `ZoomSelected` frames it. Handy for finding one joint in a crowded model.
+- The role suffix is optional: `J40-53` selects **both** halves of the pair at once, and bare pair numbers (`40-53`) get the `J` prefix added automatically.
+- Canonical PyBullet body keys like `joint_J25-26_male` work too — paste them straight from a collision log and the `joint_` prefix is stripped.
+- Comma-separate ids (`J40-53_female,J12-7`) to select several at once. The prompt loops so you can jump from joint to joint; each entry **replaces** the selection. Enter on an empty prompt (or Esc) ends the command.
+- Matches blocks by the object-name convention `{joint_id}_{female|male|ground}` written at placement time, with a fallback to the `joint_id` user text + instance layer for blocks that lost their name. Tool blocks are never selected (they carry `joint_id` user text too, but live on the tool layer).
+- **Read-only** — never edits the document, so it is safe to run any time. No PyBullet needed. On the RSDesign toolbar.
 
 ### RSDefineJointHalf (`rs_define_joint_half.py`)
 
@@ -369,9 +380,16 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 ### RSShowBarActionPlan (`rs_show_bar_action_plan.py`) / …Motion (`rs_show_bar_action_plan_motion.py`)
 
-- **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles M1→M2→M3→M4→M4-home from the `KEY_ASSEMBLY_*` user-text; draws the active bar's **base frame** (axis triad + footprint). When `RSLoadSolvedBarAction` has populated the loaded-solved cache, it auto-starts on those bar(s), draws every base frame, and offers **NextBar/PrevBar** (the all-bars map).
-- **Right-click** — the MOTION viewer. Pick a bar; if its trajectory isn't cached it loads `<bar>.solved_motion.json` from the export root and syncs the condensed IK to user-text, then **steps through the concatenated M1..M4 trajectory from the command line** (Enter/Next/Prev/Jump — a prompt, not a modal dialog, so the viewport stays free to zoom/orbit). FK-only, so the held bar follows the arm smoothly. Requires PyBullet (RSPBStart).
+- **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles that bar's timeline — approach → assembled → *hold* (held bars only) → retreat → home, plus a *release* pose per hold whose LAST stabilizing bar is this one — read from the `KEY_ASSEMBLY_*` / `KEY_SUPPORT_*` user-text; draws the active bar's **base frame** (axis triad + footprint). Support robots appear per pose exactly as the hold schedule says (earlier holders frozen throughout; this bar's own holder from the hold pose on). When `RSLoadSolvedBarAction` has populated the loaded-solved cache, it auto-starts on those bar(s), draws every base frame, and offers **NextBar/PrevBar** (the all-bars map).
+- **Right-click** — the MOTION viewer. Pick a bar; if its trajectory isn't cached it loads `<bar>.solved_motion.json` from the export root and syncs the condensed IK to user-text, then **steps through the concatenated trajectory from the command line** (Enter/Next/Prev/Jump — a prompt, not a modal dialog, so the viewport stays free to zoom/orbit). FK-only, so the held bar follows the arm smoothly. Requires PyBullet (RSPBStart).
 - **Both clicks** also temporarily color the active bar's assigned **WalkableGround** brep(s) green and print each ground's id + Rhino object id to the command line, so you can see which ground surface the robot base is allowed to stand on. The color is reverted to ByLayer when you switch bars or exit.
+
+### RSShowAssemblyPlan (`rs_show_assembly_plan.py`)
+
+- The whole-assembly twin of RSShowBarActionPlan: **every bar's poses concatenated in assembly-sequence order**, so Enter walks the build end to end in the order `ActionSchedule.json` records (`B20 approach → … → B20 home → B21 approach → … → release B21 → …`).
+- Each step is one movement ENDPOINT (the poses that carry a solved keyframe). The tool/manual movements between them — gripper open/close, screw driving, the operator mounting the bar — are printed rather than drawn, since they are instants at a pose already on screen.
+- Bars that are **fake** or have **no solved IK keyframe** contribute no steps and are listed up front; holds with no solved support keyframe are named too, so a short timeline is never a silent one.
+- Command line: **Enter/Next**, **Prev**, **Jump** (step index), **GoToBar** (bar id), click a bar to jump there, **MeshMode**, **CheckCollision**, **ShowUnbuilt/HideUnbuilt**, Esc to exit. Requires PyBullet (RSPBStart).
 
 ### RSLoadSolvedBarAction (`rs_load_solved_bar_action.py`) / …All (`rs_load_solved_bar_action_all.py`)
 
@@ -379,11 +397,19 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - **Left-click**: pick a bar → load `<bar_id>.solved_<kind>.json`. **Right-click**: load every `<bar>.solved_<kind>.json` in the folder.
 - For each loaded action it: caches the full `BarAssemblyAction` (`core.solved_action_cache`, for the motion view) and **syncs the condensed IK** (base + approach/assembled/retreat) back onto the bar's user-text via `bar_action.write_bar_keyframe_from_action` — the reverse of the export, so the on-curve record + a later re-export stay consistent. Then it launches RSShowBarActionPlan.
 
-### RSIKSupportKeyframe (`rs_ik_support_keyframe.py`)
+### RSIKSupportKeyframe (deleted)
 
-- **Removed from the toolbar** — no `.rui` button. The script is kept in `scripts/` for archive only; run it by hand via ScriptEditor if you need it.
-- Solves support-arm IK keyframe for holding/assisting a just-assembled bar.
-- Saves support keyframe data for downstream replay/export.
+- The support-robot IK is now the SUPPORT flow of the single RSIKKeyframe
+  button: picking a bar that needs holding (non-empty `supported_until`) and
+  already has its assembly keyframe runs the support flow instead.
+- The old script's reusable pickers (two-phase grasp pick with the ghost
+  gripper, base pick with the ghost support robot, dual-arm ghost bake)
+  moved to `core/support_grasp_pick.py`; keyframe IO + release validation
+  live in `core/hold_action_builder.py`; the hold derivation (which robot
+  holds which bar until when) is `core/hold_schedule.py`.
+- Results are written to the split `KEY_SUPPORT_*` user-text keys on the
+  held bar (robot name, base frame, grasp frame, approach + held configs) —
+  the legacy `ik_support` blob is no longer written.
 
 ### RSExportBarAction (`rs_export_bar_action.py`)
 

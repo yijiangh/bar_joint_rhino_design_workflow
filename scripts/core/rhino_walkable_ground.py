@@ -431,6 +431,108 @@ def anchor_insertion_axes_mm(bar_id):
     return axes
 
 
+def ground_insertion_normal_mm(bar_oid, points_mm, grounds_map: Dict[str, object] = None,
+                               angle_tol_deg: float = 10.0) -> np.ndarray:
+    """Unit normal of the bar's assigned WalkableGround at the given contact points.
+
+    Ground bars are inserted PERPENDICULAR to the ground they stand on (the
+    approach hovers straight above, the linear insert drops the ground feet onto
+    it) -- unlike normal bars, whose insert direction comes from the tool z axes.
+    This resolves that direction: each contact point (a ground-joint block
+    origin, mm) is projected onto the bar's assigned WalkableGround surface(s),
+    the surface normal at the closest point is oriented OUT of the ground
+    (toward the block, which sits on the bar axis above the surface), and the
+    per-point normals are averaged.
+
+    No silent fallback: every failure mode raises with a plain instruction,
+    because a wrong-but-plausible direction here would send the insert sideways.
+
+    Args:
+        bar_oid: the bar centerline curve id (source of the ground assignment).
+        points_mm (list): contact points as mm world xyz triples/arrays -- one
+            per ground joint on the bar.
+        grounds_map (dict | None): ``{ground_id: oid}``; scanned via
+            :func:`get_all_walkable_grounds` when ``None``.
+        angle_tol_deg (float): max allowed angle between per-point normals. Two
+            ground joints standing on differently sloped grounds have no single
+            insertion direction, so beyond this we refuse rather than average.
+
+    Returns:
+        np.ndarray: unit world direction (mm space) pointing OUT of the ground.
+
+    Raises:
+        RuntimeError: when the bar has no assigned/meshable walkable ground, a
+            point fails to project, a normal cannot be oriented, or the
+            per-point normals disagree beyond ``angle_tol_deg``.
+    """
+    if not points_mm:
+        raise RuntimeError(
+            "ground_insertion_normal_mm: no ground-joint contact points given -- "
+            "the bar has no ground joint blocks to stand on."
+        )
+    if grounds_map is None:
+        grounds_map = get_all_walkable_grounds()
+    soups = _bar_ground_soups(bar_oid, grounds_map)
+    if not soups:
+        raise RuntimeError(
+            "ground_insertion_normal_mm: this bar has no assigned (or meshable) "
+            "WalkableGround, so the ground-bar insertion direction cannot be "
+            "derived. Run RSAssignAndShowWalkableGround to assign one, then retry."
+        )
+
+    normals = []
+    for pt in points_mm:
+        p = np.asarray(pt, dtype=float).reshape(3)
+        ground_point, ground_normal = _walkable_np.closest_point_on_meshes(soups, p)
+        if ground_point is None or ground_normal is None:
+            raise RuntimeError(
+                f"ground_insertion_normal_mm: contact point {p.tolist()} failed to "
+                "project onto the bar's assigned WalkableGround -- check the "
+                "assignment (RSAssignAndShowWalkableGround) and the ground surfaces."
+            )
+        n = np.asarray(ground_normal, dtype=float).reshape(3)
+        n_len = float(np.linalg.norm(n))
+        if n_len < 1e-9:
+            raise RuntimeError(
+                "ground_insertion_normal_mm: degenerate surface normal at contact "
+                f"point {p.tolist()} -- check the WalkableGround geometry."
+            )
+        n = n / n_len
+        # Orient the normal OUT of the ground: the block origin sits on the bar
+        # axis, well above the surface, so point the normal toward it. A point
+        # essentially ON the surface leaves the orientation ambiguous -> refuse.
+        to_point = p - np.asarray(ground_point, dtype=float).reshape(3)
+        if float(np.linalg.norm(to_point)) < 1.0:  # < 1 mm off the surface
+            raise RuntimeError(
+                f"ground_insertion_normal_mm: contact point {p.tolist()} lies on "
+                "the WalkableGround surface, so the normal cannot be oriented -- "
+                "expected the ground-joint block origin on the bar axis above it."
+            )
+        if float(np.dot(to_point, n)) < 0.0:
+            n = -n
+        normals.append(n)
+
+    # All per-point normals must agree (one flat-ish ground) before averaging.
+    for other in normals[1:]:
+        cos_ang = float(np.clip(np.dot(normals[0], other), -1.0, 1.0))
+        angle_deg = float(np.degrees(np.arccos(cos_ang)))
+        if angle_deg > float(angle_tol_deg):
+            raise RuntimeError(
+                "ground_insertion_normal_mm: the ground-joint contact points sit "
+                f"on differently sloped grounds (normals {angle_deg:.1f} deg apart, "
+                f"tolerance {angle_tol_deg:.1f} deg) -- no single insertion "
+                "direction exists. Check the bar's WalkableGround assignment."
+            )
+    avg = np.sum(np.asarray(normals, dtype=float), axis=0)
+    avg_len = float(np.linalg.norm(avg))
+    if avg_len < 1e-9:
+        raise RuntimeError(
+            "ground_insertion_normal_mm: averaged ground normal vanished -- "
+            "check the WalkableGround geometry."
+        )
+    return avg / avg_len
+
+
 def _bar_axis_mm(bar_oid):
     """Return the bar centerline's unit direction (mm space), or ``None``."""
     start = rs.CurveStartPoint(bar_oid)

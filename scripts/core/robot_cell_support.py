@@ -1,11 +1,14 @@
-"""Single-arm Husky (support) robot cell: loads the Alice URDF/SRDF and
-attaches the dual-arm Husky as a ToolModel obstacle.
+"""Single-arm Husky (support) robot cells, one per support robot.
 
-Mirrors :mod:`core.robot_cell` but only one arm is actuated — the dual-arm
-robot is frozen at a captured pose via ``tool_states['DualArm'].configuration``.
-PyBullet client + planner sticky keys are SHARED with `core.robot_cell` so
-only one PB client lives per Rhino session; cell switching swaps which
-:class:`RobotCell` is currently loaded into the planner.
+Each support robot (Alice, Belle) has its OWN calibrated URDF/SRDF and its
+OWN persistent PyBullet session (see ``core.robot_cell``). A support cell
+contains: that robot's model + the SupportGripper tool on its arm, plus the
+OTHER robots (Cindy and the other support robot) frozen as articulated
+ToolModel obstacles (see ``core.robot_obstacles``).
+
+No cell swapping: each session's planner permanently owns its one cell. The
+cell is built + pushed lazily on the first support-flow use via
+``ensure_support_cell_pushed``.
 """
 
 from __future__ import annotations
@@ -15,70 +18,54 @@ import os
 import numpy as np
 
 from core import config
-from core import robot_cell as _rc
-
-# Reuse the single PB client + planner sticky cache + the cross-module
-# `_STICKY_CURRENT_CELL_KIND` flag (the dual-arm side updates it too — see
-# `core.robot_cell.set_cell_state`).
+from core import robot_obstacles
 from core.robot_cell import (  # noqa: F401  re-exported for callers
     import_compas_stack,
-    start_pb_client,
     stop_pb_client,
-    get_planner,
+    get_session,
     is_pb_running,
     _STICKY,
-    _STICKY_PB_CLIENT,
-    _STICKY_PB_PLANNER,
-    _STICKY_ROBOT_CELL,
-    _STICKY_CURRENT_CELL_KIND,
+    _STICKY_PB_SESSIONS,
     _mm_matrix_to_m_frame,
     _frame_to_m_matrix,
-    _pose_from_frame,
 )
 
 
-_STICKY_SUPPORT_CELL = "bar_joint:support_cell"
-_STICKY_SUPPORT_DUAL_ARM_MODEL = "bar_joint:support_cell_dual_arm_model"
+# One cached cell per support robot name.
+_STICKY_SUPPORT_CELL_PREFIX = "bar_joint:support_cell:"
 
 
 # ---------------------------------------------------------------------------
-# Dual-arm RobotModel (used as a ToolModel obstacle on the support cell)
+# Support cell loading (per robot)
 # ---------------------------------------------------------------------------
 
 
-def _get_or_load_dual_arm_robot_model():
-    cached = _STICKY.get(_STICKY_SUPPORT_DUAL_ARM_MODEL)
-    if cached is not None:
-        return cached
+def _other_robot_names(robot_name: str) -> list:
+    """Every roster robot EXCEPT the given one (they become frozen obstacles).
 
-    deps = import_compas_stack()
-    LocalPackageMeshLoader = deps["LocalPackageMeshLoader"]
-    pkg_path = config.HUSKY_PKG_PATH
-    if not os.path.isdir(pkg_path):
-        raise RuntimeError(
-            f"Husky URDF package directory not found: {pkg_path}. "
-            "Clone the husky_urdf submodule under asset/."
-        )
+    Args:
+        robot_name (str): the support robot that owns the cell.
 
-    main_loader = LocalPackageMeshLoader(pkg_path, config.HUSKY_URDF_PKG_NAME)
-    husky_loader = LocalPackageMeshLoader(pkg_path, "husky_description")
-    dualarm_loader = LocalPackageMeshLoader(pkg_path, "husky_ur_description")
-    ur_loader = LocalPackageMeshLoader(pkg_path, "ur_description")
-
-    urdf_stream = main_loader.load_urdf(config.HUSKY_URDF_FILENAME)
-    model = deps["RobotModel"].from_urdf_string(urdf_stream.read())
-    model.load_geometry(main_loader, husky_loader, dualarm_loader, ur_loader)
-
-    _STICKY[_STICKY_SUPPORT_DUAL_ARM_MODEL] = model
-    return model
+    Returns:
+        list: e.g. ["Cindy", "Belle"] for Alice's cell.
+    """
+    others = [config.ASSEMBLY_ROBOT_NAME]
+    others += [n for n in config.SUPPORT_ROBOT_NAMES if n != robot_name]
+    return others
 
 
-# ---------------------------------------------------------------------------
-# Support cell loading
-# ---------------------------------------------------------------------------
+def _attach_support_tool_models(cell, robot_name: str):
+    """Register the SupportGripper + the frozen-robot obstacles into a cell.
 
+    Args:
+        cell (RobotCell): the support cell (mutated in place).
+        robot_name (str): the support robot that owns the cell.
 
-def _attach_support_tool_models(cell):
+    Raises:
+        RuntimeError: if the hand-modeled Robotiq collision OBJ is missing —
+            the gripper's collisions are load-bearing for every support IK
+            solve, so a missing mesh is an error, not a warning.
+    """
     deps = import_compas_stack()
     Frame = deps["Frame"]
     Mesh = deps["Mesh"]
@@ -89,162 +76,151 @@ def _attach_support_tool_models(cell):
     existing = cell.tool_models.get(sg_name)
     already_loaded = existing is not None and getattr(existing, "_loaded_from", None) == mesh_path
     if not already_loaded:
-        if os.path.isfile(mesh_path):
-            mesh = Mesh.from_obj(mesh_path)
-            tool = ToolModel(mesh, Frame.worldXY(), name=sg_name)
-            try:
-                tool._loaded_from = mesh_path
-            except AttributeError:
-                pass
-            cell.tool_models[sg_name] = tool
-        else:
-            print(
-                f"core.robot_cell_support: Robotiq mesh '{mesh_path}' missing; "
-                f"SupportGripper tool not attached. Export it first."
+        if not os.path.isfile(mesh_path):
+            raise RuntimeError(
+                f"Robotiq gripper collision mesh missing: {mesh_path!r}. The "
+                "SupportGripper tool cannot be attached without it — export the "
+                "hand-modeled mesh to that path first."
             )
+        mesh = Mesh.from_obj(mesh_path)
+        tool = ToolModel(mesh, Frame.worldXY(), name=sg_name)
+        try:
+            tool._loaded_from = mesh_path
+        except AttributeError:
+            pass
+        cell.tool_models[sg_name] = tool
 
-    da_name = config.DUAL_ARM_OBSTACLE_TOOL_NAME
-    if da_name not in cell.tool_models:
-        da_model = _get_or_load_dual_arm_robot_model()
-        cell.tool_models[da_name] = ToolModel.from_robot_model(da_model.copy(), Frame.worldXY())
+    # Cindy + the other support robot, frozen as articulated obstacles.
+    robot_obstacles.attach_obstacle_robot_tools(cell, _other_robot_names(robot_name))
 
 
-def get_or_load_support_cell():
-    cached = _STICKY.get(_STICKY_SUPPORT_CELL)
+def get_or_load_support_cell(robot_name: str):
+    """One support robot's cached ``RobotCell``, loading URDF/SRDF on first call.
+
+    Args:
+        robot_name (str): "Alice" or "Belle".
+
+    Returns:
+        RobotCell: that robot's cell (model + gripper + frozen obstacles).
+
+    Raises:
+        RuntimeError: on an unknown support robot name.
+    """
+    if robot_name not in config.SUPPORT_ROBOTS:
+        raise RuntimeError(
+            f"Unknown support robot {robot_name!r}. "
+            f"Known support robots: {sorted(config.SUPPORT_ROBOTS)}."
+        )
+
+    key = _STICKY_SUPPORT_CELL_PREFIX + robot_name
+    cached = _STICKY.get(key)
     if cached is not None:
-        _attach_support_tool_models(cached)
+        _attach_support_tool_models(cached, robot_name)
         return cached
 
     deps = import_compas_stack()
     deps["compas"].PRECISION = "12f"
 
-    pkg_path = config.HUSKY_PKG_PATH
-    if not os.path.isdir(pkg_path):
-        raise RuntimeError(
-            f"Husky URDF package directory not found: {pkg_path}. "
-            "Clone the husky_urdf submodule under asset/."
-        )
+    entry = config.SUPPORT_ROBOTS[robot_name]
+    # The RobotModel is loaded (and cached) by robot_obstacles so the SAME
+    # load serves both this actuated cell and any frozen-obstacle use.
+    robot_model = robot_obstacles.get_or_load_robot_model(robot_name)
 
     LocalPackageMeshLoader = deps["LocalPackageMeshLoader"]
-    main_loader = LocalPackageMeshLoader(pkg_path, config.SUPPORT_URDF_PKG_NAME)
-    husky_loader = LocalPackageMeshLoader(pkg_path, "husky_description")
-    ur_loader = LocalPackageMeshLoader(pkg_path, "ur_description")
-
-    urdf_stream = main_loader.load_urdf(config.SUPPORT_URDF_FILENAME)
-    robot_model = deps["RobotModel"].from_urdf_string(urdf_stream.read())
-    robot_model.load_geometry(main_loader, husky_loader, ur_loader)
-
+    main_loader = LocalPackageMeshLoader(config.HUSKY_PKG_PATH, config.SUPPORT_URDF_PKG_NAME)
     srdf_path = main_loader.build_path(
-        os.path.dirname(config.SUPPORT_SRDF_REL_PATH),
-        os.path.basename(config.SUPPORT_SRDF_REL_PATH),
+        os.path.dirname(entry["srdf_rel_path"]),
+        os.path.basename(entry["srdf_rel_path"]),
     )
     semantics = deps["RobotSemantics"].from_srdf_file(srdf_path, robot_model)
 
     cell = deps["RobotCell"](robot_model, semantics)
-    _attach_support_tool_models(cell)
+    _attach_support_tool_models(cell, robot_name)
 
-    _STICKY[_STICKY_SUPPORT_CELL] = cell
+    _STICKY[key] = cell
     return cell
 
 
-def _configure_support_tool_states(state):
+def ensure_support_cell_pushed(robot_name: str):
+    """Get a support robot's session, pushing its cell into the planner once.
+
+    The first call for a robot pays the one-time cell build (URDF + gripper +
+    frozen obstacles) and the ``planner.set_robot_cell`` upload; later calls
+    just return the cached session.
+
+    Args:
+        robot_name (str): "Alice" or "Belle".
+
+    Returns:
+        tuple: ``(client, planner, cell)`` for that robot.
+    """
+    from core.robot_cell import get_session as _get_session
+
+    client, planner = _get_session(robot_name)
+    cell = get_or_load_support_cell(robot_name)
+    session = _STICKY[_STICKY_PB_SESSIONS][robot_name]
+    if not session.get("cell_loaded"):
+        print(
+            f"core.robot_cell_support: first use of {robot_name} — building + "
+            "pushing her cell into PyBullet (one-time load)..."
+        )
+        planner.set_robot_cell(cell)
+        session["cell_loaded"] = True
+    return client, planner, cell
+
+
+# ---------------------------------------------------------------------------
+# Cell states
+# ---------------------------------------------------------------------------
+
+
+def _configure_support_tool_states(state, robot_name: str):
+    """Attach the gripper to the arm group; park every frozen robot obstacle.
+
+    Args:
+        state (RobotCellState): the state to prepare (mutated in place).
+        robot_name (str): the support robot that owns the cell.
+    """
     sg_name = config.SUPPORT_TOOL_NAME
     if sg_name in state.tool_states:
         ts = state.tool_states[sg_name]
         ts.attached_to_group = config.SUPPORT_GROUP
         ts.touch_links = list(config.SUPPORT_TOOL_TOUCH_LINKS)
-    # DualArm tool deliberately stays unattached (static obstacle).
+    # ! Frozen robots default to PARKED (far away, collisions on). Scenes that
+    # ! want one of them present call configure_robot_obstacle on top of this.
+    for other in _other_robot_names(robot_name):
+        robot_obstacles.park_robot_obstacle(state, other)
 
 
-def default_support_cell_state():
-    cell = get_or_load_support_cell()
-    state = cell.default_cell_state()
-    _configure_support_tool_states(state)
-    return state
+def default_support_cell_state(robot_name: str):
+    """A fresh default state for one support robot's cell.
 
+    Args:
+        robot_name (str): "Alice" or "Belle".
 
-# ---------------------------------------------------------------------------
-# Dual-arm-as-tool obstacle configuration
-# ---------------------------------------------------------------------------
-
-
-def configure_dual_arm_obstacle(
-    state,
-    base_frame_world_mm: np.ndarray,
-    joint_values_left,
-    joint_values_right,
-    joint_names_left=None,
-    joint_names_right=None,
-):
-    """Pin the DualArm tool's world pose + internal joint configuration.
-
-    The DualArm tool is the dual-arm robot reused as a ``ToolModel`` (one
-    actuated robot per :class:`RobotCell`). We freeze it at the captured
-    pose by setting ``tool_states[DualArm].frame`` (world placement of the
-    husky base in mm) and ``tool_states[DualArm].configuration`` (left +
-    right arm joint values).
-
-    Joint names are optional: if not provided, the order is taken from
-    the ToolModel's own configurable joints (which preserves URDF
-    declaration order).
+    Returns:
+        RobotCellState: gripper attached, all other robots parked far away.
     """
-    deps = import_compas_stack()
-    Frame = deps["Frame"]
-
-    cell = get_or_load_support_cell()
-    da_name = config.DUAL_ARM_OBSTACLE_TOOL_NAME
-    da_tool = cell.tool_models[da_name]
-
-    state.tool_states[da_name].frame = _mm_matrix_to_m_frame(Frame, base_frame_world_mm)
-
-    zero_cfg = da_tool.zero_configuration()
-    cfg_joint_names = list(zero_cfg.joint_names)
-    cfg_joint_types = list(zero_cfg.joint_types)
-    cfg_values = list(zero_cfg.joint_values)
-
-    if joint_names_left and joint_names_right:
-        captured = dict(zip(list(joint_names_left) + list(joint_names_right),
-                            list(joint_values_left) + list(joint_values_right)))
-        for i, name in enumerate(cfg_joint_names):
-            if name in captured:
-                cfg_values[i] = float(captured[name])
-    else:
-        # Trust order: left arm first, right arm second, matching URDF declaration.
-        flat = list(joint_values_left) + list(joint_values_right)
-        if len(flat) > len(cfg_values):
-            raise RuntimeError(
-                f"DualArm tool has {len(cfg_values)} configurable joints but received "
-                f"{len(flat)} values (left+right)."
-            )
-        for i, v in enumerate(flat):
-            cfg_values[i] = float(v)
-
-    state.tool_states[da_name].configuration = deps["Configuration"](
-        joint_values=cfg_values,
-        joint_types=cfg_joint_types,
-        joint_names=cfg_joint_names,
-    )
+    cell = get_or_load_support_cell(robot_name)
+    state = cell.default_cell_state()
+    _configure_support_tool_states(state, robot_name)
     return state
 
 
 # ---------------------------------------------------------------------------
-# Cell state push (with cell-kind switching)
+# Cell state push
 # ---------------------------------------------------------------------------
 
 
 def set_cell_state(planner, robot_cell_state):
-    """Push state to PyBullet, swapping the planner's robot cell to the support
-    cell first if a different cell kind is currently loaded.
-    """
-    deps = import_compas_stack()
-    current_kind = _STICKY.get(_STICKY_CURRENT_CELL_KIND)
-    if current_kind != "support":
-        planner.set_robot_cell(get_or_load_support_cell())
-        _STICKY[_STICKY_CURRENT_CELL_KIND] = "support"
+    """Push a support state into PyBullet on the GIVEN planner.
 
+    The caller is responsible for passing the right support robot's planner
+    (``ensure_support_cell_pushed``); there is no cell swapping anymore. The
+    robot base pose rides in the state itself (compas_fab pushes it via
+    ``client._set_base_frame``).
+    """
     planner.set_robot_cell_state(robot_cell_state)
-    base_frame = robot_cell_state.robot_base_frame
-    deps["pp"].set_pose(planner.client.robot_puid, _pose_from_frame(base_frame))
 
 
 # ---------------------------------------------------------------------------
@@ -253,23 +229,14 @@ def set_cell_state(planner, robot_cell_state):
 
 
 def _apply_base_frame_mm(state, base_frame_world_mm: np.ndarray):
+    """Set a state's robot base frame from a 4x4 world matrix in mm.
+
+    Args:
+        state (RobotCellState): the state to modify (mutated in place).
+        base_frame_world_mm (np.ndarray): 4x4 world base pose, mm.
+    """
     deps = import_compas_stack()
     state.robot_base_frame = _mm_matrix_to_m_frame(deps["Frame"], base_frame_world_mm)
-
-
-def _ensure_support_cell_loaded(planner):
-    """Swap the planner's robot cell to the support cell if a different
-    kind (e.g. dual-arm from a prior RSIKKeyframe run, or the default
-    loaded by RSPBStart) is currently active.
-
-    Without this, ``planner.inverse_kinematics(state=support_state)`` raises
-    "The tools in the cell state do not match the tools in the robot cell"
-    because the planner's tool_models (AssemblyLeftTool/AssemblyRightTool)
-    don't match the state's tool_states (SupportGripper/DualArm).
-    """
-    if _STICKY.get(_STICKY_CURRENT_CELL_KIND) != "support":
-        planner.set_robot_cell(get_or_load_support_cell())
-        _STICKY[_STICKY_CURRENT_CELL_KIND] = "support"
 
 
 def solve_support_ik(
@@ -285,8 +252,28 @@ def solve_support_ik(
     tolerance_orientation: float = None,
     verbose_pairs: bool = False,
 ):
-    """Solve IK for the single support-arm group. Returns mutated state or None."""
-    _ensure_support_cell_loaded(planner)
+    """Solve IK for the single support-arm group. Returns mutated state or None.
+
+    The caller must pass the RIGHT support robot's planner (whose cell was
+    pushed by ``ensure_support_cell_pushed``) and a ``template_state`` from
+    that same robot's ``default_support_cell_state`` — the solve runs against
+    whatever cell the planner owns.
+
+    Args:
+        planner (PyBulletPlanner): the support robot's own planner.
+        template_state (RobotCellState): state to fork (not mutated).
+        base_frame_world_mm (np.ndarray): 4x4 robot base pose, world mm.
+        tool0_world_mm (np.ndarray): 4x4 arm flange target, world mm.
+        check_collision (bool): include collision checking in the IK descent.
+        max_results (int): candidate descents per call (default config).
+        max_descend_iterations (int): per-descent iteration cap (default config).
+        tolerance_position (float): position tolerance (default config).
+        tolerance_orientation (float): orientation tolerance (default config).
+        verbose_pairs (bool): print the collision-pair summary of the result.
+
+    Returns:
+        RobotCellState or None: the solved state, or None when IK failed.
+    """
     deps = import_compas_stack()
     Frame = deps["Frame"]
     FrameTarget = deps["FrameTarget"]
@@ -345,3 +332,138 @@ def extract_group_config(state, group: str, robot_cell) -> dict:
     """Return ``{'joint_names': [...], 'joint_values': [...]}`` for a group."""
     from husky_assembly_tamp.keyframe.dual_arm_ik import extract_group_config as _extract
     return _extract(state, group, robot_cell)
+
+
+def enumerate_support_ik_candidates(
+    planner,
+    template_state,
+    base_frame_world_mm: np.ndarray,
+    tool0_world_mm: np.ndarray,
+    *,
+    max_results: int = None,
+    max_descend_iterations: int = None,
+    tolerance_position: float = None,
+    tolerance_orientation: float = None,
+):
+    """Enumerate every REACHABLE support-arm IK solution, collision status included.
+
+    Debug companion to :func:`solve_support_ik`, and the single-arm answer to
+    the dual-arm ``enumerate_ssik_candidate_pairs``: when the normal solve
+    reports "no collision-free solution", this re-runs the SAME gradient
+    solver with collision checking turned OFF, so every pose that physically
+    reaches the target comes back — including the ones that collide. Each is
+    then collision-checked with a FULL report, so a caller can step the user
+    through them with the offending bodies highlighted.
+
+    Reading the result:
+      - no candidates at all -> the target is UNREACHABLE from this base
+        (a kinematics/base-placement problem, not a collision one);
+      - candidates that all collide -> reachable but blocked; the offenders
+        say exactly what is in the way.
+
+    Note the support robot has no analytical (ssik) solver — ssik artifacts
+    are built per dual-arm arm ("left"/"right") — so these candidates are
+    gradient-descent solutions and the set is not guaranteed exhaustive.
+
+    Args:
+        planner (PyBulletPlanner): the support robot's planner (its cell loaded).
+        template_state (RobotCellState): the scene state to fork (not mutated).
+        base_frame_world_mm (np.ndarray): 4x4 robot base pose, world mm.
+        tool0_world_mm (np.ndarray): 4x4 arm flange target, world mm.
+        max_results (int): cap on solutions to enumerate (default config).
+        max_descend_iterations (int): per-descent iteration cap (default config).
+        tolerance_position (float): position tolerance (default config).
+        tolerance_orientation (float): orientation tolerance (default config).
+
+    Returns:
+        dict: ``{"n_reachable": int, "candidates": [...]}``. Each candidate is
+        ``{"index", "state", "in_collision", "summary", "offenders",
+        "num_offending_pairs"}`` — the same shape the dual-arm enumerator
+        returns, sorted collision-free first then fewest offending pairs.
+    """
+    from compas_fab.backends import CollisionCheckError
+    # One definition of the pair -> (kind, name) resolution, shared with the
+    # dual-arm enumerator so both inspectors highlight the same way.
+    from husky_assembly_tamp.keyframe.dual_arm_ik import _resolve_collision_pairs
+
+    deps = import_compas_stack()
+    Frame = deps["Frame"]
+    FrameTarget = deps["FrameTarget"]
+    TargetMode = deps["TargetMode"]
+
+    max_results = max_results if max_results is not None else config.IK_MAX_RESULTS
+    max_descend_iterations = (
+        max_descend_iterations
+        if max_descend_iterations is not None
+        else config.IK_MAX_DESCEND_ITERATIONS
+    )
+    tolerance_position = (
+        tolerance_position if tolerance_position is not None else config.IK_TOLERANCE_POSITION
+    )
+    tolerance_orientation = (
+        tolerance_orientation
+        if tolerance_orientation is not None
+        else config.IK_TOLERANCE_ORIENTATION
+    )
+
+    state = template_state.copy()
+    _apply_base_frame_mm(state, base_frame_world_mm)
+    target = FrameTarget(
+        _mm_matrix_to_m_frame(Frame, tool0_world_mm),
+        TargetMode.ROBOT,
+        tolerance_position=tolerance_position,
+        tolerance_orientation=tolerance_orientation,
+    )
+    options = {
+        "max_results": max_results,
+        # ! Collision OFF on purpose: we WANT the colliding poses back so the
+        # user can see what blocks them. Each is checked separately below.
+        "check_collision": False,
+        "max_descend_iterations": max_descend_iterations,
+        "verbose": False,
+    }
+
+    configurations = []
+    try:
+        for cfg in planner.iter_inverse_kinematics(
+            target, state, group=config.SUPPORT_GROUP, options=options
+        ):
+            configurations.append(cfg)
+    except Exception as exc:
+        # InverseKinematicsError (nothing reachable) or a backend failure: an
+        # empty candidate list is itself the diagnosis, so report and continue.
+        print(f"core.robot_cell_support.enumerate_support_ik_candidates: {type(exc).__name__}: {exc}")
+
+    rcell = planner.client.robot_cell
+    candidates = []
+    for index, cfg in enumerate(configurations):
+        trial = state.copy()
+        trial.robot_configuration.merge(cfg)
+        in_collision = False
+        summary = "clear (no collision)"
+        offenders = []
+        num_pairs = 0
+        try:
+            planner.check_collision(trial, options={"full_report": True, "verbose": False})
+        except CollisionCheckError as exc:
+            in_collision = True
+            pairs = list(getattr(exc, "collision_pairs", []) or [])
+            summary, offenders, num_pairs = _resolve_collision_pairs(pairs, rcell)
+            if not pairs:
+                summary = str(exc).splitlines()[0] if str(exc) else "collision"
+        except Exception as exc:
+            # A non-collision failure (e.g. a cell/state mismatch): still show it.
+            in_collision = True
+            summary = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        candidates.append({
+            "index": index,
+            "state": trial,
+            "in_collision": in_collision,
+            "summary": summary,
+            "offenders": offenders,
+            "num_offending_pairs": num_pairs,
+        })
+
+    # Collision-free first, then fewest offending pairs -- so near-misses lead.
+    candidates.sort(key=lambda c: (c["in_collision"], c["num_offending_pairs"]))
+    return {"n_reachable": len(configurations), "candidates": candidates}

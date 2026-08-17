@@ -73,6 +73,12 @@ class JointHalfDef:
     # definition's local frame. Empty string -> fallback to slow Rhino
     # block-def render-mesh path.
     collision_filename: str = ""
+    # True for cradle-style female halves (the subfloor receivers): the OTHER
+    # bar physically rests INSIDE this block at the assembled pose, so the IK
+    # allowed-contact policy must let the incoming bar (and its male) touch
+    # this female during the approach + insert movements. Normal clamp-style
+    # females keep the default False.
+    bar_cradle: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
@@ -97,6 +103,7 @@ class JointHalfDef:
             "mesh_scale": list(self.mesh_scale),
             "preferred_robotic_tool_name": self.preferred_robotic_tool_name,
             "collision_filename": self.collision_filename,
+            "bar_cradle": self.bar_cradle,
             "M_block_from_bar": self.M_block_from_bar.tolist(),
             "M_screw_from_block": self.M_screw_from_block.tolist(),
         }
@@ -113,6 +120,8 @@ class JointHalfDef:
             mesh_scale=tuple(float(v) for v in data.get("mesh_scale", (1.0, 1.0, 1.0))),
             preferred_robotic_tool_name=str(data.get("preferred_robotic_tool_name", "")),
             collision_filename=str(data.get("collision_filename", "")),
+            # Registries written before this flag existed simply omit it -> False.
+            bar_cradle=bool(data.get("bar_cradle", False)),
         )
 
 

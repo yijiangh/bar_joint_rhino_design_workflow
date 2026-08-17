@@ -7,24 +7,25 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSExportAllBarActions - Batch-export BarAssemblyAction JSON for every bar.
+"""RSExportAllBarActions - Batch-export every bar's action files + the schedule.
 
 Right-click companion to ``RSExportBarAction`` (left-click = single picked bar).
-Walks every registered bar in assembly-sequence order and builds the five-movement
-``BarAssemblyAction`` via ``core.bar_action.build_bar_assembly_action``, writing
-``<root>/BarActions/<bar_id>.json``. Bars that already have IK keyframe user-text
-(``KEY_ASSEMBLY_BASE_FRAME`` + ``KEY_ASSEMBLY_IK_APPROACH`` +
-``KEY_ASSEMBLY_IK_ASSEMBLED``) carry a real base + configs; bars WITHOUT IK are
-still exported (placeholder base, no configs) so the headless keyframe solver can
-sample their base + IK later. Each BarAction also carries the bar's
-``walkable_ground_ids`` (set via RSAssignAndShowWalkableGround).
+Walks every registered bar in assembly-sequence order and writes per-action
+files under ``<root>/BarActions/``:
 
-The cached ``RobotCell`` is the persistent static registry (full canonical
-assembly + env obstacles + arm ToolModels, built by RSRebuildRobotCell), so
-after the loop this script also dumps ``<root>/RobotCell.json`` and
-``<root>/WalkableGround.json`` (every WalkableGround brep meshed, keyed by its
-stable id) via plain ``compas.json_dump`` so the cell + grounds + every BarAction
-form a consistent bundle for the downstream headless solver / motion planner.
+- ``<bar>__J.json`` / ``<bar>__R.json`` — the assembly robot's jointing and
+  release halves (``core.bar_action.build_bar_assembly_actions``). Bars with
+  IK keyframe user-text carry a real base + configs; bars WITHOUT IK are still
+  exported (placeholder base, no configs) for the headless keyframe solver.
+- ``<bar>__H.json`` / ``<bar>__HR.json`` — the support robot's holding and
+  holding-release actions for every bar in the hold plan whose support
+  keyframe is solved (``core.hold_action_builder``); unsolved holds are
+  reported, not silently skipped.
+
+Plus the bundle files at the root: ``RobotCell.json`` (Cindy's cell),
+``RobotCell_<robot>.json`` for each support robot actually used,
+``WalkableGround.json``, and ``ActionSchedule.json`` — the global interleaved
+action order across all robots with explicit robot assignments.
 
 PyBullet must be running (RSPBStart); run RSRebuildRobotCell after geometry
 edits. Root folder is shared with RSExportBarAction / RSExportRobotCell via
@@ -47,8 +48,10 @@ if SCRIPT_DIR not in sys.path:
 
 from core import bar_action as _bar_action_module
 from core import config as _config_module
+from core import hold_action_builder as _hold_action_builder_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import robot_cell as _robot_cell_module
+from core import robot_cell_support as _robot_cell_support_module
 from core.rhino_bar_registry import repair_on_entry
 
 from compas import json_dump
@@ -75,6 +78,8 @@ def main() -> None:
     config = importlib.reload(_config_module)
     importlib.reload(_ik_collision_setup_module)
     bar_action = importlib.reload(_bar_action_module)
+    robot_cell_support = importlib.reload(_robot_cell_support_module)
+    hold_action_builder = importlib.reload(_hold_action_builder_module)
 
     if not robot_cell.is_pb_running():
         rs.MessageBox(
@@ -167,7 +172,7 @@ def main() -> None:
     for i, (bar_id, bar_oid) in enumerate(all_bars, start=1):
         print(f"  [{i}/{total}] exporting bar '{bar_id}' ...")
         try:
-            action = bar_action.build_bar_assembly_action(
+            jointing_action, release_action = bar_action.build_bar_assembly_actions(
                 rcell, planner, bar_id, bar_oid, allow_missing_ik=True
             )
         except Exception as exc:  # noqa: BLE001 -- one bad bar must not abort the batch
@@ -177,11 +182,57 @@ def main() -> None:
             print(f"  [x] {bar_id}: {type(exc).__name__}: {exc}")
             print(f"      (last frame: {tb[-2] if len(tb) >= 2 else tb[-1]})")
             continue
-        out = os.path.join(actions_dir, f"{bar_id}.json")
-        with open(out, "w") as f:
-            json_dump(action, f, pretty=True)
+        for suffix, action in (("__J", jointing_action), ("__R", release_action)):
+            out = os.path.join(actions_dir, f"{bar_id}{suffix}.json")
+            with open(out, "w") as f:
+                json_dump(action, f, pretty=True)
+            print(f"  [OK] {bar_id}{suffix} -> {out} ({len(action.movements)} movements)")
         n_ok += 1
-        print(f"  [OK] {bar_id} -> {out} ({len(action.movements)} movements)")
+
+    # * ---- Holding + holding-release actions for every bar in the hold plan.
+    # Unsolved holds are listed loudly — never silently skipped.
+    from core.rhino_bar_registry import collect_hold_inputs
+    from core.hold_schedule import derive_hold_plan
+    holds_exported = []
+    holds_pending = []
+    hold_plan = {}
+    try:
+        bar_seq, supported = collect_hold_inputs(seq_map)
+        hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+    except RuntimeError as exc:
+        failures.append(("<hold plan>", str(exc)))
+        print(f"  [x] hold plan derivation failed: {exc}")
+    env_union = hold_action_builder.get_env_union(seq_map) if hold_plan else None
+    for held_bar_id in sorted(hold_plan, key=lambda b: hold_plan[b]["hold_start_seq"]):
+        held_oid = seq_map[held_bar_id][0]
+        try:
+            hold_act = hold_action_builder.build_bar_holding_action(
+                held_bar_id, held_oid, hold_plan, bar_map=seq_map, env_union=env_union,
+            )
+            release_act = hold_action_builder.build_bar_holding_release_action(
+                held_bar_id, held_oid, hold_plan, bar_map=seq_map, env_union=env_union,
+            )
+        except RuntimeError as exc:
+            holds_pending.append((held_bar_id, str(exc)))
+            print(f"  [x] hold {held_bar_id}: {exc}")
+            continue
+        for suffix, action in (("__H", hold_act), ("__HR", release_act)):
+            out = os.path.join(actions_dir, f"{held_bar_id}{suffix}.json")
+            with open(out, "w") as f:
+                json_dump(action, f, pretty=True)
+            print(f"  [OK] {held_bar_id}{suffix} -> {out} ({len(action.movements)} movements)")
+        holds_exported.append(held_bar_id)
+
+    # * ---- The global interleaved schedule (pure metadata, rebuilt fresh).
+    schedule_out = os.path.join(root, "ActionSchedule.json")
+    try:
+        import json as _json
+        with open(schedule_out, "w") as f:
+            _json.dump(hold_action_builder.build_action_schedule_payload(seq_map), f, indent=2)
+        print(f"  [OK] ActionSchedule -> {schedule_out}")
+    except RuntimeError as exc:
+        failures.append(("<schedule>", str(exc)))
+        print(f"  [x] ActionSchedule failed: {exc}")
 
     cell_out = os.path.join(root, "RobotCell.json")
     with open(cell_out, "w") as f:
@@ -190,6 +241,18 @@ def main() -> None:
         f"  [OK] RobotCell -> {cell_out} "
         f"({len(rcell.rigid_body_models)} rigid bodies, {len(rcell.tool_models)} tools)"
     )
+
+    # Per-support-robot cells, for every robot the hold plan actually uses.
+    used_support_robots = sorted({hold_plan[b]["robot_name"] for b in holds_exported})
+    for support_name in used_support_robots:
+        sr_cell = robot_cell_support.get_or_load_support_cell(support_name)
+        sr_out = os.path.join(root, f"RobotCell_{support_name}.json")
+        with open(sr_out, "w") as f:
+            json_dump(sr_cell, f, pretty=True)
+        print(
+            f"  [OK] RobotCell_{support_name} -> {sr_out} "
+            f"({len(sr_cell.rigid_body_models)} rigid bodies, {len(sr_cell.tool_models)} tools)"
+        )
 
     # Dump every WalkableGround brep as a meshed surface keyed by its stable id,
     # so the headless base sampler can snap to it. Bars reference these ids via
@@ -208,16 +271,24 @@ def main() -> None:
     os.makedirs(os.path.join(root, "Trajectories"), exist_ok=True)
 
     msg = (
-        f"Exported {n_ok}/{len(all_bars)} BarAction(s) + RobotCell.json + "
+        f"Exported {n_ok}/{len(all_bars)} bar(s) (jointing + release) + "
+        f"{len(holds_exported)} hold(s) + ActionSchedule.json + RobotCell.json + "
         f"WalkableGround.json ({len(ground_meshes)} ground(s)) to:\n{root}"
     )
+    if used_support_robots:
+        msg += f"\n\nSupport cells: {', '.join('RobotCell_' + n + '.json' for n in used_support_robots)}"
     if without_ik_ids:
         msg += f"\n\nNo IK Computed: {', '.join(without_ik_ids)}"
+    if holds_pending:
+        msg += "\n\nHolds NOT exported (solve their support keyframes first):\n" + "\n".join(
+            f"  {b}: {e}" for b, e in holds_pending
+        )
     if failures:
         msg += "\n\nFailed:\n" + "\n".join(f"  {b}: {e}" for b, e in failures)
     rs.MessageBox(msg, 0, "RSExportAllBarActions")
     print(
-        f"RSExportAllBarActions: done ({n_ok} exported, {len(failures)} failed, "
+        f"RSExportAllBarActions: done ({n_ok} bars, {len(holds_exported)} holds, "
+        f"{len(holds_pending)} holds pending, {len(failures)} failed, "
         f"{len(without_ik_ids)} without IK)."
     )
 

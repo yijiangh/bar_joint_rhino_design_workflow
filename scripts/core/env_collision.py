@@ -264,7 +264,47 @@ def _block_instance_xform_mm(oid):
     return matrix
 
 
-def collect_built_geometry(active_bar_id, bar_seq_map):
+def _raise_on_duplicate_joint_key(out: dict, key: str, joint_oid, collector: str) -> None:
+    """Refuse to build a collision scene when two joint blocks claim one name.
+
+    Canonical body names come from the ``joint_id`` + subtype USER TEXT. Two
+    blocks carrying the same id (the classic Rhino copy-paste, which clones
+    user text) therefore compute the SAME key, and a plain dict assignment
+    would silently drop one of them -- its geometry then exists in no collision
+    scene at all, so IK and the release checks happily approve poses that pass
+    straight through it. That is a wrong-answer failure mode, so stop instead.
+
+    Args:
+        out (dict): the collector's output so far.
+        key (str): the canonical body name just computed.
+        joint_oid: the Rhino object id of the block being added.
+        collector (str): calling collector name, for the message.
+
+    Raises:
+        RuntimeError: when ``key`` is already taken by a different block.
+    """
+    import rhinoscriptsyntax as rs
+
+    if key not in out:
+        return
+    first_oid = out[key].get("source_oid")
+    if str(first_oid) == str(joint_oid):
+        return  # same object seen twice (layer listed twice) -- harmless
+    first_name = rs.ObjectName(first_oid) or str(first_oid)
+    second_name = rs.ObjectName(joint_oid) or str(joint_oid)
+    raise RuntimeError(
+        f"core.env_collision.{collector}: TWO joint blocks map to the same "
+        f"collision body '{key}' -- '{first_name}' and '{second_name}' share the "
+        "same joint_id user text (typically a copy-pasted block that cloned it). "
+        "One of them would be dropped from EVERY collision scene, so IK and the "
+        "release checks would approve poses that pass straight through it. "
+        "Repair the ids first: run RSUpdatePreview to list every duplicate, then "
+        "RSReorderBarID -> Relink to re-derive ids from geometry (review its "
+        "plan before applying), then RSRebuildRobotCell."
+    )
+
+
+def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exclude_bar_ids=None):
     """Walk ``bar_seq_map`` and build env-collision payloads for every bar with seq < active_seq.
 
     Returns ``{rb_name: {rigid_body, frame_world_mm, kind, source_oid, ...}}``:
@@ -279,18 +319,40 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
     bars of the same length+radius). compas_fab's PyBullet backend creates
     a separate PB body per name, so sharing is safe.
 
-    Skips the active bar AND its joints.
+    Skips the active bar AND its joints by default. Also skips every FAKE bar
+    and the joint halves mounted on it: a fake bar is a modeling artifact that
+    only poses a real bar's male half, so nothing physical stands there.
+
+    Args:
+        active_bar_id (str): the step whose scene is being built.
+        bar_seq_map (dict): a ``get_bar_seq_map`` result.
+        include_active (bool): also include the active bar + its joints —
+            used for AFTER-the-step scenes (e.g. the support robot's
+            release-time check runs after the last stabilizing bar is built).
+        exclude_bar_ids (list): bar ids to leave out regardless (e.g. the
+            HELD bar in a release check — the gripper is wrapped around it,
+            so its tube would always false-positive).
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_bar_registry import get_fake_bar_ids
 
     deps = _import_deps_for_rb()
 
     if active_bar_id not in bar_seq_map:
         return {}
     _active_oid, active_seq = bar_seq_map[active_bar_id]
+    excluded = set(exclude_bar_ids or [])
+    # * Fake bars are modeling artifacts, not physical objects: they only exist
+    # to pose a real bar's male half. Drop them and (via built_bar_ids below)
+    # every joint half mounted on them from the collision scene.
+    fake_bar_ids = get_fake_bar_ids(bar_seq_map)
 
     built_bar_ids = {
-        bid: oid for bid, (oid, seq) in bar_seq_map.items() if seq < active_seq
+        bid: oid
+        for bid, (oid, seq) in bar_seq_map.items()
+        if (seq < active_seq or (include_active and seq == active_seq))
+        and bid not in excluded
+        and bid not in fake_bar_ids
     }
     if not built_bar_ids:
         return {}
@@ -320,12 +382,22 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
         config.LAYER_JOINT_GROUND_INSTANCES,
     )
     j_hits = j_misses = 0
+    # Joint blocks dropped because their parent bar is unreadable / not a live
+    # bar (as opposed to simply not built yet) -- reported below, since such a
+    # block is invisible to EVERY collision scene.
+    orphan_parents = []
+    live_bar_ids = set(bar_seq_map)
     for layer in joint_layers:
         if not rs.IsLayer(layer):
             continue
         for joint_oid in rs.ObjectsByLayer(layer) or []:
             parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
             if parent_bar not in built_bar_ids:
+                if parent_bar not in live_bar_ids:
+                    orphan_parents.append(
+                        f"{rs.ObjectName(joint_oid) or joint_oid}"
+                        f"(parent={parent_bar or '<none>'})"
+                    )
                 continue
             joint_id = rs.GetUserText(joint_oid, "joint_id")
             # Ground joints store joint_type="ground" but no joint_subtype;
@@ -344,7 +416,9 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
             j_hits += int(hit); j_misses += int(not hit)
             xform_mm = _block_instance_xform_mm(joint_oid)
             tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-            out[f"{ENV_RB_JOINT_PREFIX}{tag}"] = {
+            key = f"{ENV_RB_JOINT_PREFIX}{tag}"
+            _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_built_geometry")
+            out[key] = {
                 "rigid_body": rb,
                 "frame_world_mm": xform_mm,
                 "kind": "joint",
@@ -352,6 +426,23 @@ def collect_built_geometry(active_bar_id, bar_seq_map):
                 "block_name": block_name,
                 "subtype": subtype,
             }
+    if fake_bar_ids:
+        print(
+            f"core.env_collision.collect_built_geometry: excluded "
+            f"{len(fake_bar_ids)} fake bar(s) + their joint halves from the "
+            f"collision scene: {', '.join(sorted(fake_bar_ids))}"
+        )
+    if orphan_parents:
+        # ! These blocks are in NO collision scene at all -- not "not built yet",
+        # but unreachable, so nothing will ever check against them.
+        print(
+            f"core.env_collision.collect_built_geometry: NOTE - "
+            f"{len(orphan_parents)} joint block(s) skipped because parent_bar_id "
+            f"is not a live bar: {', '.join(orphan_parents[:8])}"
+            + (" ..." if len(orphan_parents) > 8 else "")
+            + " -- they are absent from every collision scene; repair with "
+            "RSUpdatePreview / RSReorderBarID -> Relink."
+        )
     print(
         f"core.env_collision.collect_built_geometry: {len(out)} bodies "
         f"(bars hit/miss={bar_hits}/{bar_misses}, joints hit/miss={j_hits}/{j_misses}) "
@@ -370,6 +461,11 @@ def collect_assembly_geometry(bar_seq_map):
     ``body_info`` carries ``parent_bar_id`` so the state builder can classify
     built / active / future by assembly sequence.
 
+    FAKE bars and the joint halves mounted on them are left out entirely: a
+    fake bar is a modeling artifact that only poses a real bar's male half, so
+    nothing physical stands there to collide with. The real bar's male half is
+    parented to the REAL bar and is unaffected.
+
     Args:
         bar_seq_map (dict): ``{bar_id: (oid, seq)}`` for every registered bar.
 
@@ -378,12 +474,19 @@ def collect_assembly_geometry(bar_seq_map):
         ``{rigid_body, frame_world_mm, kind, source_oid, parent_bar_id, ...}``.
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_bar_registry import get_fake_bar_ids
 
     deps = _import_deps_for_rb()
     t_total = time.perf_counter()
     out = {}
+    # * Fake bars are modeling artifacts that only pose a real bar's male half;
+    # nothing physical stands there, so neither the tube nor the joint halves
+    # mounted on it belong in any collision scene.
+    fake_bar_ids = get_fake_bar_ids(bar_seq_map)
     bar_hits = bar_misses = 0
     for bid, (oid, _seq) in bar_seq_map.items():
+        if bid in fake_bar_ids:
+            continue
         length_mm, frame_mm = _bar_world_frame_mm(oid)
         if length_mm <= 0.0:
             continue
@@ -405,12 +508,23 @@ def collect_assembly_geometry(bar_seq_map):
         config.LAYER_JOINT_GROUND_INSTANCES,
     )
     j_hits = j_misses = 0
+    # Blocks whose parent bar is unreadable / not a live bar: invisible to every
+    # collision scene, so report them rather than dropping them silently.
+    orphan_parents = []
     for layer in joint_layers:
         if not rs.IsLayer(layer):
             continue
         for joint_oid in rs.ObjectsByLayer(layer) or []:
             parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
+            # A half mounted on a fake bar (its female) goes out with the bar;
+            # the real bar's male is parented to the REAL bar and stays.
+            if parent_bar in fake_bar_ids:
+                continue
             if parent_bar not in bar_seq_map:
+                orphan_parents.append(
+                    f"{rs.ObjectName(joint_oid) or joint_oid}"
+                    f"(parent={parent_bar or '<none>'})"
+                )
                 continue
             joint_id = rs.GetUserText(joint_oid, "joint_id")
             subtype = (
@@ -427,7 +541,9 @@ def collect_assembly_geometry(bar_seq_map):
             j_hits += int(hit); j_misses += int(not hit)
             xform_mm = _block_instance_xform_mm(joint_oid)
             tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-            out[f"{CANONICAL_JOINT_PREFIX}{tag}"] = {
+            key = f"{CANONICAL_JOINT_PREFIX}{tag}"
+            _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_assembly_geometry")
+            out[key] = {
                 "rigid_body": rb,
                 "frame_world_mm": xform_mm,
                 "kind": "joint",
@@ -436,6 +552,21 @@ def collect_assembly_geometry(bar_seq_map):
                 "subtype": subtype,
                 "parent_bar_id": parent_bar,
             }
+    if fake_bar_ids:
+        print(
+            f"core.env_collision.collect_assembly_geometry: excluded "
+            f"{len(fake_bar_ids)} fake bar(s) + their joint halves from the "
+            f"collision scene: {', '.join(sorted(fake_bar_ids))}"
+        )
+    if orphan_parents:
+        print(
+            f"core.env_collision.collect_assembly_geometry: NOTE - "
+            f"{len(orphan_parents)} joint block(s) skipped because parent_bar_id "
+            f"is not a live bar: {', '.join(orphan_parents[:8])}"
+            + (" ..." if len(orphan_parents) > 8 else "")
+            + " -- they are absent from every collision scene; repair with "
+            "RSUpdatePreview / RSReorderBarID -> Relink."
+        )
     print(
         f"core.env_collision.collect_assembly_geometry: {len(out)} bodies "
         f"(bars hit/miss={bar_hits}/{bar_misses}, joints hit/miss={j_hits}/{j_misses}) "

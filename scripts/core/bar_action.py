@@ -1,15 +1,29 @@
-"""BarAssemblyAction schema + builder.
+"""Bar assembly action builders (jointing + release halves).
 
-A `BarAssemblyAction` is a downstream artifact describing one bar's full
-dual-arm assembly cycle as five `Movement` records:
+One bar's dual-arm assembly cycle is now TWO actions, so the assembly robot
+can wait for a support robot between inserting a bar and letting go of it:
 
-    M0  IndependentDualArmFreeMovement               free move to M1 start (live-planned)
-    M1  EndEffectorConstrainedDualArmFreeMovement    bar loading -> approach (gripped bar)
-    M2  EndEffectorConstrainedDualArmLinearMovement  linear mate (gripped bar -> mated)
-    M3  IndependentDualArmLinearMovement             linear retreat (released, per-arm)
-    M4  IndependentDualArmFreeMovement               free home (no grasp)
+`BarAssemblyJointingAction` (action id ``<bar>_J_joint``):
 
-The `build_bar_assembly_action` factory reads the IK keyframe data already
+    J_M0  IndependentDualArmFreeMovement    free move to the loading pose
+    J_M1  ManualMovement                    operator mounts the bar in the EEs
+    J_M2  ScaffoldingToolMovement           grasping screws clamp the bar
+    J_M3  EndEffectorConstrainedDualArmFreeMovement  bar-held transfer -> approach
+    J_M4  ScaffoldingToolMovement           jointing screws tighten (overlaps J_M5)
+    J_M5  EndEffectorConstrainedDualArmLinearMovement  linear insert (compliant ctrl)
+
+`BarAssemblyReleaseAction` (action id ``<bar>_R_release``):
+
+    R_M0  ScaffoldingToolMovement           jointing screws untighten
+    R_M1  ScaffoldingToolMovement           grasping screws unclamp the bar
+    R_M2  IndependentDualArmLinearMovement  per-arm linear retreat
+    R_M3  IndependentDualArmFreeMovement    free home
+
+The arm movements J_M0/J_M3/J_M5/R_M2/R_M3 are the former M0-M4 bodies
+unchanged (collision re-classing, touch policy, EE-target math); the manual
+and tool movements are timeline events carrying start-state snapshots.
+
+The `build_bar_assembly_actions` factory reads the IK keyframe data already
 written on the bar curve user-text by `rs_ik_keyframe.py`
 (`KEY_ASSEMBLY_BASE_FRAME`, `KEY_ASSEMBLY_IK_APPROACH`,
 `KEY_ASSEMBLY_IK_ASSEMBLED`) and reuses the existing collision context
@@ -76,17 +90,25 @@ if _RS_DS_SRC not in sys.path:
     sys.path.insert(0, _RS_DS_SRC)
 
 from rs_data_structure.bar_action import (  # noqa: E402  (path-prepend gate above)
+    CONTROLLER_CARTESIAN_COMPLIANT,
     Movement,
     IndependentDualArmFreeMovement,
     EndEffectorConstrainedDualArmFreeMovement,
     EndEffectorConstrainedDualArmLinearMovement,
     IndependentDualArmLinearMovement,
+    ManualMovement,
+    ScaffoldingToolMovement,
     Action,
-    BarAssemblyAction,
+    BarSceneAction,
+    BarAssemblyJointingAction,
+    BarAssemblyReleaseAction,
 )
 
 # Single home of the L/R tool-name suffix rule (Rhino-free).
 from core.robotic_tool import arm_side_from_tool_name  # noqa: E402
+# Joint-half registry (Rhino-free): used to spot cradle-style mate females
+# (`bar_cradle` in joint_pairs.json) that the incoming bar rests inside.
+from core.joint_pair import load_joint_registry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -133,17 +155,25 @@ def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, retreat_distanc
     return out, axis_world
 
 
-def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, approach_distance_mm: float):
-    """Approach: both tool0 origins translated by -avg(tool_z) * approach_distance.
+def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm: float, approach_dir_mm=None):
+    """Approach: both tool0 origins translated by -avg(tool_z) * lm_distance.
 
-    Distance is ``config.LM_APPROACH_DISTANCE``. This is the single source of the
-    approach offset; ``rs_ik_keyframe`` reads it back off ``M1.target_ee_frames``
-    rather than recomputing it. Tool block local +Z points out of the flange toward
-    the joint, so -Z is the retreat direction.
+    This is the single source of the approach offset; ``rs_ik_keyframe`` reads it
+    back off ``M1.target_ee_frames`` rather than recomputing it. Tool block local
+    +Z points out of the flange toward the joint, so -Z is the retreat direction.
+
+    Args:
+        approach_dir_mm (ndarray | None): when given, use this world direction
+            for the approach offset instead of -avg(tool z). Ground bars pass the
+            walkable-ground normal here, so the approach hovers straight above the
+            ground and the M2 linear insert runs perpendicular onto it.
     """
-    z_avg = (tool0_left_assembled_mm[:3, 2] + tool0_right_assembled_mm[:3, 2]) / 2.0
-    approach_dir = _unit(-z_avg)
-    offset = approach_dir * float(approach_distance_mm)
+    if approach_dir_mm is not None:
+        approach_dir = _unit(approach_dir_mm)
+    else:
+        z_avg = (tool0_left_assembled_mm[:3, 2] + tool0_right_assembled_mm[:3, 2]) / 2.0
+        approach_dir = _unit(-z_avg)
+    offset = approach_dir * float(lm_distance_mm)
     left = np.array(tool0_left_assembled_mm, dtype=float, copy=True)
     right = np.array(tool0_right_assembled_mm, dtype=float, copy=True)
     left[:3, 3] = left[:3, 3] + offset
@@ -320,6 +350,40 @@ def _classify_male_joints_per_arm(bar_id: str) -> dict:
     return out
 
 
+def _classify_ground_joints_per_arm(bar_id: str) -> dict:
+    """Return ``{joint_id: 'left' | 'right'}`` for every TOOL-BEARING ground joint on `bar_id`.
+
+    # * Ground-bar semantics: a ground joint is a female-like half permanently
+    # bonded to the bar, EXCEPT the arm tools grasp the ground joints directly
+    # (a ground bar has no male halves). This is the mirror of
+    # `_classify_male_joints_per_arm` over the ground-instance layer, matching
+    # the anchor resolution in `ik_collision_setup.resolve_arm_tools_on_bar`.
+    # A tool-less ground joint is simply absent from the result and keeps the
+    # carried-female behavior downstream (rides the bar's arm).
+    """
+    import rhinoscriptsyntax as rs
+    from core import config
+    from core.rhino_tool_place import find_tool_for_joint
+
+    out = {}
+    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
+        return out
+    for goid in rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or []:
+        if rs.GetUserText(goid, "parent_bar_id") != bar_id:
+            continue
+        jid = rs.GetUserText(goid, "joint_id")
+        if not jid:
+            continue
+        toid = find_tool_for_joint(jid)
+        if toid is None:
+            continue
+        tname = rs.GetUserText(toid, "tool_name") or ""
+        side = arm_side_from_tool_name(tname)
+        if side is not None:
+            out[jid] = side
+    return out
+
+
 def _read_bar_keyframe(bar_oid):
     """Read the bar's saved IK keyframe data from its Rhino user-text.
 
@@ -378,23 +442,30 @@ def has_ik_keyframe(bar_oid) -> bool:
     return _read_bar_keyframe(bar_oid) is not None
 
 
-_MOVEMENT_ROLE_RE = re.compile(r"_M([0-9])_")
+# Movement ids carry an action-prefixed role infix: `_J_M5_` (jointing),
+# `_R_M2_` (assembly release), `_H_M0_` (holding), `_HR_M1_` (holding release).
+_MOVEMENT_ROLE_RE = re.compile(r"_(J|R|H|HR)_M([0-9])_")
 
 
-def _movement_by_role(action, role: str):
-    """Return the Movement in ``action`` whose id carries the ``_M<n>_`` tag.
+def _movement_by_role(actions, role: str):
+    """Return the Movement whose id carries the ``_<prefix>_M<n>_`` role tag.
 
     Args:
-        action (BarAssemblyAction): the action to search.
-        role (str): the wanted role, ``"M0"``..``"M4"``.
+        actions: one Action or an iterable of Actions to search.
+        role (str): the wanted role like ``"J_M5"`` or ``"R_M2"``.
 
     Returns:
         Movement | None: the matching movement, or None.
     """
-    for mv in action.movements:
-        m = _MOVEMENT_ROLE_RE.search(getattr(mv, "movement_id", "") or "")
-        if m and f"M{m.group(1)}" == role:
-            return mv
+    if not isinstance(actions, (list, tuple)):
+        actions = [actions]
+    for action in actions:
+        if action is None:
+            continue
+        for mv in action.movements:
+            m = _MOVEMENT_ROLE_RE.search(getattr(mv, "movement_id", "") or "")
+            if m and f"{m.group(1)}_M{m.group(2)}" == role:
+                return mv
     return None
 
 
@@ -413,8 +484,8 @@ def _frame_to_mm4(frame) -> np.ndarray:
     return matrix
 
 
-def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
-    """Sync a loaded BarAssemblyAction's condensed IK info onto the bar user-text.
+def write_bar_keyframe_from_action(bar_oid, actions, rcell) -> bool:
+    """Sync loaded assembly actions' condensed IK info onto the bar user-text.
 
     Writes the essential IK-related fields -- the robot base frame and the
     approach / assembled / retreat per-arm configs -- into the same
@@ -423,14 +494,18 @@ def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
     JSON is loaded (the reverse of the export, which reads user-text -> JSON). The
     per-keyframe configs come from the movements' start_states, matching the
     movement model (a movement's start config is the previous movement's goal):
-        approach  = M2.start_state (M1's goal),
-        assembled = M3.start_state (M2's goal),
-        retreat   = M4.start_state (M3's goal).
-    The base frame is taken from whichever movement carries one (M1 first).
+        approach  = J_M5.start_state (the transfer J_M3's goal),
+        assembled = R_M0.start_state (the insert J_M5's goal; falls back to
+                    R_M1/R_M2's start when a file lacks the tool movements),
+        retreat   = R_M3.start_state (the retreat R_M2's goal).
+    The base frame is taken from whichever movement carries one.
 
     Args:
         bar_oid: Rhino object id of the bar curve.
-        action (BarAssemblyAction): the loaded (solved) action.
+        actions: the loaded (solved) BarAssemblyJointingAction and/or
+            BarAssemblyReleaseAction — one action or a list. The assembled +
+            retreat configs live in the RELEASE action, so pass both halves
+            when available.
         rcell (RobotCell): used to name the per-group joints.
 
     Returns:
@@ -442,10 +517,13 @@ def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
     # The group-config reader lives with the solvers in the tamp submodule now.
     from husky_assembly_tamp.keyframe.dual_arm_ik import extract_group_config
 
-    m1 = _movement_by_role(action, "M1")
-    m2 = _movement_by_role(action, "M2")
-    m3 = _movement_by_role(action, "M3")
-    m4 = _movement_by_role(action, "M4")
+    approach_mv = _movement_by_role(actions, "J_M5")
+    assembled_mv = (
+        _movement_by_role(actions, "R_M0")
+        or _movement_by_role(actions, "R_M1")
+        or _movement_by_role(actions, "R_M2")
+    )
+    retreat_mv = _movement_by_role(actions, "R_M3")
 
     def _group_pair(mv):
         state = getattr(mv, "start_state", None) if mv is not None else None
@@ -457,15 +535,15 @@ def write_bar_keyframe_from_action(bar_oid, action, rcell) -> bool:
         }
 
     base_frame = None
-    for mv in (m1, m2, m3, m4):
+    for mv in (approach_mv, assembled_mv, retreat_mv):
         state = getattr(mv, "start_state", None) if mv is not None else None
         if state is not None and getattr(state, "robot_base_frame", None) is not None:
             base_frame = state.robot_base_frame
             break
 
-    approach = _group_pair(m2)
-    assembled = _group_pair(m3)
-    retreat = _group_pair(m4)
+    approach = _group_pair(approach_mv)
+    assembled = _group_pair(assembled_mv)
+    retreat = _group_pair(retreat_mv)
 
     if base_frame is None or approach is None or assembled is None:
         print(
@@ -497,6 +575,7 @@ def _set_active_attachments(
     active_keys,
     env_geom: dict,
     arm_to_male: dict,
+    arm_to_ground: dict,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     bar_arm_side: str = "left",
@@ -507,6 +586,9 @@ def _set_active_attachments(
     - Canonical male joint (``joint_<jid>_male``) attaches to its classified arm.
     - Canonical female joint (``joint_<jid>_female``) attaches to ``bar_arm_side``
       (rigidly bonded to the bar).
+    - Canonical ground joint (``joint_<jid>_ground``) attaches to its classified
+      arm when a tool grasps it (ground bars: the tools grasp the ground joints
+      directly); a tool-less ground rides ``bar_arm_side`` like a carried female.
 
     Each ``attachment_frame`` = ``inv(tool0_<arm>_assembled_world) @
     body_world_at_assembled`` (i.e. ``tool0_from_body``).
@@ -516,6 +598,8 @@ def _set_active_attachments(
         active_keys (set): canonical names of the grasped bar + its joint halves.
         env_geom (dict): ``{name: body_info}`` with ``frame_world_mm`` world poses.
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        arm_to_ground (dict): ``{joint_id: 'left' | 'right'}`` for the grasped
+            (tool-bearing) ground joints; empty for a normal bar.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm flange
             poses at the assembled keyframe.
         bar_arm_side (str): arm the bar + carried females attach to (default
@@ -538,7 +622,7 @@ def _set_active_attachments(
         # * Only the bar + its joint halves are grasped; skip anything else.
         if not key.startswith(CANONICAL_JOINT_PREFIX):
             continue
-        # Parse the canonical joint key "joint_<jid>_<sub>" (sub = male|female);
+        # Parse the canonical joint key "joint_<jid>_<sub>" (sub = male|female|ground);
         # skip anything that doesn't split cleanly.
         tag = key[len(CANONICAL_JOINT_PREFIX):]
         if "_" not in tag:
@@ -549,6 +633,11 @@ def _set_active_attachments(
         # bar, so it rides the bar's arm.
         if sub == "male":
             arm = arm_to_male.get(jid, bar_arm_side)
+        elif sub == "ground":
+            # * Ground bars: a tool-bearing ground joint is grasped directly, so
+            # it rides ITS OWN arm's flange; a tool-less ground behaves like a
+            # carried female (bonded to the bar -> the bar's arm).
+            arm = arm_to_ground.get(jid, bar_arm_side)
         else:
             arm = bar_arm_side  # females rigidly bonded to bar -> bar's gripper
         # Attach to that arm's assembled flange pose (stores tool0_from_body).
@@ -579,7 +668,7 @@ def _detach_active_to_assembled_world(state, active_keys, env_geom: dict) -> Non
 
 def _apply_movement_touch_policy(
     state, movement: str, active_keys, env_geom: dict, arm_to_male: dict,
-    bar_key: str, tool_ids: dict,
+    arm_to_ground: dict, bar_key: str, tool_ids: dict, cradle_female_keys=frozenset(),
 ) -> None:
     """Set per-movement allowed contacts (``touch_bodies``) on the grasped bodies.
 
@@ -596,6 +685,25 @@ def _apply_movement_touch_policy(
     - **M3** (released, tool peeling off): ``male<->tool`` only -- everything else
       is detached/static, so compas_fab auto-skips it.
     - **M4** (gone): nothing.
+    - **Grasped ground joints** (ground bars: the tool grips the ground joint
+      directly) follow the male policy MINUS the M2 mate extras -- a ground
+      joint mates with the floor, which is not collision geometry today (see
+      todos.md): ``{its arm tool, bar}`` in M1/M2, ``{its arm tool}`` in M3.
+      A tool-less ground joint follows the carried-female policy (``[bar]``
+      while held).
+    - **Cradle mate females** (``cradle_female_keys``; subfloor receivers with
+      ``bar_cradle`` set in joint_pairs.json): the incoming bar physically rests
+      INSIDE these blocks at the assembled pose, and the ~60 mm deep cradle
+      mouth already wraps the bar/male at the 15 mm approach pose. So in M1 AND
+      M2 the bar whitelists every cradle mate, and each male whose mate is a
+      cradle whitelists it in M1 too (M2 already allows the mate for all males).
+      The mating male's own ARM TOOL is whitelisted against that cradle in M1,
+      M2 and M3 as well: PyBullet loads each collision OBJ as its convex hull,
+      and the cradle mesh is ~82% solid inside its 60x72x80 mm box, so the hull
+      is effectively a solid brick that the tool head gripping a seated male
+      cannot avoid overlapping. M3 is included because the retreat backs off
+      only ``LM_DISTANCE`` (15 mm) while the brick is 60-80 mm deep, so the
+      peeling tool is still inside it at the retreat target.
 
     The male<->mate whitelist is recorded on the male / carried-female side (one
     side is enough). The bar tube additionally whitelists BOTH gripper tools while
@@ -615,13 +723,18 @@ def _apply_movement_touch_policy(
             ``joint_<jid>_female`` exists for M2, and to read that female's
             ``parent_bar_id`` so the male can whitelist the female's bar).
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        arm_to_ground (dict): ``{joint_id: 'left' | 'right'}`` for the grasped
+            (tool-bearing) ground joints; empty for a normal bar.
         bar_key (str): canonical name of the grasped bar (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
+        cradle_female_keys (set): canonical names of this bar's mate females
+            that are cradle blocks (``bar_cradle`` halves); empty for a bar
+            with only clamp-style mates.
 
     Returns:
         None: mutates ``state``.
     """
-    # The three blocks below write per-body ``touch_bodies`` allow-lists -- the
+    # The blocks below write per-body ``touch_bodies`` allow-lists -- the
     # only ACM this pipeline authors. compas_fab consumes them ONLY in its CC4
     # (attached body vs other rigid body) and CC5 (tool vs rigid body) checks.
     # They do NOT affect arm<->arm self-collision (that is CC1, driven by the
@@ -641,6 +754,13 @@ def _apply_movement_touch_policy(
             if tool:
                 partners.append(tool)
             partners.append(bar_key)
+            # A cradle mate's ~60 mm deep mouth already wraps the male at the
+            # 15 mm approach pose, so allow male<->cradle female in M1 too
+            # (clamp-style mates only get the mate whitelist in M2 below).
+            if movement == "M1":
+                female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+                if female_key in cradle_female_keys:
+                    partners.append(female_key)
             if movement == "M2":
                 # M2 is the mate: the male seats into the already-built female of
                 # the SAME joint_id, so allow that contact too (when it exists).
@@ -667,6 +787,46 @@ def _apply_movement_touch_policy(
         # M0/M4 (bar not / no longer held): partners stays empty -> no allow-list.
         male_rb.touch_bodies = sorted(set(partners))
 
+    # (1c) Each CRADLE mate female vs the arm tool of the male seating into it.
+    # The cradle's convex hull is a solid ~60x72x80 mm brick, so the tool head
+    # holding a seated male overlaps it by construction -- in the approach (M1),
+    # the insert (M2) and still at the 15 mm retreat (M3). Written on the female
+    # (a static, already-built body) because CC5 reads the rigid-body side.
+    for jid, arm in arm_to_male.items():
+        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        if female_key not in cradle_female_keys:
+            continue
+        cradle_rb = state.rigid_body_states.get(female_key)
+        tool = tool_ids.get(arm)
+        if cradle_rb is None or not tool:
+            continue
+        existing = set(cradle_rb.touch_bodies or [])
+        if movement in ("M1", "M2", "M3"):
+            cradle_rb.touch_bodies = sorted(existing | {tool})
+        else:
+            cradle_rb.touch_bodies = sorted(existing - {tool})
+
+    # (1b) Each grasped GROUND joint half with its own tool (ground bars): the
+    # male policy MINUS the M2 mate extras -- the ground joint "mates" with the
+    # floor, which is not collision geometry today (see todos.md).
+    #   M1/M2 (held):  {its arm tool, bar}  (the tool grips it; bonded to the bar)
+    #   M3 (peel-off): {its arm tool}
+    #   M0/M4:         []  (always assigned, never left over)
+    for jid, arm in arm_to_ground.items():
+        ground_rb = state.rigid_body_states.get(f"{CANONICAL_JOINT_PREFIX}{jid}_ground")
+        if ground_rb is None:
+            continue
+        tool = tool_ids.get(arm)
+        partners = []
+        if movement in ("M1", "M2"):
+            if tool:
+                partners.append(tool)
+            partners.append(bar_key)
+        elif movement == "M3":
+            if tool:
+                partners.append(tool)
+        ground_rb.touch_bodies = sorted(set(partners))
+
     # (2) Each carried FEMALE joint half is rigidly bonded to the bar while it is
     # gripped, so allow female<->bar contact during M1/M2; clear once released.
     for key in active_keys:
@@ -676,13 +836,33 @@ def _apply_movement_touch_policy(
         if frb is not None:
             frb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
 
+    # (2b) A tool-LESS ground joint (not in arm_to_ground) is carried exactly
+    # like a bonded female: allow ground<->bar while held, clear otherwise.
+    # Grasped grounds were already set by (1b) -- skip them here.
+    for key in active_keys:
+        if not (key.startswith(CANONICAL_JOINT_PREFIX) and key.endswith("_ground")):
+            continue
+        jid = key[len(CANONICAL_JOINT_PREFIX):].rsplit("_", 1)[0]
+        if jid in arm_to_ground:
+            continue
+        grb = state.rigid_body_states.get(key)
+        if grb is not None:
+            grb.touch_bodies = [bar_key] if movement in ("M1", "M2") else []
+
     # (3) The two gripper tools overlap the grasped tube by a few mm on the coarse
     # collision meshes (see note above). Whitelist tool<->bar while the arms are
     # at the joints (M1-M3); clear it once the bar is gone (M0/M4).
     bar_rb = state.rigid_body_states.get(bar_key)
     if bar_rb is not None:
         if movement in ("M1", "M2", "M3"):
-            bar_rb.touch_bodies = sorted({t for t in tool_ids.values() if t})
+            allowed = {t for t in tool_ids.values() if t}
+            # The incoming bar rests INSIDE its cradle mate females (subfloor
+            # receivers) at the assembled pose and is already in their mouths at
+            # the approach pose -- allow bar<->cradle while approaching/inserting.
+            # Not in M3: the bar is released/static there (auto-skipped anyway).
+            if movement in ("M1", "M2"):
+                allowed |= set(cradle_female_keys)
+            bar_rb.touch_bodies = sorted(allowed)
         else:
             bar_rb.touch_bodies = []
 
@@ -693,13 +873,16 @@ def _build_m1(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
     approach_distance_mm: float,
     bar_arm_side: str = "left",
+    approach_dir_mm=None,
 ) -> EndEffectorConstrainedDualArmFreeMovement:
     """Build M1: bar loading position -> approach, gripping the bar (constrained dual-arm).
 
@@ -715,14 +898,20 @@ def _build_m1(
         env_geom (dict): ``{name: body_info}`` with world frames.
         active_keys (set): canonical names of the grasped bar + its joint halves.
         arm_to_male (dict): ``{joint_id: 'left' | 'right'}``.
+        arm_to_ground (dict): ``{joint_id: 'left' | 'right'}`` for grasped ground
+            joints (ground bars); empty for a normal bar.
         bar_key (str): canonical grasped-bar name (``bar_<id>``).
         tool_ids (dict): ``{"left": tool_id, "right": tool_id}``.
+        cradle_female_keys (set): canonical names of this bar's cradle mate
+            females (see :func:`_apply_movement_touch_policy`); empty otherwise.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm
             flange poses at the assembled keyframe.
         base_frame_world_mm (ndarray): 4x4 mm robot base frame.
         approach_distance_mm (float): approach offset distance
             (``config.LM_APPROACH_DISTANCE``).
         bar_arm_side (str): arm the bar attaches to (default ``"left"``).
+        approach_dir_mm (ndarray | None): world direction for the approach offset
+            (ground bars: the walkable-ground normal); ``None`` -> -avg(tool z).
 
     Returns:
         EndEffectorConstrainedDualArmFreeMovement: the M1 movement (start config
@@ -733,18 +922,20 @@ def _build_m1(
     # Start config is planner-computed (see docstring); leave it unset here.
     state.robot_configuration = None
     _set_active_attachments(
-        state, active_keys, env_geom, arm_to_male,
+        state, active_keys, env_geom, arm_to_male, arm_to_ground,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
     )
     _apply_movement_touch_policy(
-        state, "M1", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M1", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
     )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
-        tool0_left_assembled_mm, tool0_right_assembled_mm, approach_distance_mm,
+        tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
+        approach_dir_mm=approach_dir_mm,
     )
     return EndEffectorConstrainedDualArmFreeMovement(
-        movement_id=f"{bar_id}_M1_CDFM_bar_loading_to_approach",
+        movement_id=f"{bar_id}_J_M3_CDFM_transfer_to_approach",
         tag="Bar loading position -> Approach (gripped bar, fixed relative EE)",
         start_state=state,
         target_ee_frames={
@@ -754,7 +945,13 @@ def _build_m1(
         target_configuration=None,
         notes={
             "constraint": "fixed_relative_ee_transform",
-            "approach_offset_mm": float(approach_distance_mm),
+            "approach_offset_mm": float(lm_distance_mm),
+            # Ground bars approach along the walkable-ground normal (hover
+            # straight above); normal bars along -avg(tool z).
+            "approach_axis": (
+                "walkable_ground_normal" if approach_dir_mm is not None
+                else "neg_avg_tool0_z"
+            ),
             "bar_arm_side": bar_arm_side,
             "start_config_is_none": True,
             "planner_fills": "start_state.robot_configuration",
@@ -768,18 +965,23 @@ def _build_m2(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
     approach_groups: dict,
     approach_distance_mm: float,
     bar_arm_side: str = "left",
+    approach_dir_mm=None,
 ) -> EndEffectorConstrainedDualArmLinearMovement:
     """Build M2: approach -> assembled (linear mate), still gripping the bar.
 
-    Shared args are as in :func:`_build_m1`.
+    Shared args are as in :func:`_build_m1` (``approach_dir_mm`` is only used to
+    label the insert axis in the notes -- the linear path itself is implied by
+    start (approach) -> target (assembled)).
 
     Args:
         approach_groups (dict): per-arm approach-keyframe joint config
@@ -795,28 +997,37 @@ def _build_m2(
     _set_robot_base_frame(state, base_frame_world_mm)
     _apply_groups_to_config(state, approach_groups)
     _set_active_attachments(
-        state, active_keys, env_geom, arm_to_male,
+        state, active_keys, env_geom, arm_to_male, arm_to_ground,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         bar_arm_side=bar_arm_side,
     )
     _apply_movement_touch_policy(
-        state, "M2", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M2", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
     )
     return EndEffectorConstrainedDualArmLinearMovement(
-        movement_id=f"{bar_id}_M2_LM_mate",
-        tag="Approach -> Assembled (linear mate)",
+        movement_id=f"{bar_id}_J_M5_LM_insert",
+        tag="Approach -> Assembled (linear insert, Cartesian compliant controller)",
         start_state=state,
         target_ee_frames={
             "left": _mm4_to_frame(tool0_left_assembled_mm),
             "right": _mm4_to_frame(tool0_right_assembled_mm),
         },
         target_configuration=None,
+        # The one movement on the compliant controller: the J_M4 tightening
+        # screws keep running through it and their stall signal ends it,
+        # switching back to plain joint tracking.
+        controller=CONTROLLER_CARTESIAN_COMPLIANT,
         notes={
-            "lm_axis": "per_tool0_z_avg",
-            # Key name kept as-is for downstream consumers; the value is the
-            # APPROACH distance -- M2 travels back over M1's offset.
-            "lm_distance_mm": float(approach_distance_mm),
+            # Ground bars insert perpendicular to the walkable ground; normal
+            # bars along the averaged tool z (the path itself is start->target).
+            "lm_axis": (
+                "walkable_ground_normal" if approach_dir_mm is not None
+                else "per_tool0_z_avg"
+            ),
+            "lm_distance_mm": float(lm_distance_mm),
             "bar_arm_side": bar_arm_side,
+            "ends_on": "tool_stall_signal",
         },
     )
 
@@ -827,8 +1038,10 @@ def _build_m3(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     tool0_left_assembled_mm,
     tool0_right_assembled_mm,
     base_frame_world_mm,
@@ -856,20 +1069,40 @@ def _build_m3(
     # tool is still peeling off the male, so allow male<->tool; everything else
     # is static<->static (compas_fab auto-skips).
     _apply_movement_touch_policy(
-        state, "M3", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M3", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
     )
 
     retreat_axes_world = {}
     target_left_mm = tool0_left_assembled_mm
     target_right_mm = tool0_right_assembled_mm
     for arm, tool0_assembled in (("left", tool0_left_assembled_mm), ("right", tool0_right_assembled_mm)):
-        # Find this arm's male joint OCF.
+        # Find this arm's anchor joint OCF: its male joint, or -- on a ground
+        # bar -- its grasped ground joint. Same retreat rule either way: the
+        # assembled flange origin shifted along the joint block's world -Z.
         jid = next((j for j, a in arm_to_male.items() if a == arm), None)
-        if jid is None:
+        joint_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male" if jid is not None else None
+        if joint_key is None:
+            gjid = next((j for j, a in arm_to_ground.items() if a == arm), None)
+            if gjid is not None:
+                joint_key = f"{CANONICAL_JOINT_PREFIX}{gjid}_ground"
+        if joint_key is None:
+            # ! This arm has no classified male OR ground joint, so its retreat
+            # target stays at the assembled pose (zero retreat). Say so loudly
+            # instead of silently degrading.
+            print(
+                f"core.bar_action._build_m3: NOTE - arm '{arm}' has no classified "
+                f"male/ground joint on bar '{bar_id}'; its retreat target stays "
+                "at the assembled pose."
+            )
             continue
-        joint_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male"
         joint_body_info = env_geom.get(joint_key)
         if joint_body_info is None:
+            print(
+                f"core.bar_action._build_m3: NOTE - '{joint_key}' has no cached "
+                f"geometry on bar '{bar_id}'; arm '{arm}' retreat target stays "
+                "at the assembled pose."
+            )
             continue
         target_mm, axis_world = _retreat_tool0_target_mm(
             tool0_assembled, joint_body_info["frame_world_mm"], retreat_distance_mm,
@@ -881,7 +1114,7 @@ def _build_m3(
         retreat_axes_world[arm] = [float(x) for x in axis_world]
 
     return IndependentDualArmLinearMovement(
-        movement_id=f"{bar_id}_M3_LM_retreat",
+        movement_id=f"{bar_id}_R_M2_LM_retreat",
         tag="Assembled -> Retreated (per-arm linear)",
         start_state=state,
         target_ee_frames={
@@ -906,8 +1139,10 @@ def _build_m4(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     base_frame_world_mm,
     home_left,
     home_right,
@@ -931,14 +1166,15 @@ def _build_m4(
     _detach_active_to_assembled_world(state, active_keys, env_geom)
     # Fully released, tools retreated: no special allowed contacts.
     _apply_movement_touch_policy(
-        state, "M4", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M4", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
     )
 
     home_cfg = _build_home_configuration(
         template_state, rcell, home_left, home_right, left_group, right_group,
     )
     return IndependentDualArmFreeMovement(
-        movement_id=f"{bar_id}_M4_free_home",
+        movement_id=f"{bar_id}_R_M3_free_home",
         tag="Retreated -> Home (free motion)",
         start_state=state,
         target_ee_frames=None,
@@ -956,8 +1192,10 @@ def _build_m0(
     env_geom: dict,
     active_keys,
     arm_to_male: dict,
+    arm_to_ground: dict,
     bar_key: str,
     tool_ids: dict,
+    cradle_female_keys,
     base_frame_world_mm,
 ) -> IndependentDualArmFreeMovement:
     """Build M0: current pose -> M1 start (free joint-space motion, live-planned).
@@ -1001,18 +1239,19 @@ def _build_m0(
     # No grasp, arms independent -> no allowed-touch whitelist (falls through the
     # M1/M2/M3 branches, same as M4).
     _apply_movement_touch_policy(
-        state, "M0", active_keys, env_geom, arm_to_male, bar_key, tool_ids,
+        state, "M0", active_keys, env_geom, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
     )
     return IndependentDualArmFreeMovement(
-        movement_id=f"{bar_id}_M0_free_to_M1_start",
-        tag="Current -> M1 start (free, live-planned)",
+        movement_id=f"{bar_id}_J_M0_free_to_load",
+        tag="Current -> loading pose (free, live-planned)",
         start_state=state,
         target_ee_frames=None,
         target_configuration=None,
         notes={
             "unplanned_offline": True,
             "planner_fills": "trajectory",
-            "goal_backfilled_from": "M1.start_state.robot_configuration",
+            "goal_backfilled_from": "J_M3.start_state.robot_configuration",
             "bar_pose_is_placeholder": True,
         },
     )
@@ -1023,7 +1262,7 @@ def _build_m0(
 # ---------------------------------------------------------------------------
 
 
-def build_assembly_movements(
+def build_split_assembly_movements(
     rcell,
     planner,
     bar_id: str,
@@ -1035,22 +1274,31 @@ def build_assembly_movements(
     retreat_groups: dict = None,
     bar_arm_side: str = "left",
 ):
-    """Build the five assembly movements (M0-M4) for ``bar_id``.
+    """Build one bar's jointing + release movements (both action halves).
 
     This is the single place that turns the cached static cell + the two placed
-    tool blocks into the M0-M4 ``start_state``/``target_ee_frames`` pairs. It is
+    tool blocks into every ``start_state``/``target_ee_frames`` pair. It is
     callable **before** IK has been solved: ``approach_groups``/``assembled_groups``
     are optional, so the start configs default to the template seed and the IK
-    solver fills them in later. ``build_bar_assembly_action`` (export) passes the
-    saved keyframe groups; ``rs_ik_keyframe`` (solver) passes ``None`` and reads the
-    M1/M2/M3 ``start_state``s back out to solve against.
+    solver fills them in later. ``build_bar_assembly_actions`` (export) passes the
+    saved keyframe groups; ``rs_ik_keyframe`` (solver) passes ``None`` and reads
+    the J_M3 / J_M5 / R_M2 ``start_state``s back out to solve against.
 
     Everything each movement needs is known here without IK:
       - tool0 at the assembled pose = the placed tool block world transforms,
-      - the approach EE targets = a pure geometric offset of those (``_build_m1``),
-      - the retreat EE targets = the male-joint OCF offset (``_build_m3``),
-      - attachments / allowed-touch policy = cell geometry + arm classification.
+      - the approach EE targets = a pure geometric offset of those (ground bars:
+        along the assigned walkable ground's normal instead of -avg tool z),
+      - the retreat EE targets = the anchor-joint (male or grasped ground) OCF offset,
+      - attachments / allowed-touch policy = cell geometry + arm classification
+        (males AND tool-bearing ground joints -- ground bars are grasped at their
+        ground joints).
     Only ``robot_configuration`` is movement-state data that IK supplies.
+
+    The manual / tool movements are timeline events (no arm motion) whose
+    start_states are snapshots cloned from the neighboring arm movements:
+    J_M1/J_M2 share J_M3's start (loading pose, bar attached), J_M4 sits at
+    the approach (J_M5's start), R_M0 at the assembled pose still attached,
+    R_M1 at the assembled pose detached (the ungrasp boundary = R_M2's start).
 
     Args:
         rcell (RobotCell): the cached static cell.
@@ -1061,24 +1309,36 @@ def build_assembly_movements(
             for the export + viewer.
         tool0_left_assembled_mm, tool0_right_assembled_mm (ndarray): 4x4 mm flange
             poses at the assembled keyframe (the placed tool block xforms).
-        approach_groups (dict | None): saved approach per-arm config -> M1.target +
-            M2.start, or ``None`` (pre-IK) to leave them unset.
-        assembled_groups (dict | None): saved assembled per-arm config -> M2.target +
-            M3.start, or ``None`` (pre-IK).
-        retreat_groups (dict | None): saved retreat per-arm config -> M3.target +
-            M4.start, or ``None`` (pre-IK, or a bar solved before retreat was saved).
+        approach_groups (dict | None): saved approach per-arm config -> J_M3.target
+            + J_M5.start, or ``None`` (pre-IK) to leave them unset.
+        assembled_groups (dict | None): saved assembled per-arm config ->
+            J_M5.target + R_M0/R_M1/R_M2.start, or ``None`` (pre-IK).
+        retreat_groups (dict | None): saved retreat per-arm config -> R_M2.target +
+            R_M3.start, or ``None`` (pre-IK, or a bar solved before retreat was saved).
         bar_arm_side (str): arm the bar + carried females attach to (default "left").
 
     Returns:
-        tuple: ``(movements, env_geom)`` where ``movements`` is
-        ``{"M0": .., "M1": .., "M2": .., "M3": .., "M4": ..}`` and ``env_geom`` is
-        the cached ``{name: body_info}`` collision-body dict for the active bar's
-        bodies. ``M0`` is the unplanned live-deployment lead-in (see
-        :func:`_build_m0`).
+        tuple: ``(jointing, release, env_geom)`` where ``jointing`` is
+        ``{"M0".."M5"}`` (the BarAssemblyJointingAction movements), ``release``
+        is ``{"M0".."M3"}`` (the BarAssemblyReleaseAction movements), and
+        ``env_geom`` is the cached ``{name: body_info}`` collision-body dict.
     """
     from core import config
     from core import ik_collision_setup
     from core import robot_cell
+    from core.rhino_bar_registry import get_bar_seq_map as _get_bar_seq_map, is_fake_bar
+
+    # ! A fake bar is a modeling artifact (it only poses a real bar's male
+    # half), so it is excluded from every collision scene -- there would be no
+    # bar_<id> body to grasp and the movements would come out empty. Say so
+    # instead of building a nonsense action.
+    _bar_map_check = _get_bar_seq_map()
+    if bar_id in _bar_map_check and is_fake_bar(_bar_map_check[bar_id][0]):
+        raise RuntimeError(
+            f"Bar '{bar_id}' is marked as a FAKE (non-fabricated) staging bar, so "
+            "the robot never assembles it and it carries no collision geometry. "
+            "Un-mark it in RSBarEdit > FakeBar > Delete if that is wrong."
+        )
 
     # Build the full static-cell template state. `prepare_assembly_collision_state`
     # calls `ensure_assembly_cell` (registers the full canonical assembly + env
@@ -1091,7 +1351,40 @@ def build_assembly_movements(
     template_state, env_geom = ik_collision_setup.prepare_assembly_collision_state(
         rcell, planner, slim_state, bar_id,
     )
+
+    # ! Any support robot holding a bar during THIS step stands frozen in the
+    # scene (its collisions are included in all planning); robots not deployed
+    # stay parked (the base state's default). A hold that exists in the plan
+    # but is not SOLVED yet is skipped with a loud note — the release
+    # checkpoints re-check things once it is solved. The bar's OWN hold (the
+    # robot that grabs it mid-step, before the release half) cannot be known
+    # at solve time (staged flow: assembly first) — the follow-up motion
+    # planner owns that check.
+    # Local imports: hold_action_builder imports from this module (circular at top).
+    from core import hold_action_builder
+    from core.hold_schedule import derive_hold_plan
+    from core.rhino_bar_registry import collect_hold_inputs, get_bar_seq_map
+    bar_map = get_bar_seq_map()
+    bar_seq, supported = collect_hold_inputs(bar_map)
+    hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+    skipped_holds = hold_action_builder.freeze_holding_robots(
+        template_state, hold_plan, int(bar_seq[bar_id]),
+        skip_unsolved=True, bar_map=bar_map,
+    )
+    for robot_name, held_bar in skipped_holds:
+        print(
+            f"core.bar_action: NOTE — {robot_name} holds {held_bar} during "
+            f"{bar_id}'s step but that hold is UNSOLVED; planning WITHOUT it. "
+            f"Solve {held_bar}'s support keyframe, then re-solve {bar_id}."
+        )
+
     arm_to_male = _classify_male_joints_per_arm(bar_id)
+
+    # * Ground bars: the arm tools grasp the GROUND joints directly (no male
+    # halves on the bar). Classified additively so the male path stays untouched.
+    arm_to_ground = _classify_ground_joints_per_arm(bar_id)
+    if arm_to_ground:
+        print(f"core.bar_action: ground-grasp classification for '{bar_id}': {arm_to_ground}")
 
     # * The grasped (active) bodies = bar_<bar_id> + every joint half mounted on it.
     active_keys = {
@@ -1100,6 +1393,41 @@ def build_assembly_movements(
     }
     bar_key = f"{CANONICAL_BAR_PREFIX}{bar_id}"
     tool_ids = robot_cell.arm_tool_ids()
+
+    # * Ground bars insert perpendicular to their assigned walkable ground: the
+    # approach (M1 target) hovers straight above the assembled pose along the
+    # ground's normal, so the linear insert (M2) drops the ground feet onto it.
+    # Contact points = every ground-joint block origin on this bar (grasped or
+    # carried). The helper raises a clear error when the bar has no assigned
+    # walkable ground or the per-joint normals disagree (no silent fallback).
+    approach_dir_mm = None
+    if arm_to_ground:
+        from core.rhino_walkable_ground import ground_insertion_normal_mm
+        ground_points_mm = [
+            np.asarray(env_geom[k]["frame_world_mm"], dtype=float)[:3, 3]
+            for k in sorted(active_keys)
+            if k.startswith(CANONICAL_JOINT_PREFIX) and k.endswith("_ground")
+        ]
+        approach_dir_mm = ground_insertion_normal_mm(bar_map[bar_id][0], ground_points_mm)
+
+    # * Subfloor cradle mates: a cradle-style female (`bar_cradle` in
+    # joint_pairs.json, e.g. the T20Sub* receivers) is a big block the incoming
+    # bar physically rests INSIDE at the assembled pose. Collect which of this
+    # bar's mate females are cradles so the touch policy can allow bar/male <->
+    # cradle contact during approach + insert. Detection keys on the live Rhino
+    # block-definition name in env_geom (immune to stale joint_id user text).
+    registry_halves = load_joint_registry().halves
+    cradle_female_keys = set()
+    for jid in arm_to_male:
+        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        female_info = env_geom.get(female_key)
+        if female_info is None:
+            continue
+        half = registry_halves.get(female_info.get("block_name") or "")
+        if half is not None and half.bar_cradle:
+            cradle_female_keys.add(female_key)
+    if cradle_female_keys:
+        print(f"core.bar_action: cradle mate females for '{bar_id}': {sorted(cradle_female_keys)}")
 
     # The active bar/joint frames in the template are the assembled-pose world
     # frames; every Mi rewrites them (M1/M2 attach to tool0, M3/M4 detach to
@@ -1113,32 +1441,34 @@ def build_assembly_movements(
     # the code reads in movement order; it forks the same template independently,
     # so the build order among M0-M4 does not matter (see module docstring).
     m0 = _build_m0(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
         base_frame_world_mm,
     )
     # M1's start config is planner-computed (left None); it needs no HOME values
     # or planning-group names, unlike M4 which targets the fixed home pose.
     m1 = _build_m1(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         config.LM_APPROACH_DISTANCE,
         bar_arm_side=bar_arm_side,
+        approach_dir_mm=approach_dir_mm,
     )
     m2 = _build_m2(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         approach_groups,
         config.LM_APPROACH_DISTANCE,
         bar_arm_side=bar_arm_side,
+        approach_dir_mm=approach_dir_mm,
     )
     m3 = _build_m3(
-        template_state, bar_id, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
+        template_state, bar_id, env_geom, active_keys, arm_to_male, arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
         base_frame_world_mm,
         assembled_groups,
@@ -1150,20 +1480,21 @@ def build_assembly_movements(
     # the actual home the user authored.
     m4 = _build_m4(
         template_state, bar_id, rcell, env_geom, active_keys, arm_to_male,
-        bar_key, tool_ids,
+        arm_to_ground,
+        bar_key, tool_ids, cradle_female_keys,
         base_frame_world_mm,
         config.HOME_CONF_LEFT_6, config.HOME_CONF_RIGHT_6,
         config.LEFT_GROUP, config.RIGHT_GROUP,
     )
 
-    # Keyframe-config chain: each Mi.target == Mi+1.start == the config between
-    # them. _build_m2/_build_m3 already stamp approach -> M2.start and assembled ->
-    # M3.start; here we fill the remaining half of every pair so the exported
-    # action carries the full chain and matches the headless keyframe solver's
-    # write-back (see ``accept_solved_movement``):
-    #   approach  -> M1.target
-    #   assembled -> M2.target
-    #   retreat   -> M3.target + M4.start   (M4 then runs retreat -> home)
+    # Keyframe-config chain: each movement's target == the next one's start ==
+    # the config between them. The builders above already stamp approach ->
+    # J_M5.start (old M2) and assembled -> R_M2.start (old M3); here we fill
+    # the remaining half of every pair so the exported actions carry the full
+    # chain and match the headless keyframe solver's write-back:
+    #   approach  -> J_M3.target
+    #   assembled -> J_M5.target
+    #   retreat   -> R_M2.target + R_M3.start   (R_M3 then runs retreat -> home)
     # All are None (unset) for a pre-IK bar whose groups are None.
     approach_cfg = _configuration_from_groups(template_state, approach_groups)
     assembled_cfg = _configuration_from_groups(template_state, assembled_groups)
@@ -1176,7 +1507,59 @@ def build_assembly_movements(
         m3.target_configuration = retreat_cfg
         m4.start_state.robot_configuration = retreat_cfg.copy()
 
-    return {"M0": m0, "M1": m1, "M2": m2, "M3": m3, "M4": m4}, env_geom
+    # * ---- the timeline-event movements (no arm motion, snapshot states) ----
+    # Both arm tools act together on every scaffolding-tool event.
+    acting_tools = sorted(t for t in tool_ids.values() if t)
+
+    # J_M1: the operator mounts the bar into the EEs at the loading pose. Same
+    # snapshot as the transfer's start (bar attached, config planner-filled).
+    j_m1 = ManualMovement(
+        movement_id=f"{bar_id}_J_M1_manual_mount_bar",
+        tag="Operator mounts the bar into the two end effectors",
+        start_state=m1.start_state.copy(),
+    )
+    # J_M2: grasping screws clamp the bar (stall when tight).
+    j_m2 = ScaffoldingToolMovement(
+        movement_id=f"{bar_id}_J_M2_tool_grasp_bar",
+        tag="Grasping screws clamp the bar (stall when tight)",
+        start_state=m1.start_state.copy(),
+        tool_action="grasp",
+        tool_names=acting_tools,
+    )
+    # J_M4: jointing screws start tightening at the approach and deliberately
+    # keep running through the whole insert (J_M5) until they stall.
+    j_m4 = ScaffoldingToolMovement(
+        movement_id=f"{bar_id}_J_M4_tool_tighten_joint",
+        tag="Jointing screws tighten (keeps running through the insert)",
+        start_state=m2.start_state.copy(),
+        tool_action="tighten",
+        tool_names=acting_tools,
+        overlaps_next=True,
+    )
+    # R_M0: jointing screws untighten at the assembled pose, bar still gripped.
+    r_m0_state = m2.start_state.copy()
+    if assembled_groups is not None:
+        _apply_groups_to_config(r_m0_state, assembled_groups)
+    r_m0 = ScaffoldingToolMovement(
+        movement_id=f"{bar_id}_R_M0_tool_untighten_joint",
+        tag="Jointing screws untighten (bar still gripped)",
+        start_state=r_m0_state,
+        tool_action="untighten",
+        tool_names=acting_tools,
+    )
+    # R_M1: grasping screws unclamp — the attachment boundary. Its snapshot is
+    # the retreat's start (assembled pose, bar detached to the world).
+    r_m1 = ScaffoldingToolMovement(
+        movement_id=f"{bar_id}_R_M1_tool_ungrasp_bar",
+        tag="Grasping screws unclamp the bar (bar becomes part of the structure)",
+        start_state=m3.start_state.copy(),
+        tool_action="ungrasp",
+        tool_names=acting_tools,
+    )
+
+    jointing = {"M0": m0, "M1": j_m1, "M2": j_m2, "M3": m1, "M4": j_m4, "M5": m2}
+    release = {"M0": r_m0, "M1": r_m1, "M2": m3, "M3": m4}
+    return jointing, release, env_geom
 
 
 # ---------------------------------------------------------------------------
@@ -1184,22 +1567,22 @@ def build_assembly_movements(
 # ---------------------------------------------------------------------------
 
 
-def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missing_ik: bool = False):
-    """Build a `BarAssemblyAction` for `bar_id`. Rhino-only call.
+def build_bar_assembly_actions(rcell, planner, bar_id: str, bar_oid, allow_missing_ik: bool = False):
+    """Build both assembly halves for `bar_id`. Rhino-only call.
 
     `prepare_assembly_collision_state` reuses the cached static cell (the full
     canonical assembly + env obstacles + arm ToolModels, built by
     RSRebuildRobotCell) and returns a full-key-set template state: built bars
     visible static, the grasped bar a static obstacle, not-yet-built bars
-    `is_hidden=True`, tools attached. Each of the five movements clones that
-    template and re-classes only the grasped (active-bar) bodies + sets its own
+    `is_hidden=True`, tools attached. Each movement clones that template and
+    re-classes only the grasped (active-bar) bodies + sets its own
     allowed-touch policy. No canonicalization, no snapshot/restore.
 
     When ``allow_missing_ik`` is True and the bar has no saved IK keyframe, the
-    action is still built for the headless solver: the movement ``target_ee_frames``
-    are pure geometry (from the placed tool blocks) so they are complete, but the
-    robot base is a placeholder identity frame and the per-arm configs are left
-    unset. The headless base sampler fills in a real base + configs later.
+    actions are still built for the headless solver: the movement
+    ``target_ee_frames`` are pure geometry (from the placed tool blocks) so they
+    are complete, but the robot base is a placeholder identity frame and the
+    per-arm configs are left unset. The headless base sampler fills both later.
 
     Args:
         rcell (RobotCell): the cached static cell.
@@ -1212,7 +1595,9 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missin
             (default), a missing keyframe raises.
 
     Returns:
-        BarAssemblyAction: the five-movement (M0-M4) action for ``bar_id``.
+        tuple: ``(jointing_action, release_action)`` — the
+        BarAssemblyJointingAction (J_M0..J_M5) and BarAssemblyReleaseAction
+        (R_M0..R_M3) for ``bar_id``.
 
     Raises:
         RuntimeError: if the bar is missing IK keyframe user-text (and
@@ -1225,7 +1610,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missin
     from core.rhino_bar_registry import get_bar_seq_map
     from core.rhino_walkable_ground import get_bar_ground_ids
 
-    print(f"core.bar_action.build_bar_assembly_action: building bar '{bar_id}' ...")
+    print(f"core.bar_action.build_bar_assembly_actions: building bar '{bar_id}' ...")
 
     # 1) Read keyframe + base from the bar curve. Without IK we either raise or
     #    (for the headless-solve export) fall back to a placeholder identity base
@@ -1239,7 +1624,7 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missin
                 f"'{config.KEY_ASSEMBLY_IK_ASSEMBLED}'. Run RSIKKeyframe first."
             )
         print(
-            f"core.bar_action.build_bar_assembly_action: bar '{bar_id}' has no IK "
+            f"core.bar_action.build_bar_assembly_actions: bar '{bar_id}' has no IK "
             "keyframe; building with placeholder base (headless solve will fill it in)."
         )
         base_frame_world_mm = np.eye(4, dtype=float)
@@ -1262,9 +1647,9 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missin
     tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
     tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
 
-    # 4) Build M0-M4 from the cell + tool placements + the saved keyframe configs
-    #    (approach/assembled are None when the bar has no IK yet).
-    movements, _env_geom = build_assembly_movements(
+    # 4) Build both movement halves from the cell + tool placements + the saved
+    #    keyframe configs (approach/assembled are None when the bar has no IK yet).
+    jointing_mvts, release_mvts, _env_geom = build_split_assembly_movements(
         rcell, planner, bar_id,
         base_frame_world_mm,
         tool0_left_assembled_mm, tool0_right_assembled_mm,
@@ -1273,24 +1658,33 @@ def build_bar_assembly_action(rcell, planner, bar_id: str, bar_oid, allow_missin
         retreat_groups=retreat_groups,
     )
 
-    # 5) Assembly-sequence metadata for the action wrapper (the movements
+    # 5) Assembly-sequence metadata for the action wrappers (the movements
     # themselves don't need it).
     seq_map = get_bar_seq_map()
     assembly_seq = [
         bid for bid, _oid_seq in sorted(seq_map.items(), key=lambda kv: kv[1][1])
     ]
     active_index = assembly_seq.index(bar_id) if bar_id in assembly_seq else -1
+    walkable_ground_ids = get_bar_ground_ids(bar_oid)
 
-    return BarAssemblyAction(
-        action_id=f"{bar_id}_A0_assemble",
-        tag=f"Assemble bar {bar_id} (index {active_index} of {len(assembly_seq)})",
-        movements=[
-            movements["M0"], movements["M1"], movements["M2"],
-            movements["M3"], movements["M4"],
-        ],
+    jointing_action = BarAssemblyJointingAction(
+        action_id=f"{bar_id}_J_joint",
+        tag=f"Joint bar {bar_id} (index {active_index} of {len(assembly_seq)})",
+        movements=[jointing_mvts[k] for k in ("M0", "M1", "M2", "M3", "M4", "M5")],
+        robot_id=config.ROBOT_ID,
         active_bar_id=bar_id,
         assembly_seq=assembly_seq,
         # Which WalkableGround surface(s) the headless base sampler may use for
         # this bar (set via RSAssignAndShowWalkableGround; empty if not assigned yet).
-        walkable_ground_ids=get_bar_ground_ids(bar_oid),
+        walkable_ground_ids=walkable_ground_ids,
     )
+    release_action = BarAssemblyReleaseAction(
+        action_id=f"{bar_id}_R_release",
+        tag=f"Release bar {bar_id} (index {active_index} of {len(assembly_seq)})",
+        movements=[release_mvts[k] for k in ("M0", "M1", "M2", "M3")],
+        robot_id=config.ROBOT_ID,
+        active_bar_id=bar_id,
+        assembly_seq=assembly_seq,
+        walkable_ground_ids=walkable_ground_ids,
+    )
+    return jointing_action, release_action

@@ -155,12 +155,23 @@ def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, retreat_distanc
     return out, axis_world
 
 
+# !! NAMING ODD ONE OUT -- see docs/Su_note.md, "LM distance naming".
+# The distance parameter below is still called `lm_distance_mm` (the pre-split
+# name, kept verbatim from origin/yh/support-ik-keyframe). EVERYWHERE ELSE the two
+# knobs are spelled out: `approach_distance_mm` in _build_m1/_build_m2 and
+# `retreat_distance_mm` in _build_m3/_retreat_tool0_target_mm, fed from
+# config.LM_APPROACH_DISTANCE (15 mm) / config.LM_RETREAT_DISTANCE (50 mm).
+# The value handed to THIS function is always the APPROACH distance; its one
+# caller (_build_m1) passes it positionally, so the stale name is cosmetic.
+# Rename it if you ever touch this signature.
 def _compute_approach_targets_mm(tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm: float, approach_dir_mm=None):
     """Approach: both tool0 origins translated by -avg(tool_z) * lm_distance.
 
-    This is the single source of the approach offset; ``rs_ik_keyframe`` reads it
-    back off ``M1.target_ee_frames`` rather than recomputing it. Tool block local
-    +Z points out of the flange toward the joint, so -Z is the retreat direction.
+    ``lm_distance_mm`` here IS ``config.LM_APPROACH_DISTANCE`` -- see the naming
+    note above the def. This is the single source of the approach offset;
+    ``rs_ik_keyframe`` reads it back off ``M1.target_ee_frames`` rather than
+    recomputing it. Tool block local +Z points out of the flange toward the joint,
+    so -Z is the retreat direction.
 
     Args:
         approach_dir_mm (ndarray | None): when given, use this world direction
@@ -702,8 +713,8 @@ def _apply_movement_touch_policy(
       and the cradle mesh is ~82% solid inside its 60x72x80 mm box, so the hull
       is effectively a solid brick that the tool head gripping a seated male
       cannot avoid overlapping. M3 is included because the retreat backs off
-      only ``LM_DISTANCE`` (15 mm) while the brick is 60-80 mm deep, so the
-      peeling tool is still inside it at the retreat target.
+      only ``LM_RETREAT_DISTANCE`` (50 mm) while the brick is 60-80 mm deep, so
+      the peeling tool is still inside it at the retreat target.
 
     The male<->mate whitelist is recorded on the male / carried-female side (one
     side is enough). The bar tube additionally whitelists BOTH gripper tools while
@@ -931,7 +942,7 @@ def _build_m1(
         bar_key, tool_ids, cradle_female_keys,
     )
     tool0_left_approach_mm, tool0_right_approach_mm = _compute_approach_targets_mm(
-        tool0_left_assembled_mm, tool0_right_assembled_mm, lm_distance_mm,
+        tool0_left_assembled_mm, tool0_right_assembled_mm, approach_distance_mm,
         approach_dir_mm=approach_dir_mm,
     )
     return EndEffectorConstrainedDualArmFreeMovement(
@@ -945,7 +956,7 @@ def _build_m1(
         target_configuration=None,
         notes={
             "constraint": "fixed_relative_ee_transform",
-            "approach_offset_mm": float(lm_distance_mm),
+            "approach_offset_mm": float(approach_distance_mm),
             # Ground bars approach along the walkable-ground normal (hover
             # straight above); normal bars along -avg(tool z).
             "approach_axis": (
@@ -1025,7 +1036,9 @@ def _build_m2(
                 "walkable_ground_normal" if approach_dir_mm is not None
                 else "per_tool0_z_avg"
             ),
-            "lm_distance_mm": float(lm_distance_mm),
+            # Key name kept as-is for downstream consumers; the value is the
+            # APPROACH distance -- M2 travels back over M1's offset.
+            "lm_distance_mm": float(approach_distance_mm),
             "bar_arm_side": bar_arm_side,
             "ends_on": "tool_stall_signal",
         },

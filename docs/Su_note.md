@@ -5,6 +5,34 @@ command (`rs_ik_keyframe_all.py`). Each section answers a question I had.
 
 ---
 
+## ⚠ Reminder: LM distance naming (merge leftover)
+
+There used to be ONE constant, `config.LM_DISTANCE = 15 mm`, used for both the
+approach and the retreat. Commit `9c89694` split it in two, because the two moves
+need different clearances:
+
+| what             | constant                      | value | used by                                      |
+|------------------|-------------------------------|-------|----------------------------------------------|
+| approach (M1→M2) | `config.LM_APPROACH_DISTANCE` | 15 mm | `_build_m1`, `_build_m2`                     |
+| retreat (M3)     | `config.LM_RETREAT_DISTANCE`  | 50 mm | `_build_m3`, `_retreat_tool0_target_mm`      |
+
+The matching **parameter** names are `approach_distance_mm` / `retreat_distance_mm`
+— note these are function parameters, not constants; there is no `APPROACH_...`
+constant beyond the two above.
+
+**The leftover to remember:** `core/bar_action._compute_approach_targets_mm` still
+names its parameter `lm_distance_mm`, the old pre-split name. It came in verbatim
+when we accepted the incoming side of `origin/yh/support-ik-keyframe` and we chose
+not to touch it. It is *not* a third knob — the value passed in is always the
+approach distance, and the sole caller passes it positionally, so nothing breaks.
+There is a `!! NAMING ODD ONE OUT` comment above that `def`.
+
+Separately, the exported movement `notes` dicts deliberately keep the key
+`lm_distance_mm` for BOTH M2 and M3, so downstream consumers were unaffected by the
+split — only the *value* differs (M2 → 15, M3 → 50). Don't "fix" that key either.
+
+---
+
 ## 1. How do we know a bar already has IK? Where are IK results saved?
 
 IK results are **saved on the bar curve itself, as Rhino UserText** (little

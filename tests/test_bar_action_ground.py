@@ -226,7 +226,7 @@ def _build_m3(arm_to_male, arm_to_ground):
         _FakeState(ACTIVE_KEYS), "B20", ENV_GEOM, ACTIVE_KEYS,
         arm_to_male, arm_to_ground, BAR_KEY, TOOL_IDS, frozenset(),
         TOOL0_LEFT, TOOL0_RIGHT, np.eye(4),
-        assembled_groups=None, lm_distance_mm=LM,
+        assembled_groups=None, retreat_distance_mm=LM,
     )
 
 
@@ -262,7 +262,7 @@ def _build_m1(approach_dir_mm):
         _FakeState(ACTIVE_KEYS), "B20", ENV_GEOM, ACTIVE_KEYS,
         {}, ARM_TO_GROUND, BAR_KEY, TOOL_IDS, frozenset(),
         TOOL0_LEFT, TOOL0_RIGHT, np.eye(4),
-        lm_distance_mm=LM, approach_dir_mm=approach_dir_mm,
+        approach_distance_mm=LM, approach_dir_mm=approach_dir_mm,
     )
 
 

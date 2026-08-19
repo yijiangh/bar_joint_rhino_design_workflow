@@ -44,17 +44,39 @@ default) paints everything, so every toolbar command is unaffected.
 
 Written for the Grasshopper animation component
 ([grasshopper_animation.md](grasshopper_animation.md)), where you switch legend colours off
-to film a clean frame. Two tints are deliberately not switchable:
-
-- **teal** is a *variant of built*, not a class of its own, so it rides on `"built"`;
-- **pink (fake)** is always painted, matching `clear_ik_preview`, which re-asserts it rather
-  than resetting it. A staging bar that renders like a real one is a fabrication error
-  waiting to happen, so it is never silenced.
+to film a clean frame. One tint is deliberately not switchable: **teal** is a *variant of
+built*, not a class of its own, so it rides on `"built"`. **Pink (fake)** stays painted
+whenever the bar is visible — matching `clear_ik_preview`, which re-asserts it rather than
+resetting it, because a staging bar that renders like a real one is a fabrication error
+waiting to happen. The filming view does not silence that tint; it hides the bar outright
+with `show_fake=False` (below).
 
 Joints follow their parent bar's *paint decision*, not just its colour, and the active step's
 tool follows `"active"` — so switching a class off never leaves its joints or tools tinted.
 Visibility is untouched in every case; to actually hide unbuilt bars use the separate
 `show_unbuilt` argument.
+
+### The filming arguments — `show_fake`, `tint_curves_only`, `geom_built_and_active_only`, `line_style`
+
+Four more optional arguments on `show_sequence_colors`, all added for the Grasshopper
+preview and all defaulting to today's behaviour, so no toolbar command is affected:
+
+| argument | default | what the filming view passes |
+| --- | --- | --- |
+| `show_fake` | `True` | `False` — staging bars are hidden outright, not just tinted |
+| `tint_curves_only` | `False` | `True` — class colours land on the bar CENTERLINES only; tubes, joints and tools keep their normal by-layer look |
+| `geom_built_and_active_only` | `False` | `True` — tube + joint geometry only for built bars and the active bar; later bars keep at most their centerline |
+| `line_style` | `None` | `{"thickness_mm", "dashed", "pattern"}` — per-object print width and dash on the centerlines |
+
+Together they produce the filming split: **real model geometry for what has been built,
+coloured guide lines for everything else.**
+
+`line_style` writes two per-object attributes on the centerline curves. Print width only
+renders in the viewport while **PrintDisplay** is on (the GH component switches it on and
+off); dashes use a document linetype named after its own pattern (`RS_PreviewDash_4x2`),
+created on demand so a changed pattern makes a new linetype instead of mutating one in
+use. `reset_sequence_colors` resets both attribute sources back to by-layer alongside the
+colours — so the usual cleanup path covers them too.
 
 ## RSUpdatePreview — model health
 

@@ -61,6 +61,7 @@ from core import ik_collision_setup as _ik_collision_setup_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
+from core import robot_obstacles as _robot_obstacles_module
 from core import rhino_walkable_ground as _walkable_ground_module
 from core import solved_action_cache as _solved_action_cache_module
 from core.rhino_bar_pick import (
@@ -313,7 +314,8 @@ def support_presence_for_step(bar_map, active_bar_id, pose, pose_cycle, hold_pla
 
 def _reload():
     global bar_action, base_frame_viz, config, env_collision, ik_collision_setup
-    global ik_viz, robot_cell, robot_cell_support, solved_action_cache, walkable_ground
+    global ik_viz, robot_cell, robot_cell_support, robot_obstacles
+    global solved_action_cache, walkable_ground
     config = importlib.reload(_config_module)
     env_collision = importlib.reload(_env_collision_module)
     ik_collision_setup = importlib.reload(_ik_collision_setup_module)
@@ -323,6 +325,7 @@ def _reload():
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
+    robot_obstacles = importlib.reload(_robot_obstacles_module)
     base_frame_viz = importlib.reload(_base_frame_viz_module)
     solved_action_cache = importlib.reload(_solved_action_cache_module)
     walkable_ground = importlib.reload(_walkable_ground_module)
@@ -861,6 +864,21 @@ class _PreviewSession:
                 self.deps["Frame"],
                 np.asarray(config.ROBOT_PARKED_BASE_FRAME_MM, dtype=float),
             )
+            # The scene description was baked with every holder frozen at its
+            # HELD pose (freeze_holding_robots) -- those frozen bodies are the
+            # collision obstacles, and the drawing system draws them too.
+            # Robots released at-or-before this step have left the scene: park
+            # their frozen bodies (on this per-step duplicate only), or they
+            # keep being drawn held (the "ghost" at consecutive release
+            # steps). The one releasing NOW is parked too: its retreat is
+            # drawn by its own `Support <name>` layer, the only drawing that
+            # knows that pose.
+            release_order = [p[1] for p in self.poses if isinstance(p, tuple)]
+            cut = release_order.index(self.pose[1])
+            for held_bar_id in release_order[:cut + 1]:
+                robot_name = self.hold_plan[held_bar_id]["robot_name"]
+                if config.OBSTACLE_TOOL_NAMES.get(robot_name) in (state.tool_states or {}):
+                    robot_obstacles.park_robot_obstacle(state, robot_name)
             print(
                 f"RSShowBarActionPlan: {_pose_label(self.pose)} -- assembly robot "
                 "parked far away; the support robot lets go and retreats."

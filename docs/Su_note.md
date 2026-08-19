@@ -3,6 +3,65 @@
 Personal notes on Python + this codebase, written while building the multi-bar IK
 command (`rs_ik_keyframe_all.py`). Each section answers a question I had.
 
+Sections keep their original numbers (they cite each other as "§13" etc.), so new
+notes are appended at the end and **this index** is the organized view: grouped by
+topic, ordered basic → advanced inside each group.
+
+## Topic index (basic → advanced)
+
+**Python — the language**
+| § | topic |
+|---|-------|
+| 4 | `return`, and what `None` means |
+| 29 | `dict`, `tuple`, class vs. standalone function, `.copy()` |
+| 5 | `try` / `except` — handling errors without crashing |
+| 6 | `if __name__ == "__main__":` |
+| 18 | decorators: `@dataclass`, `@classmethod` |
+| 9 | `importlib.reload` — why every command reloads its modules |
+| 20 | where state lives: session vs `sc.sticky` vs document |
+
+**NumPy & geometry math**
+| § | topic |
+|---|-------|
+| 13 | NumPy from zero: arrays, `asarray`, `norm`, `dot`, `cross` |
+| 3 | reading `[:3, 3]` — slicing a position out of a matrix |
+| 17 | why everything is a 4×4 matrix (and what `@` does) |
+| 11 | the `M_<target>_from_<source>` naming system *(convention, not Python)* |
+| 14 | "triangle soup" — Rhino-free floor geometry |
+
+**Robot IK & assembly domain**
+| § | topic |
+|---|-------|
+| 1 | where IK results are saved (UserText on the bar) |
+| 16 | degrees of freedom: `jp`, `jr`, "the knob is used up" |
+| 27 | `jp`, `jr`, LE and LN — where a joint is measured from |
+| 15 | base placement: heading, guide lines, arm L/R |
+| 21 | reading the IK failure log |
+| ⚠ | LM distance naming (merge leftover) |
+
+**Rhino & Grasshopper**
+| § | topic |
+|---|-------|
+| 8 | the `.rui` toolbar file and macros |
+| 24 | `BeginUndoRecord` — one Ctrl+Z for a whole command |
+| 23 | which module a preview belongs in (the four viz mechanisms) |
+| 25 | Grasshopper components vs Rhino commands |
+
+**Tooling (git, linter, tests)**
+| § | topic |
+|---|-------|
+| 12 | what a linter is; `# noqa` *(tooling, not Python)* |
+| 19 | `pytest`, `assert`, `*args` |
+| 26 | `git add -p` and the everyday git commands |
+| 22 | `git reset --soft` — undoing a commit without losing work |
+
+**Working habits & project status**
+| § | topic |
+|---|-------|
+| 7 | the reuse habit (the recurring lesson) |
+| 10 | reuse win: one color module for the IK preview |
+| 28 | parked: understood, measured, not built yet |
+
 ---
 
 ## ⚠ Reminder: LM distance naming (merge leftover)
@@ -1622,8 +1681,24 @@ Rhino 8's Python 3 component has two ways of writing the same thing.
 | outputs | assign to named variables | `return a, b` — order matters |
 
 You get SDK mode by clicking **Convert To GH_ScriptInstance** on the Script Editor
-dashboard. Our two components are written that way, purely so that pasting one file
-produces a fully wired component. Four things to know:
+dashboard.
+
+> ⚠️ **The paste failures were OUR OWN docstrings' fault — found empirically
+> (2026-08-19).** Pasting the components kept failing with `unindent does not match any
+> outer indentation level`, even on a clean delete-then-paste. We first blamed the
+> editor's signature rewriting and switched everything to script mode (no class, no
+> def — nothing to rewrite; params named by hand). Then Su deleted the long
+> docstrings/comments from the SDK-mode files and **all three pasted fine**. Diagnosis:
+> the paste-time parameter sync scans the whole pasted text for the component
+> structure and is **not comment- or docstring-aware** — our prose *talked about* the
+> `RunScript` method and the class line, the parser matched those mentions inside the
+> documentation, and rewrote around the wrong lines. The standing rule ever since:
+> **shim docstrings carry only a summary + INPUTS/OUTPUTS/NOTES and never name the
+> code structure**; the long instructions live in `grasshopper_animation.md`. All
+> three components are back in SDK mode. (Script-mode variants remain in git history;
+> the script-mode traps below are kept because they were real and hard-won.)
+
+Four things to know about SDK mode:
 
 - **The argument name becomes the parameter NickName.** `gh_bridge.ensure_int_slider(ghenv,
   "step", ...)` finds the right input only because the argument is called `step`. Rename
@@ -1647,6 +1722,46 @@ produces a fully wired component. Four things to know:
   next solve. Anything that must persist goes in `sc.sticky` (see §20).
 - **A Button is not a parameter setting.** SDK mode can generate a boolean input but not
   the Button component that feeds it; wire one yourself.
+
+### An input with no Type hint is WRAPPED, and the wrapper is always truthy — *(Grasshopper convention)*
+
+Script mode's own trap, and a nastier one than the `None` below. If you do not set a
+param's Type hint, Grasshopper hands your script **its own wrapper object** instead of a
+Python value — `GH_Boolean`, `GH_Number`, `GH_String`. A wrapper is an object, so:
+
+```python
+bool(GH_Boolean(False))     # -> True   (a non-empty OBJECT, not the value False)
+```
+
+Every switch would read as permanently ON, with nothing on screen explaining why. Two
+defences, and the components use both:
+
+- set the Type hint on the param (right-click > Type hint > `bool` / `float` / `str`);
+- unwrap in code before using the value — `.Value` is the underlying Python value:
+
+  ```python
+  def _unwrap(value):
+      return getattr(value, "Value", value)   # plain values pass straight through
+  ```
+
+Same idea as the older `normalize_poses` reading `.Value` off `GH_String` items.
+
+### Reading inputs out of `globals()` — *(script-mode trick)*
+
+In script mode a param that does not exist is not `None`; the variable is simply
+**undefined**, and the component goes red with `NameError` — unhelpful when you have
+just hand-named nine params. `RSGHSequencePreview` therefore never names its inputs
+directly. It looks them up:
+
+```python
+_NAMES = ("enable", "reload", "step", ...)
+_kwargs = {_n: globals()[_n] for _n in _NAMES if _n in globals()}
+_missing = [_n for _n in _NAMES if _n not in globals()]
+```
+
+`globals()` is real Python: a dict of every module-level name currently defined — which,
+inside a GH script component, includes whatever the host injected. A missing param then
+becomes a readable message on the `info` output instead of a crash.
 
 ### An unconnected input is `None`, not your default — *(Grasshopper convention)*
 
@@ -1752,9 +1867,18 @@ why persistent state has to live in `sc.sticky` rather than in a module global.
 
 ### `idx // n` and `idx % n` — one slider, two dimensions *(real Python)*
 
-`RSGHSequencePreview` has one integer slider, but a frame is really a pair: *which bar* and
-*which of the robot's four movements*. The two are pulled back out with integer division
-and remainder — the same arithmetic as reading a two-digit odometer.
+> ⚠️ **Superseded as of the global-timeline rework.** `RSGHSequencePreview` no longer
+> computes its frames this way: it reuses `build_global_timeline` from
+> `rs_show_bar_action_plan`, which returns a flat list of `(bar, oid, pose)` steps, so a
+> frame is now just `steps[idx]` — one list lookup, no arithmetic. It has to be a list
+> rather than an odometer because the bars no longer have a uniform number of poses: a
+> held bar gains a `hold` step, and a bar that is the last stabilizer of a hold gains one
+> `release X` step per hold it ends. The maths below is still worth knowing (`//` and `%`
+> are everyday Python), it just is not what that component does any more.
+
+`RSGHSequencePreview` *used to have* one integer slider where a frame was really a pair:
+*which bar* and *which of the robot's four movements*. The two were pulled back out with
+integer division and remainder — the same arithmetic as reading a two-digit odometer.
 
 With 20 bars and `poses = ["M1", "M4"]`:
 
@@ -2115,3 +2239,89 @@ missing default line for free.
 
 **Also worth tidying at the same time:** three wrappers are called `_ask_mode`, one is
 `_ask_place_mode`.
+
+---
+
+## 29. `dict`, `tuple`, class vs. standalone function, `.copy()` (from the GH preview rework)
+
+> Four terms that came up while reworking `RSGHSequencePreview` to walk the global
+> assembly timeline. The first three are **real Python**; the last part mixes real
+> Python with a house pattern.
+
+### `dict` — a lookup table
+
+A `dict` maps a *key* to a *value*, like a phone book: name in, info out. The two we
+touched constantly:
+
+```python
+bar_map = get_bar_seq_map()
+# {"B21": (<oid of B21's curve>, 2), "B37": (<oid>, 7), ...}
+#   key  = bar name
+#   value = (Rhino object id, build-order number)
+
+hold_plan["B21"]            # look one up -> {"robot_name": "Alice", ...}
+bar_map.get("B99")          # .get() -> None if missing, instead of crashing
+for bar_id, (oid, seq) in bar_map.items():   # loop over key + value together
+```
+
+`{}` is an empty dict — the "no robots on screen" answer of
+`support_presence_for_step` is literally `entries = {}` returned unfilled.
+
+### `tuple` — values glued together, in order
+
+A `tuple` is a fixed little bundle: `("release", "B21")` = "a release step, and the
+bar being let go is B21". Unlike a `dict` there are no names — position is the
+meaning. Two idioms we used:
+
+```python
+bar_id, bar_oid, pose = steps[idx]      # "unpacking": one step -> three names
+
+if isinstance(pose, tuple):             # "is this a pair, not a plain word?"
+    ...                                 # -> it is a release step
+```
+
+That `isinstance` check is how the whole codebase tells a release step
+(`("release", "B21")`) apart from a normal pose (`"approach"`).
+
+### Class vs. standalone function — who is allowed to call the code
+
+A **class** is a blueprint for a "machine" that carries its own stored values;
+`self.pose` means "this machine's own stored pose". Code inside a class (a
+**method**) can only run on a built machine:
+
+```python
+session = _PreviewSession(planner)   # building it REQUIRES the PyBullet planner
+session._support_presence()          # method: needs `session` to exist
+```
+
+A **standalone (module-level) function** needs nothing built first — its inputs
+come in as arguments:
+
+```python
+support_presence_for_step(bar_map, "B37", ("release", "B21"), pose_cycle, hold_plan)
+```
+
+Why it mattered: Grasshopper must never start PyBullet, so it can never build a
+`_PreviewSession` — the logic had to move out of the class for GH to call it. The
+method still exists, but it is now a 3-line *forwarder* that hands its stored
+values to the shared function. One copy of the logic, two callers.
+
+> Rule of thumb: if the logic only *reads its inputs* (never touches the machine's
+> planner/session), it can be a standalone function — and then anything can reuse it.
+
+### `.copy()` — duplicate first, then modify
+
+```python
+state = movement.start_state.copy()   # SaveAs before marking up
+state.robot_base_frame = ...          # all edits hit the DUPLICATE
+```
+
+Assignment in Python does NOT copy — `b = a` makes two names for the *same* object,
+so modifying `b` modifies `a`. `.copy()` makes a real duplicate. The viewer caches
+one master scene description per bar (expensive to build); every step copies it and
+modifies only the copy — that is why scrubbing *backwards* still shows the correct
+earlier scene. The ghost-robot fix (parking released robots) edits exactly that
+per-step copy, never the cached master.
+
+> Rule of thumb: about to modify something that is cached or shared? `.copy()` it
+> first. Same instinct as §13's `np.array(x, copy=True)`.

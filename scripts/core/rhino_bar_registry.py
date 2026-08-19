@@ -815,6 +815,45 @@ def _set_visible(oid, visible):
         rs.HideObject(oid)
 
 
+def _ensure_preview_linetype(dash_mm, gap_mm):
+    """Return the name of a document linetype drawing ``dash_mm`` on / ``gap_mm`` off.
+
+    The pattern is encoded in the NAME (``RS_PreviewDash_4x2``), so a changed
+    pattern simply creates a fresh linetype instead of modifying one in place
+    -- Rhino's linetype table has no safe in-place edit while objects use the
+    style.  Old patterns linger unused in the table, which is harmless.
+    """
+    def _num(v):
+        return ("%g" % float(v)).replace(".", "_")
+
+    name = f"RS_PreviewDash_{_num(dash_mm)}x{_num(gap_mm)}"
+    if sc.doc.Linetypes.FindName(name) is None:
+        # Positive segment = ink, negative = gap (Rhino's convention).
+        sc.doc.Linetypes.Add(name, [float(dash_mm), -abs(float(gap_mm))])
+    return name
+
+
+def _apply_line_style(oid, line_style):
+    """Apply a ``line_style`` dict (see ``show_sequence_colors``) to one curve.
+
+    Both attributes are always written explicitly: a style with
+    ``dashed=False`` RESETS the linetype to by-layer rather than leaving a
+    stale dash from the previous frame, and likewise for thickness.
+    """
+    thickness = line_style.get("thickness_mm")
+    if thickness:
+        rs.ObjectPrintWidth(oid, float(thickness))
+        rs.ObjectPrintWidthSource(oid, 1)  # 1 = by object
+    else:
+        rs.ObjectPrintWidthSource(oid, 0)  # 0 = by layer
+    if line_style.get("dashed"):
+        dash_mm, gap_mm = line_style.get("pattern") or (4.0, 2.0)
+        rs.ObjectLinetype(oid, _ensure_preview_linetype(dash_mm, gap_mm))
+        rs.ObjectLinetypeSource(oid, 1)
+    else:
+        rs.ObjectLinetypeSource(oid, 0)
+
+
 #: Per-class keys accepted by ``show_sequence_colors(color_flags=...)``.  One
 #: key per colour a user can reason about from the legend; the two derived
 #: tints are deliberately absent (see the ``color_flags`` docs below).
@@ -835,7 +874,9 @@ def _normalize_color_flags(color_flags):
 
 
 def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
-                         highlight_supports=True, color_flags=None):
+                         highlight_supports=True, color_flags=None,
+                         show_fake=True, tint_curves_only=False,
+                         geom_built_and_active_only=False, line_style=None):
     """Apply sequence colour-coding + visibility to bars, joints, and tools.
 
     Bar visibility / colour
@@ -894,10 +935,37 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
 
             Two tints are deliberately not switchable.  ``SEQ_COLOR_UNSTABLE``
             (teal) is a *variant of built*, not a class of its own, so it rides
-            on ``"built"``.  ``SEQ_COLOR_FAKE`` (olive) is always painted,
-            matching :func:`clear_ik_preview`, which re-asserts it rather than
-            resetting it: a staging bar that renders like a real one is a
-            fabrication error waiting to happen, so it is never silenced.
+            on ``"built"``.  ``SEQ_COLOR_FAKE`` (pink) is always painted when
+            the bar is visible, matching :func:`clear_ik_preview`, which
+            re-asserts it rather than resetting it: a staging bar that renders
+            like a real one is a fabrication error waiting to happen.  The
+            filming view does not silence the tint -- it hides the bar
+            entirely via *show_fake*.
+        show_fake (bool): False hides fake (staging) bars outright -- their
+            joints follow automatically.  True (the default, every in-command
+            caller) keeps today's behaviour: visible per the sequence rules,
+            tinted pink.  For the Grasshopper filming view, where a staging
+            bar has no business on camera.
+        tint_curves_only (bool): True puts the class colours on the bar
+            CENTERLINE CURVES only; tubes, joint instances and tools keep
+            their normal by-layer look.  The filming split: coloured guide
+            lines over an uncoloured model.  False (default) tints everything,
+            as before.
+        geom_built_and_active_only (bool): True shows tube + joint geometry
+            only for built bars and the active bar; bars later in the
+            sequence keep at most their centerline (per *show_unbuilt*).
+            False (default) shows unbuilt geometry per *show_unbuilt*, as
+            before.
+        line_style (dict | None): styling for the centerline curves, applied
+            per bar:
+            ``{"thickness_mm": float | None, "dashed": bool,
+            "pattern": (dash_mm, gap_mm)}``.
+            Thickness is a per-object print width (viewport shows it only
+            while PrintDisplay is on -- the GH component manages that);
+            ``dashed`` swaps the curve onto a document linetype built from
+            ``pattern`` (default 4 mm ink / 2 mm gap).  ``None`` (default)
+            touches neither attribute.  Reset by
+            :func:`reset_sequence_colors`.
     """
     if bar_map is None:
         bar_map = get_bar_seq_map()
@@ -962,20 +1030,38 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
         # another class's tint.
         if bar_id in fake_ids and bar_id != active_bar_id:
             color = SEQ_COLOR_FAKE
-            paint = True  # never silenced -- see the docstring
+            paint = True  # never silenced while visible -- see the docstring
+            if not show_fake:
+                visible = False  # the filming view: staging bars off camera
         if bar_id in support_ids:
             color = SEQ_COLOR_SUPPORT_PICK
             visible = True
             paint = flags["support"]
-        bar_visible_by_id[bar_id] = visible
+        # The curve follows the LINE rules computed above; the tube (and, via
+        # the maps below, the joints) follows the GEOMETRY rules -- identical
+        # by default, restricted to built + active bars in the filming view.
+        geom_visible = visible and (
+            not geom_built_and_active_only or seq <= active_seq
+        )
+        geom_paint = paint and not tint_curves_only
+        bar_visible_by_id[bar_id] = geom_visible
         bar_color_by_id[bar_id] = color
-        bar_paint_by_id[bar_id] = paint
-        for obj in _bar_curve_and_tube(oid, tube_index):
-            if paint:
+        bar_paint_by_id[bar_id] = geom_paint
+        objs = _bar_curve_and_tube(oid, tube_index)
+        curve_obj = objs[0]
+        if paint:
+            _set_obj_color(curve_obj, color)
+        else:
+            _reset_obj_color(curve_obj)
+        _set_visible(curve_obj, visible)
+        if line_style is not None:
+            _apply_line_style(curve_obj, line_style)
+        for obj in objs[1:]:
+            if geom_paint:
                 _set_obj_color(obj, color)
             else:
                 _reset_obj_color(obj)
-            _set_visible(obj, visible)
+            _set_visible(obj, geom_visible)
 
     # Joints follow their parent bar's visibility AND color.  Setting
     # by-object color on the block instance lets nested sub-objects that
@@ -1000,7 +1086,7 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
     for tool_oid in _tool_layer_objects():
         is_active = tool_oid in active_tool_oids
         if is_active:
-            if flags["active"]:
+            if flags["active"] and not tint_curves_only:
                 _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
             else:
                 _reset_obj_color(tool_oid)
@@ -1031,6 +1117,10 @@ def reset_sequence_colors():
         for bar_id, (oid, _) in bar_map.items():
             for obj in _bar_curve_and_tube(oid, tube_index):
                 _reset_obj_color(obj)
+                # Undo any filming line style (width / dash back to by-layer);
+                # harmless on objects that never carried one.
+                rs.ObjectLinetypeSource(obj, 0)
+                rs.ObjectPrintWidthSource(obj, 0)
                 rs.ShowObject(obj)
         for joint_oid in _joint_layer_objects():
             _reset_obj_color(joint_oid)

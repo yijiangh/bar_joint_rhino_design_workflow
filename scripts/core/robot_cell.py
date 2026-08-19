@@ -592,6 +592,32 @@ def build_arm_tool_models():
     return out
 
 
+def ensure_arm_tool_models(robot_cell):
+    """Register the active pair's arm ToolModels on *robot_cell* if absent.
+
+    PyBullet-free subset of what ``rebuild_assembly_cell`` does for tools:
+    viewers (the Grasshopper preview, its warm-up) call this so the arms render
+    WITH their assembly tools without requiring RSIKKeyframe /
+    RSRebuildRobotCell to have run first.  Idempotent: does nothing when a
+    non-obstacle tool is already registered.
+
+    Returns:
+        bool: True when the tools were (re)built and added, False when they
+        were already present.
+
+    Raises:
+        RuntimeError: from ``build_arm_tool_models`` when the registry's active
+            pair cannot be resolved or a collision OBJ export is missing.
+    """
+    existing = getattr(robot_cell, "tool_models", None) or {}
+    obstacle_names = set(config.OBSTACLE_TOOL_NAMES.values())
+    if any(tid not in obstacle_names for tid in existing):
+        return False
+    for tid, tm in build_arm_tool_models().items():
+        robot_cell.tool_models[tid] = tm
+    return True
+
+
 def base_assembly_cell_state():
     """Default cell state with the arm ToolModels attached to their arm groups.
 

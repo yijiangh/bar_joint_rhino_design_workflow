@@ -232,6 +232,85 @@ def build_global_timeline(hold_plan=None, bar_map=None):
     return steps, skipped
 
 
+def support_presence_for_step(bar_map, active_bar_id, pose, pose_cycle, hold_plan,
+                              label: str = "RSShowBarActionPlan"):
+    """Which support robots stand where for ONE timeline step.
+
+    Answers ``{robot_name: (base_frame_mm, cfg)}`` -- e.g. at bar B37's
+    ``("release", "B21")`` step: Alice at her approach (pulled-back) config,
+    Belle still at her held config; at ``("release", "B35")``: Alice absent,
+    Belle pulled back.
+
+    Module-level (not on ``_PreviewSession``) so the Grasshopper preview can
+    reuse it without a planner: everything here reads bar user-text only.
+
+    Presence rules (mirrors the schedule semantics):
+    - holders that arrived at EARLIER steps are frozen in every pose;
+    - the bar's OWN holder is absent through approach + assembled (it
+      only arrives after the insert) and present from hold onward;
+    - in a release pose (assembly robot parked far away) the releasing
+      robot shows retreated at its approach config, holds released just
+      before it are gone, and other spanning holds stay at their held
+      configs.
+
+    Args:
+        bar_map (dict): a ``get_bar_seq_map`` result.
+        active_bar_id (str): the step's host bar.
+        pose: the step's pose (string, or a ``(RELEASE_POSE_PREFIX, bar)`` tuple).
+        pose_cycle (list): the host bar's full pose cycle (:func:`poses_for_bar`)
+            -- needed only to order same-bar releases.
+        hold_plan (dict): a ``derive_hold_plan`` result.
+        label (str): command name used in printed notes.
+
+    Returns:
+        dict: ``{robot_name: (base_frame_mm, cfg)}``.
+    """
+    entries = {}
+    active = bar_map.get(active_bar_id)
+    if active is None or not hold_plan:
+        return entries
+
+    def _payload_for(held_bar_id):
+        held = bar_map.get(held_bar_id)
+        p = _load_support_payload(held[0]) if held is not None else None
+        if p is None:
+            print(
+                f"{label}: hold on {held_bar_id} has no solved "
+                "support keyframe; its robot is not drawn."
+            )
+        return p
+
+    if isinstance(pose, tuple):
+        releasing_bar = pose[1]
+        release_seq = hold_plan[releasing_bar]["release_after_seq"]
+        # Releases attached to this bar fire in hold-start order; holds
+        # earlier in that order have already let go and driven away.
+        release_order = [p[1] for p in pose_cycle if isinstance(p, tuple)]
+        for held_bar_id, e in hold_plan.items():
+            if not (e["hold_start_seq"] <= release_seq <= e["release_after_seq"]):
+                continue
+            if (held_bar_id in release_order
+                    and release_order.index(held_bar_id) < release_order.index(releasing_bar)):
+                continue
+            p = _payload_for(held_bar_id)
+            if p is None:
+                continue
+            cfg = p["approach"] if held_bar_id == releasing_bar else p["held"]
+            entries[p["robot_name"]] = (p["base_frame_world_mm"], cfg)
+        return entries
+
+    from core.hold_schedule import robots_holding_at_step
+    for _robot_name, held_bar_id in robots_holding_at_step(hold_plan, active[1]).items():
+        p = _payload_for(held_bar_id)
+        if p is not None:
+            entries[p["robot_name"]] = (p["base_frame_world_mm"], p["held"])
+    if pose in (HOLD_POSE, "retreat", "home") and active_bar_id in hold_plan:
+        p = _load_support_payload(active[0])
+        if p is not None:
+            entries[p["robot_name"]] = (p["base_frame_world_mm"], p["held"])
+    return entries
+
+
 def _reload():
     global bar_action, base_frame_viz, config, env_collision, ik_collision_setup
     global ik_viz, robot_cell, robot_cell_support, solved_action_cache, walkable_ground
@@ -828,65 +907,19 @@ class _PreviewSession:
     def _support_presence(self):
         """Which support robots stand where for the CURRENT pose.
 
-        Presence rules (mirrors the schedule semantics):
-        - holders that arrived at EARLIER steps are frozen in every pose;
-        - the bar's OWN holder is absent through approach + assembled (it
-          only arrives after the insert) and present from hold onward;
-        - in a release pose (assembly robot parked far away) the releasing
-          robot shows retreated at its approach config, holds released just
-          before it are gone, and other spanning holds stay at their held
-          configs.
+        Thin forwarder: the logic lives in the module-level
+        :func:`support_presence_for_step` so the Grasshopper preview can share
+        it without a planner.
 
         Returns:
             dict: ``{robot_name: (base_frame_mm, cfg)}``.
         """
-        entries = {}
         # Cached on bar switch: a full-document re-scan per pose step is
         # wasted work (the registry cannot change while the viewer runs).
         bar_map = self._bar_map or get_bar_seq_map()
-        active = bar_map.get(self.active_bar_id)
-        if active is None or not self.hold_plan:
-            return entries
-
-        def _payload_for(held_bar_id):
-            held = bar_map.get(held_bar_id)
-            p = _load_support_payload(held[0]) if held is not None else None
-            if p is None:
-                print(
-                    f"RSShowBarActionPlan: hold on {held_bar_id} has no solved "
-                    "support keyframe; its robot is not drawn."
-                )
-            return p
-
-        if isinstance(self.pose, tuple):
-            releasing_bar = self.pose[1]
-            release_seq = self.hold_plan[releasing_bar]["release_after_seq"]
-            # Releases attached to this bar fire in hold-start order; holds
-            # earlier in that order have already let go and driven away.
-            release_order = [p[1] for p in self.poses if isinstance(p, tuple)]
-            for held_bar_id, e in self.hold_plan.items():
-                if not (e["hold_start_seq"] <= release_seq <= e["release_after_seq"]):
-                    continue
-                if (held_bar_id in release_order
-                        and release_order.index(held_bar_id) < release_order.index(releasing_bar)):
-                    continue
-                p = _payload_for(held_bar_id)
-                if p is None:
-                    continue
-                cfg = p["approach"] if held_bar_id == releasing_bar else p["held"]
-                entries[p["robot_name"]] = (p["base_frame_world_mm"], cfg)
-            return entries
-
-        from core.hold_schedule import robots_holding_at_step
-        for _robot_name, held_bar_id in robots_holding_at_step(self.hold_plan, active[1]).items():
-            p = _payload_for(held_bar_id)
-            if p is not None:
-                entries[p["robot_name"]] = (p["base_frame_world_mm"], p["held"])
-        if self.pose in (HOLD_POSE, "retreat", "home") and self.active_bar_id in self.hold_plan:
-            p = _load_support_payload(self.active_bar_oid)
-            if p is not None:
-                entries[p["robot_name"]] = (p["base_frame_world_mm"], p["held"])
-        return entries
+        return support_presence_for_step(
+            bar_map, self.active_bar_id, self.pose, self.poses, self.hold_plan,
+        )
 
     def _render(self, payload):
         modes = (ik_viz.MESH_MODE_VISUAL, ik_viz.MESH_MODE_COLLISION)

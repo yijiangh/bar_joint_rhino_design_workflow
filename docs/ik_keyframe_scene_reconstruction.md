@@ -225,9 +225,15 @@ Three collectors feed the static cell:
   `rebuild_assembly_cell`.
 - `collect_environment_geometry()` (line 463) — static obstacle meshes →
   `obstacle_*`.
-- `collect_built_geometry(active_bar_id, bar_seq_map)` (line 267) — the *single-arm
-  support-cell* path (`env_bar_*` / `env_joint_*`); not used by the dual-arm
-  assembly IK, listed here only to explain the two naming namespaces.
+- `collect_built_geometry(active_bar_id, bar_seq_map)` — a filter over
+  `collect_assembly_geometry` ("built before this step"), used by the support
+  cells. Since 2026-10-02 every cell uses the same `bar_*` / `joint_*` names
+  (the old support-cell `env_bar_*` / `env_joint_*` names are gone).
+- `collect_floor_geometry()` — one floor slab `ground_<id>` per walkable ground
+  some real bar uses (50 mm thick, built under the surface), with its own
+  always-allowed contacts (the four wheel links, the frozen robots).
+  `collect_static_scene_geometry()` caches obstacles + floors once, so Cindy's
+  cell and the support cells share the same bodies.
 
 ### 4.1 Naming conversion — the exact rules
 
@@ -692,8 +698,7 @@ places, at three levels:
    `robot_obstacles.whitelist_frozen_contact`, called wherever a holding robot is
    frozen into a scene (`freeze_holding_robots` and the release-scene builder): the
    frozen robot's obstacle tool is allowed against exactly the held bar its gripper
-   is clamped around (`bar_<id>` in the assembly cell, `env_bar_<id>` in support
-   cells). The pair is static↔static during the solve, so the allowance removes a
+   is clamped around (`bar_<id>`, the same name in every cell). The pair is static↔static during the solve, so the allowance removes a
    constant physical-contact veto without losing any configuration-dependent check.
    It lives only in the states of steps inside the hold window — every template
    starts back at `touch_bodies=[]`.
@@ -715,11 +720,11 @@ remain important:
 | Area | Current implementation status |
 |---|---|
 | Startup | `RSPBStart` auto-builds Stage 1 after loading the low-level bare cell; `RSRebuildRobotCell` is a refresh/fallback, not a mandatory second startup click. |
-| Ground anchors | Implemented: `_classify_ground_joints_per_arm` routes grasped grounds to their own arms (attachment + male-minus-mate ACM + M3 retreat via ground block −Z); insertion runs along the Walkable Ground normal. Mixed male+ground bars untargeted; the floor is still not collision geometry. |
+| Ground anchors | Implemented: `_classify_ground_joints_per_arm` routes grasped grounds to their own arms (attachment + ACM with the floor as the "mate" during the insert + M3 retreat via ground block −Z); insertion runs along the Walkable Ground normal. A ground bar runs no jointing motor: its jointing action ends with the operator's `manual_fix_foundation` step. Mixed male+ground bars are refused. The floor is collision geometry (`ground_<id>` slabs). |
 | Subfloor cradle mates | Implemented: females flagged `bar_cradle` in `joint_pairs.json` (T20Sub*) get the male↔mate whitelist in M1 too, the bar whitelists its cradle mates in M1/M2, and the seating male's own arm tool is allowed against the cradle in M1–M3 (PyBullet convex-hulls every OBJ, so the cradle is effectively a solid 60×72×80 mm brick). Detection uses the live block-definition name, immune to stale `joint_id` user text. |
 | Duplicate joint ids | Both collectors now RAISE when two blocks compute the same canonical body name (copied `joint_id` user text), instead of silently dropping one — a dropped body is in no collision scene at all. Blocks whose `parent_bar_id` is not a live bar are reported too. |
 | Fake bars | A bar marked `scaffolding.fake_bar` (RSBarEdit > FakeBar) is a modeling artifact that only poses a real bar's male half: it and every joint half mounted on it are excluded from every collision scene, in both collectors. The real bar's male is parented to the real bar and survives. The mark is in the staleness fingerprint, and building an assembly action for a fake bar raises. |
-| Hold scenes | Support keyframes solve against the RELEASE-time built set (`collect_hold_window_geometry`), not the grasp-time scene: the pose must clear every stabilizing bar installed before the hold ends, so it cannot block the bars the hold exists to enable. |
+| Hold scenes | Support keyframes solve against the RELEASE-time built set (`collect_hold_window_geometry`), not the grasp-time scene: the pose must clear every stabilizing bar installed before the hold ends, so it cannot block the bars the hold exists to enable. One builder (`build_hold_scene_state`) serves the interactive solve, the batch re-solve and the `__H` export: the held bar is shown, Cindy may touch the bar she still grips, a frozen robot may touch bars built after it leaves, and the gripper may touch the held bar only at the held pose (not the approach). |
 | Frozen-robot preview | `hold_action_builder.show_frozen_holders_context` draws every robot frozen holding a bar during this step at the same held pose the collision scene uses, on its own ik_viz sub-layer (`AssemblyHolder <robot>`). Both flows call it, so the assembly base pick and the support grasp/base pick are made against the scene the IK is solved in rather than against an invisible obstacle. An UNSOLVED hold is announced instead of drawn — it is absent from the collision scene too. |
 | Missing joint OBJ cache | `None` is stored but not recognized as a hit, so the missing path is probed again. |
 | Bar cache | Pure movement reuses the local mesh; the world frame changes only after a scene rebuild. |

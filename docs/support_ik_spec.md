@@ -31,13 +31,22 @@ All four actions share the same base `Movement` and `Action` classes. The existi
 2. `ScaffoldingToolMovement` — both tools drive their grasping screws to clamp the bar; the screws keep turning until they stall, meaning the bar is tightly held.
 3. `EndEffectorConstrainedDualArmFreeMovement` — free transfer motion with the bar in hand, ending at the start of the insertion approach (same as the old M1).
 4. `ScaffoldingToolMovement` — both tools start driving the jointing screws; **this movement deliberately overlaps the next one** — the screws keep turning through the whole insertion until they stall.
-5. `EndEffectorConstrainedDualArmLinearMovement` — straight-line, bar-held insertion (same as the old M2). This is the one movement on the Cartesian compliant controller; the stall signal from movement 4's screws is what ends it and switches the controller back.
+5. `EndEffectorConstrainedDualArmLinearMovement` — straight-line, bar-held insertion (same as the old M2). This is the one movement on the Cartesian compliant controller; the stall signal from movement 4's screws is what ends it and switches the controller back (`notes["ends_on"] == "tool_stall_signal"`).
+
+**Ground bars** (the bar stands on ground joints, a foundation; no male-female joint) run **no jointing motor**. Movements 0-3 are the same; then:
+
+4. `EndEffectorConstrainedDualArmLinearMovement` — the same straight-line insertion; it ends when the arms reach the assembled target (`notes["ends_on"] == "target_reached"`).
+5. `ManualMovement` — a human operator tapes / fixes the foundation to the ground while the robot keeps holding the bar.
+
+A bar with one ground joint and one male joint is not a valid design; the tool gate and the export refuse it with a clear error. Movement ids are `<bar>_J_M<n>_<name>` (e.g. `B1_J_M4_LM_insert`); since the number depends on the bar kind, readers find a movement by its name.
 
 ### 2.2 `BarAssemblyReleaseAction` (assembly robot, 3 movements)
 
-1. `ScaffoldingToolMovement` — both tools run the screws backwards to let go of the joint and the bar.
+1. `ScaffoldingToolMovement` — both tools drive their **grasping** screws back to let go of the bar (`tool_ungrasp_bar`). The **jointing** screws are never run backwards: the tightened screw is what keeps the joint.
 2. `IndependentDualArmLinearMovement` — both arms retreat in a straight line, each on its own (same as the old M3).
 3. `IndependentDualArmFreeMovement` — free travel to a given home pose (same as the old M4).
+
+If the bar is held by a support robot, that robot stands at its hold pose in all three release states (it grabbed the bar between the jointing and the release).
 
 ### 2.3 `BarHoldingAction` (support robot, 4 movements — corrected order)
 
@@ -178,6 +187,8 @@ Actions fired at this step:
 The compas_fab pybullet backend only supports one active robot per client, so:
 
 - **Three parallel pybullet sessions**, one per robot (Cindy, Alice, Belle). Each session's active robot is its own; the **other two robots are frozen in place as articulated `Tool` obstacles**, with their arm configurations inherited from the previous state of the schedule. Their collision geometry is **always on** in every plan.
+- **One body naming for every cell**: `bar_<id>`, `joint_<jid>_<sub>`, `obstacle_<name>` (environment layer) and `ground_<id>` (a floor slab for each walkable ground some bar uses). Every cell carries the obstacles and the floors; a floor always allows the robot's four wheels and the frozen robots, and a ground joint may touch it during its bar's insert and the operator's fix step.
+- **Hold scenes** (`__H`, and the hold IK solve): the bars built by the hold's **release** (the held bar shown), with the robots where they stand at the hold's **start**. So a frozen robot may touch the bars built after it leaves (Cindy: after the held bar's step; another holder: after its own release), Cindy may touch the bar she still grips, and the support gripper may touch the held bar only from the straight-line approach on. **Release scenes** (`__HR`): a hold released earlier in the same step is already gone.
 - By default all three sessions run **headless** (no window). If GUI mode is turned on in `rs_start_pb`, only the **assembly robot's** session opens a window; the two support-robot sessions stay headless.
 
 ---

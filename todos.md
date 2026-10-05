@@ -192,3 +192,23 @@ Like BarAssemblyAction, BarHoldingAction will also need         active_bar_id: s
 For scene creation, walkable ground for base sampling, etc. So maybe rethink the class abstraction so they can share this in the base class.
 
 This is a big plan, and ask me alll questions that can help you clarify.
+
+# Constrained Dualarm planning benchmark
+
+I want to do a benchmark on the CDFM planning algorithm that we use to plan M1 motions (transfer motions with bar held in two tools).
+C:\Users\yijiangh\Insync\yijiang94817@gmail.com\Google Drive - Shared with me\2025-03 Husky Assembly\data_design_study\260921_motion_sample 
+contains representative grasps and bar length used in our scaffolding demo we are aiming for as short-term milestone. 
+The idea is that we only take the bar geometry and grasp there, ignore the target bar pose encoded in the design problem there, and do the following:
+1. for each bar-grasp pair, I want you to sample 50 feasible goal pose for the bar, which means you just do random sampling around the robot (we assume everything is robot-centric, so assume robot stays in origin and just bar is sampled wrt to that), and do IK to test reachability for both arms, and collision-checking. Only keep the reachable and collision-free ones. So I want 50 such targets all passed the checks. I want you to record them in a file so we can accumulate and reuse these benchmark later.
+2. After we get the entire library of bar-grasp-target bar pose pair of benchmarking, let's run the plan_constrained_dual_arm in @external/husky_assembly_tamp/scripts/headless_bar_action_planner.py#1118-1130 . Note that the assembly sequence in the bar action file is not relevant in our benchmarkinhg here, so you should not consider other bars as collision geometry in the plnaning test. Only consider the robot, tool, and the grasped bar and its attached joints. You can get the scene and acm from start_state from the bar action, but just ignore the existing built bars encoded there.
+  - I want you to run the derive_constrained_start explicitly, so for each test, I can see a clear distribution on what anchor configurations you tried, and which failed bc of what (IK failure, or collision failure on which pair of links). And don't do early exit at the first feasible configuration found. Store all feasible sampled start confs.
+  - And I want you to run cdfm planning for all pairs of sampled start conf and the target pose. For each pair, give it 10 random seeds and run it 10 times.
+3. See if you can use the multiple core to run this in parallel. we want to batch run all these overnight.
+4. In terms of result representation: I want you to build a dashboard to show me:
+  - global overview of the entire result distribution. For example, over bar length and grasp - success rate and avg runtime with confidemce interval or quantile.
+  - And for each bar-grasp pair, I can zoom in and first visualize all goal bar pose target with robot model and bar pose and ik visulized. Maybe a 3js backend to render and allow me to interact would be helpful, like what we did here: https://github.com/yijiangh/robot-friendly-scaffolding
+  - and for each bar goal pose, I want to have a stat breakdown on the start anchor conf sampling (failure rate and run time for each anchor, and stat on failure reason), I want to also visualize both the failed and succeeded start confs. Could provide some insights.
+  - And then for each start conf-goal conf pair, show me the stats for the 10 random runs. Success rate, run time, tree sampling and extension related stats can also be shown if you think useful for intereprating the result and gauge the difficulty of the problem.
+  for succeeded ones, allow me to interactively visualize and scrub thru the trajectory.
+
+Finally structure the whole thing imagining that we will reuse this stack to evaluate any future improvement on the planning algorithm. Now let's not changing the algorithjm itself, bc I just want to see how tghings go for now, but at the end you can intepret the result yourself and suggest improvement on the algorithm, but don't implement those yet until I review and confirm.

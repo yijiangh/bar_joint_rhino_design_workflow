@@ -8,8 +8,11 @@ Belle takes B5, and both release right after B8.
 import pytest
 
 from core.hold_schedule import (
+    bodies_built_after,
     build_action_schedule,
     derive_hold_plan,
+    frozen_robot_leave_steps,
+    holds_present_at_release,
     robots_holding_at_step,
 )
 
@@ -131,3 +134,35 @@ def test_duplicate_steps_raise():
     bar_seq = {"B1": 1, "B2": 1}
     with pytest.raises(RuntimeError, match="Duplicate assembly step"):
         derive_hold_plan(bar_seq, {})
+
+
+# * ---- who is in a hold's scenes (issues D1 + D5) ----
+
+
+def test_same_step_release_drops_the_earlier_hold():
+    """B2 and B5 both release after B8; B2 goes first, so B5's release no longer sees Alice."""
+    plan = derive_hold_plan(DEMO_BAR_SEQ, DEMO_SUPPORTED_UNTIL)
+    assert holds_present_at_release(plan, "B2") == ["B5"]
+    assert holds_present_at_release(plan, "B5") == []
+
+
+def test_hold_starting_at_release_step_is_present():
+    """B4's hold starts AT B2's release step, so it is there when B2 is released."""
+    bar_seq = {f"B{i}": i for i in range(1, 7)}
+    plan = derive_hold_plan(bar_seq, {"B2": ["B4"], "B4": ["B6"]})
+    assert holds_present_at_release(plan, "B2") == ["B4"]
+    assert holds_present_at_release(plan, "B4") == []
+
+
+def test_frozen_robot_leave_steps_demo():
+    """In B5's grasp scene: Cindy leaves after B5, Alice (holding B2) after B8."""
+    plan = derive_hold_plan(DEMO_BAR_SEQ, DEMO_SUPPORTED_UNTIL)
+    assert frozen_robot_leave_steps(plan, "B5") == {"Cindy": 5, "Alice": 8}
+    # B2 is the first hold: only Cindy is frozen in its grasp scene.
+    assert frozen_robot_leave_steps(plan, "B2") == {"Cindy": 2}
+
+
+def test_bodies_built_after():
+    steps = {"bar_B1": 1, "bar_B4": 4, "joint_J4-5_female": 4, "bar_B9": 9}
+    assert bodies_built_after(steps, 4) == ["bar_B9"]
+    assert bodies_built_after(steps, 3) == ["bar_B4", "bar_B9", "joint_J4-5_female"]

@@ -27,10 +27,8 @@ import os
 import numpy as np
 
 from core import config
-# The two bar-body naming schemes a frozen robot's held bar may live under:
-# canonical `bar_<id>` in the dual-arm assembly cell, `env_bar_<id>` in the
-# single-arm support cells.
-from core.env_collision import CANONICAL_BAR_PREFIX, ENV_RB_BAR_PREFIX
+# The one bar-body naming scheme, shared by every cell (`bar_<id>`).
+from core.env_collision import bar_body_name
 # Session/sticky plumbing + unit converters come from robot_cell. That module
 # lazily imports THIS one inside two functions (base state + cell rebuild), so
 # importing robot_cell at our top level is safe (no import cycle at load time).
@@ -335,6 +333,34 @@ def configure_robot_obstacle(
     return state
 
 
+def set_tool_contact(state, tool_name: str, body_names, allowed: bool = True) -> list:
+    """Allow (or forbid again) contact between one tool and some rigid bodies.
+
+    compas_fab reads tool <-> body allowances from the BODY's ``touch_bodies``
+    (collision check CC.5), so the tool name is added to / removed from each
+    body's list, keeping whatever else is there. Bodies missing from the
+    state are skipped (the caller decides whether that matters).
+
+    Args:
+        state (RobotCellState): the state to mutate.
+        tool_name (str): the tool, e.g. ``"ObstacleRobotCindy"`` or ``"SupportGripper"``.
+        body_names (list): rigid-body names, e.g. ``["bar_B3", "joint_J1-3_male"]``.
+        allowed (bool): True to allow the contact, False to remove the allowance.
+
+    Returns:
+        list: the body names that were present (and updated).
+    """
+    touched = []
+    for name in body_names:
+        rb = state.rigid_body_states.get(name)
+        if rb is None:
+            continue
+        current = set(rb.touch_bodies or [])
+        rb.touch_bodies = sorted(current | {tool_name}) if allowed else sorted(current - {tool_name})
+        touched.append(name)
+    return touched
+
+
 def whitelist_frozen_contact(state, robot_name: str, bar_ids) -> list:
     """Allow a frozen robot obstacle to touch the bar(s) it is clamped onto.
 
@@ -347,10 +373,9 @@ def whitelist_frozen_contact(state, robot_name: str, bar_ids) -> list:
 
     The allow-list entry goes on the BAR's rigid-body state (`touch_bodies` is
     the side compas_fab consults for tool<->body pairs), appended without
-    clobbering whatever is already there. Because per-movement touch policies
-    only rewrite the ACTIVE bar's bodies and a held bar is always an earlier
-    static bar, the entry written on a scene template survives into every
-    movement state forked from it.
+    clobbering whatever is already there. Per-movement touch policies rewrite
+    the ACTIVE bar's bodies, so when the held bar IS the active bar (its own
+    release) call this AFTER the movements are built.
 
     Args:
         state (RobotCellState): the scene state to mutate.
@@ -363,33 +388,18 @@ def whitelist_frozen_contact(state, robot_name: str, bar_ids) -> list:
     tool_name = config.OBSTACLE_TOOL_NAMES[robot_name]
     touched = []
     for bar_id in bar_ids:
-        # The same bar is `bar_<id>` in the assembly cell and `env_bar_<id>`
-        # in a support cell; probe both.
-        key = None
-        for candidate in (
-            f"{CANONICAL_BAR_PREFIX}{bar_id}",
-            f"{ENV_RB_BAR_PREFIX}{bar_id}",
-        ):
-            if candidate in state.rigid_body_states:
-                key = candidate
-                break
-        if key is None:
-            # ! No silent skip: a scene may legitimately exclude the bar (the
-            # acting robot's own held bar is left out because the gripper wraps
-            # it), but say so, since a genuinely missing body means the frozen
+        # Same name in every cell (Cindy's and the support robots').
+        key = bar_body_name(bar_id)
+        if key not in state.rigid_body_states:
+            # ! No silent skip: a genuinely missing body means the frozen
             # contact stays forbidden and IK will veto every candidate.
             print(
                 f"core.robot_obstacles: NOTE - frozen {robot_name} is clamped "
-                f"onto bar {bar_id}, but this scene has no rigid body "
-                f"'{CANONICAL_BAR_PREFIX}{bar_id}' or '{ENV_RB_BAR_PREFIX}{bar_id}' "
+                f"onto bar {bar_id}, but this scene has no rigid body '{key}' "
                 "to whitelist (bar excluded from the scene?)."
             )
             continue
-        rb = state.rigid_body_states[key]
-        existing = list(rb.touch_bodies or [])
-        if tool_name not in existing:
-            rb.touch_bodies = sorted(set(existing) | {tool_name})
-        touched.append(key)
+        touched.extend(set_tool_contact(state, tool_name, [key], allowed=True))
     return touched
 
 

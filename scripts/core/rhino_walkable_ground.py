@@ -949,6 +949,8 @@ def rebuild_summary_after_assign(collision_bodies, tool_names):
     n_bar = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "bar")
     n_joint = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "joint")
     n_env = sum(1 for bi in collision_bodies.values() if bi.get("kind") == "environment")
+    # Floor slabs: the walkable grounds the bars use (see env_collision.collect_floor_geometry).
+    floors = sorted(name for name, bi in collision_bodies.items() if bi.get("kind") == "floor")
     n_tools = len(tool_names)
 
     # WalkableGround line: only warn about un-grounded bars when grounds exist.
@@ -968,12 +970,13 @@ def rebuild_summary_after_assign(collision_bodies, tool_names):
         f"  {n_bar} bar(s)\n"
         f"  {n_joint} joint half/halves\n"
         f"  {n_env} environment obstacle(s)\n"
+        f"  {len(floors)} floor(s): {', '.join(floors) or '- (no bar has a walkable ground)'}\n"
         f"  {n_tools} arm tool(s): {', '.join(sorted(tool_names)) or '-'}\n"
         f"{ground_line}\n"
         f"{base_line}"
     )
     console_line = (
-        f"{n_bar} bars, {n_joint} joints, {n_env} obstacles, "
+        f"{n_bar} bars, {n_joint} joints, {n_env} obstacles, {len(floors)} floor(s), "
         f"{n_tools} tools; WalkableGround {n_grounds} surf / {n_assigned} assigned / "
         f"{n_kept} kept / {n_noground} none; Base pose {n_base_pop} populated / "
         f"{n_base_kept} kept / {n_base_fail} skipped."

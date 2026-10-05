@@ -597,6 +597,25 @@ def get_fake_bar_ids(bar_map=None):
     }
 
 
+def get_real_bar_seq_map(bar_map=None):
+    """The bars the robots actually build: :func:`get_bar_seq_map` without fake bars.
+
+    Every exported sequence (each action's ``assembly_seq``, the hold plan,
+    ``ActionSchedule.json``) uses this one map, so a single-bar export and the
+    batch export can never disagree about which bars exist.
+
+    Args:
+        bar_map (dict): a :func:`get_bar_seq_map` result; fetched when omitted.
+
+    Returns:
+        dict: ``{bar_id: (oid, seq)}`` for the real bars only.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    fake_bar_ids = get_fake_bar_ids(bar_map)
+    return {bar_id: value for bar_id, value in bar_map.items() if bar_id not in fake_bar_ids}
+
+
 def cleanup_stale_supports():
     """Remove dangling bar-id refs from every ``supported_until`` list.
 
@@ -680,18 +699,20 @@ def collect_hold_inputs(bar_map=None):
 
     The one Rhino-side gateway into the (Rhino-free) hold derivation, so
     every consumer — the IK button, the exporters, the schedule builder —
-    reads the SAME document data the same way.
+    reads the SAME document data the same way. Fake bars are always left
+    out (they are never built, so they neither need a hold nor stabilize
+    anything), whatever map the caller passes.
 
     Args:
-        bar_map (dict): a :func:`get_bar_seq_map` result; fetched when omitted.
+        bar_map (dict): a :func:`get_bar_seq_map` result (with or without the
+            fake bars); fetched when omitted.
 
     Returns:
         tuple: ``(bar_seq, supported_until)`` where ``bar_seq`` is
         ``{bar_id: step int}`` and ``supported_until`` is
         ``{bar_id: [stabilizing bar ids]}`` (only bars with a non-empty list).
     """
-    if bar_map is None:
-        bar_map = get_bar_seq_map()
+    bar_map = get_real_bar_seq_map(bar_map)
     bar_seq = {bar_id: seq for bar_id, (_oid, seq) in bar_map.items()}
     supported_until = {}
     for bar_id, (oid, _seq) in bar_map.items():

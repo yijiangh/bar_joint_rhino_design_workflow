@@ -53,10 +53,22 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+# ! Reload the "provider" modules FIRST: the ones other core modules import
+# NAMES from (`from core.env_collision import STATIC_KINDS`, ...). A module
+# imported below for the first time in this Rhino session would otherwise bind
+# those names against a stale copy still in sys.modules, and fail with an
+# ImportError on any newly added name before main() could reload anything.
+from core import env_collision as _env_collision_module
+from core import hold_schedule as _hold_schedule_module
+from core import rhino_bar_registry as _rhino_bar_registry_module
+
+importlib.reload(_env_collision_module)
+importlib.reload(_hold_schedule_module)
+importlib.reload(_rhino_bar_registry_module)
+
 from core import bar_action as _bar_action_module
 from core import base_frame_viz as _base_frame_viz_module
 from core import config as _config_module
-from core import env_collision as _env_collision_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
@@ -92,11 +104,11 @@ WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 # Pose taxonomy -- TogglePose steps through the bar's timeline. Which poses a
 # bar gets depends on the hold plan (see _PreviewSession._rebuild_hold_context):
 #
-#   approach  = arms at the approach keyframe, bar gripped         (J_M5 start)
-#   assembled = bar inserted, arms still gripping                  (R_M0 start)
+#   approach  = arms at the approach keyframe, bar gripped         (LM_insert start)
+#   assembled = bar inserted, arms at the assembled keyframe       (tool_ungrasp_bar start)
 #   hold      = the bar's own support robot grips too (handover)   [held bars]
-#   retreat   = arms pulled back, bar released                     (R_M3 start)
-#   home      = arms at the fixed home pose                        (R_M3 target)
+#   retreat   = arms pulled back, bar released                     (free_home start)
+#   home      = arms at the fixed home pose                        (free_home target)
 #   release X = a hold whose LAST stabilizing bar is THIS bar lets go: its
 #               robot shown retreated at the approach conf, the assembly robot
 #               parked far away                         [last-stabilizer bars]
@@ -233,7 +245,7 @@ def build_global_timeline(hold_plan=None, bar_map=None):
     return steps, skipped
 
 
-def support_presence_for_step(bar_map, active_bar_id, pose, pose_cycle, hold_plan,
+def support_presence_for_step(bar_map, active_bar_id, pose, hold_plan,
                               label: str = "RSShowBarActionPlan"):
     """Which support robots stand where for ONE timeline step.
 
@@ -252,14 +264,13 @@ def support_presence_for_step(bar_map, active_bar_id, pose, pose_cycle, hold_pla
     - in a release pose (assembly robot parked far away) the releasing
       robot shows retreated at its approach config, holds released just
       before it are gone, and other spanning holds stay at their held
-      configs.
+      configs (the same rule the exported release scenes use:
+      ``hold_schedule.holds_present_at_release``).
 
     Args:
         bar_map (dict): a ``get_bar_seq_map`` result.
         active_bar_id (str): the step's host bar.
         pose: the step's pose (string, or a ``(RELEASE_POSE_PREFIX, bar)`` tuple).
-        pose_cycle (list): the host bar's full pose cycle (:func:`poses_for_bar`)
-            -- needed only to order same-bar releases.
         hold_plan (dict): a ``derive_hold_plan`` result.
         label (str): command name used in printed notes.
 
@@ -282,17 +293,11 @@ def support_presence_for_step(bar_map, active_bar_id, pose, pose_cycle, hold_pla
         return p
 
     if isinstance(pose, tuple):
+        from core.hold_schedule import holds_present_at_release
         releasing_bar = pose[1]
-        release_seq = hold_plan[releasing_bar]["release_after_seq"]
-        # Releases attached to this bar fire in hold-start order; holds
-        # earlier in that order have already let go and driven away.
-        release_order = [p[1] for p in pose_cycle if isinstance(p, tuple)]
-        for held_bar_id, e in hold_plan.items():
-            if not (e["hold_start_seq"] <= release_seq <= e["release_after_seq"]):
-                continue
-            if (held_bar_id in release_order
-                    and release_order.index(held_bar_id) < release_order.index(releasing_bar)):
-                continue
+        # The releasing robot + every other hold still in place (holds that
+        # released earlier in the same step have already driven away).
+        for held_bar_id in [releasing_bar] + holds_present_at_release(hold_plan, releasing_bar):
             p = _payload_for(held_bar_id)
             if p is None:
                 continue
@@ -317,7 +322,10 @@ def _reload():
     global ik_viz, robot_cell, robot_cell_support, robot_obstacles
     global solved_action_cache, walkable_ground
     config = importlib.reload(_config_module)
+    # Providers before the modules that import names from them.
     env_collision = importlib.reload(_env_collision_module)
+    importlib.reload(_hold_schedule_module)
+    importlib.reload(_rhino_bar_registry_module)
     ik_collision_setup = importlib.reload(_ik_collision_setup_module)
     # bar_action.build_assembly_movements is the single source of the per-pose
     # collision state (M2 start = approach, M3 start = assembled).
@@ -675,9 +683,15 @@ class _PreviewSession:
         if action is None:
             return
         # The planned arm movements in timeline order (tool/manual events and
-        # the unplanned J_M0 lead-in carry no trajectory).
-        for role in ("J_M3", "J_M5", "R_M2", "R_M3"):
-            mv = bar_action._movement_by_role(action, role)
+        # the unplanned free_to_load lead-in carry no trajectory). Looked up by
+        # NAME: the numbers differ between normal and ground bars.
+        for kind, role in (
+            (bar_action.KIND_JOINTING, bar_action.MV_TRANSFER),
+            (bar_action.KIND_JOINTING, bar_action.MV_LM_INSERT),
+            (bar_action.KIND_RELEASE, bar_action.MV_LM_RETREAT),
+            (bar_action.KIND_RELEASE, bar_action.MV_FREE_HOME),
+        ):
+            mv = bar_action.movement_by_name(action, kind, role)
             traj = getattr(mv, "trajectory", None) if mv is not None else None
             if not traj:
                 continue
@@ -831,8 +845,9 @@ class _PreviewSession:
 
         Args:
             payload (dict): the bar's keyframe record.
-            jointing_mvts (dict): ``{"M0".."M5"}`` jointing movements.
-            release_mvts (dict): ``{"M0".."M3"}`` release movements.
+            jointing_mvts (dict): ``{name: Movement}`` jointing movements
+                (keys are ``bar_action.MV_*``).
+            release_mvts (dict): ``{name: Movement}`` release movements.
 
         Returns:
             RobotCellState: the state to draw.
@@ -851,14 +866,14 @@ class _PreviewSession:
             # away, the same convention the collision scenes use. Arms at
             # home; the released-bar body layout comes from the free-home
             # movement's snapshot.
-            movement = release_mvts["M3"]
+            movement = release_mvts[bar_action.MV_FREE_HOME]
             state = movement.start_state.copy()
             home_cfg = movement.target_configuration
             if home_cfg is not None:
                 state.robot_configuration = home_cfg.copy()
             elif state.robot_configuration is None:
                 state.robot_configuration = (
-                    release_mvts["M2"].start_state.robot_configuration.copy()
+                    release_mvts[bar_action.MV_LM_RETREAT].start_state.robot_configuration.copy()
                 )
             state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(
                 self.deps["Frame"],
@@ -886,29 +901,29 @@ class _PreviewSession:
             return state
         if self.pose == "approach":
             # Arms at the approach keyframe, bar gripped.
-            movement = jointing_mvts["M5"]
+            movement = jointing_mvts[bar_action.MV_LM_INSERT]
             state = movement.start_state.copy()
         elif self.pose in ("assembled", HOLD_POSE):
-            # Bar inserted, arms still gripping (the release action's first
-            # tool event carries exactly this snapshot).
-            movement = release_mvts["M0"]
+            # Bar inserted, arms at the assembled keyframe (the release
+            # action's first step, the ungrasp, carries exactly this snapshot).
+            movement = release_mvts[bar_action.MV_TOOL_UNGRASP_BAR]
             state = movement.start_state.copy()
         elif self.pose == "retreat":
             # Arms pulled back, bar released (the free-home movement starts
             # at the retreat keyframe when it is saved).
-            movement = release_mvts["M3"]
+            movement = release_mvts[bar_action.MV_FREE_HOME]
             state = movement.start_state.copy()
             if state.robot_configuration is None:
                 retreat = payload.get("retreat")
                 if retreat is None:
                     raise RuntimeError("bar has no saved retreat keyframe")
                 state.robot_configuration = (
-                    release_mvts["M2"].start_state.robot_configuration.copy()
+                    release_mvts[bar_action.MV_LM_RETREAT].start_state.robot_configuration.copy()
                 )
                 _apply_groups(state, retreat)
         elif self.pose == "home":
             # The fixed home pose the arms return to; bar released.
-            movement = release_mvts["M3"]
+            movement = release_mvts[bar_action.MV_FREE_HOME]
             target_cfg = movement.target_configuration
             if target_cfg is None:
                 raise RuntimeError("release action has no home target configuration")
@@ -936,7 +951,7 @@ class _PreviewSession:
         # wasted work (the registry cannot change while the viewer runs).
         bar_map = self._bar_map or get_bar_seq_map()
         return support_presence_for_step(
-            bar_map, self.active_bar_id, self.pose, self.poses, self.hold_plan,
+            bar_map, self.active_bar_id, self.pose, self.hold_plan,
         )
 
     def _render(self, payload):
@@ -1466,7 +1481,7 @@ def _run_collision_jog_dialog(session, state, env_geom, joint_specs):
         # One-shot full CC dump: enumerates every CC.1..CC.5 pair with
         # PASS / COLLISION / SKIPPED reason. Use to verify that
         # AssemblyLeftArmToolBody / AssemblyRightArmToolBody actually get
-        # paired against env_bar_* / env_joint_* in CC.4.
+        # paired against the bar_* / joint_* bodies in CC.4.
         print("=" * 78)
         print("RSShowBarActionPlan: InteractiveCollisionCheck -- VERBOSE DUMP")
         print("Look for CC.4 lines mentioning 'AssemblyLeftArmToolBody' / "

@@ -223,13 +223,14 @@ def _solve_one(planner, rcell, ctx, include_self, include_env):
     except (RuntimeError, ValueError) as exc:
         print(f"RSIKKeyframeAll: {bar_id}: could not build movements ({exc}).")
         return False
-    # Same solver-facing role map as the single-bar command: approach = the
-    # bar-held transfer's goal (J_M3), assembled = the insert's goal (J_M5),
-    # retreat = the per-arm retreat's goal (R_M2).
+    # Same solver-facing role map as the single-bar command (by NAME; the
+    # numbers differ between normal and ground bars): approach = the bar-held
+    # transfer's goal, assembled = the insert's goal, retreat = the per-arm
+    # retreat's goal.
     movements = {
-        "M1": jointing_mvts["M3"],
-        "M2": jointing_mvts["M5"],
-        "M3": release_mvts["M2"],
+        "M1": jointing_mvts[ikf.bar_action.MV_TRANSFER],
+        "M2": jointing_mvts[ikf.bar_action.MV_LM_INSERT],
+        "M3": release_mvts[ikf.bar_action.MV_LM_RETREAT],
     }
 
     # brep_id=None => sampling disabled: exactly one attempt at the placed base.
@@ -467,6 +468,10 @@ def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_
 def main():
     global base_guide_geom, base_guide_viz, rhino_tool_place
 
+    # The single-bar module is imported once per Rhino session; reload it so
+    # its own code (movement lookups, support solve) is the one on disk. Its
+    # import-time code reloads the shared modules in the right order.
+    importlib.reload(ikf)
     ikf._reload_runtime_modules()
     # Pick up the extended default_base_frame_for_bar(center_mm=, standoff_mm=) /
     # derive_seed_base signatures without a Rhino restart (numpy half first).

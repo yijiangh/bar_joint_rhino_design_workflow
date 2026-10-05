@@ -67,7 +67,6 @@ _STICKY_ROBOT_CELL = "bar_joint:robot_cell"
 # that). Each planner permanently owns ONE robot's cell -- there is no cell
 # swapping anymore.
 _STICKY_PB_SESSIONS = "bar_joint:pb_sessions"
-_STICKY_ENV_GEOM = "bar_joint:env_geom"
 # Static-cell snapshot: the full canonical assembly (bars + joints + obstacles)
 # + tool models, built once by `rebuild_assembly_cell` (RSRebuildRobotCell) and
 # reused by every per-command `ensure_assembly_cell`. Plus a cheap fingerprint
@@ -322,7 +321,6 @@ def stop_pb_client():
                 print(f"stop_pb_client: {name} disconnect raised ({exc}); continuing.")
     finally:
         _STICKY.pop(_STICKY_PB_SESSIONS, None)
-        _STICKY.pop(_STICKY_ENV_GEOM, None)
         # Per-robot caches tied to the cells that were loaded into those
         # sessions: the support cells and the frozen-robot obstacle ToolModels
         # (prefix-keyed, see core.robot_obstacles / core.robot_cell_support).
@@ -349,6 +347,8 @@ def stop_pb_client():
         _STICKY.pop("bar_joint:env_joint_rb_cache", None)
         _STICKY.pop("bar_joint:env_bar_rb_cache", None)
         _STICKY.pop("bar_joint:env_joint_obj_path_map", None)
+        # The static bodies (obstacles + floors) shared by every cell.
+        _STICKY.pop("bar_joint:static_scene_bodies", None)
 
 
 def get_session(robot_name: str = None):
@@ -452,40 +452,6 @@ def set_cell_state(planner, robot_cell_state):
     """
     print("core.robot_cell.set_cell_state: planner.set_robot_cell_state(state)")
     planner.set_robot_cell_state(robot_cell_state)
-
-
-def ensure_env_registered(robot_cell, env_geom, planner):
-    """Mirror ``env_geom`` into ``robot_cell.rigid_body_models`` and re-push
-    the cell to the planner if anything changed.
-
-    ``env_geom`` comes from ``core.env_collision.collect_built_geometry``.
-    If the same geometry was registered last call, this does nothing (it
-    does not call ``planner.set_robot_cell``).
-    """
-    from core import env_collision
-
-    t_top = time.perf_counter()
-    deps = _import_compas_stack()
-    t_deps = time.perf_counter()
-    changed = env_collision.register_env_in_robot_cell(robot_cell, env_geom, deps=deps)
-    t_reg = time.perf_counter()
-    if changed:
-        print(
-            f"core.robot_cell.ensure_env_registered: env changed "
-            f"({len(env_geom)} bodies) -> planner.set_robot_cell(<dual-arm>)"
-        )
-        planner.set_robot_cell(robot_cell)
-    else:
-        print("core.robot_cell.ensure_env_registered: env unchanged; skipping planner.set_robot_cell")
-    t_push = time.perf_counter()
-    _STICKY[_STICKY_ENV_GEOM] = env_geom
-    print(
-        f"core.robot_cell.ensure_env_registered: timing "
-        f"deps={ (t_deps-t_top)*1000:.1f}ms "
-        f"register={ (t_reg-t_deps)*1000:.1f}ms "
-        f"set_robot_cell={ (t_push-t_reg)*1000:.1f}ms "
-        f"total={ (t_push-t_top)*1000:.1f}ms"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -684,9 +650,14 @@ def _live_assembly_fingerprint():
     count and no coordinate, so without this hash the cached cell would keep
     serving phantom body names after a rename with no warning at all.
 
+    The floor bodies come from the walkable grounds the bars use, so the
+    fingerprint also covers the walkable-ground layer (object count + a
+    bounding-box coordinate sum, folded into the endpoint sum) and each bar's
+    assigned ground ids (in the names hash).
+
     Returns:
-        tuple: ``(n_bars, n_joint_instances, n_env_meshes,
-        rounded_endpoint_sum, (left_tool, right_tool), names_md5)``.
+        tuple: ``(n_bars, n_joint_instances, n_env_meshes, n_walkable_grounds,
+        rounded_coordinate_sum, (left_tool, right_tool), names_md5)``.
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_bar_seq_map
@@ -710,8 +681,12 @@ def _live_assembly_fingerprint():
     from core.rhino_bar_registry import get_fake_bar_ids
 
     fake_bar_ids = get_fake_bar_ids(seq_map)
+    # Each bar also carries its assigned walkable-ground ids: they decide which
+    # grounds become floor bodies.
     name_parts = sorted(
-        f"{bid}{':fake' if bid in fake_bar_ids else ''}" for bid in seq_map
+        f"{bid}{':fake' if bid in fake_bar_ids else ''}"
+        f"@{rs.GetUserText(oid, config.KEY_BAR_WALKABLE_GROUND_IDS) or ''}"
+        for bid, (oid, _seq) in seq_map.items()
     )
     for layer in (
         config.LAYER_JOINT_FEMALE_INSTANCES,
@@ -735,6 +710,19 @@ def _live_assembly_fingerprint():
         if rs.IsLayer(config.LAYER_ENVIRONMENT)
         else 0
     )
+    # Walkable grounds (floor bodies): count + where they are (a moved or
+    # resized ground changes its bounding box).
+    walkable_oids = (
+        rs.ObjectsByLayer(config.LAYER_WALKABLE_GROUND) or []
+        if rs.IsLayer(config.LAYER_WALKABLE_GROUND)
+        else []
+    )
+    for oid in walkable_oids:
+        try:
+            for corner in rs.BoundingBox(oid) or []:
+                coord_sum += float(corner.X + corner.Y + corner.Z)
+        except Exception:
+            pass
     # Active tool identity: a tool swap changes the cell geometry just like a
     # bar edit does, so it must change the fingerprint too. The staleness probe
     # runs at every command entry, so an unresolvable pair only gets a
@@ -748,13 +736,17 @@ def _live_assembly_fingerprint():
     # Deterministic digest of the sorted naming inputs (see docstring). Sorted so
     # document order / layer scan order cannot flip the fingerprint.
     names_md5 = hashlib.md5("|".join(sorted(name_parts)).encode("utf-8")).hexdigest()
-    return (len(seq_map), n_joints, n_env, round(coord_sum, 3), active_sig, names_md5)
+    return (
+        len(seq_map), n_joints, n_env, len(walkable_oids), round(coord_sum, 3),
+        active_sig, names_md5,
+    )
 
 
 def rebuild_assembly_cell(robot_cell, planner):
     """Manual rebuild of the static assembly cell (the RSRebuildRobotCell button).
 
-    Collects every bar + joint (canonical names) + environment obstacle, builds
+    Collects every bar + joint (canonical names) + environment obstacle + floor
+    slab (the walkable grounds the bars use), builds
     + registers the arm ToolModels, then calls ``planner.set_robot_cell`` once 
     to load the fully-populated cell into PyBullet in a single call (that
     call rebuilds the whole PyBullet scene, so we register everything first and
@@ -775,9 +767,11 @@ def rebuild_assembly_cell(robot_cell, planner):
 
     Returns:
         dict: ``collision_bodies`` -- ``{name: body_info}`` for the full assembly
-        + environment obstacles. Each ``body_info`` carries the world pose +
-        metadata the RobotCell itself does NOT store: ``frame_world_mm`` (4x4 mm
-        world pose), ``kind`` (``"bar"`` / ``"joint"`` / ``"environment"``),
+        + environment obstacles + floors. Each ``body_info`` carries the world
+        pose + metadata the RobotCell itself does NOT store: ``frame_world_mm``
+        (4x4 mm world pose), ``kind`` (``"bar"`` / ``"joint"`` / ``"environment"``
+        / ``"floor"``; floors also carry their always-allowed ``touch_links`` /
+        ``touch_bodies``),
         ``parent_bar_id`` (bars/joints only), and ``rigid_body`` (the RigidBody
         geometry -- the only field mirrored into ``robot_cell.rigid_body_models``).
         ``core.ik_collision_setup.build_full_assembly_state`` consumes this to
@@ -790,7 +784,9 @@ def rebuild_assembly_cell(robot_cell, planner):
 
     seq_map = get_bar_seq_map()
     collision_bodies = dict(env_collision.collect_assembly_geometry(seq_map))
-    collision_bodies.update(env_collision.collect_environment_geometry())
+    # Obstacles + floor slabs, re-read from the document (force) and cached so
+    # the support cells register the very same bodies.
+    collision_bodies.update(env_collision.collect_static_scene_geometry(force=True))
 
     # Tool models (geometry-only, per-arm). Rebuild the ACTIVE pair's tools, then
     # evict any tool that is no longer in the active pair. Without the eviction a
@@ -821,12 +817,8 @@ def rebuild_assembly_cell(robot_cell, planner):
     from core import robot_obstacles
     robot_obstacles.attach_obstacle_robot_tools(robot_cell, list(config.SUPPORT_ROBOT_NAMES))
 
-    # Canonical bar/joint/obstacle rigid-body registry: replace the managed set.
-    managed_prefixes = (
-        env_collision.CANONICAL_BAR_PREFIX,
-        env_collision.CANONICAL_JOINT_PREFIX,
-        env_collision.OBSTACLE_PREFIX,
-    )
+    # Canonical bar/joint/obstacle/floor rigid-body registry: replace the managed set.
+    managed_prefixes = env_collision.MANAGED_BODY_PREFIXES
     desired = {name: bi["rigid_body"] for name, bi in collision_bodies.items()}
     existing_managed = {
         n for n in list(robot_cell.rigid_body_models.keys())

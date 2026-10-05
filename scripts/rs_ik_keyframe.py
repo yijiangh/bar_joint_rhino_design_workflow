@@ -64,15 +64,26 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+# ! Reload the "provider" modules FIRST: the ones other core modules import
+# NAMES from (`from core.env_collision import STATIC_KINDS`, ...). A module
+# imported below for the first time in this Rhino session would otherwise bind
+# those names against a stale copy still in sys.modules, and fail with an
+# ImportError on any newly added name before main() could reload anything.
+from core import env_collision as _env_collision_module
+from core import hold_schedule as _hold_schedule_module
+from core import rhino_bar_registry as _rhino_bar_registry_module
+
+importlib.reload(_env_collision_module)
+importlib.reload(_hold_schedule_module)
+importlib.reload(_rhino_bar_registry_module)
+
 from core import bar_action as _bar_action_module
 from core import base_guide_geom as _base_guide_geom_module
 from core import base_guide_viz as _base_guide_viz_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
-from core import env_collision as _env_collision_module
 from core import highlight_env as _highlight_env_module
 from core import hold_action_builder as _hold_action_builder_module
-from core import hold_schedule as _hold_schedule_module
 from core import ik_viz as _ik_viz_module
 from core import reach_viz as _reach_viz_module
 from core import rhino_tool_place as _rhino_tool_place_module
@@ -87,16 +98,20 @@ from core import support_grasp_pick as _support_grasp_pick_module
 from husky_assembly_tamp.keyframe import dual_arm_ik as _dual_arm_ik_module
 from husky_assembly_tamp.keyframe import ik_keyframe as _ik_keyframe_module
 from core.rhino_bar_pick import pick_bar
-# Reload BEFORE the from-import below, not in _reload_runtime_modules().  A
+# Reload BEFORE the from-imports below, not in _reload_runtime_modules().  A
 # `from X import name` resolves against whatever copy of X is already in
 # sys.modules, so the first run after a new helper is added to
-# rhino_bar_registry would raise ImportError at THIS line -- long before any
-# reload inside main() could run, and the only cure would be restarting Rhino.
-# Reloading first re-executes the file from disk, so the names below are always
-# the ones on disk.  Same reload-then-use order as rs_clear_color_preview.
-from core import rhino_bar_registry as _rhino_bar_registry_module
+# rhino_bar_registry / ik_collision_setup would raise ImportError at THIS line
+# -- long before any reload inside main() could run, and the only cure would be
+# restarting Rhino.  Reloading first re-executes the file from disk, so the
+# names below are always the ones on disk (rhino_bar_registry was reloaded with
+# the providers at the top; ik_collision_setup comes after env_collision).
+from core import ik_collision_setup as _ik_collision_setup_module
 
-importlib.reload(_rhino_bar_registry_module)
+importlib.reload(_ik_collision_setup_module)
+
+# The "ground joint + male joint on one bar" rule, shared with the export gate.
+from core.ik_collision_setup import mixed_ground_male_error  # noqa: E402 -- must follow the reload
 
 from core.rhino_bar_registry import (  # noqa: E402 -- must follow the reload
     BAR_ID_KEY,
@@ -141,12 +156,17 @@ def _reload_runtime_modules():
     """
     global bar_action, base_guide_geom, base_guide_viz, config, dual_arm_ik
     global dynamic_preview, env_collision, highlight_env, hold_action_builder
-    global hold_schedule, ik_keyframe, ik_viz, reach_viz
+    global hold_schedule, ik_collision_setup, ik_keyframe, ik_viz, reach_viz
     global rhino_tool_place, rhino_walkable_ground, robot_cell
     global robot_cell_support, robot_obstacles, support_grasp_pick
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
+    # Providers before the modules that import names from them (env_collision
+    # -> ik_collision_setup / robot_obstacles / bar_action; hold_schedule +
+    # rhino_bar_registry -> hold_action_builder).
     env_collision = importlib.reload(_env_collision_module)
+    importlib.reload(_rhino_bar_registry_module)
+    ik_collision_setup = importlib.reload(_ik_collision_setup_module)
     highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
@@ -293,9 +313,10 @@ def _males_on_bar(bar_id):
 
     Scans BOTH the male-joint layer and the ground-joint layer: assembly IK
     treats any tool-bearing joint instance on the bar as an arm anchor, so a
-    bar with one male + one ground (or two grounds) is a valid 2-anchor
-    configuration.  The variable name is kept as ``males`` for back-compat
-    with downstream code that just consumes opaque block-instance oids.
+    bar with two males or two grounds is a valid 2-anchor configuration (a
+    bar mixing the two kinds is refused by ``_resolve_arm_tools_on_bar``).
+    The variable name is kept as ``males`` for back-compat with downstream
+    code that just consumes opaque block-instance oids.
     """
     out = []
     for layer in (
@@ -346,6 +367,19 @@ def _resolve_arm_tools_on_bar(bar_oid):
                 "block and the bar should pass."
             )
         return None, message
+
+    # ! A bar is either a ground bar or a normal bar, never both (no jointing
+    # motor on a ground bar; the screws tighten on a normal one).
+    male_ids, ground_ids = [], []
+    for moid in males:
+        jid = rs.GetUserText(moid, "joint_id") or str(moid)
+        if rs.ObjectLayer(moid) == config.LAYER_JOINT_GROUND_INSTANCES:
+            ground_ids.append(jid)
+        else:
+            male_ids.append(jid)
+    mixed = mixed_ground_male_error(bar_id, male_ids, ground_ids)
+    if mixed:
+        return None, mixed
 
     left = right = None
     for moid in males:
@@ -2253,7 +2287,7 @@ def _cycle_support_candidates(sr_cell, label, candidates, env_geom):
         sc.doc.Views.Redraw()
 
 
-def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_mm,
+def _inspect_support_candidates(sr_planner, sr_cell, template_state, held_bar_id, base_frame_mm,
                                 tool0_grasp_mm, include_self, include_env,
                                 mesh_mode, env_geom):
     """Diagnose a support IK failure by cycling the failing target's candidates.
@@ -2269,7 +2303,10 @@ def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_
     Args:
         sr_planner: the support robot's planner.
         sr_cell (RobotCell): its cell.
-        template_state (RobotCellState): the hold-time scene state.
+        template_state (RobotCellState): the hold scene state
+            (``hold_action_builder.build_hold_scene_state``).
+        held_bar_id (str): the held bar (its gripper contact differs between
+            the held and the approach target).
         base_frame_mm (np.ndarray): the base the user is on.
         tool0_grasp_mm (np.ndarray): the flange target at the grasp.
         include_self, include_env (bool): collision toggles (their OR drives checks).
@@ -2280,17 +2317,16 @@ def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_
     approach_tool0_mm = hold_action_builder.approach_tool0_from_grasp(tool0_grasp_mm)
 
     print("RSIKKeyframe(support): locating which target fails at this base ...")
-    held_state = robot_cell_support.solve_support_ik(
-        sr_planner, template_state, base_frame_mm, tool0_grasp_mm,
+    held_state, approach_state = hold_action_builder.solve_hold_pair(
+        sr_planner, template_state, held_bar_id, base_frame_mm, tool0_grasp_mm,
         check_collision=check_collision,
     )
     if held_state is None:
-        label, target_mm, seed_state = "held", tool0_grasp_mm, template_state
+        # Same scene the held solve used: the gripper may touch the held bar.
+        seed_state = template_state.copy()
+        hold_action_builder.set_gripper_bar_contact(seed_state, held_bar_id, allowed=True)
+        label, target_mm = "held", tool0_grasp_mm
     else:
-        approach_state = robot_cell_support.solve_support_ik(
-            sr_planner, held_state, base_frame_mm, approach_tool0_mm,
-            check_collision=check_collision,
-        )
         if approach_state is not None:
             rs.MessageBox(
                 "Both targets solved on this re-run, so there are no failing "
@@ -2299,7 +2335,9 @@ def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_
                 0, "RSIKKeyframe",
             )
             return
-        label, target_mm, seed_state = "approach", approach_tool0_mm, held_state
+        # Same scene the approach solve used: no gripper contact, held config as seed.
+        seed_state = hold_action_builder.approach_seed_state(template_state, held_bar_id, held_state)
+        label, target_mm = "approach", approach_tool0_mm
 
     print(f"RSIKKeyframe(support): enumerating reachable '{label}' solutions ...")
     result = robot_cell_support.enumerate_support_ik_candidates(
@@ -2332,6 +2370,7 @@ def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_
 def _solve_support_pair_with_sampling(
     sr_planner,
     template_state,
+    held_bar_id,
     seed_base_frame_mm,
     tool0_grasp_mm,
     brep_id,
@@ -2346,11 +2385,14 @@ def _solve_support_pair_with_sampling(
     works, solve the approach pose (grasp backed off along tool0 -Z by
     ``SUPPORT_LM_DISTANCE_MM``) seeded from the held configuration, so the
     two configs sit on the same IK branch and the linear approach between
-    them stays short. Both must succeed at the SAME base.
+    them stays short. Both must succeed at the SAME base. The pair is solved
+    by ``hold_action_builder.solve_hold_pair`` (gripper may touch the held bar
+    at the held pose, not at the approach pose).
 
     Args:
         sr_planner: the support robot's planner (cell pushed).
         template_state (RobotCellState): scene state to fork per attempt.
+        held_bar_id (str): the held bar.
         seed_base_frame_mm (np.ndarray): the user-picked base (first attempt).
         tool0_grasp_mm (np.ndarray): flange pose at the grasp, world mm.
         brep_id: WalkableGround object id for snapping base samples.
@@ -2366,7 +2408,6 @@ def _solve_support_pair_with_sampling(
         ``(None, None, None)`` when every attempt failed.
     """
     check_collision = bool(include_self or include_env)
-    approach_tool0_mm = hold_action_builder.approach_tool0_from_grasp(tool0_grasp_mm)
 
     attempts = [np.asarray(seed_base_frame_mm, dtype=float)]
     brep = support_grasp_pick.as_brep(brep_id)
@@ -2398,24 +2439,11 @@ def _solve_support_pair_with_sampling(
             )
             if viz is not None:
                 viz.set_ghost_xform(_np_mm_to_rhino_xform(base_frame))
-            held_state = robot_cell_support.solve_support_ik(
-                sr_planner,
-                template_state,
-                base_frame,
-                tool0_grasp_mm,
-                check_collision=check_collision,
-                verbose_pairs=check_collision,
+            # Held first; the approach is seeded from it (same branch, short move).
+            held_state, approach_state = hold_action_builder.solve_hold_pair(
+                sr_planner, template_state, held_bar_id, base_frame, tool0_grasp_mm,
+                check_collision=check_collision, verbose_pairs=check_collision,
             )
-            approach_state = None
-            if held_state is not None:
-                # Approach seeded from the held config (same branch, short move).
-                approach_state = robot_cell_support.solve_support_ik(
-                    sr_planner,
-                    held_state,
-                    base_frame,
-                    approach_tool0_mm,
-                    check_collision=check_collision,
-                )
             solved = held_state is not None and approach_state is not None
             # Marker for every sampled base (idx 0 is the seed, already marked
             # by the seed arrow), so the tried/failed history stays on screen.
@@ -2516,37 +2544,25 @@ def _run_support_flow(bar_id: str, bar_oid):
         # later needs a different moment's scene.
         env_union = hold_action_builder.get_env_union(bar_map)
         hold_action_builder.ensure_support_env_registered(sr_cell, sr_planner, env_union)
-        # Visible: the RELEASE-time built set -- every stabilizing bar that will
-        # exist before this hold ends (the held bar itself is excluded, since the
-        # gripper wraps around it). The hold pose has to clear the whole window,
-        # not just grasp time: a pose that only fits the grasp-time world can sit
-        # exactly where a later stabilizing bar must go, and then block the very
-        # bars the hold exists to enable.
-        env_scene = hold_action_builder.collect_hold_window_geometry(
-            bar_id, hold_plan, bar_map=bar_map
-        )
-        template_state = hold_action_builder.build_support_scene_state(
-            robot_name, env_union, env_scene
-        )
-        # Cindy frozen at her assembled pose (she still grips the bar while the
-        # support robot approaches).
-        robot_obstacles.configure_robot_obstacle(
-            template_state,
-            config.ASSEMBLY_ROBOT_NAME,
-            assembled["base_frame_world_mm"],
-            list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
-            list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
-        )
-        # The other support robot frozen at its held pose if it is deployed now
-        # (raises if its hold is unsolved); parked otherwise.
+        # The hold scene, shared with the batch re-solve and the __H export:
+        # the RELEASE-time built set (every stabilizing bar that will exist
+        # before this hold ends, the held bar included), Cindy frozen at her
+        # assembled pose (she still grips the bar while the support robot
+        # approaches), the other support robot frozen at its held pose if it
+        # is deployed now (raises if its hold is unsolved). The hold pose has
+        # to clear the whole window, not just grasp time: a pose that only
+        # fits the grasp-time world can sit exactly where a later stabilizing
+        # bar must go, and then block the very bars the hold exists to enable.
         try:
-            hold_action_builder.freeze_holding_robots(
-                template_state, hold_plan, entry["hold_start_seq"],
-                exclude_robot=robot_name, bar_map=bar_map,
+            template_state, _skipped = hold_action_builder.build_hold_scene_state(
+                robot_name, bar_id, hold_plan, env_union, bar_map, skip_unsolved=False,
             )
         except RuntimeError as exc:
             rs.MessageBox(str(exc), 0, "RSIKKeyframe")
             return
+        env_scene = hold_action_builder.collect_hold_window_geometry(
+            bar_id, hold_plan, bar_map=bar_map, env_union=env_union,
+        )
         print(f"RSIKKeyframe(support): env collision -- {env_collision.list_env_summary(env_scene)}")
 
         bar_curve = rs.coercecurve(bar_oid)
@@ -2639,7 +2655,7 @@ def _run_support_flow(bar_id: str, bar_oid):
             try:
                 print(f"RSIKKeyframe(support): solving {robot_name}'s held + approach IK ...")
                 held_state, approach_state, used_base = _solve_support_pair_with_sampling(
-                    sr_planner, template_state, seed_base_frame,
+                    sr_planner, template_state, bar_id, seed_base_frame,
                     tool0_mm, brep_id, heading_mm, include_self, include_env,
                     viz=viz,
                 )
@@ -2658,7 +2674,7 @@ def _run_support_flow(bar_id: str, bar_oid):
                     )
                     if action == "inspect":
                         _inspect_support_candidates(
-                            sr_planner, sr_cell, template_state, seed_base_frame,
+                            sr_planner, sr_cell, template_state, bar_id, seed_base_frame,
                             tool0_mm, include_self, include_env, mesh_mode, env_union,
                         )
                         continue
@@ -2841,16 +2857,17 @@ def main():
     except (RuntimeError, ValueError) as exc:
         rs.MessageBox(str(exc), 0, "RSIKKeyframe")
         return
-    # The IK chain's solver-facing roles map onto the split movements:
-    # approach = the bar-held transfer's goal (J_M3), assembled = the linear
-    # insert's goal (J_M5), retreat = the per-arm retreat's goal (R_M2), and
-    # home comes from the free-home movement (R_M3). Keeping the old M1..M4
-    # labels here means the solve/preview code below stays unchanged.
+    # The IK chain's solver-facing roles map onto the split movements (looked
+    # up by NAME -- their numbers differ between normal and ground bars):
+    # approach = the bar-held transfer's goal, assembled = the linear insert's
+    # goal, retreat = the per-arm retreat's goal, and home comes from the
+    # free-home movement. Keeping the old M1..M4 labels here means the
+    # solve/preview code below stays unchanged.
     movements = {
-        "M1": jointing_mvts["M3"],
-        "M2": jointing_mvts["M5"],
-        "M3": release_mvts["M2"],
-        "M4": release_mvts["M3"],
+        "M1": jointing_mvts[bar_action.MV_TRANSFER],
+        "M2": jointing_mvts[bar_action.MV_LM_INSERT],
+        "M3": release_mvts[bar_action.MV_LM_RETREAT],
+        "M4": release_mvts[bar_action.MV_FREE_HOME],
     }
 
     env_token = None

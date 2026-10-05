@@ -407,6 +407,18 @@ LAYER_JOINT_GROUND_INSTANCES = (
 )
 LAYER_TOOL_INSTANCES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Robotic Tool Instances"
 LAYER_WALKABLE_GROUND = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Walkable Ground"
+# Every walkable ground some bar is assigned to also becomes a floor body
+# (`ground_<id>`, see `core.env_collision.collect_floor_geometry`): a slab this
+# thick, built UNDER the surface so the top stays where the robots stand.
+FLOOR_SLAB_THICKNESS_MM = 50.0
+# Robot links that always rest on the floor: the four wheels. Same link names
+# in the dual-arm (Cindy) and single-arm (Alice / Belle) URDFs.
+FLOOR_TOUCH_LINKS = [
+    "front_left_wheel_link",
+    "front_right_wheel_link",
+    "rear_left_wheel_link",
+    "rear_right_wheel_link",
+]
 # Static environment obstacle meshes (tables, walls, scaffolding, etc.). Any
 # mesh placed on this layer is registered as a static `obstacle_<name>` rigid
 # body by `core.env_collision.collect_environment_geometry` and checked for

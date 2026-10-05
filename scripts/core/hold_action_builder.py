@@ -35,10 +35,16 @@ from core import robot_obstacles
 # Frame conversion shared with the assembly builder (private on purpose —
 # same package, one definition).
 from core.bar_action import _mm4_to_frame
-from core.hold_schedule import derive_hold_plan, robots_holding_at_step
+from core.hold_schedule import (
+    bodies_built_after,
+    derive_hold_plan,
+    frozen_robot_leave_steps,
+    holds_present_at_release,
+    robots_holding_at_step,
+)
 from core.rhino_bar_registry import (
     collect_hold_inputs,
-    get_bar_seq_map,
+    get_real_bar_seq_map,
     get_supported_until,
 )
 from rs_data_structure.bar_action import (
@@ -206,23 +212,27 @@ def approach_tool0_from_grasp(tool0_world_mm) -> np.ndarray:
 
 
 def get_env_union(bar_map=None):
-    """Every bar + joint as env-collision payloads (the register-once superset).
+    """Every bar + joint + static body (the register-once superset).
 
     Registered into a support cell ONCE per session; each scene state then
-    only flips per-body visibility (``is_hidden``) — mirroring how the
+    only flips per-body visibility (``is_hidden``) -- mirroring how the
     assembly cell handles not-yet-built bars, with no cell re-uploads when
-    switching between hold-time and release-time scenes.
+    switching between hold-time and release-time scenes. The names are the
+    same as in Cindy's cell (``bar_*`` / ``joint_*``), and the static bodies
+    (environment obstacles, floor slabs) are the very objects Cindy's cell
+    uses (``env_collision.collect_static_scene_geometry``).
 
     Args:
         bar_map (dict): a ``get_bar_seq_map`` result; fetched when omitted.
 
     Returns:
-        dict: ``{name: payload}`` for ALL bars/joints (cached RigidBodies).
+        dict: ``{name: payload}`` for ALL bars/joints + every static body.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
-    last_bar = max(bar_map, key=lambda b: bar_map[b][1])
-    return env_collision.collect_built_geometry(last_bar, bar_map, include_active=True)
+        bar_map = get_real_bar_seq_map()
+    union = dict(env_collision.collect_assembly_geometry(bar_map))
+    union.update(env_collision.collect_static_scene_geometry())
+    return union
 
 
 def ensure_support_env_registered(sr_cell, planner, env_union):
@@ -238,9 +248,12 @@ def ensure_support_env_registered(sr_cell, planner, env_union):
     if env_collision.register_env_in_robot_cell(sr_cell, env_union, deps=deps):
         if planner is not None:
             planner.set_robot_cell(sr_cell)
+        else:
+            # Changed with no planner at hand (export): push it on next use.
+            robot_cell_support.mark_cell_needs_push(sr_cell)
 
 
-def collect_hold_window_geometry(held_bar_id: str, hold_plan: dict, bar_map=None):
+def collect_hold_window_geometry(held_bar_id: str, hold_plan: dict, bar_map=None, env_union=None):
     """The built geometry a hold must clear: the RELEASE-time scene.
 
     A holding pose is not judged against the world at grasp time. It has to
@@ -252,41 +265,44 @@ def collect_hold_window_geometry(held_bar_id: str, hold_plan: dict, bar_map=None
 
     Bars only ACCUMULATE during the window, so this release-time set is a
     superset of every intermediate moment: one scene covers the whole window.
-    The held bar itself is excluded (the gripper is wrapped around it, so its
-    tube would always false-positive).
+    The held bar itself IS in the scene (it is already built when the support
+    robot arrives): the gripper's contact with it is allowed per movement
+    instead (:func:`set_gripper_bar_contact`), so the free approach is still
+    checked against it.
 
     Args:
         held_bar_id (str): the bar being held.
         hold_plan (dict): a ``derive_hold_plan`` result (must contain the bar).
         bar_map (dict): a ``get_bar_seq_map`` result; fetched when omitted.
+        env_union (dict): a ``get_env_union`` result to filter; collected when omitted.
 
     Returns:
-        dict: ``{name: payload}`` for the release-time built bodies.
+        dict: ``{name: payload}`` for the release-time built bars + joints.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     entry = hold_plan[held_bar_id]
     return env_collision.collect_built_geometry(
         entry["release_after_bar_id"],
         bar_map,
         include_active=True,      # the last stabilizing bar IS built by then
-        exclude_bar_ids=[held_bar_id],
+        all_geom=env_union,
     )
 
 
 def build_support_scene_state(robot_name: str, env_union: dict, visible_geom: dict):
     """A support state with the whole env placed, and only one scene visible.
 
-    Every env body is stamped at its world frame, then everything NOT in
-    ``visible_geom`` is hidden (not built yet at this scene's moment, or
-    deliberately excluded like the held bar). Robots default to parked; the
-    caller freezes the ones actually present.
+    Every env body is stamped at its world frame, then every bar / joint NOT
+    in ``visible_geom`` is hidden (not built yet at this scene's moment).
+    Static bodies (obstacles, floors) are always shown. Robots default to
+    parked; the caller freezes the ones actually present.
 
     Args:
         robot_name (str): whose cell/state ("Alice"/"Belle").
         env_union (dict): a ``get_env_union`` result (must already be
             registered into the cell).
-        visible_geom (dict): the subset payload for THIS scene (e.g. from
+        visible_geom (dict): the bars + joints shown in THIS scene (e.g. from
             ``collect_built_geometry`` at the scene's step).
 
     Returns:
@@ -294,10 +310,195 @@ def build_support_scene_state(robot_name: str, env_union: dict, visible_geom: di
     """
     state = robot_cell_support.default_support_cell_state(robot_name)
     state = env_collision.build_env_state(state, env_union)
-    for name in env_union:
+    for name, body_info in env_union.items():
+        if body_info.get("kind") in env_collision.STATIC_KINDS:
+            continue
         if name not in visible_geom:
             state.rigid_body_states[name].is_hidden = True
     return state
+
+
+def set_gripper_bar_contact(state, held_bar_id: str, allowed: bool) -> None:
+    """Allow (or forbid) the support gripper to touch the held bar.
+
+    The gripper closes around the bar, so the contact is real from the linear
+    approach onto the grasp until the retreat away from it -- but NOT during
+    the free move to the approach start, which must clear the bar.
+
+    Args:
+        state (RobotCellState): a support scene state (mutated in place).
+        held_bar_id (str): the held bar.
+        allowed (bool): True from the linear approach on, False before.
+    """
+    robot_obstacles.set_tool_contact(
+        state, config.SUPPORT_TOOL_NAME, [env_collision.bar_body_name(held_bar_id)], allowed=allowed,
+    )
+
+
+def _held_bar_bodies(env_union: dict, held_bar_id: str) -> list:
+    """The held bar, every joint half on it, and the mate female of each male on it.
+
+    These are the bodies the assembly robot's tools are wrapped around (or
+    seated against) while she still grips the bar.
+
+    Args:
+        env_union (dict): a ``get_env_union`` result.
+        held_bar_id (str): the held bar.
+
+    Returns:
+        list: sorted rigid-body names.
+    """
+    out = set()
+    for name, body_info in env_union.items():
+        if body_info.get("parent_bar_id") != held_bar_id:
+            continue
+        out.add(name)
+        is_male = str(body_info.get("subtype", "")).lower() == "male"
+        if body_info.get("kind") == env_collision.KIND_JOINT and is_male:
+            joint_id = name[len(env_collision.CANONICAL_JOINT_PREFIX):].rsplit("_", 1)[0]
+            mate = env_collision.joint_body_name(joint_id, "female")
+            if mate in env_union:
+                out.add(mate)
+    return sorted(out)
+
+
+def build_hold_scene_state(robot_name: str, held_bar_id: str, hold_plan: dict, env_union: dict,
+                           bar_map: dict, *, skip_unsolved: bool = False) -> tuple:
+    """The scene a support robot's hold is solved and exported against.
+
+    One builder for the interactive solve (RSIKKeyframe), the batch re-solve
+    and the ``__H`` export, so all three agree:
+
+    - bars + joints: the RELEASE-time set, held bar included
+      (:func:`collect_hold_window_geometry`); static bodies always;
+    - the assembly robot frozen at her assembled pose for the held bar (she
+      still grips it while the support robot approaches);
+    - every other support robot holding at the grasp step frozen at its held
+      pose; robots not in the scene parked.
+
+    Allowed contacts on top:
+
+    - the assembly robot may touch the held bar, the joints on it and the mate
+      females of its males (her tools are wrapped around / seated against them);
+    - a frozen robot may touch the bars + joints built AFTER it leaves (the
+      assembly robot after the held bar's step, another holder after its own
+      release): those never stand next to it, but the release-time scene
+      shows them while it stands at its grasp-time pose.
+
+    The support gripper's own contact with the held bar is NOT set here: it
+    depends on the movement (:func:`set_gripper_bar_contact`).
+
+    Args:
+        robot_name (str): the holding robot ("Alice"/"Belle").
+        held_bar_id (str): the held bar.
+        hold_plan (dict): a ``derive_hold_plan`` result (must contain the bar).
+        env_union (dict): a ``get_env_union`` result (already registered).
+        bar_map (dict): a ``get_bar_seq_map`` result.
+        skip_unsolved (bool): True = an overlapping hold without a solved
+            keyframe is skipped with a note instead of raising.
+
+    Returns:
+        tuple: ``(state, skipped)`` -- the scene state and the skipped
+        ``(robot_name, held_bar_id)`` notes (``skip_unsolved`` only).
+
+    Raises:
+        RuntimeError: missing assembly keyframe, an unsolved overlapping hold
+            (strict mode), or a robot-assignment mismatch.
+    """
+    entry = hold_plan[held_bar_id]
+    visible = collect_hold_window_geometry(held_bar_id, hold_plan, bar_map=bar_map, env_union=env_union)
+    state = build_support_scene_state(robot_name, env_union, visible)
+
+    # * The assembly robot, still gripping the held bar.
+    assembled = load_assembly_payload(bar_map[held_bar_id][0])
+    robot_obstacles.configure_robot_obstacle(
+        state,
+        config.ASSEMBLY_ROBOT_NAME,
+        assembled["base_frame_world_mm"],
+        list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
+        list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
+    )
+    # * Other holders present at the grasp step.
+    skipped = freeze_holding_robots(
+        state, hold_plan, entry["hold_start_seq"],
+        exclude_robot=robot_name, skip_unsolved=skip_unsolved, bar_map=bar_map,
+    )
+
+    # * Allowed contacts: the assembly robot is wrapped around the held bar.
+    assembly_tool = config.OBSTACLE_TOOL_NAMES[config.ASSEMBLY_ROBOT_NAME]
+    robot_obstacles.set_tool_contact(state, assembly_tool, _held_bar_bodies(env_union, held_bar_id))
+
+    # * Allowed contacts: bars built after a frozen robot has left.
+    body_steps = {
+        name: bar_map[body_info["parent_bar_id"]][1]
+        for name, body_info in visible.items()
+        if body_info.get("parent_bar_id") in bar_map
+    }
+    skipped_robots = {robot for robot, _bar in skipped}
+    leave_steps = frozen_robot_leave_steps(hold_plan, held_bar_id, config.ASSEMBLY_ROBOT_NAME)
+    for frozen_robot, leave_step in leave_steps.items():
+        if frozen_robot in skipped_robots:
+            continue  # not in the scene (its hold is unsolved)
+        robot_obstacles.set_tool_contact(
+            state, config.OBSTACLE_TOOL_NAMES[frozen_robot], bodies_built_after(body_steps, leave_step),
+        )
+    return state, skipped
+
+
+def solve_hold_pair(planner, scene_state, held_bar_id: str, base_frame_world_mm, tool0_grasp_mm, *,
+                    check_collision: bool = True, verbose_pairs: bool = False) -> tuple:
+    """Solve the held pose, then the approach pose seeded from it.
+
+    The held pose may have the gripper touching the held bar (it closes around
+    it); the approach pose may not (the free move to it must clear the bar).
+    The approach is seeded from the held configuration, so both sit on the
+    same IK branch and the linear approach between them stays short.
+
+    Args:
+        planner: the support robot's planner (its cell pushed).
+        scene_state (RobotCellState): a :func:`build_hold_scene_state` state.
+        held_bar_id (str): the held bar.
+        base_frame_world_mm (np.ndarray): 4x4 robot base pose, world mm.
+        tool0_grasp_mm (np.ndarray): 4x4 flange pose at the grasp, world mm.
+        check_collision (bool): include collision checking in the IK.
+        verbose_pairs (bool): print the collision-pair summary of the held solve.
+
+    Returns:
+        tuple: ``(held_state, approach_state)``; either is None when its IK failed
+        (the approach is not tried when the held pose fails).
+    """
+    held_template = scene_state.copy()
+    set_gripper_bar_contact(held_template, held_bar_id, allowed=True)
+    held_state = robot_cell_support.solve_support_ik(
+        planner, held_template, base_frame_world_mm, tool0_grasp_mm,
+        check_collision=check_collision, verbose_pairs=verbose_pairs,
+    )
+    if held_state is None:
+        return None, None
+    approach_seed = approach_seed_state(scene_state, held_bar_id, held_state)
+    approach_state = robot_cell_support.solve_support_ik(
+        planner, approach_seed, base_frame_world_mm, approach_tool0_from_grasp(tool0_grasp_mm),
+        check_collision=check_collision,
+    )
+    return held_state, approach_state
+
+
+def approach_seed_state(scene_state, held_bar_id: str, held_state):
+    """The scene for the approach solve: no gripper contact, held config as the seed.
+
+    Args:
+        scene_state (RobotCellState): a :func:`build_hold_scene_state` state.
+        held_bar_id (str): the held bar.
+        held_state (RobotCellState): the solved held state (its configuration
+            seeds the approach IK).
+
+    Returns:
+        RobotCellState: a new state.
+    """
+    seed = scene_state.copy()
+    set_gripper_bar_contact(seed, held_bar_id, allowed=False)
+    seed.robot_configuration = held_state.robot_configuration.copy()
+    return seed
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +531,7 @@ def freeze_holding_robots(state, hold_plan, at_seq, *, exclude_robot=None,
             robot-assignment mismatch (sequence edited since solving).
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     skipped = []
     for robot_name, held_bar_id in robots_holding_at_step(hold_plan, at_seq).items():
         if robot_name == exclude_robot:
@@ -408,7 +609,7 @@ def show_frozen_holders_context(hold_plan: dict, at_seq: int, mesh_mode, *,
     from core import ik_viz
 
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     drawn = []
     for robot_name, held_bar_id in robots_holding_at_step(hold_plan, at_seq).items():
         if robot_name == exclude_robot:
@@ -465,12 +666,13 @@ def build_release_scene_state(
     """The RELEASE-time scene for one hold, as a support cell state.
 
     Release-time scene: every bar with seq <= the release step is built
-    (INCLUDING the last stabilizing bar, EXCLUDING the held bar itself — the
-    gripper is wrapped around it); the assembly robot stays parked far away
-    (she has finished and driven off); other support robots still holding at
-    that moment are frozen at their held poses. The release runs after the
-    release step completes, so a hold STARTING at that very step is present
-    too — hence <= on both interval ends below.
+    (INCLUDING the last stabilizing bar and the held bar itself); the assembly
+    robot stays parked far away (she has finished and driven off); other
+    support robots still holding at that moment are frozen at their held
+    poses (:func:`hold_schedule.holds_present_at_release`: a hold STARTING at
+    the release step is present, one released EARLIER in the same step is
+    not). The support gripper's contact with the held bar is set per use
+    (:func:`set_gripper_bar_contact`).
 
     Args:
         robot_name (str): the holding robot the scene is for.
@@ -489,19 +691,16 @@ def build_release_scene_state(
         RuntimeError: in full mode, on an unsolved overlapping hold.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
-    entry = hold_plan[held_bar_id]
-    release_seq = entry["release_after_seq"]
+        bar_map = get_real_bar_seq_map()
 
-    release_geom = collect_hold_window_geometry(held_bar_id, hold_plan, bar_map=bar_map)
+    release_geom = collect_hold_window_geometry(
+        held_bar_id, hold_plan, bar_map=bar_map, env_union=env_union,
+    )
     state = build_support_scene_state(robot_name, env_union, release_geom)
 
     skipped = []
-    for other_bar_id, other in hold_plan.items():
-        if other_bar_id == held_bar_id:
-            continue
-        if not (other["hold_start_seq"] <= release_seq <= other["release_after_seq"]):
-            continue
+    for other_bar_id in holds_present_at_release(hold_plan, held_bar_id):
+        other = hold_plan[other_bar_id]
         other_payload = read_bar_support_keyframe(bar_map[other_bar_id][0])
         if other_payload is None:
             if partial:
@@ -548,11 +747,12 @@ def validate_release_confs(
 ):
     """Check the held + approach configurations against the RELEASE-time scene.
 
-    Release-time scene: every bar with seq <= the release step is built
-    (INCLUDING the last stabilizing bar, EXCLUDING the held bar itself — the
-    gripper is wrapped around it); the assembly robot is parked far away
-    (she has finished and driven off); other support robots still holding at
-    that moment are frozen at their held poses.
+    Release-time scene (:func:`build_release_scene_state`): every bar with
+    seq <= the release step is built, the held bar included; the assembly
+    robot is parked far away; other support robots still holding at that
+    moment are frozen at their held poses. The gripper may touch the held bar
+    at the held configuration (it is wrapped around it) but not at the
+    approach / retreat configuration.
 
     Args:
         planner: the support robot's own planner (cell already pushed).
@@ -576,7 +776,7 @@ def validate_release_confs(
             on an unsolved overlapping hold.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     env_union = get_env_union(bar_map)
     ensure_support_env_registered(sr_cell, planner, env_union)
     state, skipped = build_release_scene_state(
@@ -586,8 +786,12 @@ def validate_release_confs(
 
     # Check both configurations at the hold's base.
     problems = []
-    for label, cfg in (("held", held_cfg), ("approach/retreat", approach_cfg)):
+    for label, cfg, gripper_on_bar in (
+        ("held", held_cfg, True),
+        ("approach/retreat", approach_cfg, False),
+    ):
         check_state = state.copy()
+        set_gripper_bar_contact(check_state, held_bar_id, allowed=gripper_on_bar)
         robot_cell_support._apply_base_frame_mm(
             check_state, np.asarray(base_frame_world_mm, dtype=float)
         )
@@ -622,9 +826,9 @@ def resolve_support_keyframe_noninteractive(
     means the user should re-pick interactively). Writes the complete split
     keys on success. Never auto-picks a grasp — grasps are hand-picked.
 
-    Solved against the RELEASE-time scene (see
-    :func:`collect_hold_window_geometry`), so the pose must clear every
-    stabilizing bar that will be installed before the hold ends.
+    Solved against the hold scene (:func:`build_hold_scene_state`, the same
+    one the interactive solve and the ``__H`` export use), so the pose must
+    clear every stabilizing bar that will be installed before the hold ends.
 
     Args:
         bar_id (str): the held bar.
@@ -642,7 +846,7 @@ def resolve_support_keyframe_noninteractive(
             stored base, or a failed release check.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     if env_union is None:
         env_union = get_env_union(bar_map)
     entry = hold_plan[bar_id]
@@ -657,42 +861,24 @@ def resolve_support_keyframe_noninteractive(
         )
     grasp_mm = np.asarray(json.loads(grasp_raw), dtype=float)
     base_mm = np.asarray(json.loads(base_raw), dtype=float)
-    assembled = load_assembly_payload(bar_oid)
 
     _client, planner, sr_cell = robot_cell_support.ensure_support_cell_pushed(robot_name)
     ensure_support_env_registered(sr_cell, planner, env_union)
-    # Solve against the RELEASE-time scene: the pose must clear every
-    # stabilizing bar that will exist before the hold ends, not just what is
-    # built at grasp time (see collect_hold_window_geometry).
-    scene_geom = collect_hold_window_geometry(bar_id, hold_plan, bar_map=bar_map)
-    template = build_support_scene_state(robot_name, env_union, scene_geom)
-    robot_obstacles.configure_robot_obstacle(
-        template,
-        config.ASSEMBLY_ROBOT_NAME,
-        assembled["base_frame_world_mm"],
-        list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
-        list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
-    )
     # Strict: overlapping earlier holds must be solved. The batch walks holds
     # in hold-start order, so they are — a miss here is a real problem.
-    freeze_holding_robots(
-        template, hold_plan, entry["hold_start_seq"],
-        exclude_robot=robot_name, bar_map=bar_map,
+    template, _skipped = build_hold_scene_state(
+        robot_name, bar_id, hold_plan, env_union, bar_map, skip_unsolved=False,
     )
 
     tool0_grasp_mm = grasp_mm @ np.asarray(config.BAR_GRASP_TO_TOOL0["Robotiq"], dtype=float)
-    held = robot_cell_support.solve_support_ik(
-        planner, template, base_mm, tool0_grasp_mm, check_collision=check_collision,
+    held, approach = solve_hold_pair(
+        planner, template, bar_id, base_mm, tool0_grasp_mm, check_collision=check_collision,
     )
     if held is None:
         raise RuntimeError(
             f"Bar {bar_id!r}: held IK failed at the STORED base — re-pick the "
             "grasp/base with RSIKKeyframe's support flow."
         )
-    approach = robot_cell_support.solve_support_ik(
-        planner, held, base_mm, approach_tool0_from_grasp(tool0_grasp_mm),
-        check_collision=check_collision,
-    )
     if approach is None:
         raise RuntimeError(
             f"Bar {bar_id!r}: approach IK failed at the STORED base — re-pick "
@@ -758,11 +944,17 @@ def _support_state_at(scene_state, base_frame_world_mm, cfg: dict = None):
 
 
 def _assembly_seq_and_grounds(bar_oid, bar_map):
-    """The shared BarSceneAction metadata: ordered bar ids + walkable grounds."""
+    """The shared BarSceneAction metadata: ordered bar ids + walkable grounds.
+
+    The sequence lists the real bars only (fake bars dropped even when the
+    caller's map has them), exactly like ``ActionSchedule.json`` and the
+    assembly actions.
+    """
     from core.rhino_walkable_ground import get_bar_ground_ids
 
+    real_map = get_real_bar_seq_map(bar_map)
     assembly_seq = [
-        bid for bid, _oid_seq in sorted(bar_map.items(), key=lambda kv: kv[1][1])
+        bid for bid, _oid_seq in sorted(real_map.items(), key=lambda kv: kv[1][1])
     ]
     return assembly_seq, get_bar_ground_ids(bar_oid)
 
@@ -803,12 +995,13 @@ def _read_hold_build_inputs(bar_id: str, bar_oid, hold_plan: dict):
 def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None, env_union=None):
     """Build one held bar's ``BarHoldingAction`` from its stored keyframe.
 
-    Scene = the RELEASE-time built set (every stabilizing bar this hold waits
-    for, see :func:`collect_hold_window_geometry`), the held bar itself
-    excluded (the gripper wraps it), Cindy frozen at her assembled pose, any
-    other holding robot frozen at its held pose, the rest parked. This is the
-    same scene the keyframe was solved against, so the exported states cannot
-    permit a pose the solve would have rejected.
+    Scene = :func:`build_hold_scene_state` (the RELEASE-time built set with
+    the held bar shown, Cindy frozen at her assembled pose, any other holding
+    robot frozen at its held pose, the rest parked, plus the frozen robots'
+    allowed contacts). This is the same scene the keyframe is solved against,
+    so the exported states cannot permit a pose the solve would have
+    rejected. The gripper may touch the held bar from the linear approach on
+    (H_M2, H_M3), not in the free move to the approach start (H_M0, H_M1).
 
     Args:
         bar_id (str): the held bar.
@@ -821,7 +1014,7 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
         BarHoldingAction: movements H_M0..H_M3.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     if env_union is None:
         env_union = get_env_union(bar_map)
     entry, payload, tool0_grasp_mm, approach_tool0_mm = _read_hold_build_inputs(
@@ -831,27 +1024,21 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
     sr_cell = robot_cell_support.get_or_load_support_cell(robot_name)
     ensure_support_env_registered(sr_cell, None, env_union)
 
-    # Scene the hold must clear: release-time (every stabilizing bar built),
-    # the same one the keyframe was solved against.
-    scene_geom = collect_hold_window_geometry(bar_id, hold_plan, bar_map=bar_map)
-    scene = build_support_scene_state(robot_name, env_union, scene_geom)
-    assembled = load_assembly_payload(bar_oid)
-    robot_obstacles.configure_robot_obstacle(
-        scene,
-        config.ASSEMBLY_ROBOT_NAME,
-        assembled["base_frame_world_mm"],
-        list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
-        list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
-    )
-    freeze_holding_robots(
-        scene, hold_plan, entry["hold_start_seq"],
-        exclude_robot=robot_name, bar_map=bar_map,
+    # Scene the hold must clear: the same one the keyframe is solved against.
+    scene, _skipped = build_hold_scene_state(
+        robot_name, bar_id, hold_plan, env_union, bar_map, skip_unsolved=False,
     )
 
     base_mm = payload["base_frame_world_mm"]
     approach_cfg = payload["approach"]
     held_cfg = payload["held"]
     gripper = [config.SUPPORT_TOOL_NAME]
+
+    # The gripper touches the held bar only from the linear approach on.
+    def _hold_state(cfg, gripper_on_bar: bool):
+        state = _support_state_at(scene, base_mm, cfg=cfg)
+        set_gripper_bar_contact(state, bar_id, allowed=gripper_on_bar)
+        return state
 
     movements = [
         # H_M0: free travel from wherever the arm is to the approach start.
@@ -860,7 +1047,7 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
         SingleArmFreeMovement(
             movement_id=f"{bar_id}_H_M0_free_to_approach",
             tag="Current -> approach start (free, live-planned)",
-            start_state=_support_state_at(scene, base_mm, cfg=None),
+            start_state=_hold_state(None, gripper_on_bar=False),
             target_ee_frames={"arm": _mm4_to_frame(approach_tool0_mm)},
             target_configuration=_cfg_from_group(approach_cfg),
             notes={
@@ -872,7 +1059,7 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
         GripperToolMovement(
             movement_id=f"{bar_id}_H_M1_gripper_open",
             tag="Gripper opens to receive the bar",
-            start_state=_support_state_at(scene, base_mm, cfg=approach_cfg),
+            start_state=_hold_state(approach_cfg, gripper_on_bar=False),
             tool_action="open",
             tool_names=list(gripper),
         ),
@@ -880,7 +1067,7 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
         SingleArmLinearMovement(
             movement_id=f"{bar_id}_H_M2_LM_to_grasp",
             tag="Approach -> grasp (straight line onto the bar)",
-            start_state=_support_state_at(scene, base_mm, cfg=approach_cfg),
+            start_state=_hold_state(approach_cfg, gripper_on_bar=True),
             target_ee_frames={"arm": _mm4_to_frame(tool0_grasp_mm)},
             target_configuration=_cfg_from_group(held_cfg),
             notes={"lm_distance_mm": float(config.SUPPORT_LM_DISTANCE_MM)},
@@ -889,7 +1076,7 @@ def build_bar_holding_action(bar_id: str, bar_oid, hold_plan: dict, bar_map=None
         GripperToolMovement(
             movement_id=f"{bar_id}_H_M3_gripper_close",
             tag="Gripper closes; the bar is held until its stabilizers are built",
-            start_state=_support_state_at(scene, base_mm, cfg=held_cfg),
+            start_state=_hold_state(held_cfg, gripper_on_bar=True),
             tool_action="close",
             tool_names=list(gripper),
         ),
@@ -918,7 +1105,8 @@ def build_bar_holding_release_action(bar_id: str, bar_oid, hold_plan: dict, bar_
     Scene = the release moment (after the last stabilizing bar's step): see
     ``build_release_scene_state``. Built strictly (``partial=False``) — every
     overlapping hold must be solved, which is guaranteed once all bars up to
-    the release step are keyframed.
+    the release step are keyframed. The gripper starts both movements in
+    contact with the held bar (it opens, then backs straight off it).
 
     Args: same as ``build_bar_holding_action``.
 
@@ -926,7 +1114,7 @@ def build_bar_holding_release_action(bar_id: str, bar_oid, hold_plan: dict, bar_
         BarHoldingReleaseAction: movements HR_M0..HR_M1.
     """
     if bar_map is None:
-        bar_map = get_bar_seq_map()
+        bar_map = get_real_bar_seq_map()
     if env_union is None:
         env_union = get_env_union(bar_map)
     entry, payload, _tool0_grasp_mm, approach_tool0_mm = _read_hold_build_inputs(
@@ -939,6 +1127,7 @@ def build_bar_holding_release_action(bar_id: str, bar_oid, hold_plan: dict, bar_
     scene, _skipped = build_release_scene_state(
         robot_name, bar_id, hold_plan, env_union, partial=False, bar_map=bar_map,
     )
+    set_gripper_bar_contact(scene, bar_id, allowed=True)
 
     base_mm = payload["base_frame_world_mm"]
     approach_cfg = payload["approach"]
@@ -1000,22 +1189,31 @@ SCHEDULE_KINDS = {
 }
 
 
-def build_action_schedule_payload(bar_map=None) -> dict:
+def build_action_schedule_payload(bar_map=None, written_files=None) -> dict:
     """The ``ActionSchedule.json`` content: global interleaved order + robots.
 
     Pure metadata (no states) rebuilt from the document every time, so the
-    manifest can never drift from the sequence data.
+    manifest can never drift from the sequence data. Real bars only (fake
+    bars are dropped even when the caller's map has them).
+
+    When ``written_files`` is given, an entry whose action file is not in it
+    (the export skipped that bar or hold) is left out of ``schedule`` and
+    listed under ``not_exported`` instead, so the schedule never points at a
+    file that does not exist.
 
     Args:
-        bar_map (dict): a ``get_bar_seq_map`` result; fetched when omitted.
+        bar_map (dict): a ``get_bar_seq_map`` result (with or without the
+            fake bars); fetched when omitted.
+        written_files (set): the ``"BarActions/<name>.json"`` paths that
+            exist; None keeps every entry.
 
     Returns:
-        dict: ``{schema_version, robots, assembly_seq, holds, schedule}``.
+        dict: ``{schema_version, robots, assembly_seq, holds, schedule,
+        not_exported}``.
     """
     from core.hold_schedule import build_action_schedule
 
-    if bar_map is None:
-        bar_map = get_bar_seq_map()
+    bar_map = get_real_bar_seq_map(bar_map)
     bar_seq, supported = collect_hold_inputs(bar_map)
     hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
     assembly_seq = [
@@ -1028,16 +1226,28 @@ def build_action_schedule_payload(bar_map=None) -> dict:
         robots[name] = {"robot_id": config.SUPPORT_ROBOTS[name]["robot_id"], "role": "support"}
 
     schedule = []
-    for index, entry in enumerate(entries):
+    not_exported = []
+    for entry in entries:
         suffix, id_suffix, type_name = SCHEDULE_KINDS[entry["kind"]]
-        schedule.append({
-            "index": index,
+        record = {
+            "index": len(schedule),
             "action_id": f"{entry['bar_id']}{id_suffix}",
             "type": type_name,
             "bar_id": entry["bar_id"],
             "robot": entry["robot_name"],
             "file": f"BarActions/{entry['bar_id']}{suffix}.json",
-        })
+        }
+        # ! Never point at a file that was not written: list it apart.
+        if written_files is not None and record["file"] not in written_files:
+            not_exported.append(record["file"])
+            continue
+        schedule.append(record)
+    if not_exported:
+        print(
+            f"core.hold_action_builder: NOTE - {len(not_exported)} scheduled action "
+            f"file(s) were not exported and are left out of the schedule: "
+            f"{', '.join(not_exported[:8])}" + (" ..." if len(not_exported) > 8 else "")
+        )
     return {
         "schema_version": 1,
         "robots": robots,
@@ -1053,6 +1263,8 @@ def build_action_schedule_payload(bar_map=None) -> dict:
             )
         ],
         "schedule": schedule,
+        # Action files the schedule would name but the export did not write.
+        "not_exported": not_exported,
     }
 
 
@@ -1078,7 +1290,7 @@ def validate_releases_after_bar(released_bar_id: str) -> dict:
         hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
     except RuntimeError as exc:
         return {"<hold plan>": f"derivation failed: {exc}"}
-    bar_map = get_bar_seq_map()
+    bar_map = get_real_bar_seq_map()
 
     for held_bar_id, entry in hold_plan.items():
         if entry["release_after_bar_id"] != released_bar_id:

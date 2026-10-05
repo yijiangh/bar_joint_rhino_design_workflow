@@ -141,6 +141,83 @@ def robots_holding_at_step(hold_plan: dict, seq: int) -> dict:
     }
 
 
+def holds_present_at_release(hold_plan: dict, held_bar_id: str) -> list:
+    """The OTHER holds still in place while ``held_bar_id``'s hold is released.
+
+    A hold is present at the release step when it started at or before that
+    step and has not released before it (``hold_start_seq <= release_seq <=
+    release_after_seq``; a hold starting AT the release step is present, since
+    its holding action runs before the step's releases). Holds released in the
+    SAME step go in hold-start order (the order :func:`build_action_schedule`
+    writes), so one that releases earlier in that step has already let go and
+    driven away -- it is not present.
+
+    Args:
+        hold_plan (dict): a :func:`derive_hold_plan` result.
+        held_bar_id (str): the hold being released.
+
+    Returns:
+        list: held bar ids of the other holds present, in hold-start order.
+    """
+    entry = hold_plan[held_bar_id]
+    release_seq = entry["release_after_seq"]
+    present = []
+    for other_bar_id, other in hold_plan.items():
+        if other_bar_id == held_bar_id:
+            continue
+        if not (other["hold_start_seq"] <= release_seq <= other["release_after_seq"]):
+            continue
+        # Same release step, earlier hold start -> released just before this one.
+        if (other["release_after_seq"] == release_seq
+                and other["hold_start_seq"] < entry["hold_start_seq"]):
+            continue
+        present.append(other_bar_id)
+    return sorted(present, key=lambda b: hold_plan[b]["hold_start_seq"])
+
+
+def frozen_robot_leave_steps(hold_plan: dict, held_bar_id: str,
+                             assembly_robot_name: str = "Cindy") -> dict:
+    """When each robot frozen in a hold's GRASP scene leaves the structure.
+
+    The hold scene of ``held_bar_id`` shows the bars built by the hold's END
+    (release time), while the frozen robots stand where they are at its START
+    (grasp time). A bar built after a frozen robot has left never stands next
+    to it, so that robot may overlap it in the scene. This returns the step
+    after which each frozen robot is gone:
+
+    - the assembly robot: the held bar's own step (she finishes it and leaves);
+    - every other support robot holding at the grasp: its own release step.
+
+    Args:
+        hold_plan (dict): a :func:`derive_hold_plan` result.
+        held_bar_id (str): the hold whose grasp scene is being built.
+        assembly_robot_name (str): the assembly robot's name.
+
+    Returns:
+        dict: ``{robot_name: leave_step}`` (the holding robot itself is not in it).
+    """
+    entry = hold_plan[held_bar_id]
+    out = {assembly_robot_name: entry["hold_start_seq"]}
+    for robot_name, other_bar_id in robots_holding_at_step(hold_plan, entry["hold_start_seq"]).items():
+        if robot_name == entry["robot_name"]:
+            continue
+        out[robot_name] = hold_plan[other_bar_id]["release_after_seq"]
+    return out
+
+
+def bodies_built_after(body_steps: dict, leave_step: int) -> list:
+    """Bodies built after a given step.
+
+    Args:
+        body_steps (dict): ``{body_name: step its bar is built at}``.
+        leave_step (int): the step after which a robot is gone.
+
+    Returns:
+        list: sorted names of the bodies whose step is greater than ``leave_step``.
+    """
+    return sorted(name for name, step in body_steps.items() if int(step) > int(leave_step))
+
+
 def build_action_schedule(
     assembly_seq: list,
     hold_plan: dict,

@@ -3,8 +3,7 @@
 A frozen holding robot (an unattached obstacle ToolModel) is clamped around its
 held bar, so that one tool<->bar contact must be allowed or every IK candidate
 in the scene is vetoed. These tests drive the whitelist helper with fake scene
-states covering both bar naming schemes (`bar_<id>` in the assembly cell,
-`env_bar_<id>` in the support cells).
+states. Every cell (Cindy's and the support robots') names the bar `bar_<id>`.
 
 Run with the tamp venv (has compas + compas_fab):
     external\\husky_assembly_tamp\\.venv\\Scripts\\python.exe -m pytest tests/test_robot_obstacles_whitelist.py -v
@@ -43,11 +42,13 @@ def test_assembly_cell_naming():
 
 
 def test_support_cell_naming():
-    """In a support cell the held bar is `env_bar_<id>` -- probed second."""
-    st = _state(["env_bar_B39"])
+    """A support cell uses the same `bar_<id>` name (the old `env_bar_<id>` is gone)."""
+    st = _state(["bar_B39", "env_bar_B39"])
     touched = whitelist_frozen_contact(st, "Belle", ["B39"])
-    assert touched == ["env_bar_B39"]
-    assert st.rigid_body_states["env_bar_B39"].touch_bodies == [BELLE_TOOL]
+    assert touched == ["bar_B39"]
+    assert st.rigid_body_states["bar_B39"].touch_bodies == [BELLE_TOOL]
+    # An old-style body (only in a stale cached cell) is never touched.
+    assert st.rigid_body_states["env_bar_B39"].touch_bodies == []
 
 
 def test_appends_without_clobbering_and_is_idempotent():
@@ -60,10 +61,10 @@ def test_appends_without_clobbering_and_is_idempotent():
 
 
 def test_missing_bar_prints_note_and_skips(capsys):
-    """A bar absent under both naming schemes is skipped LOUDLY, not silently."""
+    """A bar absent from the scene is skipped LOUDLY, not silently."""
     st = _state(["bar_B34"])
     touched = whitelist_frozen_contact(st, "Alice", ["B21"])
     assert touched == []
     out = capsys.readouterr().out
     assert "frozen Alice is clamped onto bar B21" in out
-    assert "bar_B21" in out and "env_bar_B21" in out
+    assert "'bar_B21'" in out

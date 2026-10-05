@@ -32,10 +32,10 @@ def fake_rs(monkeypatch):
 
 def test_duplicate_key_from_two_blocks_raises(fake_rs):
     """Two different blocks claiming one name is a hard error, naming both."""
-    out = {"env_joint_J40-43_female": {"source_oid": "oid-A"}}
+    out = {"joint_J40-43_female": {"source_oid": "oid-A"}}
     with pytest.raises(RuntimeError) as excinfo:
         env_collision._raise_on_duplicate_joint_key(
-            out, "env_joint_J40-43_female", "oid-B", "collect_built_geometry"
+            out, "joint_J40-43_female", "oid-B", "collect_assembly_geometry"
         )
     message = str(excinfo.value)
     assert "J40-43_female" in message and "J40-43_female_copy" in message
@@ -45,14 +45,14 @@ def test_duplicate_key_from_two_blocks_raises(fake_rs):
 
 def test_same_block_seen_twice_is_tolerated(fake_rs):
     """Re-adding the SAME object (layer listed twice) is harmless, not an error."""
-    out = {"env_joint_J40-43_female": {"source_oid": "oid-A"}}
+    out = {"joint_J40-43_female": {"source_oid": "oid-A"}}
     env_collision._raise_on_duplicate_joint_key(
-        out, "env_joint_J40-43_female", "oid-A", "collect_built_geometry"
+        out, "joint_J40-43_female", "oid-A", "collect_assembly_geometry"
     )
 
 
 def test_fresh_key_passes(fake_rs):
     """A name nobody has claimed yet is accepted silently."""
     env_collision._raise_on_duplicate_joint_key(
-        {}, "env_joint_J26-41_female", "oid-B", "collect_assembly_geometry"
+        {}, "joint_J26-41_female", "oid-B", "collect_assembly_geometry"
     )

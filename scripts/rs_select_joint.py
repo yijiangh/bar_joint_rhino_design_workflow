@@ -36,6 +36,12 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+# Canonical PyBullet body keys look like "joint_J25-26_male"; the "joint_"
+# prefix lives in core/env_collision.py, the one home of the body naming
+# (env_collision imports only config + numpy at module level, so this stays a
+# light command). Users paste those keys straight from collision logs, so the
+# prefix is accepted and stripped when parsing a token.
+from core.env_collision import CANONICAL_JOINT_PREFIX
 
 
 # Command name used in every command-line message + dialog title.
@@ -45,13 +51,6 @@ CMD = "RSSelectJoint"
 # names a block instance (e.g. "J40-53_female"). Order matters only for the
 # help text; matching is case-insensitive.
 ROLES = ("female", "male", "ground")
-
-# Canonical PyBullet body keys look like "joint_J25-26_male" (the "joint_"
-# prefix is CANONICAL_JOINT_PREFIX in core/bar_action.py + core/env_collision.py;
-# kept as a plain string here so this read-only command stays free of heavy
-# imports). Users paste those keys straight from collision logs, so the prefix
-# is accepted and stripped when parsing a token.
-CANONICAL_JOINT_PREFIX = "joint_"
 
 # Fallback for blocks that lost their object name: map each joint-instance
 # layer to the role it holds, so the block can still be filed correctly from

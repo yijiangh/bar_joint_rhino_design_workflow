@@ -43,11 +43,25 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+# ! Reload the "provider" modules FIRST: the ones other core modules import
+# NAMES from (`from core.env_collision import STATIC_KINDS`, ...). A module
+# imported below for the first time in this Rhino session would otherwise bind
+# those names against a stale copy still in sys.modules, and fail with an
+# ImportError on any newly added name before main() could reload anything.
+from core import env_collision as _env_collision_module
+from core import hold_schedule as _hold_schedule_module
+from core import rhino_bar_registry as _rhino_bar_registry_module
+
+importlib.reload(_env_collision_module)
+importlib.reload(_hold_schedule_module)
+importlib.reload(_rhino_bar_registry_module)
+
 from core import bar_action as _bar_action_module
 from core import config as _config_module
 from core import hold_action_builder as _hold_action_builder_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import robot_cell as _robot_cell_module
+from core import robot_obstacles as _robot_obstacles_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, is_fake_bar, repair_on_entry
 
@@ -73,6 +87,11 @@ def _prompt_export_root() -> str | None:
 def main() -> None:
     robot_cell = importlib.reload(_robot_cell_module)
     config = importlib.reload(_config_module)
+    # Providers before the modules that import names from them.
+    importlib.reload(_env_collision_module)
+    importlib.reload(_hold_schedule_module)
+    importlib.reload(_rhino_bar_registry_module)
+    importlib.reload(_robot_obstacles_module)
     importlib.reload(_ik_collision_setup_module)
     bar_action = importlib.reload(_bar_action_module)
     hold_action_builder = importlib.reload(_hold_action_builder_module)
@@ -141,11 +160,12 @@ def main() -> None:
 
     # Holding + holding-release for a bar in the hold plan (skipped with a
     # clear note when its support keyframe is not solved yet).
-    from core.rhino_bar_registry import collect_hold_inputs, get_bar_seq_map
+    from core.rhino_bar_registry import collect_hold_inputs, get_real_bar_seq_map
     from core.hold_schedule import derive_hold_plan
     hold_actions = []
     hold_note = None
-    seq_map = get_bar_seq_map()
+    # Real bars only (no fake bars): the same map the batch export uses.
+    seq_map = get_real_bar_seq_map()
     try:
         bar_seq, supported = collect_hold_inputs(seq_map)
         hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
@@ -217,13 +237,23 @@ def main() -> None:
         print(f"RSExportBarAction: saved {out}.")
 
     # Refresh the schedule manifest when a prior batch export created one —
-    # pure metadata, so a single-bar refresh keeps it consistent for free.
+    # pure metadata, so a single-bar refresh keeps it consistent for free. Only
+    # files that exist in this bundle are scheduled (the rest are listed under
+    # "not_exported").
     schedule_path = os.path.join(root, "ActionSchedule.json")
     if os.path.isfile(schedule_path):
         try:
             import json as _json
+            written_files = {
+                f"BarActions/{name}" for name in os.listdir(out_dir) if name.endswith(".json")
+            }
             with open(schedule_path, "w") as f:
-                _json.dump(hold_action_builder.build_action_schedule_payload(seq_map), f, indent=2)
+                _json.dump(
+                    hold_action_builder.build_action_schedule_payload(
+                        seq_map, written_files=written_files,
+                    ),
+                    f, indent=2,
+                )
             print(f"RSExportBarAction: refreshed {schedule_path}.")
         except RuntimeError as exc:
             print(f"RSExportBarAction: ActionSchedule refresh failed ({exc}).")

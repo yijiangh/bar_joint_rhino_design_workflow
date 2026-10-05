@@ -141,6 +141,23 @@ def get_or_load_support_cell(robot_name: str):
     return cell
 
 
+def mark_cell_needs_push(cell) -> None:
+    """Make the next ``ensure_support_cell_pushed`` send this cell to PyBullet again.
+
+    For a cell whose bodies were changed WITHOUT a planner at hand (an export
+    registers bodies into the cached cell but pushes nothing): the robot's
+    PyBullet session would otherwise keep the old bodies, and the next solve
+    would check against them.
+
+    Args:
+        cell (RobotCell): a cached support cell (from ``get_or_load_support_cell``).
+    """
+    sessions = _STICKY.get(_STICKY_PB_SESSIONS) or {}
+    for robot_name in config.SUPPORT_ROBOT_NAMES:
+        if _STICKY.get(_STICKY_SUPPORT_CELL_PREFIX + robot_name) is cell and robot_name in sessions:
+            sessions[robot_name]["cell_loaded"] = False
+
+
 def ensure_support_cell_pushed(robot_name: str):
     """Get a support robot's session, pushing its cell into the planner once.
 

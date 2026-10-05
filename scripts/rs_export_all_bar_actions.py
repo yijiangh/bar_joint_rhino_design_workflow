@@ -46,12 +46,26 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+# ! Reload the "provider" modules FIRST: the ones other core modules import
+# NAMES from (`from core.env_collision import STATIC_KINDS`, ...). A module
+# imported below for the first time in this Rhino session would otherwise bind
+# those names against a stale copy still in sys.modules, and fail with an
+# ImportError on any newly added name before main() could reload anything.
+from core import env_collision as _env_collision_module
+from core import hold_schedule as _hold_schedule_module
+from core import rhino_bar_registry as _rhino_bar_registry_module
+
+importlib.reload(_env_collision_module)
+importlib.reload(_hold_schedule_module)
+importlib.reload(_rhino_bar_registry_module)
+
 from core import bar_action as _bar_action_module
 from core import config as _config_module
 from core import hold_action_builder as _hold_action_builder_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
+from core import robot_obstacles as _robot_obstacles_module
 from core.rhino_bar_registry import repair_on_entry
 
 from compas import json_dump
@@ -76,6 +90,11 @@ def _prompt_export_root() -> str | None:
 def main() -> None:
     robot_cell = importlib.reload(_robot_cell_module)
     config = importlib.reload(_config_module)
+    # Providers before the modules that import names from them.
+    importlib.reload(_env_collision_module)
+    importlib.reload(_hold_schedule_module)
+    importlib.reload(_rhino_bar_registry_module)
+    importlib.reload(_robot_obstacles_module)
     importlib.reload(_ik_collision_setup_module)
     bar_action = importlib.reload(_bar_action_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
@@ -97,17 +116,18 @@ def main() -> None:
         print("RSExportAllBarActions: aborted (stale collision cell).")
         return
 
-    from core.rhino_bar_registry import get_bar_seq_map, get_fake_bar_ids
-    seq_map = get_bar_seq_map()
-    if not seq_map:
+    from core.rhino_bar_registry import get_bar_seq_map, get_fake_bar_ids, get_real_bar_seq_map
+    all_bars_map = get_bar_seq_map()
+    if not all_bars_map:
         rs.MessageBox("No registered bars found.", 0, "RSExportAllBarActions")
         return
     # Fake bars are staging the robot never assembles -- no action plan to
     # export.  Dropped here rather than inside the loop so the count is reported
     # once, up front: a silently shorter export looks like a partial failure.
-    fake_ids = get_fake_bar_ids(seq_map)
+    # The same fake-free map feeds every action, the hold plan and the schedule.
+    fake_ids = get_fake_bar_ids(all_bars_map)
+    seq_map = get_real_bar_seq_map(all_bars_map)
     if fake_ids:
-        seq_map = {b: v for b, v in seq_map.items() if b not in fake_ids}
         print(
             f"RSExportAllBarActions: skipping {len(fake_ids)} fake bar(s) -- "
             f"{', '.join(sorted(fake_ids))} (RSBarEdit > FakeBar to change)."
@@ -146,6 +166,8 @@ def main() -> None:
 
     n_ok = 0
     failures = []
+    # Every action file written, as the schedule names them ("BarActions/<name>.json").
+    written_files = set()
     total = len(all_bars)
     # The cell is the persistent static registry; ensure it once up front so the
     # RobotCell.json dumped after the loop is the full assembly. No snapshot/
@@ -186,6 +208,7 @@ def main() -> None:
             out = os.path.join(actions_dir, f"{bar_id}{suffix}.json")
             with open(out, "w") as f:
                 json_dump(action, f, pretty=True)
+            written_files.add(f"BarActions/{bar_id}{suffix}.json")
             print(f"  [OK] {bar_id}{suffix} -> {out} ({len(action.movements)} movements)")
         n_ok += 1
 
@@ -220,15 +243,23 @@ def main() -> None:
             out = os.path.join(actions_dir, f"{held_bar_id}{suffix}.json")
             with open(out, "w") as f:
                 json_dump(action, f, pretty=True)
+            written_files.add(f"BarActions/{held_bar_id}{suffix}.json")
             print(f"  [OK] {held_bar_id}{suffix} -> {out} ({len(action.movements)} movements)")
         holds_exported.append(held_bar_id)
 
     # * ---- The global interleaved schedule (pure metadata, rebuilt fresh).
+    # Only the files written THIS run are scheduled; a skipped bar / hold is
+    # listed under "not_exported" instead of pointing at a missing file.
     schedule_out = os.path.join(root, "ActionSchedule.json")
+    not_exported = []
     try:
         import json as _json
+        payload = hold_action_builder.build_action_schedule_payload(
+            seq_map, written_files=written_files,
+        )
+        not_exported = payload["not_exported"]
         with open(schedule_out, "w") as f:
-            _json.dump(hold_action_builder.build_action_schedule_payload(seq_map), f, indent=2)
+            _json.dump(payload, f, indent=2)
         print(f"  [OK] ActionSchedule -> {schedule_out}")
     except RuntimeError as exc:
         failures.append(("<schedule>", str(exc)))
@@ -285,6 +316,12 @@ def main() -> None:
         )
     if failures:
         msg += "\n\nFailed:\n" + "\n".join(f"  {b}: {e}" for b, e in failures)
+    if not_exported:
+        msg += (
+            f"\n\nLeft OUT of ActionSchedule.json (not exported): {len(not_exported)} file(s)\n"
+            + "\n".join(f"  {name}" for name in not_exported[:12])
+            + ("\n  ..." if len(not_exported) > 12 else "")
+        )
     rs.MessageBox(msg, 0, "RSExportAllBarActions")
     print(
         f"RSExportAllBarActions: done ({n_ok} bars, {len(holds_exported)} holds, "

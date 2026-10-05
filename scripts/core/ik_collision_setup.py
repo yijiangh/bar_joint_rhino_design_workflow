@@ -24,6 +24,8 @@ import numpy as np
 
 from core import config
 from core import robot_cell
+# Body kinds that exist at every assembly step (obstacles, floors).
+from core.env_collision import STATIC_KINDS
 # Single home of the L/R tool-name suffix rule.
 from core.robotic_tool import arm_side_from_tool_name
 
@@ -31,6 +33,62 @@ from core.robotic_tool import arm_side_from_tool_name
 # ---------------------------------------------------------------------------
 # Rhino-side tool resolution (lazy rhinoscriptsyntax import)
 # ---------------------------------------------------------------------------
+
+
+def mixed_ground_male_error(bar_id: str, male_joint_ids, ground_joint_ids):
+    """Error text for a bar that mixes ground joints with male joints, else None.
+
+    A bar is EITHER a ground bar (its ground joints stand on the floor; no
+    jointing motor runs and the operator fixes the foundation) OR a normal bar
+    (male joints mate into built females and the jointing screws tighten).
+    One ground joint plus one male joint on the same bar is not a valid design,
+    so every gate refuses it with the same message. Rhino-free.
+
+    Args:
+        bar_id (str): the bar being checked.
+        male_joint_ids (list): ids of the male joints on the bar.
+        ground_joint_ids (list): ids of the ground joints on the bar.
+
+    Returns:
+        str | None: the error message, or None when the bar is not mixed.
+    """
+    if not male_joint_ids or not ground_joint_ids:
+        return None
+    return (
+        f"Bar '{bar_id}' has both ground joint(s) {sorted(ground_joint_ids)} and "
+        f"male joint(s) {sorted(male_joint_ids)}. A bar is either a ground bar "
+        "(two ground joints, no jointing motor, the operator fixes the "
+        "foundation) or a normal bar (two male joints) -- not both. Fix the "
+        "joints on this bar (RSJointEdit / RSGroundPlace)."
+    )
+
+
+def _anchor_blocks_on_bar(bar_id: str) -> dict:
+    """Find the tool-bearing joint blocks mounted on a bar, by kind.
+
+    Args:
+        bar_id (str): the bar to scan for.
+
+    Returns:
+        dict: ``{"male": [oid, ...], "ground": [oid, ...]}`` -- Rhino object ids
+        of the male and ground joint block instances whose
+        ``parent_bar_id == bar_id``.
+    """
+    import rhinoscriptsyntax as rs
+
+    out = {"male": [], "ground": []}
+    for kind, layer in (
+        ("male", config.LAYER_JOINT_MALE_INSTANCES),
+        ("ground", config.LAYER_JOINT_GROUND_INSTANCES),
+    ):
+        if not rs.IsLayer(layer):
+            continue
+        out[kind].extend(
+            oid
+            for oid in rs.ObjectsByLayer(layer) or []
+            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+        )
+    return out
 
 
 def _males_on_bar(bar_id: str) -> list:
@@ -43,21 +101,8 @@ def _males_on_bar(bar_id: str) -> list:
         list: Rhino object ids of male + ground joint block instances whose
         ``parent_bar_id == bar_id``.
     """
-    import rhinoscriptsyntax as rs
-
-    out = []
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
-        if not rs.IsLayer(layer):
-            continue
-        out.extend(
-            oid
-            for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") == bar_id
-        )
-    return out
+    blocks = _anchor_blocks_on_bar(bar_id)
+    return blocks["male"] + blocks["ground"]
 
 
 def resolve_arm_tools_on_bar(bar_id: str):
@@ -68,12 +113,21 @@ def resolve_arm_tools_on_bar(bar_id: str):
 
     Returns:
         tuple: ``({"left": tool_oid, "right": tool_oid}, None)`` on success, or
-        ``(None, error_msg)`` if the bar lacks exactly one left + one right tool.
+        ``(None, error_msg)`` if the bar lacks exactly one left + one right tool,
+        or mixes a ground joint with a male joint.
     """
     import rhinoscriptsyntax as rs
     from core.rhino_tool_place import find_tool_for_joint
 
-    males = _males_on_bar(bar_id)
+    blocks = _anchor_blocks_on_bar(bar_id)
+    mixed = mixed_ground_male_error(
+        bar_id,
+        [rs.GetUserText(oid, "joint_id") or str(oid) for oid in blocks["male"]],
+        [rs.GetUserText(oid, "joint_id") or str(oid) for oid in blocks["ground"]],
+    )
+    if mixed:
+        return None, mixed
+    males = blocks["male"] + blocks["ground"]
     if len(males) != 2:
         return None, (
             f"Bar '{bar_id}' has {len(males)} tool-bearing joint(s) (male+ground); need exactly 2."
@@ -160,8 +214,9 @@ def build_full_assembly_state(base_state, collision_bodies, bar_seq_map, active_
     ``robot_cell.base_assembly_cell_state``). Every body in ``collision_bodies``
     becomes a static, unattached obstacle at its world frame, EXCEPT
     not-yet-built bars/joints (parent-bar sequence > active) which are
-    ``is_hidden=True``. Environment obstacles (``kind:"environment"``, no
-    parent bar) are always static + visible.
+    ``is_hidden=True``. Static bodies (obstacles and floors, no parent bar)
+    are always visible and keep the always-allowed contacts their
+    ``body_info`` carries (a floor: the wheels + the frozen robots).
 
     The active bar is left as a static obstacle here (the live-IK form); the
     BarAction export re-classes it to gripper-attached per movement.
@@ -190,7 +245,8 @@ def build_full_assembly_state(base_state, collision_bodies, bar_seq_map, active_
 
     for name, body_info in collision_bodies.items():
         frame = _frame_from_mm4(body_info["frame_world_mm"])
-        if body_info.get("kind") == "environment":
+        if body_info.get("kind") in STATIC_KINDS:
+            # Exists at every step of the assembly.
             is_hidden = False
         else:
             parent = body_info.get("parent_bar_id")
@@ -200,8 +256,10 @@ def build_full_assembly_state(base_state, collision_bodies, bar_seq_map, active_
             frame=frame,
             attached_to_link=None,
             attached_to_tool=None,
-            touch_links=[],
-            touch_bodies=[],
+            # Bars / joints start with no allowed contacts (the per-movement
+            # policy in core.bar_action sets them); floors carry their own.
+            touch_links=list(body_info.get("touch_links") or []),
+            touch_bodies=list(body_info.get("touch_bodies") or []),
             attachment_frame=None,
             is_hidden=is_hidden,
         )

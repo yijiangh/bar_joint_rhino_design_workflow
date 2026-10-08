@@ -85,6 +85,29 @@ def test_demo_action_schedule_interleaving():
     assert len(schedule) == 2 * 9 + 2 + 2
 
 
+def test_range_schedule_follows_the_releasing_bar():
+    """A range export walks only its bars (RSExportAllBarActions From/Until).
+
+    Range B3..B8 of the demo: B2's hold started before the range, yet it is
+    released right after B8, inside the range, so its release is scheduled.
+    Range B3..B6: B5's hold starts inside but releases after B8, outside the
+    range -- the holding step is scheduled, its release is not.
+    """
+    plan = derive_hold_plan(DEMO_BAR_SEQ, DEMO_SUPPORTED_UNTIL)
+
+    in_range = [(e["kind"], e["bar_id"]) for e in build_action_schedule(
+        [f"B{i}" for i in range(3, 9)], plan)]
+    assert ("jointing", "B2") not in in_range
+    assert ("holding", "B2") not in in_range
+    assert ("holding_release", "B2") in in_range
+    assert ("holding", "B5") in in_range and ("holding_release", "B5") in in_range
+
+    open_end = [(e["kind"], e["bar_id"]) for e in build_action_schedule(
+        [f"B{i}" for i in range(3, 7)], plan)]
+    assert ("holding", "B5") in open_end
+    assert not any(kind == "holding_release" for kind, _bar in open_end)
+
+
 def test_robot_reused_after_release():
     # B2 held until B4 only; B6 held until B8: Alice serves both in turn.
     bar_seq = {f"B{i}": i for i in range(1, 9)}

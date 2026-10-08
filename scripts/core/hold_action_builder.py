@@ -35,6 +35,7 @@ from core import robot_obstacles
 # Frame conversion shared with the assembly builder (private on purpose —
 # same package, one definition).
 from core.bar_action import _mm4_to_frame
+from core.export_subset import cut_assembly_seq, ordered_bar_ids, range_bar_ids
 from core.hold_schedule import (
     bodies_built_after,
     derive_hold_plan,
@@ -1189,7 +1190,7 @@ SCHEDULE_KINDS = {
 }
 
 
-def build_action_schedule_payload(bar_map=None, written_files=None) -> dict:
+def build_action_schedule_payload(bar_map=None, written_files=None, export_range=None) -> dict:
     """The ``ActionSchedule.json`` content: global interleaved order + robots.
 
     Pure metadata (no states) rebuilt from the document every time, so the
@@ -1201,25 +1202,63 @@ def build_action_schedule_payload(bar_map=None, written_files=None) -> dict:
     listed under ``not_exported`` instead, so the schedule never points at a
     file that does not exist.
 
+    A range export (``export_range = (from_bar_id, until_bar_id)``) covers
+    only part of the assembly:
+
+    - ``assembly_seq`` is cut to the bars up to ``until`` (the bars before
+      ``from`` stay: they are the scene the first exported bar is built into);
+    - ``schedule`` holds the steps of the bars ``from .. until``: each bar's
+      jointing, holding and release, plus every hold release that happens
+      right after one of these bars -- even for a hold that started before
+      ``from``. A hold that releases after ``until`` gets no release entry;
+    - ``holds`` lists the holds that are under way at some point of the range.
+
+    The hold plan itself always comes from the FULL sequence: a bar may list
+    a stabilizing bar after ``until``, and the robot assignment must not
+    depend on where the export stops.
+
     Args:
         bar_map (dict): a ``get_bar_seq_map`` result (with or without the
             fake bars); fetched when omitted.
         written_files (set): the ``"BarActions/<name>.json"`` paths that
             exist; None keeps every entry.
+        export_range (tuple | None): ``(from_bar_id, until_bar_id)``; None
+            means the whole assembly.
 
     Returns:
-        dict: ``{schema_version, robots, assembly_seq, holds, schedule,
-        not_exported}``.
+        dict: ``{schema_version, robots, assembly_seq, export_range, holds,
+        schedule, not_exported}``.
     """
     from core.hold_schedule import build_action_schedule
 
     bar_map = get_real_bar_seq_map(bar_map)
     bar_seq, supported = collect_hold_inputs(bar_map)
     hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
-    assembly_seq = [
-        bid for bid, _oid_seq in sorted(bar_map.items(), key=lambda kv: kv[1][1])
-    ]
-    entries = build_action_schedule(assembly_seq, hold_plan, config.ASSEMBLY_ROBOT_NAME)
+    full_seq = ordered_bar_ids(bar_map)
+    if export_range is None:
+        export_range = (full_seq[0], full_seq[-1]) if full_seq else (None, None)
+    from_bar_id, until_bar_id = export_range
+    if full_seq:
+        # The built scene of the export (prefix included) and the bars it acts on.
+        assembly_seq = cut_assembly_seq(bar_map, until_bar_id)
+        acting_seq = range_bar_ids(bar_map, from_bar_id, until_bar_id)
+    else:
+        assembly_seq, acting_seq = [], []
+    # Walking only the acting bars gives exactly the range rule above: the
+    # holding step comes with its held bar, the hold release with the bar it
+    # waits for.
+    entries = build_action_schedule(acting_seq, hold_plan, config.ASSEMBLY_ROBOT_NAME)
+    # Holds under way during the range: started by ``until`` and not yet
+    # released before ``from``.
+    if acting_seq:
+        from_step = int(bar_map[from_bar_id][1])
+        until_step = int(bar_map[until_bar_id][1])
+        hold_plan_in_range = {
+            held: e for held, e in hold_plan.items()
+            if e["hold_start_seq"] <= until_step and e["release_after_seq"] >= from_step
+        }
+    else:
+        hold_plan_in_range = {}
 
     robots = {config.ASSEMBLY_ROBOT_NAME: {"robot_id": config.ROBOT_ID, "role": "assembly"}}
     for name in config.SUPPORT_ROBOT_NAMES:
@@ -1252,14 +1291,19 @@ def build_action_schedule_payload(bar_map=None, written_files=None) -> dict:
         "schema_version": 1,
         "robots": robots,
         "assembly_seq": assembly_seq,
+        # Which bars this bundle acts on (the whole assembly unless a range
+        # was picked in RSExportAllBarActions).
+        "export_range": {"from_bar_id": from_bar_id, "until_bar_id": until_bar_id},
         "holds": [
             {
                 "bar_id": held_bar_id,
                 "robot": e["robot_name"],
+                # May name a bar after the range: that hold is still on at
+                # the end of this bundle.
                 "release_after_bar_id": e["release_after_bar_id"],
             }
             for held_bar_id, e in sorted(
-                hold_plan.items(), key=lambda kv: kv[1]["hold_start_seq"]
+                hold_plan_in_range.items(), key=lambda kv: kv[1]["hold_start_seq"]
             )
         ],
         "schedule": schedule,

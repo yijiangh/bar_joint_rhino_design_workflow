@@ -319,7 +319,7 @@
         <locale_1033>RSExportBarAction</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Left-click: pick a bar; save its assembly cycle (M0-M4) to &lt;root&gt;/BarActions/&lt;bar_id&gt;.json. Right-click: export EVERY bar (IK optional) + RobotCell.json + WalkableGround.json (for the headless base+IK solver).</locale_1033>
+        <locale_1033>Left-click: pick a bar; save its jointing + release (+ hold) actions to &lt;root&gt;/BarActions/ (cut to the folder's bundle range). Right-click: export the bars (IK optional) + RobotCell.json + WalkableGround.json + ActionSchedule.json; Enter = every bar, or set FromBar / UntilBar to export a smaller bundle up to a bar.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_export_bar_action.py"</script>
     </macro_item>
@@ -328,7 +328,7 @@
         <locale_1033>RSExportAllBarActions</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Export BarAssemblyAction JSON for EVERY bar (IK optional), plus RobotCell.json + WalkableGround.json, to &lt;root&gt;. Bars without IK are solved later by the headless base+IK sampler.</locale_1033>
+        <locale_1033>Export the action JSON for every bar, or a From .. Until range (Enter = all), plus RobotCell.json + WalkableGround.json + ActionSchedule.json, to &lt;root&gt;. A range drops the later bars and their joints from the cell and every state. Bars without IK are solved later by the headless base+IK sampler.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_export_all_bar_actions.py"</script>
     </macro_item>

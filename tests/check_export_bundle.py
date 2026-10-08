@@ -6,6 +6,10 @@ Checks the exported files against the rules agreed in
 line per rule, with the first few offenders for every FAIL. It reads plain
 JSON only (no compas, no Rhino), so it runs with any Python 3.
 
+A bundle exported for a range of bars (RSExportAllBarActions From/Until) is
+checked the same way: its schedule's ``assembly_seq`` ends at the last
+exported bar, and every action file must carry that same cut sequence.
+
 Usage:
     python tests/check_export_bundle.py <export folder> [--cells]
 
@@ -433,6 +437,43 @@ def check_cells(report: Report, root: str, floors: set) -> None:
     report.rule("D2/D6 cell files use canonical names and carry the floor", problems)
 
 
+def check_cell_bodies(report: Report, root: str, schedule: dict, actions: dict) -> None:
+    """The assembly robot's cell and its action states name the same bodies.
+
+    The exporter records ``RobotCell.json``'s body names in the schedule
+    (``cell_rigid_bodies``). Every jointing / release state must name exactly
+    those bodies (compas_fab refuses a state that does not), which also
+    catches a single bar re-exported into a range bundle without the cut.
+    Older bundles without the record are skipped.
+    """
+    recorded = schedule.get("cell_rigid_bodies")
+    if recorded is None:
+        print("SKIP  cell bodies: the schedule has no cell_rigid_bodies (older export)")
+        return
+    recorded = set(recorded)
+    problems = []
+    with open(os.path.join(root, "RobotCell.json"), encoding="utf-8") as f:
+        cell = json.load(f)
+    cell = cell.get("data", cell)
+    in_cell = set(cell["rigid_body_models"])
+    if in_cell != recorded:
+        problems.append(
+            f"RobotCell.json: {sorted(in_cell - recorded)[:4]} not recorded, "
+            f"{sorted(recorded - in_cell)[:4]} missing"
+        )
+    for stem, action in actions.items():
+        if not stem.endswith(("__J", "__R")):
+            continue
+        for movement in movements_of(action):
+            names = set(body_states(start_state(movement)))
+            if names and names != in_cell:
+                problems.append(
+                    f"{movement['movement_id']}: {sorted(names - in_cell)[:4]} not in the cell, "
+                    f"{sorted(in_cell - names)[:4]} missing"
+                )
+    report.rule("RobotCell.json and every assembly state name the same bodies (schedule record)", problems)
+
+
 def main() -> int:
     """Run every rule on one export folder.
 
@@ -446,6 +487,9 @@ def main() -> int:
 
     schedule, actions = load_bundle(args.root)
     print(f"{args.root}: {len(actions)} action file(s), {len(schedule['schedule'])} schedule entries")
+    export_range = schedule.get("export_range")
+    if export_range:
+        print(f"export range: {export_range['from_bar_id']} .. {export_range['until_bar_id']}")
     report = Report()
     check_movement_lists(report, actions)
     check_tighten_tools(report, actions)
@@ -455,6 +499,7 @@ def main() -> int:
     if args.cells:
         used = {gid for a in actions.values() for gid in a["data"].get("walkable_ground_ids", [])}
         check_cells(report, args.root, {f"{FLOOR_PREFIX}{gid}" for gid in used})
+        check_cell_bodies(report, args.root, schedule, actions)
     print(f"\n{report.failed} rule(s) failed.")
     return 1 if report.failed else 0
 

@@ -462,11 +462,27 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 ### RSExportBarAction (`rs_export_bar_action.py`)
 
 - Left-click: exports one picked bar's movement/action schema for planner/monitor integration.
+  When the folder holds a bundle from the batch export (its `ActionSchedule.json` records
+  `cell_rigid_bodies`), the bar is cut to that bundle: a bar outside its range, or a bundle
+  whose bar sequence no longer matches the document, is refused (re-export with the right-click).
 - Right-click on the same button runs the batch export below (`rs_export_all_bar_actions.py`) — there is no separate "RSExportAllBarActions" button.
 
 ### RSExportAllBarActions (`rs_export_all_bar_actions.py`)
 
 - Batch export of ALL bars (not just IK-solved ones): writes `<root>/BarActions/<bar_id>.json`, `<root>/RobotCell.json`, and `<root>/WalkableGround.json`.
+- **Range (From .. Until).** It first asks which bars to export: press Enter for all of them, or use
+  `FromBar` / `UntilBar` (click a bar, or type its id `B5` or step number `5`; the scene built up
+  to that bar is shown for Accept / Repick; `All` resets). A range export is a smaller bundle
+  (`core/export_subset.py`):
+  - actions for the bars From .. Until only; a hold's `__H` when it starts in the range, its
+    `__HR` when it releases right after a bar of the range (the hold plan still comes from the
+    whole sequence);
+  - the cells and every state keep the bars up to Until and the joint halves mounted on them
+    (a female half on an earlier bar stays); later bars, their halves, and floors no exported
+    action stands on are left out; `WalkableGround.json` keeps only the used grounds;
+  - every `assembly_seq` (actions and `ActionSchedule.json`) ends at Until, the bars before
+    From included; the schedule records `export_range` and the cell's `cell_rigid_bodies`.
+  - Files an earlier, bigger export left in the folder are listed, with an offer to delete them.
 - Each BarAction carries the bar's `walkable_ground_ids` (set by RSRebuildRobotCell auto-assign or RSAssignAndShowWalkableGround). `WalkableGround.json` holds every WalkableGround brep meshed and keyed by its stable id.
 - Bars exported without IK get a placeholder base; the headless keyframe solver (`external/husky_assembly_tamp/scripts/headless_bar_action_planner.py --solve-keyframes`) samples their base + IK afterward.
 

@@ -230,7 +230,7 @@ class GroundJointDef:
 
     `M_tool_from_block` decouples the robotic tool's attach frame from the
     block frame.  It is needed because the two are governed by different
-    constraints: `core.ground_placement.auto_jr_y_down` requires the block's
+    constraints: `core.single_sided_placement.auto_jr_y_down` requires the block's
     local +Y to point at the ground (the foot must sit down), while the arm
     may have to approach with its TCP rolled relative to that.  Identity --
     the default, and what every male/female half does implicitly -- means the
@@ -249,7 +249,7 @@ class GroundJointDef:
     # forces the translation to zero, so the TCP always stays on the block
     # origin and the 50 mm TCP probe in `core.joint_relink._tool_edit` is
     # unaffected.  Being block-local, it rides along with the `flip` operation
-    # (`core.ground_placement.effective_M_block_from_bar`) automatically; note
+    # (`core.single_sided_placement.effective_M_block_from_bar`) automatically; note
     # that flip reverses block-local +Z, so a 180 deg roll about Z is exactly
     # invariant under a flip while a general angle reverses sense.
     M_tool_from_block: np.ndarray = field(default_factory=lambda: np.eye(4))

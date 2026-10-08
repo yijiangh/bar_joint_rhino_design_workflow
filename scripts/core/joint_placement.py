@@ -106,7 +106,7 @@ def insert_block_instance(
 
     ``subtype``, when given, tags a PREVIEW block (user text
     ``UT_PREVIEW_SUBTYPE``) so the interactive pickers in :mod:`rs_joint_place`
-    / :mod:`rs_ground_place` can tell receiver, male and ground previews apart.
+    can tell receiver, male, ground and MoCap previews apart.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 

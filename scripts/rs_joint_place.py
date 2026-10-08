@@ -2,9 +2,9 @@
 # venv: scaffolding_env
 # r: numpy==1.24.4
 # r: scipy==1.13.1
-"""RSJointPlace - Place connector blocks on one bar pair.
+"""RSJointPlace - Place connector blocks on one bar pair, or one joint on one bar.
 
-Two modes, chosen at the first prompt:
+Three modes, chosen at the first prompt:
 
 **JointPairAndTool** (the default, and everything below): confirm the active
 joint pair (Enter accepts the last-used pair, or pick a different one from the
@@ -23,6 +23,20 @@ grippers), and "earlier seq -> receiver" is what guarantees it.
 Flip to swap left/right.  No joint blocks are created and no variant is solved.
 This is the repair path for a joint pair that survived but lost its tool -- the
 normal flow would build a whole new pair, which is not what is wanted.
+
+**JointOnly**: place ONE single-sided joint -- a Ground joint or a standalone
+MoCap joint -- on one bar.  Pick the bar, pick a point on it, pick the joint
+(``T20_Ground`` / ``T20_MoCap``; skipped when only one is registered), then:
+
+  - Ground: ``Accept | Flip``.  Its angle about the bar is automatic -- the
+    foot faces the floor.  Clicking the preview flips it end-for-end.
+  - MoCap: ``Accept | Rotate``.  It starts with its marker plate facing up
+    (world +Z), or +X on a bar within 15 deg of vertical.  Rotate turns it
+    about the bar by the angle you type; clicking the preview repeats it.
+
+No tool is placed.  A Ground joint carries one, so the command reminds you to
+add it with ToolOnly (RSUpdatePreview also adds the default tool to any Ground
+joint still without one); a MoCap joint never carries a tool.
 
 The optimizer solves all 4 endpoint-reversal variants.  After an initial
 placement you can refine interactively:
@@ -58,6 +72,7 @@ from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module
 from core import joint_pair_solver as _joint_pair_solver_module
 from core import joint_placement as _joint_placement_module
+from core import single_sided_placement as _single_sided_module
 from core.rhino_helpers import (
     curve_endpoints,
     delete_objects,
@@ -69,7 +84,11 @@ from core.rhino_bar_registry import (
     repair_on_entry,
 )
 from core.rhino_block_import import require_block_definition
-from core.rhino_bar_pick import pick_bar, pick_bar_with_pair_option
+from core.rhino_bar_pick import (
+    pick_bar,
+    pick_bar_with_pair_option,
+    pick_point_on_bar,
+)
 from core import robotic_tool as _robotic_tool
 from core.rhino_tool_place import (
     get_tool_name_for_joint,
@@ -84,7 +103,7 @@ from core.rhino_tool_place import (
 
 def _reload_runtime_modules():
     """Reload shared core modules so edits take effect without a Rhino restart."""
-    global config, joint_pair_module, joint_placement
+    global config, joint_pair_module, joint_placement, single_sided
     global compute_variant, interface_metrics, is_variant_acceptable
     global place_joint_blocks, insert_block_instance
     global PREVIEW_COLORS
@@ -93,6 +112,7 @@ def _reload_runtime_modules():
     joint_pair_module = importlib.reload(_joint_pair_module)
     importlib.reload(_joint_pair_solver_module)
     joint_placement = importlib.reload(_joint_placement_module)
+    single_sided = importlib.reload(_single_sided_module)
 
     compute_variant = joint_placement.compute_variant
     interface_metrics = joint_placement.interface_metrics
@@ -386,6 +406,209 @@ def _run_tool_only():
         return
 
 
+# ---------------------------------------------------------------------------
+# JointOnly mode -- one Ground or standalone MoCap joint on one bar
+# ---------------------------------------------------------------------------
+
+
+#: Default step for MoCap's Rotate, in degrees.
+MOCAP_ROTATE_STEP_DEG = 90.0
+
+
+class _SingleSidedSession:
+    """Live preview of one single-sided joint while it is being aimed.
+
+    Ground can only be flipped (its angle is set by the floor); MoCap can only
+    be rotated about the bar (it has no floor to face).
+    """
+
+    def __init__(self, *, definition, bar_id, bar_start, bar_end, jp, jr, flipped=False):
+        self.definition = definition
+        self.subtype = single_sided.subtype_of(definition)
+        self.bar_id = bar_id
+        self.bar_start = bar_start
+        self.bar_end = bar_end
+        self.jp = float(jp)
+        self.jr = float(jr)
+        self.flipped = bool(flipped)
+        self.rotate_step_deg = MOCAP_ROTATE_STEP_DEG
+        self.preview_id = None
+
+    def _frame(self):
+        return single_sided.fk_single_block_frame(
+            self.bar_start, self.bar_end, self.jp, self.jr, self.definition,
+            flipped=self.flipped,
+        )
+
+    def show(self):
+        """(Re-)insert the preview at the current angle / flip."""
+        with suspend_redraw():
+            self.cleanup()
+            self.preview_id = single_sided.insert_single_sided_preview(
+                self.definition, self._frame()
+            )
+        print(
+            f"RSJointPlace: {self.definition.block_name} jp={self.jp:.2f} mm, "
+            f"jr={np.degrees(self.jr):.1f} deg"
+            + (f", flipped={self.flipped}" if self.subtype == jnc.GROUND else "")
+        )
+
+    def flip(self):
+        self.flipped = not self.flipped
+        self.show()
+
+    def rotate(self, degrees):
+        """Turn about the bar by *degrees*; jr is kept in (-180, 180]."""
+        angle = self.jr + np.radians(float(degrees))
+        self.jr = float(np.arctan2(np.sin(angle), np.cos(angle)))
+        self.show()
+
+    def cleanup(self):
+        if self.preview_id is not None:
+            delete_objects([self.preview_id])
+            self.preview_id = None
+
+
+def _single_sided_preview_loop(session):
+    """``Accept | Flip`` (Ground) or ``Accept | Rotate`` (MoCap).  True on accept.
+
+    Clicking the preview block repeats the one adjustment the joint has.
+    Also used by RSJointEdit to re-aim a placed joint.
+    """
+    is_ground = session.subtype == jnc.GROUND
+
+    def _preview_filter(rhino_object, geometry, component_index):
+        return rs.GetUserText(rhino_object.Id, jnc.UT_PREVIEW_SUBTYPE) == session.subtype
+
+    session.show()
+    try:
+        while True:
+            go = Rhino.Input.Custom.GetObject()
+            if is_ground:
+                go.SetCommandPrompt(
+                    "Click the joint to flip it along the bar (Enter = Accept, Esc = Cancel)"
+                )
+            else:
+                go.SetCommandPrompt(
+                    f"Click the joint to rotate it {session.rotate_step_deg:g} deg about "
+                    "the bar (Enter = Accept, Esc = Cancel)"
+                )
+            go.EnablePreSelect(False, False)
+            go.AcceptNothing(True)
+            go.SetCustomGeometryFilter(_preview_filter)
+            go.AddOption("Accept")
+            go.AddOption("Flip" if is_ground else "Rotate")
+
+            result = go.Get()
+            if result == Rhino.Input.GetResult.Cancel:
+                return False
+            if result == Rhino.Input.GetResult.Nothing:
+                return True
+            if result == Rhino.Input.GetResult.Option:
+                name = go.Option().EnglishName if go.Option() is not None else ""
+                if name == "Accept":
+                    return True
+                if name == "Flip":
+                    session.flip()
+                elif name == "Rotate":
+                    step = rs.GetReal(
+                        "Rotate about the bar (degrees)", session.rotate_step_deg
+                    )
+                    if step is not None:
+                        session.rotate_step_deg = float(step)
+                        session.rotate(step)
+                continue
+            if result == Rhino.Input.GetResult.Object:
+                if is_ground:
+                    session.flip()
+                else:
+                    session.rotate(session.rotate_step_deg)
+    finally:
+        session.cleanup()
+
+
+def _pick_single_sided_definition():
+    """The Ground / MoCap definition to place, or ``None``."""
+    registry = joint_pair_module.load_joint_registry()
+    definitions = single_sided.single_sided_definitions(registry)
+    if not definitions:
+        rs.MessageBox(
+            "No Ground or MoCap joint is registered.\n"
+            "Define one with RSDefineJointHalf (block named <Type>_Ground or "
+            "<Type>_MoCap).",
+            0,
+            "RSJointPlace",
+        )
+        return None
+    if len(definitions) == 1:
+        return definitions[0]
+    names = [d.block_name for d in definitions]
+    chosen = rs.ListBox(names, "Joint to place on the bar", "RSJointPlace")
+    if not chosen:
+        return None
+    return definitions[names.index(chosen)]
+
+
+def _run_joint_only():
+    """Place one Ground or standalone MoCap joint on one bar.  No tool."""
+    bar_curve = pick_bar("Select the bar for the Ground / MoCap joint")
+    if bar_curve is None:
+        return
+    bar_id = ensure_bar_id(bar_curve)
+    bar_start, bar_end = curve_endpoints(bar_curve)
+    bar_start = np.asarray(bar_start, dtype=float)
+    bar_end = np.asarray(bar_end, dtype=float)
+    bar_vec = bar_end - bar_start
+    bar_len = float(np.linalg.norm(bar_vec))
+    if bar_len <= 0.0:
+        print(f"RSJointPlace: {bar_id} has zero length; cannot place a joint on it.")
+        return
+
+    point = pick_point_on_bar(bar_curve, "Pick the point on the bar for the joint")
+    if point is None:
+        return
+    jp = float(np.dot(point - bar_start, bar_vec / bar_len))
+
+    definition = _pick_single_sided_definition()
+    if definition is None:
+        return
+    try:
+        require_block_definition(
+            definition.block_name, asset_path=definition.asset_path()
+        )
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSJointPlace")
+        return
+
+    session = _SingleSidedSession(
+        definition=definition,
+        bar_id=bar_id,
+        bar_start=bar_start,
+        bar_end=bar_end,
+        jp=jp,
+        jr=single_sided.default_jr(bar_start, bar_end, definition),
+    )
+    if not _single_sided_preview_loop(session):
+        print("RSJointPlace: Cancelled.")
+        return
+
+    _oid, joint_id = single_sided.place_single_sided_block(
+        definition=definition,
+        bar_id=bar_id,
+        bar_start=bar_start,
+        bar_end=bar_end,
+        jp=session.jp,
+        jr=session.jr,
+        flipped=session.flipped,
+    )
+    if session.subtype == jnc.GROUND:
+        print(
+            f"RSJointPlace: {joint_id} has no tool yet -- run RSJointPlace > "
+            "ToolOnly to place it (and choose its side), or the next "
+            "RSUpdatePreview adds the default tool."
+        )
+
+
 def _print_variant_info(variant):
     origin_err, z_err = interface_metrics(variant)
     print(
@@ -432,18 +655,19 @@ def _assign_receiver_male_by_seq(bar_a_id, bar_a_bid, bar_b_id, bar_b_bid):
 
 
 def _ask_place_mode():
-    """Ask whether to build a new joint pair or only re-tool an existing joint.
+    """JointPairAndTool / ToolOnly / JointOnly.
 
-    Returns ``"pair"`` / ``"tool"``, or ``None`` on Esc.  Enter keeps the
-    historical behaviour.
+    Returns ``"pair"`` / ``"tool"`` / ``"single"``, or ``None`` on Esc.  Enter
+    keeps the historical behaviour (a joint pair with its tool).
     """
     go = Rhino.Input.Custom.GetOption()
     go.SetCommandPrompt(
-        "Place a new joint pair with its tool, or put a tool on a joint that "
-        "already exists"
+        "Place a joint pair with its tool, put a tool on an existing joint, or "
+        "place one Ground / MoCap joint on a bar"
     )
     pair_idx = go.AddOption("JointPairAndTool")
     tool_idx = go.AddOption("ToolOnly")
+    single_idx = go.AddOption("JointOnly")
     go.SetCommandPromptDefault("JointPairAndTool")
     go.AcceptNothing(True)
     while True:
@@ -456,6 +680,8 @@ def _ask_place_mode():
                 return "pair"
             if chosen == tool_idx:
                 return "tool"
+            if chosen == single_idx:
+                return "single"
             continue
         return None
 
@@ -509,6 +735,9 @@ def main():
         return
     if mode == "tool":
         _run_tool_only()
+        return
+    if mode == "single":
+        _run_joint_only()
         return
 
     bar_a_id, pair = pick_bar_with_pair_option(

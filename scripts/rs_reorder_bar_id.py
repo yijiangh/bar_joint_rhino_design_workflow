@@ -103,18 +103,31 @@ def _layers_for(*names):
     return [n for n in names if rs.IsLayer(n)]
 
 
+def _is_single_sided(oid):
+    """Ground, or a standalone MoCap: its id is ``G…`` / ``M…``, not ``J…``."""
+    jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+    return jnc.single_sided_subtype_of_id(jid) is not None
+
+
 def _iter_joint_block_oids():
-    """All receiver (Female / MoCap) + Male joint instance object IDs (oids)."""
+    """Halves placed by a mate: receiver (Female / MoCap) + Male, ``J…`` ids."""
     out = []
     for layer in _layers_for(*jnc.PAIRED_LAYERS):
-        out.extend(rs.ObjectsByLayer(layer) or [])
+        out.extend(
+            oid for oid in rs.ObjectsByLayer(layer) or [] if not _is_single_sided(oid)
+        )
     return out
 
 
-def _iter_ground_block_oids():
-    if not rs.IsLayer(jnc.LAYER_GROUND):
-        return []
-    return list(rs.ObjectsByLayer(jnc.LAYER_GROUND) or [])
+def _iter_single_sided_block_oids():
+    """Ground blocks, and MoCap blocks placed alone on a bar (``M…`` ids)."""
+    out = []
+    for layer in _layers_for(*jnc.SINGLE_SIDED_LAYERS):
+        out.extend(
+            oid for oid in rs.ObjectsByLayer(layer) or []
+            if layer == jnc.LAYER_GROUND or _is_single_sided(oid)
+        )
+    return out
 
 
 def _iter_tool_block_oids():
@@ -153,7 +166,7 @@ def _build_joint_id_remap(bar_rename):
         ln_new = bar_rename.get(ln_old, ln_old)
         remap[old_jid] = jnc.pair_joint_id(le_new, ln_new)
 
-    for oid in _iter_ground_block_oids():
+    for oid in _iter_single_sided_block_oids():
         old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         parent_old = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
         if not (old_jid and parent_old) or jnc.split_single_joint_id(old_jid) is None:
@@ -266,7 +279,7 @@ def _remap_supported_until(curve_oid, bar_rename):
 
 
 def _apply_rename(bar_rename, jid_remap, seq_map):
-    n_bars = n_tubes = n_supp = n_joints = n_grounds = n_tools = 0
+    n_bars = n_tubes = n_supp = n_joints = n_singles = n_tools = 0
 
     bar_oids = {bid: oid for bid, (oid, _) in seq_map.items()}
 
@@ -321,8 +334,8 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
                 rs.ObjectName(oid, jnc.object_name(new_jid, subtype))
                 n_joints += 1
 
-        # 6. Ground instances.
-        for oid in _iter_ground_block_oids():
+        # 6. Single-sided instances (Ground, standalone MoCap).
+        for oid in _iter_single_sided_block_oids():
             old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             new_jid = jid_remap.get(old_jid, old_jid)
             parent_old = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
@@ -330,8 +343,9 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
                 rs.SetUserText(oid, jnc.UT_PARENT_BAR, bar_rename[parent_old])
             if new_jid and new_jid != old_jid:
                 rs.SetUserText(oid, jnc.UT_JOINT_ID, new_jid)
-                rs.ObjectName(oid, jnc.object_name(new_jid, jnc.GROUND))
-                n_grounds += 1
+                subtype = jnc.subtype_of_layer(rs.ObjectLayer(oid))
+                rs.ObjectName(oid, jnc.object_name(new_jid, subtype))
+                n_singles += 1
 
         # 7. Tool instances - inherit joint_id from jid_remap.
         for oid in _iter_tool_block_oids():
@@ -348,7 +362,7 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
     print(
         f"RSReorderBarID: applied. bars={n_bars}, tubes={n_tubes}, "
         f"supported_until={n_supp}, "
-        f"joints={n_joints}, grounds={n_grounds}, tools={n_tools}"
+        f"joints={n_joints}, ground/mocap singles={n_singles}, tools={n_tools}"
     )
 
 

@@ -22,7 +22,7 @@ definitions the *creation* side already owns, and report:
 * whether a joint/tool still has a bar, and whether a bar has any joint.
 
 Anything that fails is surfaced (selected + listed) for the user to fix with
-RSJointEdit / RSJointPlace / RSGroundPlace.  Re-deriving a solved placement from
+RSJointEdit / RSJointPlace.  Re-deriving a solved placement from
 stored ``(jp, jr)`` is deliberately not attempted: the reconstruction is not a
 trustworthy authority on where a solved joint belongs, and acting on it moved
 correct joints.
@@ -83,6 +83,15 @@ def _reset_color(oid) -> None:
     """Revert *oid*'s color override back to by-layer."""
     if rs.IsObject(oid) and hasattr(rs, "ObjectColorSource"):
         rs.ObjectColorSource(oid, 0)  # 0 == by layer
+
+
+def _is_paired_half(layer, joint_id):
+    """True for a half placed by a mate (``J…`` id on a receiver / male layer).
+
+    A standalone MoCap shares the MoCap layer but has an ``M…`` id and no male
+    by design, so it is not half of a pair.
+    """
+    return layer in jnc.PAIRED_LAYERS and jnc.single_sided_subtype_of_id(joint_id) is None
 
 
 def _joint_block_instances():
@@ -201,8 +210,9 @@ def report_unmated_joints(verbose: bool = False) -> list:
     ``core.joint_placement.is_variant_acceptable`` applies when the solver picks
     a variant.  So "mated" means the same thing here as it did at placement time.
 
-    Ground joints have no partner and are not checked (a ground joint can only be
-    broken by losing its bar, which :func:`find_broken_links` covers).
+    Single-sided joints (Ground, standalone MoCap) have no partner and are not
+    checked (one can only be broken by losing its bar, which
+    :func:`find_broken_links` covers).
 
     Args:
         verbose (bool): print each offending joint with its measured errors.
@@ -217,7 +227,7 @@ def report_unmated_joints(verbose: bool = False) -> list:
     # Female OR MoCap -- both seat a male the same way.
     pairs: dict = {}
     for oid, layer, joint_id, block_name in _joint_block_instances():
-        if not joint_id or layer not in jnc.PAIRED_LAYERS:
+        if not joint_id or not _is_paired_half(layer, joint_id):
             continue
         half = registry.halves.get(block_name)
         if half is None:
@@ -359,7 +369,7 @@ def find_broken_links() -> dict:
         * *bare_bars* -- registered bars carrying no joint instance at all.
 
     None of these can be repaired automatically: the bar is gone, or the joint
-    needs RSJointPlace / RSGroundPlace.
+    needs RSJointPlace.
     """
     from core.rhino_tool_place import find_detached_tools  # noqa: PLC0415
 
@@ -370,10 +380,11 @@ def find_broken_links() -> dict:
 
     # Pass 1: which joint_ids have which halves?  A receiver with no male (or
     # the reverse) is as broken as one with no bar -- there is nothing for it to
-    # mate with.  Ground joints are single-sided by design and never counted.
+    # mate with.  Single-sided joints (Ground, standalone MoCap) have no partner
+    # by design and are never counted.
     halves_by_joint: dict = {}
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        if not joint_id or layer not in jnc.PAIRED_LAYERS:
+        if not joint_id or not _is_paired_half(layer, joint_id):
             continue
         halves_by_joint.setdefault(joint_id, set()).add(layer)
 
@@ -384,7 +395,7 @@ def find_broken_links() -> dict:
             reason = f"parent bar {bar_id or '<none>'} is gone"
         elif (
             joint_id
-            and layer in jnc.PAIRED_LAYERS
+            and _is_paired_half(layer, joint_id)
             and len(halves_by_joint.get(joint_id, ())) < 2
         ):
             missing = "male" if layer in jnc.RECEIVER_LAYERS else "receiving"
@@ -548,7 +559,7 @@ def broken_link_legend_lines() -> list:
         "(its asset has baked colors).",
         "  dark indigo = registered bar carrying no joint. Its centre-line AND "
         "its tube preview are both selected, so Delete removes the whole bar; "
-        "or give it a joint with RSJointPlace / RSGroundPlace.",
+        "or give it a joint with RSJointPlace.",
         "  RSUpdatePreview right-click (RSClearColorPreview) clears all of this.",
     ]
 

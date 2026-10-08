@@ -32,7 +32,7 @@ The script:
 
 Ground: the tool-attach frame
 -----------------------------
-A ground block's own orientation is not free: `core.ground_placement.
+A ground block's own orientation is not free: `core.single_sided_placement.
 auto_jr_y_down` rotates it about the bar until its local +Y points at the
 floor, so the foot lands on the ground.  The arm, however, may have to
 approach with its TCP rolled relative to that.  The two frames therefore
@@ -53,13 +53,13 @@ tool_attach_frame` applies it when a tool is placed.  The ground block
 itself is NEVER moved by it.
 
 ! Anchoring the bar axis at the block origin makes `M_block_from_bar` come
-! out with a ZERO translation, so RSGroundPlace lands the block origin
+! out with a ZERO translation, so RSJointPlace > JointOnly lands the block origin
 ! exactly on the point clicked on the bar.  Ground joints defined with the
 ! older bar-axis-line pick carry whatever offset that line's start point had
 ! (T20_Ground: 25 mm), so re-defining one shifts where a given `jp` puts it.
 ! Its DIRECTION also sets both the tool's +X and the sense of the bar axis,
 ! so re-defining can flip which way new placements face along the bar --
-! RSGroundPlace's Flip covers that, and the old pick had the same
+! JointOnly's Flip covers that, and the old pick had the same
 ! sensitivity.  Already-baked instances never move either way.
 
 Stacked picks: each pick auto-hides the previous selection, then everything
@@ -235,7 +235,7 @@ def _pick_ground_tool_frame(block_id, selected, scale_to_mm):
 
     That origin doubles as the bar-axis anchor, so the bar line handed back is
     ``block origin -> +X point``.  ``M_block_from_bar`` therefore comes out with
-    a zero translation, and RSGroundPlace lands the block origin exactly on the
+    a zero translation, and RSJointPlace > JointOnly lands the block origin on the
     point clicked on the bar (rather than a fixed offset past it).
 
     Loops until accepted: pick +X -> pick +Y -> ghost tool -> Accept / Repick.

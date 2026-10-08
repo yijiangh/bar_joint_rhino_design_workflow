@@ -122,9 +122,6 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000046" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000046</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000021" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000021</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000022" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000022</left_macro_id>
       </tool_bar_item>
@@ -193,15 +190,6 @@
         <locale_1033>Place connector blocks on one bar pair</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_joint_place.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000021">
-      <text>
-        <locale_1033>RSGroundPlace</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Anchor a ground joint to a bar at a picked point (auto-jr aligns block +Y to world up)</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_ground_place.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000011">
       <text>

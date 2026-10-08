@@ -31,8 +31,8 @@ changes nothing.
    no joint. These are painted, selected and counted in the popup.
 
 This command never moves a joint. Re-deriving a solved placement is not reliable
-enough to do silently; fix a reported joint with RSJointEdit / RSJointPlace /
-RSGroundPlace instead. One consequence: editing ``M_block_from_bar`` in
+enough to do silently; fix a reported joint with RSJointEdit / RSJointPlace
+instead. One consequence: editing ``M_block_from_bar`` in
 ``joint_pairs.json`` affects only NEWLY placed joints -- re-place an existing one
 to adopt a changed transform.
 """

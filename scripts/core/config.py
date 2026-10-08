@@ -87,7 +87,7 @@ SELECTED_BAR_COLOR = (30, 100, 220)  # blue
 
 # UI: RSUpdatePreview paints broken model links so they are visible without
 # reading the command history. Neither case can be auto-repaired (the bar is
-# gone / the joint needs RSJointPlace or RSGroundPlace) -- see
+# gone / the joint needs RSJointPlace) -- see
 # `core.rhino_joint_refresh.find_broken_links`.
 ORPHAN_LINK_COLOR = (175, 55, 10)   # orange -- joint/tool whose parent bar is gone
 # Muted indigo, deliberately: a green bare-bar color is hard to tell apart from

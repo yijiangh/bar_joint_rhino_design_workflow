@@ -7,7 +7,9 @@
 Two modes, chosen at the first prompt:
 
 **FlipJoint** (the default, and everything described below) - flip the
-orientation of a joint half by clicking it.
+orientation of a joint half by clicking it.  A Ground joint flips end-for-end
+along its bar; a standalone MoCap joint (one bar, no male) opens the
+``Accept | Rotate`` preview RSJointPlace > JointOnly uses, at its current angle.
 
 **MoveJoint** - slide a joint along the bar it is attached to, carrying its own
 bar and that bar's other joint with it.  Pick the joint, pick which of its two
@@ -84,10 +86,10 @@ importlib.reload(_geometry_module)
 importlib.reload(dynamic_preview)
 
 from core.geometry import points_on_line_at_distance  # noqa: E402 -- after reload
-from core.ground_placement import (
-    fk_ground_block_frame,
-    place_ground_block,
-    remove_placed_ground,
+from core.single_sided_placement import (
+    find_definition,
+    place_single_sided_block,
+    remove_placed_single,
 )
 from core.joint_pair import get_joint_pair_variant, load_joint_registry
 from core.joint_pick_helpers import block_instance_frame
@@ -162,6 +164,12 @@ def _placed_pair(joint_id, pair_name):
     return get_joint_pair_variant(pair_name, _receiver_subtype(joint_id))
 
 
+def _is_single_sided(oid):
+    """True for a Ground or standalone MoCap block (its id is ``G…`` / ``M…``)."""
+    jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+    return jnc.single_sided_subtype_of_id(jid) is not None
+
+
 def _remove_placed_joint(joint_id):
     """Delete every placed receiver/male block instance for *joint_id*.
 
@@ -214,6 +222,11 @@ def _joints_touching_bar(bar_id):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+            # A standalone MoCap shares the MoCap layer but has no mate to keep
+            # consistent, so it is not one of the bar's joints here (Ground
+            # joints are already excluded by layer).
+            if jnc.single_sided_subtype_of_id(joint_id) is not None:
+                continue
             if joint_id and rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id:
                 found[joint_id] = oid
     return found
@@ -421,8 +434,11 @@ def _run_move_joint():
     if go.Get() != Rhino.Input.GetResult.Object:
         return
     clicked_id = go.Object(0).ObjectId
-    if rs.ObjectLayer(clicked_id) not in jnc.PAIRED_LAYERS:
-        print("RSJointEdit: MoveJoint works on paired (receiver/male) joint blocks only.")
+    if rs.ObjectLayer(clicked_id) not in jnc.PAIRED_LAYERS or _is_single_sided(clicked_id):
+        print(
+            "RSJointEdit: MoveJoint works on paired (receiver/male) joint blocks only; "
+            "re-aim a Ground or standalone MoCap joint with FlipJoint."
+        )
         return
 
     near_joint_id = rs.GetUserText(clicked_id, jnc.UT_JOINT_ID)
@@ -745,19 +761,18 @@ def _run_move_joint():
 # ---------------------------------------------------------------------------
 
 
-def _flip_ground_block(clicked_id):
-    """Flip a placed ground-joint block's X axis along the bar.
+def _edit_single_sided(clicked_id):
+    """Re-aim a placed Ground or standalone MoCap joint, keeping its id.
 
-    Reads the block name and ``parent_bar_id`` / ``position_mm`` /
-    ``rotation_deg`` / ``flipped`` from the clicked instance, deletes it,
-    and re-bakes via :func:`core.ground_placement.place_ground_block`
-    with ``flipped`` toggled.  ``jr`` is preserved (the flip post-multi-
-    plies ``M_block_from_bar`` by ``R_y(pi)``, which keeps block-local
-    +Y -- so world-up alignment is preserved and ``jr`` does not change).
+    Ground flips end-for-end straight away (``flipped`` toggled; ``jr`` kept,
+    because the flip preserves block-local +Y) and its tool follows.  A
+    standalone MoCap opens the ``Accept | Rotate`` preview at its current angle;
+    Esc leaves it as it was.  Reads the block name and ``parent_bar_id`` /
+    ``position_mm`` / ``rotation_deg`` / ``flipped`` from the clicked instance.
     """
     import math
-    import numpy as np
 
+    subtype = jnc.subtype_of_layer(rs.ObjectLayer(clicked_id))
     joint_id = rs.GetUserText(clicked_id, jnc.UT_JOINT_ID)
     block_name = rs.BlockInstanceName(clicked_id)
     bar_id = rs.GetUserText(clicked_id, jnc.UT_PARENT_BAR)
@@ -766,19 +781,14 @@ def _flip_ground_block(clicked_id):
     flipped_text = rs.GetUserText(clicked_id, jnc.UT_FLIPPED)
     if not joint_id or not block_name or not bar_id or not jp_text or not jr_text:
         print(
-            "RSJointEdit: Could not read ground-joint metadata from the selected block.\n"
-            "  This block may have been placed by an older RSGroundPlace.\n"
-            "  Re-place it with RSGroundPlace to enable re-editing."
+            "RSJointEdit: Could not read the joint's placement from the selected block.\n"
+            "  Re-place it with RSJointPlace > JointOnly to enable re-editing."
         )
         return
 
-    ground = next(
-        (g for g in load_joint_registry().ground_joints.values()
-         if g.block_name == block_name),
-        None,
-    )
-    if ground is None:
-        print(f"RSJointEdit: Ground joint '{block_name}' is no longer registered.")
+    definition = find_definition(block_name, load_joint_registry())
+    if definition is None:
+        print(f"RSJointEdit: '{block_name}' is no longer registered.")
         return
 
     bar_curve_id = _find_bar_curve(bar_id)
@@ -793,11 +803,29 @@ def _flip_ground_block(clicked_id):
     jr = math.radians(float(jr_text))
     # Older bakes (pre-flipped-flag) have no UserText -> default False.
     flipped = (flipped_text == "True") if flipped_text else False
-    flipped = not flipped
 
-    remove_placed_ground(joint_id)
-    ground_oid, _ = place_ground_block(
-        ground=ground,
+    if subtype == jnc.GROUND:
+        flipped = not flipped
+    else:
+        session = _rjp._SingleSidedSession(
+            definition=definition, bar_id=bar_id, bar_start=bar_start,
+            bar_end=bar_end, jp=jp, jr=jr, flipped=flipped,
+        )
+        rs.HideObject(clicked_id)  # the preview takes its place while aiming
+        accepted = False
+        try:
+            accepted = _rjp._single_sided_preview_loop(session)
+        finally:
+            if not accepted:
+                rs.ShowObject(clicked_id)
+        if not accepted:
+            print(f"RSJointEdit: {joint_id} left as it was.")
+            return
+        jr = session.jr
+
+    remove_placed_single(joint_id, subtype)
+    new_oid, _ = place_single_sided_block(
+        definition=definition,
         bar_id=bar_id,
         bar_start=bar_start,
         bar_end=bar_end,
@@ -805,18 +833,21 @@ def _flip_ground_block(clicked_id):
         jr=jr,
         flipped=flipped,
         joint_id=joint_id,
+        log_prefix="RSJointEdit",
     )
 
-    # Re-place the robotic tool so it follows the flipped ground frame.
-    # Preserve whichever tool the user previously had attached to this joint.
-    from core.rhino_tool_place import (  # noqa: PLC0415
-        get_tool_name_for_joint,
-        place_tool_by_name_at_ground_block,
-    )
-    prev_tool = get_tool_name_for_joint(joint_id)
-    place_tool_by_name_at_ground_block(ground_oid, joint_id, prev_tool)
-
-    print(f"RSJointEdit: ground {joint_id} flipped (flipped now {flipped}).")
+    if subtype == jnc.GROUND:
+        # Re-place the robotic tool so it follows the flipped ground frame,
+        # keeping whichever tool the joint had.
+        from core.rhino_tool_place import (  # noqa: PLC0415
+            get_tool_name_for_joint,
+            place_tool_by_name_at_ground_block,
+        )
+        prev_tool = get_tool_name_for_joint(joint_id)
+        place_tool_by_name_at_ground_block(new_oid, joint_id, prev_tool)
+        print(f"RSJointEdit: ground {joint_id} flipped (flipped now {flipped}).")
+    else:
+        print(f"RSJointEdit: {joint_id} rotated to {math.degrees(jr):.1f} deg.")
 
 
 def _ask_mode():
@@ -877,10 +908,12 @@ def main():
             cycle_tool_at_tool_instance(clicked_id)
             continue
 
-        # Ground-joint instance: flip jr by 180 deg and re-bake at the
-        # same (jp) along the same bar.  No mate-side recovery needed.
-        if clicked_layer == jnc.LAYER_GROUND:
-            _flip_ground_block(clicked_id)
+        # Single-sided joint (Ground, or a MoCap with no male): re-aim it on
+        # its own bar.  No mate-side recovery needed.
+        if clicked_layer in jnc.SINGLE_SIDED_LAYERS and (
+            clicked_layer == jnc.LAYER_GROUND or _is_single_sided(clicked_id)
+        ):
+            _edit_single_sided(clicked_id)
             continue
 
         # Read stored metadata before the block is deleted.

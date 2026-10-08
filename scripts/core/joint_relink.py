@@ -248,22 +248,22 @@ def _female_male_edit(oid, subtype, segs):
 
 
 # ---------------------------------------------------------------------------
-# Ground joint matching
+# Single-sided joint matching (Ground, standalone MoCap)
 # ---------------------------------------------------------------------------
 
 
-def _ground_edit_raw(oid, segs):
-    """First pass for a ground block: resolve its bar; index assigned later."""
+def _single_edit_raw(oid, segs, subtype):
+    """First pass for a single-sided block: resolve its bar; index assigned later."""
     try:
         frame, block_name = block_instance_frame(oid)
         type_ = jnc.block_type(block_name)
     except Exception as exc:
-        return _degenerate_edit(oid, jnc.GROUND, f"frame/name read failed ({exc})")
+        return _degenerate_edit(oid, subtype, f"frame/name read failed ({exc})")
 
     origin = frame[:3, 3]
     ranked = _rank_bars(origin, segs)
     if not ranked:
-        return _degenerate_edit(oid, jnc.GROUND, "no bars in document")
+        return _degenerate_edit(oid, subtype, "no bars in document")
 
     own_dist, own_seg = ranked[0]
     own_bar = own_seg[0]
@@ -272,8 +272,8 @@ def _ground_edit_raw(oid, segs):
 
     return {
         "oid": oid,
-        "subtype": jnc.GROUND,
-        "kind": jnc.role(jnc.GROUND),
+        "subtype": subtype,
+        "kind": jnc.role(subtype),
         "old_jid": rs.GetUserText(oid, jnc.UT_JOINT_ID) or "",
         "old_tid": None,
         "new_tid": None,
@@ -287,30 +287,31 @@ def _ground_edit_raw(oid, segs):
     }
 
 
-def _finalize_ground_edit(edit, own_bar, type_, index):
-    new_jid = jnc.single_joint_id(jnc.GROUND, own_bar, type_, index)
+def _finalize_single_edit(edit, own_bar, type_, index):
+    subtype = edit["subtype"]
+    new_jid = jnc.single_joint_id(subtype, own_bar, type_, index)
     edit["new_jid"] = new_jid
-    edit["new_name"] = jnc.object_name(new_jid, jnc.GROUND)
+    edit["new_name"] = jnc.object_name(new_jid, subtype)
     edit["usertext"] = {jnc.UT_JOINT_ID: new_jid, jnc.UT_PARENT_BAR: own_bar}
     edit["parents"] = f"{own_bar}"
     _mark_changed(edit)
 
 
-def _assign_ground_indices(ground_edits):
-    """Assign per-``(bar, Type)`` indices, preserving already-valid ones.
+def _assign_single_indices(single_edits):
+    """Assign per-``(Subtype, bar, Type)`` indices, preserving already-valid ones.
 
-    A correctly-linked ORIGINAL ground whose ``joint_id`` already matches its
-    resolved bar keeps its index; copied grounds (whose old id encodes the
-    *source* bar) get the next free index in deterministic position order.
+    A correctly-linked ORIGINAL whose ``joint_id`` already matches its resolved
+    bar keeps its index; copies (whose old id encodes the *source* bar) get the
+    next free index in deterministic position order.
     """
     groups = defaultdict(list)
-    for edit in ground_edits:
+    for edit in single_edits:
         if edit.get("own_bar") is None:  # degenerate; already finalized
             continue
-        groups[(edit["own_bar"], edit["type"])].append(edit)
+        groups[(edit["subtype"], edit["own_bar"], edit["type"])].append(edit)
 
-    for (own_bar, type_), members in groups.items():
-        base = jnc.single_joint_id_base(jnc.GROUND, own_bar, type_)
+    for (subtype, own_bar, type_), members in groups.items():
+        base = jnc.single_joint_id_base(subtype, own_bar, type_)
         used = set()
         pending = []
         for edit in members:
@@ -330,7 +331,7 @@ def _assign_ground_indices(ground_edits):
             edit["_idx"] = idx
             used.add(idx)
         for edit in members:
-            _finalize_ground_edit(edit, own_bar, type_, edit["_idx"])
+            _finalize_single_edit(edit, own_bar, type_, edit["_idx"])
 
 
 # ---------------------------------------------------------------------------
@@ -459,15 +460,23 @@ def build_plan():
                 "warnings": ["no registered bars in document"]}
 
     joint_edits = []
-    for layer in jnc.PAIRED_LAYERS:
+    single_edits = []
+    for layer in jnc.JOINT_LAYERS:
         subtype = jnc.subtype_of_layer(layer)
         for oid in _layer_oids(layer):
-            joint_edits.append(_female_male_edit(oid, subtype, segs))
+            # Single-sided: every Ground block, and a MoCap block whose id says
+            # it is standalone (M…) rather than the receiver of a pair (J…).
+            standalone = subtype == jnc.GROUND or (
+                subtype in jnc.SINGLE_SIDED_SUBTYPES
+                and jnc.single_sided_subtype_of_id(rs.GetUserText(oid, jnc.UT_JOINT_ID))
+            )
+            if standalone:
+                single_edits.append(_single_edit_raw(oid, segs, subtype))
+            else:
+                joint_edits.append(_female_male_edit(oid, subtype, segs))
 
-    ground_edits = [_ground_edit_raw(oid, segs)
-                    for oid in _layer_oids(jnc.LAYER_GROUND)]
-    _assign_ground_indices(ground_edits)
-    joint_edits.extend(ground_edits)
+    _assign_single_indices(single_edits)
+    joint_edits.extend(single_edits)
 
     # Male + ground blocks are the tool anchors (receivers never carry a tool).
     targets = [

@@ -208,7 +208,7 @@ def tool_attach_offset(block_id) -> np.ndarray:
     """Block-local offset between a joint block's frame and its tool's TCP frame.
 
     Ground blocks carry a ``block_name`` user-text (written by
-    :func:`core.ground_placement.place_ground_block`); male blocks do not, so
+    :func:`core.single_sided_placement.place_single_sided_block`); male blocks do not, so
     they resolve to identity and their behaviour is unchanged.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
@@ -818,10 +818,12 @@ def _restore_side_tool(block_id, joint_id, active, default_tool):
 def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
     """Re-place the active-pair tool on any joint block that lost its tool.
 
-    Every male (``J*``) and ground (``G*``) joint block is auto-tooled the
-    moment it is created (RSBarSnap / RSBarBrace / RSGroundPlace / RSJointEdit
-    all call the ``auto_place_tool_*`` helpers), so the document convention is
-    "every joint block carries exactly one tool instance".  A tool can still go
+    Every male (``J*``) joint block is auto-tooled the moment it is created
+    (RSBarSnap / RSBarBrace / RSJointPlace / RSJointEdit all call the
+    ``auto_place_tool_*`` helpers), so the document convention is "every
+    tool-bearing joint block carries exactly one tool instance".  A ground
+    (``G*``) block placed by RSJointPlace > JointOnly starts WITHOUT one -- this
+    pass is what gives it the default tool if ToolOnly was not run first.  A tool can still go
     missing -- most visibly after :func:`replace_all_tool_instances`
     (RSSwapRoboticTool) swaps to a tool of a DIFFERENT type, which deletes the
     old instances before re-inserting the new ones -- leaving the joint with no

@@ -30,7 +30,7 @@ All four actions share the same base `Movement` and `Action` classes. The existi
 1. `ManualMovement` — a human operator mounts the bar into the robot's two end effectors.
 2. `ScaffoldingToolMovement` — both tools drive their grasping screws to clamp the bar; the screws keep turning until they stall, meaning the bar is tightly held.
 3. `EndEffectorConstrainedDualArmFreeMovement` — free transfer motion with the bar in hand, ending at the start of the insertion approach (same as the old M1).
-4. `ScaffoldingToolMovement` — both tools start driving the jointing screws; **this movement deliberately overlaps the next one** — the screws keep turning through the whole insertion until they stall.
+4. `ScaffoldingToolMovement` — the tools whose male joint has its female in the scene start driving the jointing screws (both on most bars; one on a one-sided bar, whose other female sits on a staging bar); **this movement deliberately overlaps the next one** — the screws keep turning through the whole insertion until they stall.
 5. `EndEffectorConstrainedDualArmLinearMovement` — straight-line, bar-held insertion (same as the old M2). This is the one movement on the Cartesian compliant controller; the stall signal from movement 4's screws is what ends it and switches the controller back (`notes["ends_on"] == "tool_stall_signal"`).
 
 **Ground bars** (the bar stands on ground joints, a foundation; no male-female joint) run **no jointing motor**. Movements 0-3 are the same; then:

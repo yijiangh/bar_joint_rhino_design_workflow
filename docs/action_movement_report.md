@@ -92,7 +92,11 @@ both arms locked to one bar, one support arm, nobody) and **motion type**
 `tighten`, `open`, `close`; the jointing screws are never run backwards),
 `tool_names` (e.g. `["AT3L", "AT3R"]` or `["SupportGripper"]`), and
 `overlaps_next` (True only on a normal bar's tighten step: the jointing screws
-keep turning during the whole insert until they stall). Manual
+keep turning during the whole insert until they stall). The grasp and ungrasp
+steps name both arm tools; the tighten step names only the tools whose male
+joint has its receiver (Female or MoCap half) in the scene. On a one-sided bar
+the other male's receiver sits on a staging (fake) bar, so that male is only a
+grasp point and the tighten step names one tool (issue D10). Manual
 and tool movements still carry a full `start_state`, so any single movement
 can be replayed or inspected on its own.
 
@@ -133,8 +137,8 @@ flange in that snapshot. The Rhino-side builders are described in section 3.
 | J_M1 `manual_mount_bar` | Manual | `None` (copy of J_M3's start) | attached | n/a | n/a |
 | J_M2 `tool_grasp_bar` | ScaffoldingTool `grasp` | `None` (copy of J_M3's start) | attached | n/a | n/a |
 | J_M3 `CDFM_transfer_to_approach` | EndEffectorConstrainedDualArmFree | `None` (planner decides the loading pose) | attached to tool0: bar + carried females on the left flange, each male on its own arm | `target_ee_frames` = approach flanges; `target_configuration` = **approach keyframe** | RSIKKeyframe |
-| J_M4 `tool_tighten_joint` | ScaffoldingTool `tighten`, `overlaps_next=True` | approach keyframe (copy of J_M5's start) | attached | n/a | n/a |
-| J_M5 `LM_insert` | EndEffectorConstrainedDualArmLinear, `cartesian_compliant`, `notes["ends_on"] = "tool_stall_signal"` | approach keyframe | attached; mate contacts allowed | `target_ee_frames` = assembled flanges (the placed tool blocks); `target_configuration` = **assembled keyframe** | RSIKKeyframe |
+| J_M4 `tool_tighten_joint` | ScaffoldingTool `tighten`, `overlaps_next=True`; `tool_names` = the arms whose male has its receiver (Female or MoCap) in the scene (one tool on a one-sided bar) | approach keyframe (copy of J_M5's start) | attached | n/a | n/a |
+| J_M5 `LM_insert` | EndEffectorConstrainedDualArmLinear, `cartesian_compliant`, `notes["ends_on"] = "tool_stall_signal"` (all of J_M4's tools stalled; also listed in `notes["stall_tools"]`) | approach keyframe | attached; mate contacts allowed | `target_ee_frames` = assembled flanges (the placed tool blocks); `target_configuration` = **assembled keyframe** | RSIKKeyframe |
 
 **Ground bar** (two ground joints, no male joint; no jointing motor runs). J_M0
 to J_M3 as above, then:

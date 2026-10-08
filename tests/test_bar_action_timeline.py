@@ -1,7 +1,8 @@
-"""Headless tests for the movement timeline of one bar (issues D7 + D9).
+"""Headless tests for the movement timeline of one bar (issues D7 + D9 + D10).
 
 - Normal bar: load, mount, grasp, transfer, tighten (runs through the insert),
-  insert.
+  insert. Only the arms whose male has its female in the scene tighten (D10:
+  on a one-sided bar the other female sits on a staging bar).
 - Ground bar: load, mount, grasp, transfer, insert, operator fixes the
   foundation. No jointing motor runs.
 - Release, every bar: ungrasp, retreat, home (no untighten step).
@@ -56,8 +57,13 @@ def _arm_movement(name: str, label: str, configuration=None):
     )
 
 
-def _timeline(is_ground_bar: bool):
-    """Run the timeline on stand-in arm movements; return (jointing, release, arms)."""
+def _timeline(is_ground_bar: bool, tighten_tools: list = TOOLS):
+    """Run the timeline on stand-in arm movements; return (jointing, release, arms).
+
+    Args:
+        is_ground_bar (bool): build the ground-bar shape.
+        tighten_tools (list): the tools that screw a joint (both by default).
+    """
     arms = {
         "m0": _arm_movement(bar_action.MV_FREE_TO_LOAD, "load"),
         "m1": _arm_movement(bar_action.MV_TRANSFER, "transfer start"),
@@ -67,7 +73,7 @@ def _timeline(is_ground_bar: bool):
     }
     jointing, release = bar_action.assemble_timeline(
         "B7", arms["m0"], arms["m1"], arms["m2"], arms["m3"], arms["m4"],
-        TOOLS, is_ground_bar,
+        TOOLS, tighten_tools, is_ground_bar,
     )
     return jointing, release, arms
 
@@ -95,6 +101,16 @@ def test_normal_bar_jointing_order_and_ids():
     assert tighten.tool_names == TOOLS
     # The tighten step starts where the insert starts (the approach).
     assert tighten.start_state.label == "insert start"
+
+
+def test_one_sided_bar_tightens_one_tool_but_grasps_with_both():
+    """One-sided bar (D10): only the screwing arm tightens; both arms clamp the bar."""
+    jointing, release, arms = _timeline(is_ground_bar=False, tighten_tools=["AT3L"])
+    assert jointing[bar_action.MV_TOOL_TIGHTEN].tool_names == ["AT3L"]
+    assert jointing[bar_action.MV_TOOL_GRASP_BAR].tool_names == TOOLS
+    assert release[bar_action.MV_TOOL_UNGRASP_BAR].tool_names == TOOLS
+    # The insert says whose stall ends it.
+    assert arms["m2"].notes["stall_tools"] == ["AT3L"]
 
 
 def test_normal_bar_has_no_operator_fix_step():
@@ -138,7 +154,7 @@ def test_ground_bar_fix_step_unsolved_has_no_config():
         bar_action.MV_FREE_TO_LOAD, bar_action.MV_TRANSFER, bar_action.MV_LM_INSERT,
         bar_action.MV_LM_RETREAT, bar_action.MV_FREE_HOME,
     )]
-    jointing, _release = bar_action.assemble_timeline("B1", *arms, TOOLS, True)
+    jointing, _release = bar_action.assemble_timeline("B1", *arms, TOOLS, [], True)
     assert jointing[bar_action.MV_MANUAL_FIX_FOUNDATION].start_state.robot_configuration is None
 
 
@@ -186,6 +202,55 @@ def test_movement_by_name_needs_exact_name():
     """``LM_retreat`` must not match ``HR_M1_LM_retreat`` (different kind) or a longer name."""
     action = _action(["B3_HR_M1_LM_retreat", "B3_R_M1_LM_retreat_extra"])
     assert bar_action.movement_by_name(action, bar_action.KIND_RELEASE, bar_action.MV_LM_RETREAT) is None
+
+
+# * ---------------------------------------------------------------- tighten tools (D10)
+
+
+ARM_TOOLS = {"left": "AT3L", "right": "AT3R"}
+
+
+def test_tighten_tools_both_females_in_scene():
+    """Both males have their female in the scene: both tools tighten."""
+    env_geom = {"joint_J1-3_female": {}, "joint_J2-3_female": {}}
+    tools = bar_action.tighten_tools_for(
+        "B3", {"J1-3": "left", "J2-3": "right"}, ARM_TOOLS, env_geom, False,
+    )
+    assert tools == ["AT3L", "AT3R"]
+
+
+@pytest.mark.parametrize("present,expected", [
+    ("joint_J1-3_female", ["AT3L"]),   # B3: right female on fake B2
+    ("joint_J2-3_female", ["AT3R"]),   # mirror case (B12 / B15)
+])
+def test_tighten_tools_one_sided(present, expected):
+    """A male whose female is not in the scene (staging bar) does not tighten."""
+    tools = bar_action.tighten_tools_for(
+        "B3", {"J1-3": "left", "J2-3": "right"}, ARM_TOOLS, {present: {}}, False,
+    )
+    assert tools == expected
+
+
+def test_tighten_tools_mocap_receiver_counts():
+    """A male mating into a MoCap half (a Female with a marker plate) screws too."""
+    env_geom = {"joint_J1-3_mocap": {}, "joint_J2-3_female": {}}
+    tools = bar_action.tighten_tools_for(
+        "B3", {"J1-3": "left", "J2-3": "right"}, ARM_TOOLS, env_geom, False,
+    )
+    assert tools == ["AT3L", "AT3R"]
+
+
+def test_tighten_tools_no_mating_male_raises():
+    """A normal bar where no male has a female in the scene is not a valid design."""
+    with pytest.raises(RuntimeError, match="B3"):
+        bar_action.tighten_tools_for(
+            "B3", {"J1-3": "left", "J2-3": "right"}, ARM_TOOLS, {}, False,
+        )
+
+
+def test_tighten_tools_ground_bar_is_empty():
+    """A ground bar runs no jointing motor."""
+    assert bar_action.tighten_tools_for("B1", {}, ARM_TOOLS, {}, True) == []
 
 
 # * ---------------------------------------------------------------- mixed bars

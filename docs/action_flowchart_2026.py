@@ -177,7 +177,7 @@ bottom_j = container("J", COL_A, Y_J, "Cindy: BarAssemblyJointingAction (bar i)"
     ("J_M3", "fm_c", "Cindy carries the bar to the approach pose, 15 mm off the assembled pose "
                      "(constrained dual-arm FM)  ·  target = approach keyframe"),
     ("J_M4", "tool_overlap", "Jointing screws tighten through J_M5 until they stall (TM, overlaps "
-                             "next). Ground bar: see note"),
+                             "next); only the arms whose male has its female built. Ground bar: see note"),
     ("J_M5", "lm_c", "Straight-line insert, approach to assembled, on the Cartesian compliant "
                      "controller; the screw stall ends it (constrained dual-arm LM)  ·  target = assembled keyframe"),
 ])

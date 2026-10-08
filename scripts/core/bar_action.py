@@ -10,7 +10,8 @@ can wait for a support robot between inserting a bar and letting go of it:
     J_M1  ManualMovement                    manual_mount_bar: operator mounts the bar in the EEs
     J_M2  ScaffoldingToolMovement           tool_grasp_bar: grasping screws clamp the bar
     J_M3  EndEffectorConstrainedDualArmFreeMovement  CDFM_transfer_to_approach
-    J_M4  ScaffoldingToolMovement           tool_tighten_joint: jointing screws tighten (overlaps J_M5)
+    J_M4  ScaffoldingToolMovement           tool_tighten_joint: jointing screws tighten (overlaps J_M5);
+                                            only the arms whose male has a built female
     J_M5  EndEffectorConstrainedDualArmLinearMovement  LM_insert (ends on the screw stall)
 
 a ground bar (its two ground joints stand on the floor; no jointing motor runs):
@@ -1356,6 +1357,60 @@ def _build_m0(
 # ---------------------------------------------------------------------------
 
 
+def tighten_tools_for(
+    bar_id: str,
+    arm_to_male: dict,
+    tool_ids: dict,
+    env_geom: dict,
+    is_ground_bar: bool,
+) -> list:
+    """The arm tools that actually screw a joint in this bar's tighten step.
+
+    On a normal bar each arm holds a male joint. A male whose receiver (its
+    Female, or a MoCap half -- a Female with a marker plate) is in the scene
+    screws into it, so that arm's jointing motor runs. A male whose receiver
+    sits on a staging (fake) bar has nothing to screw into: the receiver is not
+    a body in the scene, so that male is only a grasp point and its motor stays
+    off. This is the same "is the mate's receiver in the scene" test the
+    insert's allowed contacts use (``_apply_movement_touch_policy``, M2, via
+    :func:`_receiver_key`).
+
+    Rhino-free, so it is unit-tested headless.
+
+    Args:
+        bar_id (str): the bar being assembled (only used in the error message).
+        arm_to_male (dict): ``{joint_id: 'left' | 'right'}`` for the grasped males.
+        tool_ids (dict): ``{'left': tool id, 'right': tool id}`` of the arm tools.
+        env_geom (dict): every collision body in the scene, ``{name: body_info}``.
+        is_ground_bar (bool): True when the arms grasp ground joints (no
+            jointing motor runs at all).
+
+    Returns:
+        list: the sorted tool ids that tighten; empty for a ground bar.
+
+    Raises:
+        RuntimeError: a normal bar where no male has its receiver in the
+            scene -- nothing would be screwed, which is not a valid design.
+    """
+    if is_ground_bar:
+        return []
+    # Only the arms whose male has its receiver in the scene screw a joint; the
+    # other male (its receiver sits on a staging bar) is just a grasp point.
+    tighten_tools = sorted(
+        tool_ids[side]
+        for jid, side in arm_to_male.items()
+        if tool_ids.get(side) and _receiver_key(jid, env_geom) in env_geom
+    )
+    if not tighten_tools:
+        raise RuntimeError(
+            f"Bar {bar_id!r}: none of its male joints has its receiver (Female or "
+            f"MoCap half) in the scene (males: {sorted(arm_to_male)}), so the "
+            "tighten step would screw nothing. Check that each male's receiver "
+            "sits on a real (not fake), earlier bar."
+        )
+    return tighten_tools
+
+
 def assemble_timeline(
     bar_id: str,
     m0,
@@ -1364,6 +1419,7 @@ def assemble_timeline(
     m3,
     m4,
     acting_tools: list,
+    tighten_tools: list,
     is_ground_bar: bool,
 ) -> tuple:
     """Put one bar's arm movements and its operator / tool steps in order.
@@ -1374,6 +1430,8 @@ def assemble_timeline(
     Normal bar (two male joints):
         free_to_load, manual_mount_bar, tool_grasp_bar, transfer,
         tool_tighten_joint (keeps running through the insert), LM_insert.
+        Both tools clamp the bar, but only ``tighten_tools`` screw: on a
+        one-sided bar the other male's female is on a staging bar.
     Ground bar (its ground joints stand on the floor; no jointing motor runs):
         free_to_load, manual_mount_bar, tool_grasp_bar, transfer,
         LM_insert, manual_fix_foundation (the operator tapes / fixes the
@@ -1392,7 +1450,11 @@ def assemble_timeline(
         m2: the linear insert (``_build_m2``).
         m3: the per-arm linear retreat (``_build_m3``).
         m4: the free move home (``_build_m4``).
-        acting_tools (list): the two arm tool ids; both act in every tool step.
+        acting_tools (list): the two arm tool ids; both clamp and unclamp the
+            bar (the grasp and ungrasp steps).
+        tighten_tools (list): the arm tools whose male screws into a receiver
+            (:func:`tighten_tools_for`); only these run in the tighten step,
+            and their stall ends the insert. Unused on a ground bar.
         is_ground_bar (bool): True when the arms grasp ground joints.
 
     Returns:
@@ -1440,15 +1502,18 @@ def assemble_timeline(
     else:
         # * ---- normal bar: the jointing screws tighten through the insert ----
         # They start at the approach and keep running through the whole insert
-        # until they stall; the stall ends the insert.
+        # until they stall; the stall of ALL the named tools ends the insert.
+        # Only the arms that screw a joint are named (one-sided bars: one).
         jointing[MV_TOOL_TIGHTEN] = ScaffoldingToolMovement(
             movement_id=MV_TOOL_TIGHTEN,
             tag="Jointing screws tighten (keeps running through the insert)",
             start_state=m2.start_state.copy(),
             tool_action="tighten",
-            tool_names=list(acting_tools),
+            tool_names=list(tighten_tools),
             overlaps_next=True,
         )
+        # A reader looking at the insert alone can see whose stall ends it.
+        m2.notes["stall_tools"] = list(tighten_tools)
         jointing[MV_LM_INSERT] = m2
 
     # * ---- release: ungrasp, retreat, home ----
@@ -1741,10 +1806,14 @@ def build_split_assembly_movements(
         m4.start_state.robot_configuration = retreat_cfg.copy()
 
     # * ---- the operator / tool steps around the arm movements ----
-    # Both arm tools act together on every scaffolding-tool step.
+    # Both arm tools clamp and unclamp the bar; only the arms whose male has
+    # its female in the scene run their jointing screw (issue D10).
     acting_tools = sorted(t for t in tool_ids.values() if t)
+    tighten_tools = tighten_tools_for(
+        bar_id, arm_to_male, tool_ids, env_geom, is_ground_bar,
+    )
     jointing, release = assemble_timeline(
-        bar_id, m0, m1, m2, m3, m4, acting_tools, is_ground_bar,
+        bar_id, m0, m1, m2, m3, m4, acting_tools, tighten_tools, is_ground_bar,
     )
     return jointing, release, env_geom
 

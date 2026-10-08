@@ -1,9 +1,10 @@
 """Read-only checker for an exported design problem (BarActions + ActionSchedule).
 
 Checks the exported files against the rules agreed in
-``docs/support_export_issues_from_monitor.md`` (issues D1-D9) and prints one
-PASS / FAIL line per rule, with the first few offenders for every FAIL. It
-reads plain JSON only (no compas, no Rhino), so it runs with any Python 3.
+``docs/support_export_issues_from_monitor.md`` (issues D1-D9) and
+``docs/one_sided_tighten_from_monitor.md`` (D10), and prints one PASS / FAIL
+line per rule, with the first few offenders for every FAIL. It reads plain
+JSON only (no compas, no Rhino), so it runs with any Python 3.
 
 Usage:
     python tests/check_export_bundle.py <export folder> [--cells]
@@ -107,6 +108,22 @@ def start_state(movement: dict) -> dict:
 def body_states(state: dict) -> dict:
     """``{body name: body state data}`` of one state."""
     return {name: value["data"] for name, value in state.get("rigid_body_states", {}).items()}
+
+
+def arm_tools_by_side(state: dict) -> dict:
+    """``{"left" | "right": tool name}`` of the arm tools in a state.
+
+    An arm tool is attached to an arm's planning group (e.g.
+    ``base_left_arm_manipulator``); the frozen-robot obstacle tools are not
+    attached to any group, so they never show up here.
+    """
+    out = {}
+    for name, tool in state.get("tool_states", {}).items():
+        group = (tool["data"].get("attached_to_group") or "").lower()
+        for side in ("left", "right"):
+            if side in group:
+                out[side] = name
+    return out
 
 
 def tool_point(state: dict, tool_name: str):
@@ -244,6 +261,44 @@ def check_movement_lists(report: Report, actions: dict) -> None:
                 ground_shape)
     report.rule("D9  other bars keep tighten + insert (ends on the screw stall)", normal_shape)
     report.rule("D7/D9 movement numbers follow the movement order", ids_in_order)
+
+
+def check_tighten_tools(report: Report, actions: dict) -> None:
+    """D10: only the arms whose male has its receiver in the scene tighten.
+
+    On a one-sided bar one male's receiver sits on a staging (fake) bar that
+    is never built, so that male is only a grasp point. Per jointing action:
+    take the insert's start state, find each male joint riding an arm flange,
+    and keep that arm's tool when the male's receiver (its ``_female`` or
+    ``_mocap`` half) is a body of the state. The tighten step must name
+    exactly those tools.
+    """
+    wrong = []
+    for stem, action in actions.items():
+        if not stem.endswith("__J"):
+            continue
+        by_name = {movement_parts(m["movement_id"])[3]: m for m in movements_of(action)}
+        tighten = by_name.get("tool_tighten_joint")
+        if tighten is None:
+            continue  # ground bar: no tighten step (D9)
+        state = start_state(by_name.get("LM_insert") or {})
+        bodies = body_states(state)
+        tools = arm_tools_by_side(state)
+        expected = []
+        for name, body in bodies.items():
+            link = body.get("attached_to_link") or ""
+            if not (name.startswith("joint_") and name.endswith("_male") and link):
+                continue
+            side = "left" if link.startswith("left") else "right" if link.startswith("right") else None
+            joint = name[: -len("_male")]
+            receivers = (joint + "_female", joint + "_mocap")
+            if side in tools and any(r in bodies for r in receivers):
+                expected.append(tools[side])
+        named = sorted(tighten.get("tool_names") or [])
+        if named != sorted(expected):
+            wrong.append(f"{stem}: tighten names {named}, expected {sorted(expected)}")
+    report.rule("D10 each tighten step names exactly the tools whose male has its receiver in the insert state",
+                wrong)
 
 
 def check_names_and_floor(report: Report, schedule: dict, actions: dict) -> None:
@@ -393,6 +448,7 @@ def main() -> int:
     print(f"{args.root}: {len(actions)} action file(s), {len(schedule['schedule'])} schedule entries")
     report = Report()
     check_movement_lists(report, actions)
+    check_tighten_tools(report, actions)
     check_names_and_floor(report, schedule, actions)
     check_holds(report, schedule, actions)
     check_sequence(report, args.root, schedule, actions)

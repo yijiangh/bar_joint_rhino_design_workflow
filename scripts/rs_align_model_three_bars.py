@@ -45,7 +45,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from core.config import LAYER_BAR_CENTERLINES, MANAGED_LAYERS  # noqa: E402
-from core.rhino_helpers import curve_endpoints  # noqa: E402
+from core.rhino_helpers import curve_endpoints, numpy_to_xform  # noqa: E402
 
 
 _MOCAP_LAYER = "MoCap_Retrieval"
@@ -377,18 +377,6 @@ def _solve_transform(pair_data):
 # Apply transform to managed layers
 # ---------------------------------------------------------------------------
 
-def _numpy_to_rhino_transform(R, t):
-    xform = Rhino.Geometry.Transform(1.0)
-    for r in range(3):
-        for c in range(3):
-            xform[r, c] = float(R[r, c])
-        xform[r, 3] = float(t[r])
-    xform[3, 0] = 0.0
-    xform[3, 1] = 0.0
-    xform[3, 2] = 0.0
-    xform[3, 3] = 1.0
-    return xform
-
 
 def _all_managed_layer_objects():
     """Collect object ids on every managed layer (including sub-layers)."""
@@ -571,7 +559,10 @@ def main():
         print("[align] Aborted by user.")
         return
 
-    xform = _numpy_to_rhino_transform(R, t)
+    matrix = np.eye(4)
+    matrix[:3, :3] = R
+    matrix[:3, 3] = t
+    xform = numpy_to_xform(matrix)
     moved, total = _apply_transform(xform)
     sc.doc.Views.Redraw()
     print("[align] Moved {} / {} managed-layer objects.".format(moved, total))

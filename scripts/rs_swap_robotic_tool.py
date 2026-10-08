@@ -50,7 +50,7 @@ from core import ik_viz as _ik_viz_module
 from core import robot_cell as _robot_cell_module
 from core import robotic_tool as _robotic_tool_module
 from core import rhino_tool_place as _tool_place_module
-from core.rhino_bar_registry import get_bar_seq_map
+from core.rhino_bar_registry import apply_build_stage_visibility, get_bar_seq_map
 
 
 def _preflight_pair_assets(pair: dict) -> None:
@@ -231,6 +231,16 @@ def main() -> None:
 
     # 6. Collision cell: rebuild now or tell the user exactly what to click.
     _offer_cell_rebuild(robot_cell)
+
+    # 7. Re-assert the build-stage filter -- MANDATORY here, and the last
+    #    visibility-touching step on purpose.  Step 2 above deleted and
+    #    re-inserted every tool block, and a new Rhino object is always born
+    #    visible, so without this every tool on every unbuilt bar reappears.
+    #    This command is also the one entry point that does NOT call
+    #    repair_on_entry, so nothing else in the run would put them back.
+    #    Outside replace_all_tool_instances, not inside it, so its own
+    #    suspend_redraw batching is left intact.
+    apply_build_stage_visibility(caller="RSSwapRoboticTool")
 
 
 if __name__ == "__main__":

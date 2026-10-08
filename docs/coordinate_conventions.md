@@ -55,7 +55,32 @@ Joint blocks are Rhino block definitions. The geometry of a block is defined rel
 | **X** | Points towards one of the two possible directions of the bar's centerline. Defines orientation — see §4 |
 | **Y** | `bar_Z × bar_X` (right-handed) |
 
-The Z-axes of a correctly assembled female–male pair are anti-parallel and co-linear (screw enters from the male Z direction; female receives it from its own −Z direction).
+The Z-axes of a correctly assembled female–male pair are **parallel** and co-linear: the screw travels along the male's +Z into the female, and continues along the female's +Z. Measured on a solved `T20` pair (female bar along world X, male bar 36 mm above it): both blocks' +Z point straight down, and the vector from the female origin to the male origin has a negative component along the female's +Z — so a Female's +Z points **away from its male**, toward the back of the block.
+
+### MoCap joint
+
+`T20_MoCap` is a `T20_Female` with an OptiTrack marker plate bolted to its back. Its block frame follows the Female table above, so the plate faces along the block's **+Z** (the back, away from the male). A male screws into it exactly as into a Female.
+
+- It is placed either **paired** — the receiver of its Type's mate (`J40-53_mocap`, chosen at RSJointPlace's *Receiving joint* prompt) — or **standalone** on one bar (`M7-T20-0_mocap`, RSJointPlace › JointOnly). A standalone joint starts with its plate facing world +Z, or +X on a bar within 15° of vertical, and is turned about the bar with Rotate.
+- `marker_points_mm` in `joint_pairs.json` holds its marker-sphere centres, `{Motive label: [x, y, z]}`, in mm, in the **block's own frame**. A placed instance predicts them as `block_world @ point`; RSExportPrefab writes them in the bar frame of §5.
+
+### Where a joint's Z actually points in the world — and why it can cancel
+
+The block's Z is **not** along the bar. Reading `M_block_from_bar` for `T20_Male` out of
+`joint_pairs.json`, its rotation rows are `[0,1,0] / [0,0,-1] / [-1,0,0]`, so the block's
+local **+Z is `-bar_X`** — horizontal, and *perpendicular* to the bar — then spun about
+the bar axis by that joint's `rotation_deg` (`jr`, see §5).
+
+Two consequences that the base-placement code has to handle:
+
+- **Two anchors on one bar can point in opposite directions.** A bar whose two joints are
+  ~180° apart in `jr` (one coupler grabbing from the left, one from the right) has two
+  insertion axes that cancel. Averaging them yields floating-point noise, not a direction.
+- **A `jr` near ±90° tips the axis toward vertical**, whose horizontal component is also
+  noise.
+
+Both are detected in `core.base_guide_geom.resolve_heading_from_axes` (mean resultant
+length + a minimum-horizontal filter) rather than being averaged blindly — see §7.
 
 ---
 
@@ -63,25 +88,36 @@ The Z-axes of a correctly assembled female–male pair are anti-parallel and co-
 
 During design, the **single source of truth** for any joint's position and orientation is the **world transform of the block instance in the Rhino document**. Derived quantities such as `position_mm` and `rotation_deg` are computed from this transform at export time, they may be cached but are not considered as the authoritative record.
 
-Joint blocks are placed on two layers:
+Every joint block is named `<Type>_<Subtype>` (`T20_Female`, `T20_Male`, `T20_Ground`, `T20_MoCap`), and its layer, id, object name and collision key are derived from that name in `scripts/core/joint_name_conventions.py`. Joint blocks are placed on four layers, one per Subtype; **the layer is the authority for a placed block's role**:
 
-- `FemaleJointPlacedInstances`
-- `MaleJointPlacedInstances`
+- `MANAGED Scaffolding::Joint Female Instances`
+- `MANAGED Scaffolding::Joint Male Instances`
+- `MANAGED Scaffolding::Joint Ground Instances`
+- `MANAGED Scaffolding::Joint MoCap Instances`
 
-Each placed instance carries user text keys written by RSJointPlace:
+| Joint | Id | Object name |
+|---|---|---|
+| pair (receiver + male) | `J<receiver bar>-<male bar>`, e.g. `J40-53` | `J40-53_female` / `J40-53_mocap`, `J40-53_male` |
+| Ground | `G<bar>-<Type>-<i>`, e.g. `G4-T20-0` | `G4-T20-0_ground` |
+| standalone MoCap | `M<bar>-<Type>-<i>`, e.g. `M7-T20-0` | `M7-T20-0_mocap` |
+
+Each placed pair half carries user text keys written by RSJointPlace:
 
 | Key | Content | Authoritative? |
 |-----|---------|----------------|
 | `joint_id` | e.g. `J1-2` | ✓ |
-| `joint_type` | e.g. `T20` | ✓ |
-| `joint_subtype` | e.g. `Female` | ✓ |
+| `joint_type` | the block's Type, e.g. `T20` | ✓ |
+| `joint_subtype` | the block's Subtype, e.g. `Female`, `MoCap` (informational — the layer decides the role) | ✓ |
+| `joint_pair_name` | the mate it was placed from, e.g. `T20` (also for a MoCap receiver) | ✓ |
 | `parent_bar_id` | Bar this joint is mounted on | ✓ |
 | `connected_bar_id` | The other bar in the pair | ✓ |
-| `female_parent_bar` | Le bar ID (same for both blocks in a pair) | ✓ |
+| `female_parent_bar` | Le (receiver) bar ID (same for both blocks in a pair; named "female" also for a MoCap receiver) | ✓ |
 | `male_parent_bar` | Ln bar ID (same for both blocks in a pair) | ✓ |
 | `ori` | `"P"` or `"N"` — cached from placement, consistent with §5 | convenience |
 | `position_mm` | Cached from solver DOF (FJP/MJP). Matches §5 for female; may differ for male due to negated FK convention. **Not used by RSExportPrefab.** | convenience |
 | `rotation_deg` | Cached from solver DOF (FJR/MJR) in degrees. Uses a different zero reference than the geometric §5 convention. **Not used by RSExportPrefab.** | convenience |
+
+A single-sided block (Ground, standalone MoCap) carries `joint_id`, `joint_type`, `joint_subtype`, `block_name`, `parent_bar_id`, `position_mm`, `rotation_deg` and `flipped`, and no pair keys.
 
 RSExportPrefab ignores all cached convenience values and recomputes `position_mm`, `ori`, and `rotation_deg` fresh from the block's world transform (see §5).
 
@@ -126,6 +162,14 @@ rotation_deg = atan2(dot(cross(bar_X, proj), bar_Z), dot(bar_X, proj))
 At `rotation_deg = 0` the joint's assembly axis (Z) is aligned with the bar's X-axis.  
 Positive rotation is counter-clockwise about bar Z (right-hand rule).
 
+### `mocap` (MoCap joints only)
+
+```
+"mocap": {"paired": true, "markers_mm": {"M1": [x, y, z], ...}}
+```
+
+`paired` is false for a standalone MoCap joint. `markers_mm` are its marker-sphere centres in the bar frame used above — origin at `bar_start`, Z = `bar_Z`, X = `bar_X` (world Z × bar, or world X × bar for a near-vertical bar), Y = Z × X — rounded to 0.01 mm.
+
 ---
 
 ## 6. IK Keyframe Data (`ik_assembly` / `ik_support`)
@@ -155,8 +199,8 @@ The IK keyframe workflow (`RSIKKeyframe`) stores a JSON record as user-text on t
 |-------|---------|
 | `robot_id` | Identifier of the robot model the keyframe was solved against. Currently `"dual-arm_husky_Cindy"`. |
 | `base_frame_world_mm` | 4x4 homogeneous transform of the mobile-base frame in world coordinates, **translations in mm**. Z = Brep face normal at the picked base point; X = heading projected onto the tangent plane. |
-| `final` | Joint configurations for both arms with the tools at the final contact poses (tool0 = the placed tool block's world transform, i.e. male OCF ⊗ `inv(M_tcp_from_block)` from `robotic_tools.json`). |
-| `approach` | Joint configurations for both arms with tools offset by `-unit(avg(male_z_L, male_z_R)) * LM_DISTANCE` from the final poses. |
+| `final` | Joint configurations for both arms with the tools at the final contact poses (tool0 = the placed tool block's world transform, i.e. the joint's tool-attach frame ⊗ `inv(M_tcp_from_block)` from `robotic_tools.json`). The attach frame is the male OCF for male joints; for ground joints it is the ground OCF ⊗ `M_tool_from_block` from `joint_pairs.json` (identity unless the ground definition picked one). |
+| `approach` | Joint configurations for both arms with tools offset by `-unit(avg(male_z_L, male_z_R)) * LM_APPROACH_DISTANCE` from the final poses. |
 | Per-side `joint_names` / `joint_values` | Configurable joints of the planning group (`base_left_arm_manipulator` / `base_right_arm_manipulator`), order preserved from `RobotCell.get_configurable_joint_names(group)`. |
 
 ### Invariants
@@ -169,3 +213,78 @@ The IK keyframe workflow (`RSIKKeyframe`) stores a JSON record as user-text on t
 
 - **Bar OCF** — always recomputed fresh from bar endpoints per §2.
 - **Joint OCFs and types** — looked up at load time by scanning baked joint block instances for matching `male_parent_bar` / `female_parent_bar`; the authoritative joint transform is the block instance's world transform.
+
+---
+
+## 7. Mobile-Base Placement: Heading, Guides, and Arm Sides
+
+Where the mobile base stands for a bar is decided by one vector: the **heading**, the
+direction the base +X faces. The base stands the standoff distance *against* it, so
+driving forward carries the bar into the assembly — and the heading alone therefore
+decides which side of the bar the robot occupies.
+
+### Resolving the heading
+
+`core.rhino_walkable_ground.resolve_bar_heading` gathers the bar's anchor-joint insertion
+axes (each joint block's local +Z, from **both** the male and ground joint layers — the
+same set assembly IK accepts as arm anchors) and hands them to the Rhino-free
+`core.base_guide_geom.resolve_heading_from_axes`, which:
+
+1. **flattens each axis onto the ground plane first**, discarding any whose horizontal
+   part is shorter than `config.INSERTION_DIR_MIN_HORIZONTAL` (a near-vertical axis
+   carries no azimuth — see §3);
+2. measures agreement with the **mean resultant length**, `|Σ unit axes| / count`
+   (`1.0` = all axes agree, `0.0` = they cancel exactly). Below
+   `config.INSERTION_DIR_CANCEL_TOL` the axes disagree about the side and no heading is
+   returned.
+
+| Outcome | `source` | Meaning |
+|---------|----------|---------|
+| Axes agree | `averaged` | The heading is their normalized sum |
+| Axes cancel / all vertical | `perpendicular-open` | Fall back to the two bar-perpendicular horizontal directions and stand on whichever side has more clear walkable ground (standoff point on the ground, farthest from other bars and environment obstacles) |
+| Neither side is standable | `world-fallback` | The legacy world-horizontal direction; reported as ambiguous |
+
+Bars resolved by anything other than `averaged` are flagged `ambiguous` and listed in the
+`RSIKKeyframeAll` summary as "verify the side".
+
+### Base guide lines
+
+Both IK keyframe commands draw five lines on the walkable ground
+(`core.base_guide_geom.build_base_guides`, baked by `core.base_guide_viz`):
+
+| Line | Colour | Definition |
+|------|--------|-----------|
+| Projection | teal | The line joining the bar's two anchor-joint centres, projected onto the walkable ground (only the projection is drawn) |
+| ×3 offsets | light teal | That line stepped **against** the heading by each of `config.BASE_GUIDE_OFFSETS_MM` (375 / 500 / 625 mm), labelled with a text dot |
+| Extension | yellow | Through the midpoints of the four lines above |
+
+Every endpoint is re-snapped onto the ground, so the guides follow a stepped or sloped
+surface. The placed base origin lies **on the extension line**, at the offset line
+matching the standoff — `config.IK_BASE_STANDOFF_MULTIBAR_MM` is kept equal to the middle
+offset so the default auto-placement lands on a drawn line.
+
+All of this is transient preview geometry on `config.LAYER_BASE_GUIDE_PREVIEW`, removed on
+every exit path.
+
+### Which end of a bar takes the LEFT tool
+
+This follows from the approach, **not** from the bar. The robot faces the bar along the
+heading, so the end on its left is the one its left arm reaches:
+
+```
+   [tool R]
+      |
+     bar        [robot]      heading = robot → bar
+      |                      left    = ground_normal × heading
+   [tool L]
+```
+
+`core.base_guide_geom.arm_side_for_joint` dots each joint's offset from the bar centre
+against that left direction; `core.rhino_tool_place.assign_tool_sides_from_heading`
+re-places any tool that disagrees. Flip the base to the other side and the heading
+negates, so both ends swap.
+
+**A hand-picked side wins.** Cycling a tool in RSJointEdit stamps
+`config.KEY_TOOL_SIDE_MANUAL` on the joint block, and the automatic rule skips joints
+carrying it — so a deliberate manual edit is never silently undone. An explicit base Flip
+clears the mark, because that is the user re-deciding the side.

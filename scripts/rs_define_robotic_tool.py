@@ -69,12 +69,8 @@ from core import config_generated_ik as _generated_ik
 from core import robotic_tool as _robotic_tool_module
 from core.rhino_block_export import export_block_definition_to_3dm
 from core.rhino_block_obj_export import export_picked_meshes_to_obj_mm
-from core.rhino_frame_io import (
-    doc_unit_scale_to_mm,
-    reconstruct_frame,
-    resolve_frame_group,
-)
-from core.rhino_helpers import point_to_array, suspend_redraw
+from core.rhino_frame_io import reconstruct_frame, resolve_frame_group
+from core.rhino_helpers import doc_unit_scale_to_mm, point_to_array, suspend_redraw
 from core.rhino_tool_place import get_default_tool_name, set_default_tool_name
 
 
@@ -84,7 +80,7 @@ DEFAULT_GRIPPER_KIND = "Robotiq"
 def _reload():
     global robotic_tool, RoboticToolDef, save_robotic_tool, DEFAULT_ASSET_DIR
     global arm_side_from_tool_name, resolve_pair_for_tool, get_active_pair_names
-    global frame_from_axes, invert_transform, unit
+    global frame_from_x_and_y_hint, invert_transform
     importlib.reload(_robotic_tool_module)
     robotic_tool = _robotic_tool_module
     RoboticToolDef = robotic_tool.RoboticToolDef
@@ -95,13 +91,11 @@ def _reload():
     get_active_pair_names = robotic_tool.get_active_pair_names
 
     from core.transforms import (
-        frame_from_axes as _frame_from_axes,
+        frame_from_x_and_y_hint as _frame_from_x_and_y_hint,
         invert_transform as _invert_transform,
-        unit as _unit,
     )
-    frame_from_axes = _frame_from_axes
+    frame_from_x_and_y_hint = _frame_from_x_and_y_hint
     invert_transform = _invert_transform
-    unit = _unit
 
 
 _reload()
@@ -201,12 +195,16 @@ def _world_tcp_frame(
     X = unit(x_tip - origin).  Z = unit(X x (y_tip - origin)).  Y = Z x X.
     The y_tip serves only to choose Z's sign; any non-collinear point on
     the +Y side will work.
+
+    Thin wrapper over ``core.transforms.frame_from_x_and_y_hint`` -- the same
+    recipe is used by RSDefineJointHalf's ground tool-attach picks, so the two
+    commands can never drift apart on what "pick X, pick Y" means.
     """
-    x_dir = unit(np.asarray(x_tip - tcp_origin, dtype=float))
-    y_hint = np.asarray(y_tip - tcp_origin, dtype=float)
-    z_dir = unit(np.cross(x_dir, y_hint))
-    y_dir = unit(np.cross(z_dir, x_dir))
-    return frame_from_axes(np.asarray(tcp_origin, dtype=float), x_dir, y_dir, z_dir)
+    return frame_from_x_and_y_hint(
+        np.asarray(tcp_origin, dtype=float),
+        np.asarray(x_tip - tcp_origin, dtype=float),
+        np.asarray(y_tip - tcp_origin, dtype=float),
+    )
 
 
 # ---------------------------------------------------------------------------

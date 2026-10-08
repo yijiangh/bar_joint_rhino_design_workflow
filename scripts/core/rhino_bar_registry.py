@@ -18,13 +18,27 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from core import config
+from core import joint_name_conventions as jnc
+from core.build_stage import (
+    BUILD_STAGE_KEY,
+    STATUS_CLEAR,
+    STATUS_FALLBACK,
+    STATUS_OFF,
+    format_build_stage,
+    parse_build_stage,
+    resolve_build_stage_seq,
+    stage_filter_note,
+)
 from core.rhino_helpers import (
     as_object_id_list,
     apply_object_display,
     curve_endpoints,
     delete_objects,
     ensure_layer,
+    get_doc_string,
     point_to_array,
+    set_doc_string,
+    suspend_redraw,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,6 +51,23 @@ BAR_GUID_KEY = "bar_guid"
 BAR_SEQ_KEY = "bar_seq"
 BAR_SUPPORTED_UNTIL_KEY = "supported_until"
 BAR_TYPE_VALUE = "scaffolding_bar"
+
+# A "fake" bar is a MODELING ARTIFACT that will not be fabricated and is not
+# physically present.  It exists only to give a real bar's male joint something
+# to be modeled against, so the male the robot grasps sits at the right pose.
+# It stays a full registered bar in most respects (bar id, assembly step, its
+# joint halves) so the joint math and the sequence display keep working.
+#
+# ! It is NOT collision geometry: the fake bar and every joint half mounted on
+# it (its females) are excluded from every collision scene -- assembly and
+# support alike -- by `core.env_collision`.  Only the real bar's male half,
+# which is parented to the real bar, survives.  Toggling this mark therefore
+# changes the collision scene, so it is part of the cell staleness fingerprint
+# (`core.robot_cell._live_assembly_fingerprint`).
+#
+# Value is "1" when set; the key is removed otherwise, so the common case (a
+# real bar) costs one absent-key read.
+BAR_IS_FAKE_KEY = "scaffolding.fake_bar"
 
 # Layer names are owned by ``core.config`` so the whole toolchain agrees.
 TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
@@ -56,16 +87,6 @@ _POINT_TOL = 1e-3  # mm tolerance for endpoint cache comparison
 # ---------------------------------------------------------------------------
 
 
-def _parse_bar_number(bar_id):
-    """Extract integer from a bar_id like 'B7' → 7.  Return None on failure."""
-    if not bar_id or not bar_id.upper().startswith("B"):
-        return None
-    try:
-        return int(bar_id[1:])
-    except (ValueError, IndexError):
-        return None
-
-
 def _parse_bar_seq(s):
     """Parse a stored sequence string to int, or None on failure."""
     if not s:
@@ -81,10 +102,10 @@ def next_bar_id():
     max_num = 0
     for oid in rs.AllObjects():
         if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-            num = _parse_bar_number(rs.GetUserText(oid, BAR_ID_KEY))
+            num = jnc.bar_number(rs.GetUserText(oid, BAR_ID_KEY))
             if num is not None and num > max_num:
                 max_num = num
-    return f"B{max_num + 1}"
+    return jnc.bar_id(max_num + 1)
 
 
 def next_bar_seq():
@@ -171,10 +192,40 @@ def get_all_bars():
     return bars
 
 
-# Legacy bundled IK blob key (written by older RSIKKeyframe builds before the
-# solution was split into the KEY_ASSEMBLY_* keys in core.config). Cleared for
-# back-compat so an old bar can't keep a stale IK record.
+# Legacy bundled IK blob keys (written by older builds before the solutions
+# were split into the KEY_ASSEMBLY_* / KEY_SUPPORT_* keys in core.config).
+# Cleared for back-compat so an old bar can't keep a stale IK record.
 LEGACY_IK_ASSEMBLY_KEY = "ik_assembly"
+LEGACY_IK_SUPPORT_KEY = "ik_support"
+
+
+def clear_support_ik_keyframe(bar_oid):
+    """Delete a bar's saved support-robot hold keyframe (all split keys).
+
+    The support keyframe is all-or-nothing (robot name + base + grasp +
+    approach + held), so there are no partial-clear switches — everything
+    goes, including the legacy ``ik_support`` blob from older builds.
+
+    Args:
+        bar_oid: Rhino object id of the held bar's curve.
+
+    Returns:
+        list[str]: the user-text keys that were present and removed.
+    """
+    keys = [
+        config.KEY_SUPPORT_ROBOT,
+        config.KEY_SUPPORT_BASE_FRAME,
+        config.KEY_SUPPORT_GRASP_FRAME,
+        config.KEY_SUPPORT_IK_APPROACH,
+        config.KEY_SUPPORT_IK_HELD,
+        LEGACY_IK_SUPPORT_KEY,
+    ]
+    removed = []
+    for key in keys:
+        if rs.GetUserText(bar_oid, key):
+            rs.SetUserText(bar_oid, key)  # 2-arg form deletes the key/value pair
+            removed.append(key)
+    return removed
 
 
 def clear_assembly_ik_keyframe(bar_oid, clear_keyframe=True, clear_base_frame=True):
@@ -287,7 +338,7 @@ def repair_bar_sequences():
         if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
             continue
         bar_id = rs.GetUserText(oid, BAR_ID_KEY)
-        bar_id_num = _parse_bar_number(bar_id) or 0
+        bar_id_num = jnc.bar_number(bar_id) or 0
         old_seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
         bar_data.append((oid, bar_id, bar_id_num, old_seq))
 
@@ -510,6 +561,52 @@ def set_supported_until(curve_id, bar_ids):
         rs.SetUserText(curve_id, BAR_SUPPORTED_UNTIL_KEY, "")
 
 
+def is_fake_bar(curve_id):
+    """True when *curve_id* is staging that will not be fabricated.
+
+    See :data:`BAR_IS_FAKE_KEY`.  Marked in ``RSBarEdit > FakeBar``.
+    """
+    return rs.GetUserText(curve_id, BAR_IS_FAKE_KEY) == "1"
+
+
+def set_fake_bar(curve_id, fake):
+    """Mark or unmark *curve_id* as a non-fabricated staging bar."""
+    rs.SetUserText(curve_id, BAR_IS_FAKE_KEY, "1" if fake else "")
+
+
+def get_fake_bar_ids(bar_map=None):
+    """Return the set of bar ids currently marked fake.
+
+    *bar_map* is a :func:`get_bar_seq_map` result; one is fetched when omitted.
+    Returned as ids, not oids, because every consumer -- the export filters, the
+    sequence display, the joint pass -- works in bar ids.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    return {
+        bar_id for bar_id, (oid, _seq) in bar_map.items() if is_fake_bar(oid)
+    }
+
+
+def get_real_bar_seq_map(bar_map=None):
+    """The bars the robots actually build: :func:`get_bar_seq_map` without fake bars.
+
+    Every exported sequence (each action's ``assembly_seq``, the hold plan,
+    ``ActionSchedule.json``) uses this one map, so a single-bar export and the
+    batch export can never disagree about which bars exist.
+
+    Args:
+        bar_map (dict): a :func:`get_bar_seq_map` result; fetched when omitted.
+
+    Returns:
+        dict: ``{bar_id: (oid, seq)}`` for the real bars only.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    fake_bar_ids = get_fake_bar_ids(bar_map)
+    return {bar_id: value for bar_id, value in bar_map.items() if bar_id not in fake_bar_ids}
+
+
 def cleanup_stale_supports():
     """Remove dangling bar-id refs from every ``supported_until`` list.
 
@@ -588,6 +685,34 @@ def get_unstable_bars(active_bar_id, bar_map=None):
     return unstable
 
 
+def collect_hold_inputs(bar_map=None):
+    """Read the two inputs ``core.hold_schedule.derive_hold_plan`` needs.
+
+    The one Rhino-side gateway into the (Rhino-free) hold derivation, so
+    every consumer — the IK button, the exporters, the schedule builder —
+    reads the SAME document data the same way. Fake bars are always left
+    out (they are never built, so they neither need a hold nor stabilize
+    anything), whatever map the caller passes.
+
+    Args:
+        bar_map (dict): a :func:`get_bar_seq_map` result (with or without the
+            fake bars); fetched when omitted.
+
+    Returns:
+        tuple: ``(bar_seq, supported_until)`` where ``bar_seq`` is
+        ``{bar_id: step int}`` and ``supported_until`` is
+        ``{bar_id: [stabilizing bar ids]}`` (only bars with a non-empty list).
+    """
+    bar_map = get_real_bar_seq_map(bar_map)
+    bar_seq = {bar_id: seq for bar_id, (_oid, seq) in bar_map.items()}
+    supported_until = {}
+    for bar_id, (oid, _seq) in bar_map.items():
+        deps = get_supported_until(oid)
+        if deps:
+            supported_until[bar_id] = deps
+    return bar_seq, supported_until
+
+
 # ---------------------------------------------------------------------------
 # Sequence colour-coding and visibility
 # ---------------------------------------------------------------------------
@@ -604,6 +729,9 @@ SEQ_COLOR_UNSTABLE = (40, 170, 160)
 #: Colour used to overlay bars currently selected as supports inside the
 #: ``EditSupports`` toggle-pick mode (dark purple).
 SEQ_COLOR_SUPPORT_PICK = (110, 40, 160)
+#: Non-fabricated staging bar (pink) -- the same pink as :data:`COLOR_FAILED`:
+#: both mean "the robot will not be building this one".
+SEQ_COLOR_FAKE = (230, 115, 150)
 
 
 def _set_obj_color(oid, color):
@@ -617,10 +745,19 @@ def _reset_obj_color(oid):
     rs.ObjectColorSource(oid, 0)  # 0 = by layer
 
 
-def _bar_curve_and_tube(curve_id):
-    """Return ``[curve_id]`` plus the tube GUID if one exists."""
+def _bar_curve_and_tube(curve_id, tube_index=None):
+    """Return ``[curve_id]`` plus the tube GUID if one exists.
+
+    *tube_index* is an optional ``{axis_guid_str: tube_oid}`` map from
+    :func:`_tube_index`.  Pass one whenever looping over many bars:
+    :func:`_find_existing_tube` rescans the entire tube-preview layer on every
+    call, so without an index a pass over N bars costs N layer scans.
+    """
     ids = [curve_id]
-    tube = _find_existing_tube(curve_id)
+    if tube_index is None:
+        tube = _find_existing_tube(curve_id)
+    else:
+        tube = tube_index.get(str(rs.coerceguid(curve_id)))
     if tube is not None:
         ids.append(tube)
     return ids
@@ -632,13 +769,9 @@ def _bar_curve_and_tube(curve_id):
 
 
 def _joint_layer_objects():
-    """All joint block instance ids on the female + male + ground layers."""
+    """All joint block instance ids, every joint role."""
     out = []
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         if rs.IsLayer(layer):
             out.extend(rs.ObjectsByLayer(layer) or [])
     return out
@@ -662,24 +795,21 @@ def get_active_tool_oids(active_bar_id):
     if not active_bar_id:
         return []
     active_joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             if (
-                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-                and rs.GetUserText(oid, "joint_id")
+                rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
+                and rs.GetUserText(oid, jnc.UT_JOINT_ID)
             ):
-                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
+                active_joint_ids.add(rs.GetUserText(oid, jnc.UT_JOINT_ID))
     if not active_joint_ids:
         return []
     return [
         oid
         for oid in _tool_layer_objects()
-        if rs.GetUserText(oid, "joint_id") in active_joint_ids
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) in active_joint_ids
     ]
 
 
@@ -690,7 +820,68 @@ def _set_visible(oid, visible):
         rs.HideObject(oid)
 
 
-def show_sequence_colors(active_bar_id, show_unbuilt=True):
+def _ensure_preview_linetype(dash_mm, gap_mm):
+    """Return the name of a document linetype drawing ``dash_mm`` on / ``gap_mm`` off.
+
+    The pattern is encoded in the NAME (``RS_PreviewDash_4x2``), so a changed
+    pattern simply creates a fresh linetype instead of modifying one in place
+    -- Rhino's linetype table has no safe in-place edit while objects use the
+    style.  Old patterns linger unused in the table, which is harmless.
+    """
+    def _num(v):
+        return ("%g" % float(v)).replace(".", "_")
+
+    name = f"RS_PreviewDash_{_num(dash_mm)}x{_num(gap_mm)}"
+    if sc.doc.Linetypes.FindName(name) is None:
+        # Positive segment = ink, negative = gap (Rhino's convention).
+        sc.doc.Linetypes.Add(name, [float(dash_mm), -abs(float(gap_mm))])
+    return name
+
+
+def _apply_line_style(oid, line_style):
+    """Apply a ``line_style`` dict (see ``show_sequence_colors``) to one curve.
+
+    Both attributes are always written explicitly: a style with
+    ``dashed=False`` RESETS the linetype to by-layer rather than leaving a
+    stale dash from the previous frame, and likewise for thickness.
+    """
+    thickness = line_style.get("thickness_mm")
+    if thickness:
+        rs.ObjectPrintWidth(oid, float(thickness))
+        rs.ObjectPrintWidthSource(oid, 1)  # 1 = by object
+    else:
+        rs.ObjectPrintWidthSource(oid, 0)  # 0 = by layer
+    if line_style.get("dashed"):
+        dash_mm, gap_mm = line_style.get("pattern") or (4.0, 2.0)
+        rs.ObjectLinetype(oid, _ensure_preview_linetype(dash_mm, gap_mm))
+        rs.ObjectLinetypeSource(oid, 1)
+    else:
+        rs.ObjectLinetypeSource(oid, 0)
+
+
+#: Per-class keys accepted by ``show_sequence_colors(color_flags=...)``.  One
+#: key per colour a user can reason about from the legend; the two derived
+#: tints are deliberately absent (see the ``color_flags`` docs below).
+SEQ_COLOR_CLASSES = ("built", "active", "unbuilt", "support")
+
+
+def _normalize_color_flags(color_flags):
+    """Turn the ``color_flags`` argument into a full ``{class: bool}`` dict.
+
+    ``None`` (the default everywhere in-command) means every class is painted,
+    which is the behaviour every caller had before the argument existed.
+    Unknown keys are ignored rather than raising: a caller passing a stale key
+    should lose that switch, not the whole repaint.
+    """
+    if color_flags is None:
+        return {name: True for name in SEQ_COLOR_CLASSES}
+    return {name: bool(color_flags.get(name, True)) for name in SEQ_COLOR_CLASSES}
+
+
+def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
+                         highlight_supports=True, color_flags=None,
+                         show_fake=True, tint_curves_only=False,
+                         geom_built_and_active_only=False, line_style=None):
     """Apply sequence colour-coding + visibility to bars, joints, and tools.
 
     Bar visibility / colour
@@ -701,6 +892,12 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
           only finishes at the end of this step) -- it is teal instead.
         - ``seq == active_seq`` -> blue  (active step), shown.
         - ``seq > active_seq``  -> grey  (unbuilt), shown iff *show_unbuilt*.
+        - a bar in the ACTIVE bar's ``supported_until`` list -> purple, and
+          **always shown**, overriding all three rules above.  Those bars are
+          what hold this step up, so they belong in the normal view;
+          EditSupports is only for CHANGING the set.  Forced visible because a
+          support later than the active step would otherwise be hidden by
+          ``show_unbuilt=False`` -- precisely when you most need to see it.
 
     Joint visibility
         Each joint instance follows the visibility of its parent bar
@@ -711,81 +908,428 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True):
         Only the robotic tool(s) belonging to the *active* step are
         shown -- i.e. tools whose joint's male side is parented to
         *active_bar_id*.  All other tools are hidden.
+
+    This is the **in-command** view and it is deliberately pure: it reads the
+    document and paints, and never writes the build stage.  Do not confuse it
+    with :func:`apply_build_stage_visibility`, the persistent filter, which
+    differs in exactly one rule -- it keeps every *built* bar's tools visible
+    instead of only the active step's, so RSSwapRoboticTool and
+    RSInspectRoboticTool stay usable once the command has exited.  The latch is
+    written only by an explicit user toggle (``RSSequenceEdit > HideUnbuilt``).
+
+    Pass *bar_map* (a :func:`get_bar_seq_map` result) when the caller already
+    has one -- ``get_bar_seq_map`` walks every object in the document, so an
+    interactive caller that repaints and then reads the same numbers back
+    should scan once and hand the result down.  Only safe while nothing has
+    changed a bar's sequence number since the map was built; leave it ``None``
+    after any reorder.
+
+    Args:
+        active_bar_id (str): the bar being assembled at this step.
+        show_unbuilt (bool): show bars later in the sequence than the active one.
+        bar_map (dict | None): a cached :func:`get_bar_seq_map` result.
+        highlight_supports (bool): paint the active bar's declared supports purple.
+        color_flags (dict | None): per-class tint switches, keys
+            ``"built"`` / ``"active"`` / ``"unbuilt"`` / ``"support"``.  A False
+            entry leaves that class **by-layer** -- the tint is dropped, the
+            object stays exactly as visible as the rules above make it.
+            ``None`` (the default) paints everything, so every in-command caller
+            is unaffected.  Written for the Grasshopper preview component, where
+            the animator turns individual legend colours off to film a clean
+            frame; the interactive commands have no use for it.
+
+            Two tints are deliberately not switchable.  ``SEQ_COLOR_UNSTABLE``
+            (teal) is a *variant of built*, not a class of its own, so it rides
+            on ``"built"``.  ``SEQ_COLOR_FAKE`` (pink) is always painted when
+            the bar is visible, matching :func:`clear_ik_preview`, which
+            re-asserts it rather than resetting it: a staging bar that renders
+            like a real one is a fabrication error waiting to happen.  The
+            filming view does not silence the tint -- it hides the bar
+            entirely via *show_fake*.
+        show_fake (bool): False hides fake (staging) bars outright -- their
+            joints follow automatically.  True (the default, every in-command
+            caller) keeps today's behaviour: visible per the sequence rules,
+            tinted pink.  For the Grasshopper filming view, where a staging
+            bar has no business on camera.
+        tint_curves_only (bool): True puts the class colours on the bar
+            CENTERLINE CURVES only; tubes, joint instances and tools keep
+            their normal by-layer look.  The filming split: coloured guide
+            lines over an uncoloured model.  False (default) tints everything,
+            as before.
+        geom_built_and_active_only (bool): True shows tube + joint geometry
+            only for built bars and the active bar; bars later in the
+            sequence keep at most their centerline (per *show_unbuilt*).
+            False (default) shows unbuilt geometry per *show_unbuilt*, as
+            before.
+        line_style (dict | None): styling for the centerline curves, applied
+            per bar:
+            ``{"thickness_mm": float | None, "dashed": bool,
+            "pattern": (dash_mm, gap_mm)}``.
+            Thickness is a per-object print width (viewport shows it only
+            while PrintDisplay is on -- the GH component manages that);
+            ``dashed`` swaps the curve onto a document linetype built from
+            ``pattern`` (default 4 mm ink / 2 mm gap).  ``None`` (default)
+            touches neither attribute.  Reset by
+            :func:`reset_sequence_colors`.
     """
-    bar_map = get_bar_seq_map()
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
     if active_bar_id not in bar_map:
         return
-    _, active_seq = bar_map[active_bar_id]
+    flags = _normalize_color_flags(color_flags)
+    active_oid, active_seq = bar_map[active_bar_id]
     unstable_ids = get_unstable_bars(active_bar_id, bar_map)
 
-    # Build a quick "is this bar visible?" map for the joint pass.
+    # The active bar's declared supports, shown as part of the normal view --
+    # you should not have to open EditSupports to see what is holding this step
+    # up.  Forced visible even when they are later than the active step and
+    # unbuilt bars are hidden: a support you cannot see is the one case where
+    # hiding actively misleads.  EditSupports is now only for changing the set.
+    # The active bar is dropped so it always keeps its own ACTIVE colour.
+    # Pass highlight_supports=False when the caller paints the purple itself --
+    # the EditSupports picker does, because it shows the set being EDITED, which
+    # differs from the saved set the moment the user toggles anything.  Two
+    # sources of purple would leave a de-selected bar still looking selected.
+    support_ids = set()
+    if highlight_supports:
+        support_ids = {
+            b for b in get_supported_until(active_oid)
+            if b in bar_map and b != active_bar_id
+        }
+
+    # Staging bars are tinted but keep the normal visibility rules: one that is
+    # later than the active step genuinely is not standing yet, so hiding it is
+    # right.  The colour is the point -- it stops a fake bar being read as part
+    # of the structure being built.
+    fake_ids = get_fake_bar_ids(bar_map)
+
+    # Built once here and reused by the joint pass below, so the two can never
+    # disagree about what colour a bar is -- nor about whether it is painted at
+    # all, which is why the ``paint`` decision is recorded alongside the colour.
     bar_visible_by_id = {}
+    bar_color_by_id = {}
+    bar_paint_by_id = {}
+
+    # One tube-layer scan for the whole pass (see _tube_index).
+    tube_index = _tube_index()
 
     rs.EnableRedraw(False)
     for bar_id, (oid, seq) in bar_map.items():
         if seq < active_seq:
             color = SEQ_COLOR_UNSTABLE if bar_id in unstable_ids else SEQ_COLOR_BUILT
             visible = True
+            paint = flags["built"]
         elif seq == active_seq:
             color = SEQ_COLOR_ACTIVE
             visible = True
+            paint = flags["active"]
         else:
             color = SEQ_COLOR_UNBUILT
             visible = show_unbuilt
-        bar_visible_by_id[bar_id] = visible
-        for obj in _bar_curve_and_tube(oid):
-            _set_obj_color(obj, color)
-            _set_visible(obj, visible)
+            paint = flags["unbuilt"]
+        # Precedence, loosest to tightest: sequence state, then fake, then
+        # support.  The active bar keeps its blue either way -- it is excluded
+        # from support_ids, and skipped here.  ``paint`` follows the same
+        # precedence as ``color``: whichever rule wins the colour also decides
+        # whether it is applied, so a class switched off can never inherit
+        # another class's tint.
+        if bar_id in fake_ids and bar_id != active_bar_id:
+            color = SEQ_COLOR_FAKE
+            paint = True  # never silenced while visible -- see the docstring
+            if not show_fake:
+                visible = False  # the filming view: staging bars off camera
+        if bar_id in support_ids:
+            color = SEQ_COLOR_SUPPORT_PICK
+            visible = True
+            paint = flags["support"]
+        # The curve follows the LINE rules computed above; the tube (and, via
+        # the maps below, the joints) follows the GEOMETRY rules -- identical
+        # by default, restricted to built + active bars in the filming view.
+        geom_visible = visible and (
+            not geom_built_and_active_only or seq <= active_seq
+        )
+        geom_paint = paint and not tint_curves_only
+        bar_visible_by_id[bar_id] = geom_visible
+        bar_color_by_id[bar_id] = color
+        bar_paint_by_id[bar_id] = geom_paint
+        objs = _bar_curve_and_tube(oid, tube_index)
+        curve_obj = objs[0]
+        if paint:
+            _set_obj_color(curve_obj, color)
+        else:
+            _reset_obj_color(curve_obj)
+        _set_visible(curve_obj, visible)
+        if line_style is not None:
+            _apply_line_style(curve_obj, line_style)
+        for obj in objs[1:]:
+            if geom_paint:
+                _set_obj_color(obj, color)
+            else:
+                _reset_obj_color(obj)
+            _set_visible(obj, geom_visible)
 
     # Joints follow their parent bar's visibility AND color.  Setting
     # by-object color on the block instance lets nested sub-objects that
     # are set to "by parent" inherit it automatically.
-    bar_color_by_id = {}
-    for bar_id_key, (_oid, seq) in bar_map.items():
-        if seq < active_seq:
-            bar_color_by_id[bar_id_key] = (
-                SEQ_COLOR_UNSTABLE if bar_id_key in unstable_ids else SEQ_COLOR_BUILT
-            )
-        elif seq == active_seq:
-            bar_color_by_id[bar_id_key] = SEQ_COLOR_ACTIVE
-        else:
-            bar_color_by_id[bar_id_key] = SEQ_COLOR_UNBUILT
-
     for joint_oid in _joint_layer_objects():
-        parent_bar_id = rs.GetUserText(joint_oid, "parent_bar_id")
+        parent_bar_id = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
         visible = bar_visible_by_id.get(parent_bar_id, True)
         color = bar_color_by_id.get(parent_bar_id)
         if color is not None:
-            _set_obj_color(joint_oid, color)
+            # Follow the parent bar's paint decision, not just its colour, so a
+            # switched-off class does not leave its joints tinted.
+            if bar_paint_by_id.get(parent_bar_id, True):
+                _set_obj_color(joint_oid, color)
+            else:
+                _reset_obj_color(joint_oid)
         _set_visible(joint_oid, visible)
 
-    # Tools: hide all, then show + color the active step's tool(s).
+    # Tools: hide all, then show + color the active step's tool(s).  The tint is
+    # the ACTIVE blue, so it is gated on the same switch as the active bar --
+    # visibility is not, the active step's tool is shown either way.
     active_tool_oids = set(get_active_tool_oids(active_bar_id))
     for tool_oid in _tool_layer_objects():
         is_active = tool_oid in active_tool_oids
         if is_active:
-            _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+            if flags["active"] and not tint_curves_only:
+                _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+            else:
+                _reset_obj_color(tool_oid)
         _set_visible(tool_oid, is_active)
 
     rs.EnableRedraw(True)
 
 
 def reset_sequence_colors():
-    """Restore default (by-layer) colour and make all registered bars,
-    joints, and tools visible again."""
+    """Restore default (by-layer) colour, then re-assert the build-stage filter.
+
+    Colours always go back to by-layer and everything is shown again -- but if the
+    document carries a build stage (:func:`get_build_stage`), the last thing this
+    does is hide the unbuilt parts again.  That is what makes ``HideUnbuilt``
+    survive Esc: this function is the shared exit path of RSSequenceEdit,
+    RSShowBarActionPlan and RSIKKeyframe, so all three honour the latch without a
+    per-caller edit.
+
+    There is deliberately no "show everything anyway" switch.  An earlier draft
+    had one for ``clear_build_stage`` to call, but that caller repaints straight
+    afterwards, so the option was left with no users -- an untested branch whose
+    only effect would be to silently defeat this feature.  Code that genuinely
+    wants everything visible should clear the latch first.
+    """
     bar_map = get_bar_seq_map()
-    rs.EnableRedraw(False)
-    for bar_id, (oid, _) in bar_map.items():
-        for obj in _bar_curve_and_tube(oid):
-            _reset_obj_color(obj)
-            rs.ShowObject(obj)
-    for joint_oid in _joint_layer_objects():
-        _reset_obj_color(joint_oid)
-        rs.ShowObject(joint_oid)
-    for tool_oid in _tool_layer_objects():
-        _reset_obj_color(tool_oid)
-        rs.ShowObject(tool_oid)
-    rs.EnableRedraw(True)
+    tube_index = _tube_index()
+    with suspend_redraw():
+        for bar_id, (oid, _) in bar_map.items():
+            for obj in _bar_curve_and_tube(oid, tube_index):
+                _reset_obj_color(obj)
+                # Undo any filming line style (width / dash back to by-layer);
+                # harmless on objects that never carried one.
+                rs.ObjectLinetypeSource(obj, 0)
+                rs.ObjectPrintWidthSource(obj, 0)
+                rs.ShowObject(obj)
+        for joint_oid in _joint_layer_objects():
+            _reset_obj_color(joint_oid)
+            rs.ShowObject(joint_oid)
+        for tool_oid in _tool_layer_objects():
+            _reset_obj_color(tool_oid)
+            rs.ShowObject(tool_oid)
+        # LAST, inside the same batch: the show pass above just made everything
+        # visible, so the filter has to get the final word or the latch leaks.
+        apply_build_stage_visibility(verbose=False)
+
+
+# ---------------------------------------------------------------------------
+# Build stage -- the persistent "hide everything after step N" filter
+# ---------------------------------------------------------------------------
+#
+# The saved value and the rule for interpreting it live in ``core.build_stage``
+# (Rhino-free, so pytest can cover the awkward renumber/delete cases).  What is
+# here is the part that needs a document: read/write the key, and do the hiding.
+#
+# The invariant everything else depends on: ``apply_build_stage_visibility`` is
+# the LAST visibility-touching step of any command or refresh pass.  Anything
+# that shows objects afterwards re-opens the leak this feature exists to close.
+
+
+def get_build_stage():
+    """Return the saved ``(bar_id, seq)`` build stage, or ``None`` if not latched.
+
+    Deliberately a bare key read with **no document scan**: this runs on every
+    ``repair_on_entry`` even when the filter is off, so the unlatched cost must
+    stay at one string read.  The *seq* returned here is the one saved at the
+    time -- use :func:`apply_build_stage_visibility` (which re-resolves through
+    ``core.build_stage``) when the bar may since have been renumbered or deleted.
+    """
+    return parse_build_stage(get_doc_string(BUILD_STAGE_KEY))
+
+
+def set_build_stage(bar_id, seq):
+    """Latch the filter at *bar_id* / assembly step *seq*."""
+    set_doc_string(BUILD_STAGE_KEY, format_build_stage(bar_id, seq))
+
+
+def clear_build_stage():
+    """Un-latch the filter.  Clears the key only -- it changes no visibility.
+
+    Every caller repaints immediately afterwards (``show_sequence_colors`` or
+    ``reset_sequence_colors``), so hiding/showing here as well would only paint
+    twice.
+    """
+    set_doc_string(BUILD_STAGE_KEY, "")
+
+
+def apply_build_stage_visibility(caller=None, verbose=True):
+    """Hide every bar, joint and tool later than the saved build stage.
+
+    The one function that enforces the latch.  Call it as the **final**
+    visibility-touching statement of any command or refresh pass.
+
+    Returns ``(bar_id, n_hidden)``, or ``None`` when the filter is not latched
+    (or resolved to "switch off", in which case the key is wiped and the reason
+    printed).
+
+    Visibility only -- never colour.  ``show_sequence_colors`` owns the
+    green/blue/grey palette and still resets on exit; only the hidden state
+    persists.
+
+    The rules, which differ from ``show_sequence_colors`` in one place:
+
+    - **bars + tubes**: hidden when ``seq > stage_seq``.
+    - **joints**: per block half, following that half's own ``parent_bar_id`` --
+      so a joint between built B2 and unbuilt B9 keeps its female half visible
+      and hides its male half.
+    - **tools**: hidden only when the bar owning the tool's joint is unbuilt.
+      ``show_sequence_colors`` instead shows *only the active step's* tool; here
+      every built bar keeps its tools, which is what leaves RSSwapRoboticTool and
+      RSInspectRoboticTool usable while the filter is on.
+    """
+    raw = get_doc_string(BUILD_STAGE_KEY)
+    if not raw:
+        return None  # not latched -- one string read and out
+
+    bar_map = get_bar_seq_map()
+    status, stage_seq, stage_bar_id, message = resolve_build_stage_seq(raw, bar_map)
+    if status == STATUS_OFF:
+        return None
+    if status == STATUS_CLEAR:
+        # The staged bar is gone beyond rescue.  Drop the latch, show everything
+        # and say why -- an empty-looking model with no explanation is exactly
+        # what this feature must not produce.  Visibility only, so the caller's
+        # colour scheme (if any) survives; and not via reset_sequence_colors,
+        # which calls back into this function.
+        clear_build_stage()
+        print(f"{caller or 'RSScaffolding'}: {message}")
+        with suspend_redraw():
+            tube_index = _tube_index()
+            for _bar_id, (oid, _seq) in bar_map.items():
+                for obj in _bar_curve_and_tube(oid, tube_index):
+                    rs.ShowObject(obj)
+            for oid in _joint_layer_objects() + _tool_layer_objects():
+                rs.ShowObject(oid)
+        return None
+    if status == STATUS_FALLBACK:
+        # Re-point the key at the surviving bar so it stops drifting further with
+        # every subsequent delete.
+        set_build_stage(stage_bar_id, stage_seq)
+        print(f"{caller or 'RSScaffolding'}: {message}")
+
+    # Staging bars are exempt: they are put up by hand before the robot starts,
+    # so they are standing at every build stage.  Hiding one would also hide the
+    # joints the next real bar mates to, which is the opposite of useful.
+    fake_ids = get_fake_bar_ids(bar_map)
+
+    n_hidden = 0
+    with suspend_redraw():
+        # Bars + their tubes.  One tube-layer scan for the whole pass.
+        tube_index = _tube_index()
+        bar_visible_by_id = {}
+        for bar_id, (oid, seq) in bar_map.items():
+            visible = seq <= stage_seq or bar_id in fake_ids
+            bar_visible_by_id[bar_id] = visible
+            for obj in _bar_curve_and_tube(oid, tube_index):
+                _set_visible(obj, visible)
+            if not visible:
+                n_hidden += 1
+
+        # Joints, one pass over every joint layer.  Iterated per layer rather than
+        # through _joint_layer_objects() because we need to know WHICH layer each
+        # instance came from: only the tool-bearing halves answer "whose tool is
+        # this?" (see get_active_tool_oids), and a receiving half would give the
+        # opposite answer for the same joint_id.
+        tool_owner_bar_by_joint_id = {}
+        for layer in jnc.JOINT_LAYERS:
+            if not rs.IsLayer(layer):
+                continue
+            # Asked positively, against the tool-bearing set.  Phrased as
+            # "anything but the female layer" this silently made every NEW role
+            # a tool owner -- a mocap half would have claimed its joint's tool
+            # and dragged tool visibility onto the wrong bar.
+            is_tool_side = layer in jnc.TOOL_BEARING_LAYERS
+            for joint_oid in rs.ObjectsByLayer(layer) or []:
+                parent_bar_id = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
+                # Unknown parent -> leave visible.  An orphaned joint that is also
+                # invisible is one the user can never find and fix.
+                visible = bar_visible_by_id.get(parent_bar_id, True)
+                _set_visible(joint_oid, visible)
+                if not visible:
+                    n_hidden += 1
+                if is_tool_side:
+                    joint_id = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID)
+                    if joint_id:
+                        tool_owner_bar_by_joint_id[joint_id] = parent_bar_id
+
+        # Tools follow the bar owning their male/ground half.
+        for tool_oid in _tool_layer_objects():
+            owner_bar_id = tool_owner_bar_by_joint_id.get(
+                rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
+            )
+            visible = bar_visible_by_id.get(owner_bar_id, True)
+            _set_visible(tool_oid, visible)
+            if not visible:
+                n_hidden += 1
+
+    if verbose:
+        print(stage_filter_note(caller, stage_bar_id, stage_seq))
+    return (stage_bar_id, n_hidden)
+
+
+def hide_if_beyond_build_stage(object_ids, curve_id):
+    """Hide freshly created *object_ids* if their bar is later than the stage.
+
+    A newly created Rhino object is always visible, so anything baked outside a
+    repair pass would pop back on screen and make the filter look broken -- most
+    visibly a tube floating over its own hidden centerline, since the tube is
+    what you actually see.
+
+    Kept deliberately cheap, because it sits on a creation path: one document
+    string read (nothing at all when the filter is off), then the bar's own
+    ``bar_seq`` user text against the **saved** stage number.  No
+    ``get_bar_seq_map()``, no re-resolution -- if the saved number has drifted
+    (renumber, deleted stage bar) the next ``repair_on_entry`` corrects it with a
+    full :func:`apply_build_stage_visibility`.
+
+    A brand-new bar has no ``bar_seq`` until ``repair_bar_sequences()`` runs, so
+    it stays visible for the rest of the command that created it -- intended:
+    RSCreateBar warns about it instead, rather than hiding the work you just did.
+    """
+    stage = get_build_stage()
+    if stage is None:
+        return
+    _stage_bar_id, stage_seq = stage
+    seq = _parse_bar_seq(rs.GetUserText(curve_id, BAR_SEQ_KEY))
+    if seq is None or seq <= stage_seq:
+        return
+    for oid in as_object_id_list(object_ids):
+        _set_visible(oid, False)
+
+
+# There is deliberately no per-tool equivalent of the above.  Every path that
+# creates a robotic tool already ends with an apply: the three batch routines in
+# ``rhino_tool_place`` are reached only from RSUpdatePreview, and
+# ``replace_all_tool_instances`` only from RSSwapRoboticTool -- both of which end
+# with ``apply_build_stage_visibility``.  Any other tool lands on a just-picked,
+# therefore visible, bar.  A per-tool hook could never fire on anything those two
+# do not already cover.
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +1353,29 @@ def _parse_cached_point(s):
         return tuple(float(p) for p in parts)
     except (ValueError, TypeError):
         return None
+
+
+def _tube_index():
+    """Return ``{axis_guid_str: tube_oid}`` for the whole tube-preview layer.
+
+    :func:`_find_existing_tube` answers "which tube belongs to this curve?" by
+    scanning the whole layer, so asking it once per bar rescans the layer once
+    per bar (N bars x N tubes user-text reads).  This builds the same
+    curve->tube mapping in ONE scan; callers looping over every bar then look
+    each tube up by GUID, which is a dict hash rather than another scan.
+
+    First tube wins on a duplicate ``tube_axis_id``, matching
+    :func:`_find_existing_tube`'s first-match return (``repair_on_entry`` purges
+    the duplicates that copy/paste leaves behind).
+    """
+    index = {}
+    if not rs.IsLayer(TUBE_LAYER):
+        return index
+    for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
+        axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
+        if axis_guid:
+            index.setdefault(axis_guid, oid)
+    return index
 
 
 def _find_existing_tube(curve_id):
@@ -868,6 +1435,14 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
     ``(baked_ids, status)`` where ``status`` is one of ``"reused"``,
     ``"regenerated"``, or ``"created"``.  Pre-existing single-value
     callers that ignore the return are unaffected.
+
+    A newly baked tube is hidden immediately if its bar is beyond the build
+    stage (:func:`hide_if_beyond_build_stage`).  RSCreateBar, RSBarEdit,
+    RSBarSnap, RSBarBrace and RSBarSubfloor all call this outside any repair
+    pass -- and the snap/brace/subfloor trio regenerate tubes for *existing*
+    bars after trimming, so without the hide you get a visible tube floating
+    over a hidden centerline.  The ``"reused"`` path needs nothing: it hands
+    back an object whose hidden state the last filter pass already set.
     """
     # Check for an existing tube
     existing = _find_existing_tube(curve_id)
@@ -917,6 +1492,8 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
         # duplicates: a copy will retain this user text but live under a
         # different object GUID.
         rs.SetUserText(oid, TUBE_SELF_GUID_KEY, str(rs.coerceguid(oid)))
+
+    hide_if_beyond_build_stage(baked_ids, curve_id)
     return baked_ids, status
 
 
@@ -1058,7 +1635,7 @@ def _enforce_joint_layer(caller, layer):
     strays = [
         oid
         for oid in (rs.ObjectsByLayer(layer) or [])
-        if not rs.GetUserText(oid, "joint_id")
+        if not rs.GetUserText(oid, jnc.UT_JOINT_ID)
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
 
@@ -1070,7 +1647,7 @@ def _enforce_tool_layer(caller, layer):
     strays = [
         oid
         for oid in (rs.ObjectsByLayer(layer) or [])
-        if not rs.GetUserText(oid, "tool_id")
+        if not rs.GetUserText(oid, jnc.UT_TOOL_ID)
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
 
@@ -1082,9 +1659,10 @@ def enforce_managed_layers(caller="RSScaffolding"):
     user is prompted."""
     # Ensure the default + all managed layers exist and are visible.
     _JOINT_LAYER_COLORS = {
-        config.LAYER_JOINT_MALE_INSTANCES: (105, 105, 105),
-        config.LAYER_JOINT_FEMALE_INSTANCES: (230, 230, 230),
-        config.LAYER_JOINT_GROUND_INSTANCES: (180, 120, 60),
+        jnc.LAYER_MALE: (105, 105, 105),
+        jnc.LAYER_FEMALE: (230, 230, 230),
+        jnc.LAYER_GROUND: (200, 185, 170),
+        jnc.LAYER_MOCAP: (200, 220, 210),
     }
     ensure_layer(config.DEFAULT_LAYER)
     ensure_layer(config.MANAGED_LAYER_ROOT)
@@ -1093,9 +1671,8 @@ def enforce_managed_layers(caller="RSScaffolding"):
     # Sweep each managed sublayer.
     _enforce_tube_layer(caller)
     _enforce_centerline_layer(caller)
-    _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
-    _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
-    _enforce_joint_layer(caller, config.LAYER_JOINT_GROUND_INSTANCES)
+    for layer in jnc.JOINT_LAYERS:
+        _enforce_joint_layer(caller, layer)
     _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
 
 
@@ -1111,7 +1688,19 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
        preview pass below.
     3. Updates tube previews for every registered bar.
     4. Sanity-checks that the centerline and tube-preview counts match.
+    5. Re-applies the build-stage filter, if the document carries one.
+
+    Step 5 is what makes ``HideUnbuilt`` stick across every command: steps 1 and
+    3 both *show* things (``enforce_managed_layers`` force-shows every managed
+    layer, and a regenerated tube is born visible), so the filter has to run last
+    or the unbuilt parts leak back one command later.
+
+    Before all of that, documents saved before the ``<Type>_<Subtype>`` naming
+    rule get their legacy joint names rewritten (``core.joint_name_migration``).
     """
+    from core.joint_name_migration import migrate_legacy_joint_names  # noqa: PLC0415
+
+    migrate_legacy_joint_names(caller)
     enforce_managed_layers(caller)
     changed = repair_bar_sequences()
     n = update_all_previews(bar_radius)
@@ -1150,6 +1739,10 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
             f"({n_centerlines} vs {n_tubes})."
         )
 
+    # LAST statement on purpose -- see the docstring.  No-ops (one string read)
+    # when the document carries no build stage.
+    apply_build_stage_visibility(caller=caller, verbose=True)
+
 
 # ---------------------------------------------------------------------------
 # Selection-color helpers (centerline + tube together)
@@ -1185,6 +1778,141 @@ def reset_bar_color(curve_id):
     if tube is not None and rs.IsObject(tube):
         if hasattr(rs, "ObjectColorSource"):
             rs.ObjectColorSource(tube, 0)
+
+
+def snapshot_object_colors(object_ids):
+    """Capture the color state of any objects so it can be put back exactly.
+
+    :func:`reset_bar_color` (and ``highlight_env._reset_obj_color``) always
+    revert to by-layer, which is the wrong "undo" for something that was
+    ALREADY carrying a meaning: ``COLOR_HAS_IK`` on a solved bar,
+    :data:`SEQ_COLOR_FAKE` on a staging bar, a sequence color on a joint block.
+    A command that paints objects temporarily -- to flag them, highlight them,
+    mark them -- should snapshot first and restore after, so it cannot erase
+    state it did not set.
+
+    Works on bars, joint blocks, tools, anything: it only reads and writes
+    object color.  Returns an opaque token for :func:`restore_object_colors`.
+    """
+    entries = []
+    for oid in object_ids or []:
+        if oid is None or not rs.IsObject(oid):
+            continue
+        entries.append((oid, rs.ObjectColorSource(oid), rs.ObjectColor(oid)))
+    return entries
+
+
+def restore_object_colors(token):
+    """Put back exactly what :func:`snapshot_object_colors` captured."""
+    for oid, source, color in token or []:
+        if not rs.IsObject(oid):
+            continue
+        # Color first: setting it flips the source to by-object, so the source
+        # has to be written afterwards or a by-layer object comes back
+        # by-object and keeps the flag color forever.
+        rs.ObjectColor(oid, color)
+        rs.ObjectColorSource(oid, source)
+
+
+# ---------------------------------------------------------------------------
+# IK color preview (shared single source of truth)
+# ---------------------------------------------------------------------------
+#
+# The multi-bar IK command (rs_ik_keyframe_all) colors bars by IK outcome;
+# RSUpdatePreview repaints them at the end of every pass, and its right-click
+# companion (rs_clear_color_preview) clears them on demand. All of them import the
+# two colors and the show/clear/legend helpers from here so the meanings live in
+# ONE place.
+#
+# These are `paint_bar` overrides (by-object color on the centerline + tube),
+# reverted with `reset_bar_color`. COLOR_HAS_IK is PERSISTED state (readable back
+# via `core.bar_action.has_ik_keyframe`); COLOR_FAILED is TRANSIENT -- only shown
+# live during an rs_ik_keyframe_all solve run, never stored on the bar, so
+# `show_all_ik_preview` cannot reconstruct it.
+COLOR_HAS_IK = (75, 120, 150)    # bar has a solved IK keyframe
+COLOR_FAILED = (230, 115, 150)   # IK attempted at the placed base but failed
+
+
+def ik_preview_legend_lines():
+    """Return the IK color-legend lines (for command-line print / message boxes)."""
+    return [
+        "IK color preview -- what the bar colors mean:",
+        "  gray blue  = bar HAS a solved IK keyframe",
+        "  pink  = IK attempted but FAILED (shown live during "
+        "RSIKKeyframeAll; not persisted)",
+        "  default (by-layer)   = no IK solved yet",
+    ]
+
+
+def print_ik_preview_legend():
+    """Print the IK color legend to the Rhino command line."""
+    for line in ik_preview_legend_lines():
+        print(line)
+
+
+def clear_ik_preview():
+    """Revert every registered bar's color override back to by-layer.
+
+    Clears the IK overlay left by rs_ik_keyframe_all (and by
+    :func:`show_all_ik_preview`). Visibility is untouched -- only color is reset.
+
+    Fake bars keep their :data:`SEQ_COLOR_FAKE` tint.  "Which bars are staging"
+    is a property of the model, not a diagnostic overlay, so clearing the
+    overlay must not clear it -- otherwise the one marker you want on screen
+    permanently is the one that disappears every time you tidy up.
+
+    Returns:
+        int: the number of bars reset (fake bars are not counted).
+    """
+    n = 0
+    bar_map = get_bar_seq_map()
+    fake_ids = get_fake_bar_ids(bar_map)
+    rs.EnableRedraw(False)
+    for bar_id, (oid, _seq) in bar_map.items():
+        if bar_id in fake_ids:
+            paint_bar(oid, SEQ_COLOR_FAKE)  # re-assert, in case it was overpainted
+            continue
+        reset_bar_color(oid)
+        n += 1
+    rs.EnableRedraw(True)
+    return n
+
+
+def show_all_ik_preview():
+    """Color every solved bar ``COLOR_HAS_IK``; leave unsolved bars by-layer.
+
+    Reverts all bar colors first (so a stale color from a previous run does not
+    linger), then paints the bars that currently carry a solved IK keyframe. Only
+    the persisted "has IK" state can be shown -- the transient "failed" state is
+    not stored on the bar (see the section comment above).
+
+    Fake bars are painted :data:`SEQ_COLOR_FAKE` and excluded from both counts:
+    the robot never assembles them, so "has IK" is not a question that applies,
+    and counting them would make the ratio look worse than it is.
+
+    Returns:
+        tuple[int, int]: ``(n_has_ik, n_total)`` over the fabricated bars only.
+    """
+    # Lazy import: bar_action is heavy and does its own lazy imports; keep this
+    # module import-light and avoid an import cycle (bar_action imports us).
+    from core.bar_action import has_ik_keyframe
+
+    bar_map = get_bar_seq_map()
+    fake_ids = get_fake_bar_ids(bar_map)
+    n_has_ik = n_total = 0
+    rs.EnableRedraw(False)
+    for bar_id, (oid, _seq) in bar_map.items():
+        if bar_id in fake_ids:
+            paint_bar(oid, SEQ_COLOR_FAKE)
+            continue
+        n_total += 1
+        if has_ik_keyframe(oid):
+            paint_bar(oid, COLOR_HAS_IK)
+            n_has_ik += 1
+        else:
+            reset_bar_color(oid)
+    rs.EnableRedraw(True)
+    return n_has_ik, n_total
 
 
 # Note: interactive ``pick_bar`` and the ``pick_bar_with_*_option`` family

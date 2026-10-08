@@ -7,7 +7,8 @@
 Select one or more bar tube previews (the visible cylinders).  For each
 selected bar the following objects are deleted:
 
-* All joint block instances (female + male) where the bar is a participant.
+* All joint block instances (receiver + male, Ground, standalone MoCap) where
+  the bar is a participant.
 * All tool instances attached to those joints.
 * The tube preview cylinder.
 * The bar centerline curve.
@@ -29,11 +30,13 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_bar_registry import (
     get_all_bars,
     repair_bar_sequences,
     repair_on_entry,
 )
+from core.joint_placement import remove_joint_blocks
 from core.rhino_tool_place import remove_tool_for_joint
 
 # ---------------------------------------------------------------------------
@@ -42,39 +45,24 @@ from core.rhino_tool_place import remove_tool_for_joint
 
 
 def _find_joint_ids_for_bar(bar_id):
-    """Return a list of joint_ids that involve *bar_id* as female, male, or ground.
+    """Return a list of joint_ids that involve *bar_id* as receiver, male, or single-sided.
 
-    Female / male blocks store ``female_parent_bar`` and ``male_parent_bar``
-    user text; ground blocks store only ``parent_bar_id``.
+    Receiver / male blocks store ``female_parent_bar`` and ``male_parent_bar``
+    user text; single-sided blocks store only ``parent_bar_id``.
     """
     found = set()
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            fb = rs.GetUserText(oid, "female_parent_bar")
-            mb = rs.GetUserText(oid, "male_parent_bar")
-            pb = rs.GetUserText(oid, "parent_bar_id")
+            fb = rs.GetUserText(oid, jnc.UT_RECEIVER_BAR)
+            mb = rs.GetUserText(oid, jnc.UT_MALE_BAR)
+            pb = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
             if fb == bar_id or mb == bar_id or pb == bar_id:
-                jid = rs.GetUserText(oid, "joint_id")
+                jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
                 if jid:
                     found.add(jid)
     return list(found)
-
-
-def _remove_joint_blocks(joint_id):
-    """Delete placed female, male, and ground block instances for *joint_id*."""
-    to_delete = []
-    for suffix in ("_female", "_male", "_ground"):
-        ids = rs.ObjectsByName(f"{joint_id}{suffix}")
-        if ids:
-            to_delete.extend(ids)
-    if to_delete:
-        rs.DeleteObjects(to_delete)
 
 
 def _remove_tube_preview(bar_id):
@@ -110,7 +98,7 @@ def _remove_bar(bar_id, all_bars):
     joint_ids = _find_joint_ids_for_bar(bar_id)
     for jid in joint_ids:
         remove_tool_for_joint(jid)
-        _remove_joint_blocks(jid)
+        remove_joint_blocks(jid)
 
     # 2. Tube preview
     _remove_tube_preview(bar_id)

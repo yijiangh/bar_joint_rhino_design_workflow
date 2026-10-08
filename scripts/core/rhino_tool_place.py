@@ -1,9 +1,22 @@
 """Robotic-tool placement in Rhino.
 
-Given a male joint block instance already placed in the document, this
-module computes the world TCP frame (the screw-axis frame on the male
-block) and inserts the chosen robotic-tool block so that the tool's TCP
-coincides with that screw frame.
+Given a joint block instance already placed in the document, this module
+computes the joint's **tool-attach frame** and inserts the chosen
+robotic-tool block so that the tool's TCP coincides with it.
+
+:func:`tool_attach_frame` is that frame, and it is the single function both
+the write side (:func:`place_tool_at_block_instance`) and the read side
+(:func:`is_tool_on_joint`) go through, so the two can never disagree:
+
+* male joint blocks -> the block instance's own world frame (the
+  historical convention: the block origin IS the TCP).
+* ground joint blocks -> that frame post-multiplied by the definition's
+  constant block-local ``M_tool_from_block``, so a ground joint's tool can
+  be rolled relative to the block WITHOUT moving the block.  The ground
+  block's own orientation is pinned by ``auto_jr_y_down`` (its local +Y must
+  point at the floor), which is why the arm's approach needs a frame of its
+  own.  ``M_tool_from_block`` is identity for every ground joint defined
+  before that frame existed, so their behaviour is unchanged.
 
 Tagging convention on the inserted tool block (Rhino UserText):
     tool_id     : "T<joint_id>"            (e.g. "TJ1-2")
@@ -19,9 +32,12 @@ Rhino (it imports ``rhinoscriptsyntax`` lazily inside its functions).
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import robotic_tool as _robotic_tool
 from core.rhino_block_import import refresh_block_definition, require_block_definition
 
@@ -37,9 +53,12 @@ _DOC_USERTEXT_DEFAULT_TOOL_KEY = "scaffolding.last_robotic_tool"
 
 def get_default_tool_name() -> str | None:
     """Return the doc-stored default tool name, or ``None`` if unset/missing."""
-    import scriptcontext as sc  # noqa: PLC0415  (Rhino runtime)
+    # Rhino-runtime import: rhino_helpers pulls in rhinoscriptsyntax at module
+    # level, and this module must stay importable outside Rhino (see the module
+    # docstring) -- same reason as the suspend_redraw import further down.
+    from core.rhino_helpers import get_doc_string  # noqa: PLC0415
 
-    name = sc.doc.Strings.GetValue(_DOC_USERTEXT_DEFAULT_TOOL_KEY)
+    name = get_doc_string(_DOC_USERTEXT_DEFAULT_TOOL_KEY)
     if not name:
         return None
     if name not in _robotic_tool.load_robotic_tools():
@@ -48,24 +67,14 @@ def get_default_tool_name() -> str | None:
 
 
 def set_default_tool_name(name: str) -> None:
-    import scriptcontext as sc  # noqa: PLC0415  (Rhino runtime)
+    from core.rhino_helpers import set_doc_string  # noqa: PLC0415
 
-    sc.doc.Strings.SetString(_DOC_USERTEXT_DEFAULT_TOOL_KEY, str(name))
+    set_doc_string(_DOC_USERTEXT_DEFAULT_TOOL_KEY, str(name))
 
 
 # ---------------------------------------------------------------------------
 # Block import + placement
 # ---------------------------------------------------------------------------
-
-
-def _numpy_to_rhino_transform(matrix: np.ndarray):
-    import Rhino  # noqa: PLC0415
-
-    xform = Rhino.Geometry.Transform(1.0)
-    for row in range(4):
-        for col in range(4):
-            xform[row, col] = float(matrix[row, col])
-    return xform
 
 
 def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
@@ -76,7 +85,15 @@ def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
     """
     asset_path = tool.asset_path() if tool.asset_filename else None
     try:
-        require_block_definition(tool.block_name, asset_path=asset_path)
+        # Pin the tool's parts onto the (visible) tool-instances layer: the
+        # source .3dm's own layers are not imported, so without this the block's
+        # geometry lands on a hidden/unrelated layer and the inserted tool shows
+        # nothing (see rhino_block_import.import_block_definition_from_3dm).
+        require_block_definition(
+            tool.block_name,
+            asset_path=asset_path,
+            layer_name=config.LAYER_TOOL_INSTANCES,
+        )
         return True
     except RuntimeError as exc:
         print(f"  [tool] {exc}")
@@ -84,21 +101,112 @@ def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
 
 
 def _block_instance_world_xform(block_id) -> np.ndarray:
-    """Return the world transform of any inserted block instance."""
-    import Rhino  # noqa: PLC0415
-    import scriptcontext as sc  # noqa: PLC0415
+    """World transform of any inserted block instance (doc units).
 
-    rh_obj = sc.doc.Objects.FindId(block_id)
-    if rh_obj is None or not isinstance(rh_obj, Rhino.DocObjects.InstanceObject):
-        raise ValueError(f"Object {block_id} is not a block instance.")
-    xform = rh_obj.InstanceXform
-    return np.array(
-        [[xform[r, c] for c in range(4)] for r in range(4)], dtype=float
-    )
+    Kept as this module's own name because the headless tests replace it.
+    """
+    from core.rhino_helpers import block_instance_xform  # noqa: PLC0415
+
+    return block_instance_xform(block_id)
 
 
-# Back-compat alias.
-_male_world_frame_from_object = _block_instance_world_xform
+# ---------------------------------------------------------------------------
+# Tool-attach frame (block frame + optional block-local offset)
+# ---------------------------------------------------------------------------
+
+#: Cache of ``ground block name -> 4x4 block-local tool-attach offset``, keyed by
+#: the registry file's (path, mtime, size).  `resync_tools_to_joints`,
+#: `restore_missing_tools_at_joints` and `enforce_bar_tool_sides` each walk EVERY
+#: tool in the document on EVERY RSUpdatePreview run, so the registry must not be
+#: re-parsed per tool.  Keying on the file stamp means a hand-edit of
+#: joint_pairs.json is still picked up on the next call, with no Rhino restart.
+_GROUND_OFFSET_CACHE: dict = {}
+_GROUND_OFFSET_STAMP = None
+
+
+def clear_tool_attach_cache() -> None:
+    """Drop the cached ground tool-attach offsets.
+
+    Call after writing the registry (RSDefineJointHalf) and from tests; the
+    file-stamp key below already covers ordinary edits.
+    """
+    global _GROUND_OFFSET_STAMP
+
+    _GROUND_OFFSET_CACHE.clear()
+    _GROUND_OFFSET_STAMP = None
+
+
+def _ground_offsets(path: str | None = None) -> dict:
+    """``{ground block name: 4x4}`` for the whole registry, cached by file stamp."""
+    global _GROUND_OFFSET_STAMP
+
+    from core import joint_pair as _joint_pair  # noqa: PLC0415
+
+    path = path or _joint_pair.DEFAULT_REGISTRY_PATH
+    try:
+        stat = os.stat(path)
+        stamp = (path, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = (path, None, None)
+    if stamp == _GROUND_OFFSET_STAMP:
+        return _GROUND_OFFSET_CACHE
+
+    offsets: dict = {}
+    try:
+        registry = _joint_pair.load_joint_registry(path)
+    except (OSError, ValueError, KeyError) as exc:
+        # ! A malformed registry must not abort a whole RSUpdatePreview repair
+        # ! pass -- fall back to identity (the historical behaviour) and say so.
+        print(
+            f"  [tool] cannot read ground tool-attach offsets ({exc}); "
+            "attaching tools on the raw block frames."
+        )
+    else:
+        for ground in registry.ground_joints.values():
+            offsets[ground.block_name] = np.asarray(
+                getattr(ground, "M_tool_from_block", np.eye(4)), dtype=float
+            )
+    _GROUND_OFFSET_CACHE.clear()
+    _GROUND_OFFSET_CACHE.update(offsets)
+    _GROUND_OFFSET_STAMP = stamp
+    return _GROUND_OFFSET_CACHE
+
+
+def ground_tool_attach_offset(
+    block_name: str, path: str | None = None
+) -> np.ndarray:
+    """Block-local tool-attach offset for a ground joint block (4x4).
+
+    Identity for an empty or unregistered block name (every Male block).  Always a pure rotation about
+    the block origin -- ``GroundJointDef`` zeroes the translation -- so the TCP
+    probe point in :mod:`core.joint_relink` is unaffected.
+    """
+    if not block_name:
+        return np.eye(4)
+    return _ground_offsets(path).get(str(block_name), np.eye(4))
+
+
+def tool_attach_offset(block_id) -> np.ndarray:
+    """Block-local offset between a joint block's frame and its tool's TCP frame.
+
+    Ground blocks carry a ``block_name`` user-text (written by
+    :func:`core.single_sided_placement.place_single_sided_block`); male blocks do not, so
+    they resolve to identity and their behaviour is unchanged.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    name = rs.GetUserText(block_id, jnc.UT_BLOCK_NAME) or ""
+    return ground_tool_attach_offset(name)
+
+
+def tool_attach_frame(block_id) -> np.ndarray:
+    """THE world frame a tool's TCP must coincide with for *block_id*.
+
+    Single source of truth shared by :func:`place_tool_at_block_instance`
+    (which poses a tool onto it) and :func:`is_tool_on_joint` (which checks a
+    tool against it), so a placement can never be reported as drift.
+    """
+    return _block_instance_world_xform(block_id) @ tool_attach_offset(block_id)
 
 
 def remove_tool_for_joint(joint_id: str) -> int:
@@ -112,7 +220,7 @@ def remove_tool_for_joint(joint_id: str) -> int:
         return 0
     removed = 0
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             rs.DeleteObject(oid)
             removed += 1
     return removed
@@ -125,12 +233,14 @@ def place_tool_at_block_instance(
 ):
     """Insert *tool*'s block aligned to *block_id*'s frame.
 
-    Generic core: works for ANY block instance whose origin frame is the
-    target TCP coordinate frame -- both male joint blocks and ground
-    joint blocks satisfy this (the OCF / block-origin convention).
+    Generic core: works for ANY joint block instance -- male and ground
+    alike -- via :func:`tool_attach_frame`.
 
-    Computes ``world_tool_block = block_world @ inv(M_tcp_from_block)``
-    so the tool's TCP coincides with ``block_world``.
+    Computes ``world_tool_block = tool_attach_frame(block_id) @
+    inv(M_tcp_from_block)`` so the tool's TCP coincides with the joint's
+    tool-attach frame.  That frame is the block's own world frame for male
+    joints and for any ground joint whose ``M_tool_from_block`` is identity,
+    which is the historical behaviour.
 
     Returns the inserted tool's Rhino object id, or ``None`` on failure.
     """
@@ -146,23 +256,25 @@ def place_tool_at_block_instance(
     # Idempotent placement: drop any existing tool tagged with this joint_id.
     remove_tool_for_joint(joint_id)
 
-    block_world = _block_instance_world_xform(block_id)
+    attach_world = tool_attach_frame(block_id)
     M_tcp_from_block = np.asarray(tool.M_tcp_from_block, dtype=float)
-    world_tool_block = block_world @ np.linalg.inv(M_tcp_from_block)
+    world_tool_block = attach_world @ np.linalg.inv(M_tcp_from_block)
 
     tool_oid = rs.InsertBlock(tool.block_name, [0, 0, 0])
     if tool_oid is None:
         print(f"  WARNING: failed to insert tool block '{tool.block_name}'.")
         return None
-    rs.TransformObject(tool_oid, _numpy_to_rhino_transform(world_tool_block))
+    from core.rhino_helpers import numpy_to_xform  # noqa: PLC0415
+
+    rs.TransformObject(tool_oid, numpy_to_xform(world_tool_block))
     rs.ObjectLayer(tool_oid, config.LAYER_TOOL_INSTANCES)
 
-    tool_id = f"T{joint_id}"
+    tool_id = jnc.tool_id(joint_id)
     rs.ObjectName(tool_oid, tool_id)
-    rs.SetUserText(tool_oid, "tool_id", tool_id)
-    rs.SetUserText(tool_oid, "tool_name", tool.name)
-    rs.SetUserText(tool_oid, "joint_id", joint_id)
-    rs.SetUserText(tool_oid, "block_name", tool.block_name)
+    rs.SetUserText(tool_oid, jnc.UT_TOOL_ID, tool_id)
+    rs.SetUserText(tool_oid, jnc.UT_TOOL_NAME, tool.name)
+    rs.SetUserText(tool_oid, jnc.UT_JOINT_ID, joint_id)
+    rs.SetUserText(tool_oid, jnc.UT_BLOCK_NAME, tool.block_name)
     return tool_oid
 
 
@@ -210,8 +322,8 @@ def replace_all_tool_instances(pair: dict) -> dict:
         existing_tool_oids = []
     for oid in existing_tool_oids:
         tool_oids.append(oid)
-        joint_id = rs.GetUserText(oid, "joint_id")
-        tool_name = rs.GetUserText(oid, "tool_name") or ""
+        joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+        tool_name = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
         if not joint_id:
             problems.append(f"  - object {oid}: missing 'joint_id' user-text")
             continue
@@ -252,7 +364,13 @@ def replace_all_tool_instances(pair: dict) -> dict:
                 rs.DeleteObject(oid)
         for side in ("left", "right"):
             tool = pair[side]
-            refresh_block_definition(tool.block_name, tool.asset_path())
+            # Re-import onto the visible tool-instances layer so the swapped
+            # tool's parts are not left on a hidden source-file layer.
+            refresh_block_definition(
+                tool.block_name,
+                tool.asset_path(),
+                layer_name=config.LAYER_TOOL_INSTANCES,
+            )
         for joint_id, (side, block_id) in jobs.items():
             new_oid = place_tool_at_block_instance(block_id, joint_id, pair[side])
             if new_oid is None:
@@ -397,7 +515,7 @@ def find_tool_for_joint(joint_id: str):
     if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
         return None
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             return oid
     return None
 
@@ -410,7 +528,7 @@ def get_tool_name_for_joint(joint_id: str) -> str | None:
     oid = find_tool_for_joint(joint_id)
     if oid is None:
         return None
-    name = rs.GetUserText(oid, "tool_name")
+    name = rs.GetUserText(oid, jnc.UT_TOOL_NAME)
     return name or None
 
 
@@ -432,53 +550,592 @@ def place_tool_by_name_at_male_joint(
     return auto_place_tool_at_male_joint(male_id, joint_id, pair)
 
 
-def find_male_block_for_joint(joint_id: str):
-    """Return the Rhino object id of the male joint block tagged with
-    *joint_id*, or ``None``.  Looks by the conventional object name
-    ``{joint_id}_male`` first, then by user-text scan as a fallback."""
-    import rhinoscriptsyntax as rs  # noqa: PLC0415
-
-    ids = rs.ObjectsByName(f"{joint_id}_male") or []
-    if ids:
-        return ids[0]
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
-        return None
-    for oid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
-            return oid
-    return None
-
-
-def find_ground_block_for_joint(joint_id: str):
-    """Return the Rhino object id of the ground joint block tagged with
-    *joint_id*, or ``None``."""
-    import rhinoscriptsyntax as rs  # noqa: PLC0415
-
-    ids = rs.ObjectsByName(f"{joint_id}_ground") or []
-    if ids:
-        return ids[0]
-    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
-        return None
-    for oid in rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
-            return oid
-    return None
-
-
 def find_attached_block_for_joint(joint_id: str):
-    """Return the Rhino object id of the joint block (male OR ground) the
-    tool is attached to.  Dispatches by the ``joint_id`` prefix (``J*`` =
-    male pair, ``G*`` = ground), with a search of the other layer as
-    fallback so renamed ids still resolve."""
-    if joint_id.startswith("G"):
-        oid = find_ground_block_for_joint(joint_id)
-        if oid is not None:
-            return oid
-        return find_male_block_for_joint(joint_id)
-    oid = find_male_block_for_joint(joint_id)
-    if oid is not None:
-        return oid
-    return find_ground_block_for_joint(joint_id)
+    """The block *joint_id*'s tool sits on -- its Male or Ground block -- or None.
+
+    Both tool-bearing layers are searched (by object name and by ``joint_id``
+    user text, :func:`core.joint_placement.find_joint_blocks`), so an id that
+    was renamed between a pair and a ground joint still resolves.
+    """
+    from core.joint_placement import find_joint_blocks  # noqa: PLC0415
+
+    found = find_joint_blocks(joint_id, jnc.TOOL_BEARING_SUBTYPES)
+    return found[0] if found else None
+
+
+# ---------------------------------------------------------------------------
+# Re-snapping drifted tools back onto their joint blocks
+# ---------------------------------------------------------------------------
+
+#: Element-wise tolerance (mm / unitless) for the tool-on-joint check below.
+#: A correctly-placed tool satisfies ``tool_world @ M_tcp_from_block ==
+#: tool_attach_frame(block_id)`` to floating-point precision, so any real drift
+#: (user nudged the tool, or the joint was moved after the tool was placed) sits
+#: far above this.  Mirrors the TCP-coincidence invariant used by
+#: ``core.joint_relink``.
+_TOOL_ON_JOINT_TOL = 1e-3
+
+
+def is_tool_on_joint(tool_oid, block_id, tool) -> bool:
+    """True when *tool_oid* is placed on the joint block *block_id*.
+
+    THE definition of "this tool sits on that joint", inverted straight from
+    :func:`place_tool_at_block_instance`, which poses a tool as
+    ``world_tool_block = tool_attach_frame(block_id) @ inv(M_tcp_from_block)``.
+    So a correctly placed tool satisfies ``tool_world @ M_tcp_from_block ==
+    tool_attach_frame(block_id)``.  Both :func:`resync_tools_to_joints` (which
+    repairs) and :func:`find_detached_tools` (which reports) go through here,
+    and both sides read the attach frame from the same function, so a ground
+    joint's rolled tool is never mistaken for drift and re-snapped away.
+
+    Args:
+        tool_oid: the robotic-tool block instance.
+        block_id: the male/ground joint block it claims to be on.
+        tool (RoboticToolDef): supplies ``M_tcp_from_block``.
+
+    Returns:
+        bool: True when the tool's TCP reproduces the joint's attach frame.
+
+    Raises:
+        ValueError: if either object is not a readable block instance.
+    """
+    tool_world = _block_instance_world_xform(tool_oid)
+    attach_world = tool_attach_frame(block_id)
+    tcp_world = tool_world @ np.asarray(tool.M_tcp_from_block, dtype=float)
+    return bool(
+        np.allclose(tcp_world, attach_world, rtol=0.0, atol=_TOOL_ON_JOINT_TOL)
+    )
+
+
+def find_detached_tools() -> list:
+    """Return tool instances that are not sitting on a joint block.  Read-only.
+
+    Same criterion as :func:`resync_tools_to_joints` (both call
+    :func:`is_tool_on_joint`), but reporting instead of repairing.  Run it AFTER
+    the resync pass: anything still detached is one the resync could not fix,
+    i.e. a tool genuinely flying free of the model.  That is the case a
+    ``joint_id``-only check misses -- the metadata can still resolve while the
+    geometry has come adrift.
+
+    Returns:
+        list[tuple]: ``(tool_oid, joint_id, reason)`` per detached tool.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
+        return []
+
+    all_tools = _robotic_tool.load_robotic_tools()
+    detached = []
+    for tool_oid in list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []):
+        if not rs.IsObject(tool_oid):
+            continue
+        joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID) or ""
+        tool_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
+        if not joint_id:
+            detached.append((tool_oid, "", "no 'joint_id' user-text"))
+            continue
+        tool = all_tools.get(tool_name)
+        if tool is None:
+            detached.append(
+                (tool_oid, joint_id, f"tool_name {tool_name!r} is not registered")
+            )
+            continue
+        block_id = find_attached_block_for_joint(joint_id)
+        if block_id is None:
+            detached.append((tool_oid, joint_id, "its joint block is gone"))
+            continue
+        try:
+            if not is_tool_on_joint(tool_oid, block_id, tool):
+                detached.append(
+                    (tool_oid, joint_id, "not on its joint (could not be re-snapped)")
+                )
+        except ValueError as exc:
+            detached.append((tool_oid, joint_id, f"unreadable block frame ({exc})"))
+    return detached
+
+
+def resync_tools_to_joints(verbose: bool = False) -> int:
+    """Snap any tool that has drifted away from its joint back onto it.
+
+    For every robotic-tool instance this checks whether its TCP frame still
+    coincides with the joint block it is tagged to (``joint_id`` user text) --
+    the same ``tool_world @ M_tcp_from_block == block_world`` invariant that
+    :mod:`core.joint_relink` relies on.  When a tool has drifted (the user
+    nudged it, or the joint block moved after the tool was placed) it is put
+    back by re-running the canonical placement,
+    :func:`place_tool_at_block_instance` -- the very routine RSBarSnap /
+    RSBarBrace auto-placement and the tool-cycle command already use -- so the
+    same tool lands exactly on the joint's current frame.
+
+    Tools already sitting on their joint are left untouched.  Tools whose
+    joint block is gone (joint deleted) or whose ``tool_name`` is no longer in
+    the registry are skipped with a note when *verbose*.  Returns the number
+    of tools actually re-snapped.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
+        return 0
+
+    all_tools = _robotic_tool.load_robotic_tools()
+    n_moved = 0
+    for tool_oid in list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []):
+        if not rs.IsObject(tool_oid):
+            continue  # already removed (e.g. a duplicate cleared this pass)
+        joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
+        tool_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME)
+        if not joint_id or not tool_name:
+            continue
+        tool = all_tools.get(tool_name)
+        if tool is None:
+            if verbose:
+                print(
+                    f"  [tool] {joint_id}: tool_name '{tool_name}' not in "
+                    f"registry; cannot resync, skipping."
+                )
+            continue
+        block_id = find_attached_block_for_joint(joint_id)
+        if block_id is None:
+            if verbose:
+                print(f"  [tool] {joint_id}: no joint block found; skipping.")
+            continue
+
+        # Is the tool still on its joint?  Skip (rather than abort the whole
+        # pass) if either object isn't a readable block instance -- e.g. it was
+        # exploded.
+        try:
+            on_joint = is_tool_on_joint(tool_oid, block_id, tool)
+        except ValueError as exc:
+            if verbose:
+                print(f"  [tool] {joint_id}: cannot read block frame ({exc}); skipping.")
+            continue
+        if on_joint:
+            continue  # already on the joint -- leave it alone
+
+        # Drifted -> re-place the same tool on the joint's current frame.
+        if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+            n_moved += 1
+            if verbose:
+                print(f"  [tool] {joint_id}: drifted tool re-snapped onto joint.")
+    return n_moved
+
+
+def _restore_side_tool(block_id, joint_id, active, default_tool):
+    """Pick the correct-side tool for a joint whose tool went missing.
+
+    A bar carries two tool-bearing joints, one LEFT-suffix tool and one
+    RIGHT-suffix tool (this is the L/R layout RSIKKeyframe requires).  So if the
+    SIBLING joint on the same bar (matched by ``parent_bar_id``) still holds a
+    tool with a resolvable side, the missing joint must be the OPPOSITE side --
+    restore that so the bar's L/R layout is preserved.  When the side cannot be
+    inferred (no ``parent_bar_id``, no sibling tool, or an ambiguous layout)
+    fall back to *default_tool* (the doc default active tool).
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
+    if not bar_id:
+        return default_tool
+
+    sibling_sides: set = set()
+    for layer in jnc.TOOL_BEARING_LAYERS:
+        if not rs.IsLayer(layer):
+            continue
+        for other_id in rs.ObjectsByLayer(layer) or []:
+            other_jid = rs.GetUserText(other_id, jnc.UT_JOINT_ID)
+            if not other_jid or other_jid == joint_id:
+                continue
+            if rs.GetUserText(other_id, jnc.UT_PARENT_BAR) != bar_id:
+                continue
+            other_toid = find_tool_for_joint(other_jid)
+            if other_toid is None:
+                continue
+            side = _robotic_tool.arm_side_from_tool_name(
+                rs.GetUserText(other_toid, jnc.UT_TOOL_NAME) or ""
+            )
+            if side is not None:
+                sibling_sides.add(side)
+
+    if len(sibling_sides) == 1:
+        opposite = "right" if next(iter(sibling_sides)) == "left" else "left"
+        return active[opposite]
+    return default_tool
+
+
+def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
+    """Re-place the active-pair tool on any joint block that lost its tool.
+
+    Every male (``J*``) joint block is auto-tooled the moment it is created
+    (RSBarSnap / RSBarBrace / RSJointPlace / RSJointEdit all call the
+    ``auto_place_tool_*`` helpers), so the document convention is "every
+    tool-bearing joint block carries exactly one tool instance".  A ground
+    (``G*``) block placed by RSJointPlace > JointOnly starts WITHOUT one -- this
+    pass is what gives it the default tool if ToolOnly was not run first.  A tool can still go
+    missing -- most visibly after :func:`replace_all_tool_instances`
+    (RSSwapRoboticTool) swaps to a tool of a DIFFERENT type, which deletes the
+    old instances before re-inserting the new ones -- leaving the joint with no
+    visible tool.
+
+    For every joint block that currently has NO tool instance tagged to its
+    ``joint_id``, this re-places the correct-side active-pair tool (inferred from
+    the bar's surviving sibling tool by :func:`_restore_side_tool`, falling back
+    to the doc default) via :func:`place_tool_at_block_instance`, so the tool
+    re-appears on the joint's current frame with the L/R layout preserved.
+    Joints that already carry a tool are left untouched.
+
+    Returns a dict of counts::
+
+        checked             joint blocks looked at
+        already_tooled      had a tool -> left alone (the normal case)
+        no_joint_id         block has no joint_id user text  -> BROKEN
+        duplicate_joint_id  a second block claims the same id -> BROKEN
+        restored            a tool was re-placed
+        place_failed        placement was attempted and failed
+
+    Every way this pass can decline to act on a joint gets its own counter.  A
+    bare "restored N" made a pass that looked at every joint and did nothing
+    look exactly like a pass that found nothing wrong -- which is precisely the
+    case that is impossible to debug from outside.
+
+    Note what ``checked`` does NOT include: this pass only reads the male and
+    ground layers, so a joint block that ended up on some other layer (a stray
+    swept to ``Default``) is never reached and cannot be counted as broken.  It
+    just goes missing from the total -- 10 male joints in the model but
+    ``checked: 9`` means one block is not on the layer it should be on.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    n = {
+        "checked": 0,
+        "already_tooled": 0,
+        "no_joint_id": 0,
+        "duplicate_joint_id": 0,
+        "restored": 0,
+        "place_failed": 0,
+    }
+
+    active = _get_active_pair_or_none()
+    if active is None:
+        # Already printed why.  Every count stays 0, so the caller's summary
+        # reads "0 joints checked" right next to that message.
+        return n
+    default_tool = _resolve_default_active_tool(active)
+
+    seen_joint_ids: set = set()
+    for layer in jnc.TOOL_BEARING_LAYERS:
+        if not rs.IsLayer(layer):
+            continue
+        for block_id in list(rs.ObjectsByLayer(layer) or []):
+            n["checked"] += 1
+            joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
+            if not joint_id:
+                n["no_joint_id"] += 1
+                continue
+            if joint_id in seen_joint_ids:
+                n["duplicate_joint_id"] += 1
+                continue
+            seen_joint_ids.add(joint_id)
+            if find_tool_for_joint(joint_id) is not None:
+                n["already_tooled"] += 1
+                continue
+            tool = _restore_side_tool(block_id, joint_id, active, default_tool)
+            if place_tool_at_block_instance(block_id, joint_id, tool) is None:
+                n["place_failed"] += 1  # place_tool_at_block_instance printed why
+                continue
+            n["restored"] += 1
+            if verbose:
+                print(f"  [tool] {joint_id}: restored missing tool '{tool.name}'.")
+    return n
+
+
+def _joint_position_mm(block_id) -> float:
+    """Read a joint block's ``position_mm`` along its bar; ``inf`` when unset."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    try:
+        return float(rs.GetUserText(block_id, jnc.UT_POSITION))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+# ---------------------------------------------------------------------------
+# L/R tool sides from the robot's approach
+#
+# Which end of a bar carries the LEFT tool is NOT a property of the bar -- it is
+# a property of where the mobile base stands. The robot faces the bar along the
+# base heading, so the bar end lying on the robot's left is the one its left arm
+# reaches:
+#
+#           [tool R]
+#              |
+#              |
+#             bar          [robot]        heading = robot -> bar
+#              |                          left    = up x heading
+#              |
+#           [tool L]
+#
+# Move the base to the other side of the bar and the heading negates, so "left"
+# negates and BOTH ends swap tools. That is why this lives here, driven by
+# `core.rhino_walkable_ground.resolve_bar_heading`, and why an earlier version of
+# `enforce_bar_tool_sides` deliberately refused to decide it from bar geometry.
+# ---------------------------------------------------------------------------
+
+
+def _bar_anchor_joints(bar_id):
+    """Return ``[(joint_id, block_id, center_mm)]`` for a bar's tool-bearing joints.
+
+    Scans the male + ground joint layers (the two kinds assembly IK accepts as
+    arm anchors), de-duplicated by ``joint_id``. The center is the block
+    instance's world origin in mm -- where the robot actually grabs.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    from core.rhino_helpers import block_instance_xform_mm  # noqa: PLC0415
+
+    anchors = []
+    seen: set = set()
+    for layer in jnc.TOOL_BEARING_LAYERS:
+        if not rs.IsLayer(layer):
+            continue
+        for block_id in list(rs.ObjectsByLayer(layer) or []):
+            if rs.GetUserText(block_id, jnc.UT_PARENT_BAR) != bar_id:
+                continue
+            joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
+            if not joint_id or joint_id in seen:
+                continue
+            seen.add(joint_id)
+            try:
+                center = block_instance_xform_mm(block_id)[:3, 3]
+            except Exception:
+                continue
+            anchors.append((joint_id, block_id, center))
+    return anchors
+
+
+def assign_tool_sides_from_heading(bar_id, heading_mm, ground_normal,
+                                   verbose: bool = False) -> int:
+    """Re-place a bar's two tools so L/R matches where the robot will stand.
+
+    Computes each anchor joint's side with
+    ``core.base_guide_geom.arm_side_for_joint`` (the bar end on the robot's left
+    takes the left tool) and re-places any tool that is on the wrong side, via
+    the idempotent :func:`place_tool_at_block_instance`.
+
+    **A hand-picked side always wins.** A joint the user cycled by hand in
+    RSJointEdit carries ``config.KEY_TOOL_SIDE_MANUAL`` and is skipped here, so a
+    deliberate manual edit is never silently undone by the next preview / IK run.
+    An explicit base Flip calls :func:`clear_tool_side_overrides` first, because
+    that IS the user re-deciding the side.
+
+    Args:
+        bar_id (str): the bar to correct.
+        heading_mm (np.ndarray): the resolved base heading (base +X).
+        ground_normal (np.ndarray): the ground normal at the base (base +Z).
+        verbose (bool): print a line per correction / skip.
+
+    Returns:
+        int: the number of tools re-placed (0 when nothing needed changing, or
+        when the bar's layout is not a resolvable two-anchor L/R pair).
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    from core import base_guide_geom  # noqa: PLC0415  (pure numpy, no Rhino)
+
+    active = _get_active_pair_or_none()
+    if active is None:
+        return 0  # no resolvable pair -> nothing to place with (already noted)
+
+    anchors = _bar_anchor_joints(bar_id)
+    if len(anchors) != 2:
+        if verbose and anchors:
+            print(f"  [tool] {bar_id}: {len(anchors)} anchor joint(s); "
+                  "L/R layout is undefined, leaving their sides alone.")
+        return 0
+
+    bar_center = 0.5 * (anchors[0][2] + anchors[1][2])
+    wanted = []
+    for joint_id, block_id, center in anchors:
+        side = base_guide_geom.arm_side_for_joint(
+            center, bar_center, heading_mm, ground_normal
+        )
+        wanted.append((joint_id, block_id, side))
+
+    sides = [side for _jid, _bid, side in wanted]
+    if None in sides or sides[0] == sides[1]:
+        # Both joints on one side (or on the base's fore-aft axis): the robot is
+        # facing the bar end-on, so neither arm has a distinct end to take.
+        if verbose:
+            print(f"  [tool] {bar_id}: base faces the bar end-on "
+                  f"(sides {sides}); tool sides left as they are.")
+        return 0
+
+    n_fixed = 0
+    for joint_id, block_id, side in wanted:
+        manual = get_tool_side_override(block_id)
+        if manual is not None:
+            if verbose and manual != side:
+                print(f"  [tool] {bar_id}/{joint_id}: keeping hand-picked "
+                      f"'{manual}' tool (auto rule wanted '{side}').")
+            continue
+        tool_oid = find_tool_for_joint(joint_id)
+        if tool_oid is None:
+            continue  # restore_missing_tools_at_joints owns this joint this pass
+        current_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
+        if _robotic_tool.arm_side_from_tool_name(current_name) == side:
+            continue
+        tool = active[side]
+        if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+            n_fixed += 1
+            if verbose:
+                print(f"  [tool] {bar_id}/{joint_id}: side corrected "
+                      f"'{current_name}' -> '{tool.name}' ({side}, from base heading).")
+    return n_fixed
+
+
+def enforce_bar_tool_sides(verbose: bool = False) -> int:
+    """Give each bar the L/R tool layout its robot approach implies.
+
+    Which end of a bar carries the LEFT tool follows from where the mobile base
+    stands: the robot faces the bar, so the end on its left is the one the left
+    arm reaches.  For every bar that has a resolvable base heading -- i.e. an
+    assigned WalkableGround to stand on -- this pass derives BOTH sides from that
+    heading via :func:`assign_tool_sides_from_heading`, which makes the heading
+    the single source of truth for the layout (RSIKKeyframeAll applies the same
+    rule when it places a base, including after a Flip).
+
+    An earlier version could not do this: the approach was unknowable here, so it
+    only repaired the one unambiguous breakage -- a bar holding two SAME-side
+    tools -- and left one-L-one-R bars alone whichever end held which.  That
+    fallback is still used verbatim for bars with no walkable ground, where there
+    is still no approach to derive from.
+
+    Bars with a single tool-bearing joint are skipped (nothing to disambiguate),
+    as are bars with three or more (the L/R layout is undefined there -- reported
+    when *verbose*).  Re-placement always goes through the idempotent
+    :func:`place_tool_at_block_instance`.
+
+    Args:
+        verbose (bool): print a line per corrected / skipped bar.
+
+    Returns:
+        int: the number of tools re-placed onto the correct side.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    active = _get_active_pair_or_none()
+    if active is None:
+        return 0  # no resolvable pair -> nothing to place with (already noted)
+
+    n_fixed = 0
+    heading_done: set = set()
+    # Pass 1: every bar whose base heading is resolvable gets both sides derived
+    # from it. One shared soup cache -- tessellating a ground brep is the
+    # expensive step and every bar would otherwise redo it (note.md 14).
+    try:
+        from core import rhino_walkable_ground as _rwg  # noqa: PLC0415  (Rhino-only)
+        from core.rhino_bar_registry import get_all_bars  # noqa: PLC0415
+
+        grounds = _rwg.get_all_walkable_grounds()
+        soup_cache: dict = {}
+        for bar_id, bar_oid in get_all_bars().items():
+            anchors = _bar_anchor_joints(bar_id)
+            if len(anchors) != 2:
+                continue
+            soups = _rwg._bar_ground_soups(bar_oid, grounds, soup_cache=soup_cache)
+            if not soups:
+                continue  # no ground -> no approach -> fall through to pass 2
+            center = 0.5 * (anchors[0][2] + anchors[1][2])
+            ground_point, ground_normal = _rwg._walkable_np.closest_point_on_meshes(
+                soups, center
+            )
+            if ground_point is None:
+                continue
+            diag = _rwg.resolve_bar_heading(
+                bar_oid, bar_id, soups, ground_point, ground_normal,
+                float(config.IK_BASE_STANDOFF_MULTIBAR_MM), verbose=False,
+            )
+            heading_done.add(bar_id)
+            n_fixed += assign_tool_sides_from_heading(
+                bar_id, diag["heading"], ground_normal, verbose=verbose
+            )
+    except Exception as exc:  # noqa: BLE001 -- never let this block the repair pass
+        print(f"  [tool] heading-based side check skipped ({exc}); "
+              "falling back to the same-side repair.")
+
+    # Pass 2 (fallback): bars with no resolvable heading still get the narrow
+    # repair -- a bar holding two SAME-side tools is broken whatever the approach.
+    # Group every tool-bearing joint (male J* + ground G*) by its parent bar.
+    by_bar: dict = {}
+    seen_joint_ids: set = set()
+    for layer in jnc.TOOL_BEARING_LAYERS:
+        if not rs.IsLayer(layer):
+            continue
+        for block_id in list(rs.ObjectsByLayer(layer) or []):
+            joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
+            bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
+            if not joint_id or not bar_id or joint_id in seen_joint_ids:
+                continue
+            if bar_id in heading_done:
+                continue  # pass 1 already set this bar's sides from its heading
+            seen_joint_ids.add(joint_id)
+            by_bar.setdefault(bar_id, []).append(
+                (_joint_position_mm(block_id), joint_id, block_id)
+            )
+
+    for bar_id in sorted(by_bar):
+        entries = by_bar[bar_id]
+        if len(entries) < 2:
+            continue
+        if len(entries) > 2:
+            if verbose:
+                print(
+                    f"  [tool] {bar_id}: {len(entries)} tool-bearing joints; "
+                    "L/R layout is undefined, leaving their sides alone."
+                )
+            continue
+        # joint_id breaks ties so the order never depends on ObjectsByLayer.
+        entries.sort(key=lambda entry: (entry[0], entry[1]))
+
+        held = []
+        for _jp, joint_id, block_id in entries:
+            tool_oid = find_tool_for_joint(joint_id)
+            if tool_oid is None:
+                held = []
+                break  # restore_missing_tools_at_joints owns this bar this pass
+            current_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
+            held.append(
+                (
+                    joint_id,
+                    block_id,
+                    current_name,
+                    _robotic_tool.arm_side_from_tool_name(current_name),
+                )
+            )
+        if len(held) != 2:
+            continue
+
+        near, far = held
+        if near[3] is not None and far[3] is not None and near[3] != far[3]:
+            continue  # one L + one R -> correct as it stands, whichever end
+
+        # Same side (or one side unreadable): keep one joint and flip the other.
+        # A hand-picked joint is the one to keep; otherwise keep the near joint.
+        if get_tool_side_override(near[1]) is None and get_tool_side_override(far[1]):
+            near, far = far, near
+        keep_side = near[3] or far[3] or "left"
+        want = "right" if keep_side == "left" else "left"
+        joint_id, block_id, current_name, _side = far
+        if _robotic_tool.arm_side_from_tool_name(current_name) != want:
+            tool = active[want]
+            if place_tool_at_block_instance(block_id, joint_id, tool) is not None:
+                n_fixed += 1
+                if verbose:
+                    print(
+                        f"  [tool] {bar_id}/{joint_id}: side corrected "
+                        f"'{current_name}' -> '{tool.name}' ({want})."
+                    )
+    return n_fixed
 
 
 def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
@@ -495,8 +1152,8 @@ def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    joint_id = rs.GetUserText(tool_oid, "joint_id")
-    current_name = rs.GetUserText(tool_oid, "tool_name") or ""
+    joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
+    current_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
     if not joint_id:
         print("  [tool] clicked tool has no 'joint_id' user-text; cannot toggle.")
         return None
@@ -536,5 +1193,43 @@ def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     if new_oid is None:
         return None
     set_default_tool_name(tool.name)
-    print(f"  [tool] {joint_id}: tool toggled '{current_name}' -> '{tool.name}'.")
+    # This was a deliberate hand-pick: record it on the JOINT BLOCK so the
+    # automatic heading rule leaves this joint alone from now on (see
+    # config.KEY_TOOL_SIDE_MANUAL / assign_tool_sides_from_heading). Stamped on
+    # the block, not the tool, because re-placing a tool recreates that object.
+    rs.SetUserText(male_id, config.KEY_TOOL_SIDE_MANUAL, other_side)
+    print(f"  [tool] {joint_id}: tool toggled '{current_name}' -> '{tool.name}' "
+          "(manual side; auto side-assignment will not override it).")
     return tool.name
+
+
+def get_tool_side_override(block_id) -> str | None:
+    """Return the hand-picked arm side stamped on a joint block, or ``None``."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    side = rs.GetUserText(block_id, config.KEY_TOOL_SIDE_MANUAL)
+    return side if side in ("left", "right") else None
+
+
+def clear_tool_side_overrides(bar_id, verbose: bool = False) -> int:
+    """Drop the manual tool-side marks on a bar's anchor joints.
+
+    Called when the user explicitly flips which side the base stands on: that is
+    them re-deciding the side, so the earlier hand-pick no longer applies and the
+    automatic rule takes over again.
+
+    Returns:
+        int: how many marks were cleared.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    n_cleared = 0
+    for joint_id, block_id, _center in _bar_anchor_joints(bar_id):
+        if get_tool_side_override(block_id) is None:
+            continue
+        rs.SetUserText(block_id, config.KEY_TOOL_SIDE_MANUAL, "")
+        n_cleared += 1
+        if verbose:
+            print(f"  [tool] {bar_id}/{joint_id}: manual tool-side mark cleared "
+                  "(base side was flipped).")
+    return n_cleared

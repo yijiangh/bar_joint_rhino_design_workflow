@@ -45,6 +45,7 @@ import scriptcontext as sc
 import Rhino  # noqa: F401  (kept so other scripts can import Rhino through this file)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_helpers import ensure_layer
 from core.robot_cell import default_cell_state, get_or_load_robot_cell, import_compas_stack
 
@@ -131,7 +132,7 @@ def _native_scale_for_doc() -> float:
     Returns:
         float: meters per document unit.
     """
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
 
     # `doc_unit_scale_to_mm()` gives "millimeters per document unit". Dividing by
     # 1000 turns that into "meters per document unit", which is what the base
@@ -629,9 +630,7 @@ def begin_session(
         # user can still pick them.
         hide_doc_layers = (
             config.LAYER_BAR_TUBE_PREVIEWS,
-            config.LAYER_JOINT_FEMALE_INSTANCES,
-            config.LAYER_JOINT_MALE_INSTANCES,
-            config.LAYER_JOINT_GROUND_INSTANCES,
+            *jnc.JOINT_LAYERS,
             config.LAYER_TOOL_INSTANCES,
         )
         if not hide_tool_instances:
@@ -994,13 +993,15 @@ def _resolve_cell_for_robot_model(robot_model):
             return rcell
     except Exception:
         pass
-    try:
-        from core import robot_cell_support
-        scell = robot_cell_support.get_or_load_support_cell()
-        if scell.robot_model is robot_model:
-            return scell
-    except Exception:
-        pass
+    # Try each support robot's cell (one per robot now).
+    for support_name in config.SUPPORT_ROBOT_NAMES:
+        try:
+            from core import robot_cell_support
+            scell = robot_cell_support.get_or_load_support_cell(support_name)
+            if scell.robot_model is robot_model:
+                return scell
+        except Exception:
+            pass
     return None
 
 

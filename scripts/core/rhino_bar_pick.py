@@ -18,6 +18,10 @@ Plain bar pick
         Used by: ``rs_bar_snap``, ``rs_bar_brace``, ``rs_bar_subfloor``,
         ``rs_joint_place``.
 
+Point on a bar
+    * :func:`pick_point_on_bar`
+        Used by: ``rs_joint_place`` (JointOnly).
+
 Bar pick + inline ``Pair`` option
     * :func:`pick_bar_with_pair_option`
         Used by: ``rs_bar_snap``, ``rs_joint_place``.
@@ -41,7 +45,6 @@ from __future__ import annotations
 
 import Rhino
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 from core.joint_pair import (
     JointPairDef,
@@ -55,6 +58,7 @@ from core.rhino_bar_registry import (
     TUBE_AXIS_GUID_KEY,
     TUBE_BAR_ID_KEY,
 )
+from core.rhino_helpers import get_doc_string, set_doc_string
 
 
 # ---------------------------------------------------------------------------
@@ -68,19 +72,12 @@ _DOC_USERTEXT_SUBFLOOR_RIGHT_KEY = "scaffolding.last_subfloor_right_pair"
 _DEFAULT_BRACE_LENGTH = 500.0
 
 
-def _get_doc_string(key: str) -> str | None:
-    try:
-        value = sc.doc.Strings.GetValue(key)
-    except Exception:
-        value = None
-    return value or None
-
-
-def _set_doc_string(key: str, value: str) -> None:
-    try:
-        sc.doc.Strings.SetString(key, str(value))
-    except Exception:
-        pass
+# The read/write pair itself now lives in ``core.rhino_helpers`` so the bar
+# registry can use it too (this module imports FROM the registry, so it cannot
+# be the shared home).  Kept as module-level aliases: the accessors below and a
+# few call sites elsewhere refer to them by these names.
+_get_doc_string = get_doc_string
+_set_doc_string = set_doc_string
 
 
 def get_default_pair_name() -> str | None:
@@ -256,6 +253,28 @@ def pick_bar(prompt: str):
     # re-return the same object without waiting for user input.
     rs.UnselectObject(picked_id)
     return resolve_picked_to_bar_curve(picked_id)
+
+
+def pick_point_on_bar(bar_id, prompt: str):
+    """Prompt for a point on the bar curve *bar_id*; numpy 3-vector or ``None``.
+
+    The cursor is constrained to the bar so it slides along it.  Object snaps
+    stay on, so a point can be snapped to other geometry (an existing joint,
+    another bar's end) and is then projected onto the bar.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    curve = rs.coercecurve(bar_id)
+    if curve is None:
+        return None
+    gp = Rhino.Input.Custom.GetPoint()
+    gp.SetCommandPrompt(prompt)
+    gp.Constrain(curve, False)
+    gp.PermitObjectSnap(True)
+    if gp.Get() != Rhino.Input.GetResult.Point:
+        return None
+    pt = gp.Point()
+    return np.array([pt.X, pt.Y, pt.Z], dtype=float)
 
 
 def pick_bar_with_pair_option(

@@ -7,13 +7,24 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSIKKeyframe - Dual-arm IK keyframe workflow.
+"""RSIKKeyframe - The one IK keyframe button (assembly + support flows).
 
-Pick a single bar that already carries exactly two male joints, each with
-a robotic tool block placed by ``rs_joint_edit`` (one tool with a name
-ending in 'L' for the left arm, one ending in 'R' for the right arm).
-The placed tool block instances ARE the wrist+tool proxies; their world
-origins are tool0 (the robot flange frame) for IK. The script then:
+ONE button, staged by the picked bar's state:
+
+- ASSEMBLY flow (default): solve the dual-arm robot's approach / assembled /
+  retreat keyframes for the picked bar.
+- SUPPORT flow: when the picked bar needs holding (non-empty
+  ``supported_until``) AND its assembly keyframe is already solved, a
+  re-click runs the support-robot flow instead — pick the gripper grasp on
+  the held bar, pick the assigned support robot's base, solve its held +
+  approach keyframes, and validate the future release. Either flow can be
+  redone independently by clicking again.
+
+The ASSEMBLY flow needs a bar that carries exactly two tool-bearing joints,
+each with a robotic tool block placed by ``rs_joint_edit`` (one tool name
+ending 'L' for the left arm, one ending 'R' for the right). The placed tool
+block instances ARE the wrist+tool proxies; their world origins are tool0
+(the robot flange frame) for IK. The assembly flow then:
 
 1. Resolves left/right tool block instances on the picked bar.
 2. Prompts for a base point on a Brep in the ``Walkable Ground`` layer
@@ -23,8 +34,8 @@ origins are tool0 (the robot flange frame) for IK. The script then:
    Brep face.
 4. Previews the robot via ``core.ik_viz``.
 5. Repeats 3-4 for the approach pose, offset along
-   ``-unit(avg(tool_z_L, tool_z_R)) * LM_DISTANCE``.
-6. On accept, writes ``ik_assembly`` user-text (JSON payload) on the bar
+   ``-unit(avg(tool_z_L, tool_z_R)) * LM_APPROACH_DISTANCE``.
+6. On accept, writes the split ``KEY_ASSEMBLY_*`` user-text keys on the bar
    curve; robot meshes are cleared.
 
 Right after the base point + heading are chosen (step 2), the command offers an
@@ -53,29 +64,76 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+# ! Reload the "provider" modules FIRST: the ones other core modules import
+# NAMES from (`from core.env_collision import STATIC_KINDS`, ...). A module
+# imported below for the first time in this Rhino session would otherwise bind
+# those names against a stale copy still in sys.modules, and fail with an
+# ImportError on any newly added name before main() could reload anything.
+from core import env_collision as _env_collision_module
+from core import hold_schedule as _hold_schedule_module
+from core import rhino_bar_registry as _rhino_bar_registry_module
+
+importlib.reload(_env_collision_module)
+importlib.reload(_hold_schedule_module)
+importlib.reload(_rhino_bar_registry_module)
+
 from core import bar_action as _bar_action_module
+from core import base_guide_geom as _base_guide_geom_module
+from core import base_guide_viz as _base_guide_viz_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import highlight_env as _highlight_env_module
+from core import hold_action_builder as _hold_action_builder_module
 from core import ik_viz as _ik_viz_module
+from core import reach_viz as _reach_viz_module
+from core import rhino_tool_place as _rhino_tool_place_module
+from core import rhino_walkable_ground as _rhino_walkable_ground_module
 from core import robot_cell as _robot_cell_module
+from core import robot_cell_support as _robot_cell_support_module
+from core import robot_obstacles as _robot_obstacles_module
+from core import support_grasp_pick as _support_grasp_pick_module
 # The shared solvers live in the husky_assembly_tamp submodule (importing
 # core.config above put it on sys.path) -- ONE implementation used by both this
 # command and the headless planner.
 from husky_assembly_tamp.keyframe import dual_arm_ik as _dual_arm_ik_module
 from husky_assembly_tamp.keyframe import ik_keyframe as _ik_keyframe_module
 from core.rhino_bar_pick import pick_bar
-from core.rhino_bar_registry import (
+# Reload BEFORE the from-imports below, not in _reload_runtime_modules().  A
+# `from X import name` resolves against whatever copy of X is already in
+# sys.modules, so the first run after a new helper is added to
+# rhino_bar_registry / ik_collision_setup would raise ImportError at THIS line
+# -- long before any reload inside main() could run, and the only cure would be
+# restarting Rhino.  Reloading first re-executes the file from disk, so the
+# names below are always the ones on disk (rhino_bar_registry was reloaded with
+# the providers at the top; ik_collision_setup comes after env_collision).
+from core import ik_collision_setup as _ik_collision_setup_module
+
+importlib.reload(_ik_collision_setup_module)
+
+# The "ground joint + male joint on one bar" rule, shared with the export gate.
+from core.ik_collision_setup import mixed_ground_male_error  # noqa: E402 -- must follow the reload
+
+from core.rhino_bar_registry import (  # noqa: E402 -- must follow the reload
     BAR_ID_KEY,
+    COLOR_FAILED,
+    collect_hold_inputs,
     get_bar_seq_map,
+    get_supported_until,
     repair_on_entry,
     reset_sequence_colors,
+    restore_object_colors,
     show_sequence_colors,
+    snapshot_object_colors,
 )
-from core.rhino_frame_io import doc_unit_scale_to_mm
-from core.rhino_helpers import suspend_redraw
+from core.rhino_helpers import doc_unit_scale_to_mm
+from core.rhino_helpers import (
+    block_instance_xform_mm,
+    np_mm_to_xform,
+    suspend_redraw,
+)
 from core.rhino_tool_place import find_tool_for_joint
 from core.robotic_tool import arm_side_from_tool_name, get_robotic_tool
+from core import joint_name_conventions as jnc
 # Base-frame math shared with the headless sampler. These are pure numpy (no
 # Rhino), so they live in the tamp `keyframe.walkable_ground` module and are
 # imported under the private names this script already uses at its call sites.
@@ -83,15 +141,6 @@ from husky_assembly_tamp.keyframe.walkable_ground import (
     frame_from_origin_normal_heading as _frame_from_origin_normal_heading,
     sample_base_offsets as _sample_base_offsets,
 )
-
-
-# ---------------------------------------------------------------------------
-# Constants / user-text keys
-# ---------------------------------------------------------------------------
-
-# Legacy single-blob key (kept for back-compat readers; new writes go to the
-# split keys below from `core.config`).
-IK_ASSEMBLY_KEY = "ik_assembly"
 
 
 # ---------------------------------------------------------------------------
@@ -110,12 +159,36 @@ def _reload_runtime_modules():
     Returns:
         None.
     """
-    global bar_action, config, dual_arm_ik, dynamic_preview, highlight_env, ik_keyframe, ik_viz, robot_cell
+    global bar_action, base_guide_geom, base_guide_viz, config, dual_arm_ik
+    global dynamic_preview, env_collision, highlight_env, hold_action_builder
+    global hold_schedule, ik_collision_setup, ik_keyframe, ik_viz, reach_viz
+    global rhino_tool_place, rhino_walkable_ground, robot_cell
+    global robot_cell_support, robot_obstacles, support_grasp_pick
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
+    # Providers before the modules that import names from them (env_collision
+    # -> ik_collision_setup / robot_obstacles / bar_action; hold_schedule +
+    # rhino_bar_registry -> hold_action_builder).
+    env_collision = importlib.reload(_env_collision_module)
+    importlib.reload(_rhino_bar_registry_module)
+    ik_collision_setup = importlib.reload(_ik_collision_setup_module)
     highlight_env = importlib.reload(_highlight_env_module)
     ik_viz = importlib.reload(_ik_viz_module)
     robot_cell = importlib.reload(_robot_cell_module)
+    # Support-flow modules: session/cell per support robot, frozen-robot
+    # obstacles, hold derivation, keyframe IO + release validation, pickers.
+    robot_cell_support = importlib.reload(_robot_cell_support_module)
+    robot_obstacles = importlib.reload(_robot_obstacles_module)
+    hold_schedule = importlib.reload(_hold_schedule_module)
+    hold_action_builder = importlib.reload(_hold_action_builder_module)
+    support_grasp_pick = importlib.reload(_support_grasp_pick_module)
+    # Base-placement guide lines + the arm reach-volume ghost. Reloaded here so
+    # tweaking a guide offset / sphere radius takes effect without a Rhino restart.
+    base_guide_geom = importlib.reload(_base_guide_geom_module)
+    base_guide_viz = importlib.reload(_base_guide_viz_module)
+    reach_viz = importlib.reload(_reach_viz_module)
+    rhino_tool_place = importlib.reload(_rhino_tool_place_module)
+    rhino_walkable_ground = importlib.reload(_rhino_walkable_ground_module)
     # bar_action builds the M1-M4 movements (collision context + EE targets);
     # dual_arm_ik + ik_keyframe (from the tamp submodule) solve the chained IK
     # against them. Reload all three so edits to the shared solve path take
@@ -131,52 +204,6 @@ _reload_runtime_modules()
 # ---------------------------------------------------------------------------
 # Rhino <-> numpy helpers (doc units -> mm)
 # ---------------------------------------------------------------------------
-
-
-def _rhino_xform_to_np_mm(xform):
-    """Convert a Rhino transform to a 4x4 numpy matrix with translation in mm.
-
-    Args:
-        xform (Rhino.Geometry.Transform): a document-unit transform.
-
-    Returns:
-        np.ndarray: the same transform as a 4x4 float matrix, with the
-        translation column scaled from document units into millimeters.
-    """
-    scale = doc_unit_scale_to_mm()
-    matrix = np.array([[float(xform[i, j]) for j in range(4)] for i in range(4)], dtype=float)
-    matrix[:3, 3] *= scale  # translation -> mm
-    return matrix
-
-
-def _np_mm_to_rhino_xform(matrix: np.ndarray):
-    """Convert a 4x4 mm numpy matrix back into a document-unit Rhino transform.
-
-    Inverse of :func:`_rhino_xform_to_np_mm`: the translation column is scaled
-    from millimeters back into the document's units.
-
-    Args:
-        matrix (np.ndarray): a 4x4 transform with translation in mm.
-
-    Returns:
-        Rhino.Geometry.Transform: the equivalent transform in document units.
-    """
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    doc_matrix = np.array(matrix, dtype=float, copy=True)
-    doc_matrix[:3, 3] *= scale_from_mm
-    xform = Rhino.Geometry.Transform(1.0)
-    for i in range(4):
-        for j in range(4):
-            xform[i, j] = float(doc_matrix[i, j])
-    return xform
-
-
-def _block_instance_xform_mm(object_id) -> np.ndarray:
-    """Return the block instance's world transform as a 4x4 numpy matrix in mm."""
-    obj = rs.coercerhinoobject(object_id, True, True)
-    if not isinstance(obj, Rhino.DocObjects.InstanceObject):
-        raise RuntimeError(f"Object {object_id} is not a block instance.")
-    return _rhino_xform_to_np_mm(obj.InstanceXform)
 
 
 def _point_to_mm(point) -> np.ndarray:
@@ -245,21 +272,19 @@ def _males_on_bar(bar_id):
 
     Scans BOTH the male-joint layer and the ground-joint layer: assembly IK
     treats any tool-bearing joint instance on the bar as an arm anchor, so a
-    bar with one male + one ground (or two grounds) is a valid 2-anchor
-    configuration.  The variable name is kept as ``males`` for back-compat
-    with downstream code that just consumes opaque block-instance oids.
+    bar with two males or two grounds is a valid 2-anchor configuration (a
+    bar mixing the two kinds is refused by ``_resolve_arm_tools_on_bar``).
+    The variable name is kept as ``males`` for back-compat with downstream
+    code that just consumes opaque block-instance oids.
     """
     out = []
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         out.extend(
             oid
             for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out
 
@@ -277,14 +302,44 @@ def _resolve_arm_tools_on_bar(bar_oid):
 
     males = _males_on_bar(bar_id)
     if len(males) != 2:
-        return None, (
-            f"Bar '{bar_id}' has {len(males)} tool-bearing joint(s) (male+ground); "
-            "need exactly 2 (single-joint flow not yet supported)."
+        # Name them: the count says the bar is wrong, the ids say which joints
+        # to go and look at.
+        found = [rs.GetUserText(oid, jnc.UT_JOINT_ID) or "<no joint_id>" for oid in males]
+        listed = ", ".join(sorted(found)) if found else "none"
+        message = (
+            f"Bar '{bar_id}' has {len(males)} tool-bearing joint block(s) "
+            f"(male+ground) -- {listed}; need exactly 2 (single-joint flow not "
+            "yet supported)."
         )
+        # This counts BLOCKS, not distinct joints, so a duplicated block
+        # instance makes an otherwise-fine bar fail the check.  Say so, because
+        # "3 joints" on a bar that visibly has 2 is otherwise baffling.
+        repeated = sorted({j for j in found if found.count(j) > 1})
+        if repeated:
+            message += (
+                f"  NOTE: {', '.join(repeated)} appears more than once -- that is "
+                "a duplicate block instance (copy/paste, or a re-place that left "
+                "the old one behind), not a real extra joint.  Delete the extra "
+                "block and the bar should pass."
+            )
+        return None, message
+
+    # ! A bar is either a ground bar or a normal bar, never both (no jointing
+    # motor on a ground bar; the screws tighten on a normal one).
+    male_ids, ground_ids = [], []
+    for moid in males:
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID) or str(moid)
+        if rs.ObjectLayer(moid) == jnc.LAYER_GROUND:
+            ground_ids.append(jid)
+        else:
+            male_ids.append(jid)
+    mixed = mixed_ground_male_error(bar_id, male_ids, ground_ids)
+    if mixed:
+        return None, mixed
 
     left = right = None
     for moid in males:
-        jid = rs.GetUserText(moid, "joint_id")
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
         if not jid:
             return None, f"Male block on bar '{bar_id}' is missing 'joint_id' user-text."
         toid = find_tool_for_joint(jid)
@@ -293,7 +348,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
                 f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed. "
                 "Run RSJointEdit / tool-cycle first."
             )
-        tname = rs.GetUserText(toid, "tool_name") or ""
+        tname = rs.GetUserText(toid, jnc.UT_TOOL_NAME) or ""
         side = arm_side_from_tool_name(tname)
         if side is None:
             return None, (
@@ -316,29 +371,117 @@ def _resolve_arm_tools_on_bar(bar_oid):
     return (bar_id, left, right), None
 
 
-def _pick_bar_with_arm_tools():
-    """Loop until the user picks a bar that satisfies the L/R tool layout,
-    or cancels. Returns ``(bar_id, bar_oid, left_tuple, right_tuple)`` or None.
+def _detect_flow(bar_oid, bar_id):
+    """Decide which flow the picked bar gets: "assembly", "support", or None.
+
+    "support" only when the bar needs holding (non-empty ``supported_until``)
+    AND its assembly keyframe is already solved — then the user is asked
+    (default Support) so the assembly solve stays redoable too.
+
+    Args:
+        bar_oid: Rhino object id of the picked bar curve.
+        bar_id (str): the bar's id.
+
+    Returns:
+        str | None: "assembly", "support", or None on cancel.
+    """
+    needs_hold = bool(get_supported_until(bar_oid))
+    has_assembly = bar_action.has_ik_keyframe(bar_oid)
+    if not (needs_hold and has_assembly):
+        return "assembly"
+    choice = rs.GetString(
+        f"Bar {bar_id} needs holding and its assembly keyframe is solved. "
+        "Solve which keyframe?",
+        "Support",
+        ["Support", "Assembly"],
+    )
+    if choice is None:
+        return None
+    return "assembly" if str(choice).strip().lower().startswith("a") else "support"
+
+
+def _pick_bar_and_detect_flow():
+    """Pick a registered bar, then route it to the assembly or support flow.
+
+    Loops until a valid pick or cancel.  The L/R tool layout is a requirement of
+    the ASSEMBLY flow only, so it is checked after the routing decision -- the
+    support flow needs no tools on the bar at all.
+
+    On rejection the bar's tool-bearing JOINT blocks are painted
+    :data:`COLOR_FAILED` (the same pink as a failed IK solve, and as a fake bar
+    -- all three mean "the robot will not be building this one").  The joints,
+    not the bar: you just clicked the bar, so you already know which one it is;
+    what you cannot see is which joint blocks are on it, which is exactly what
+    the count is complaining about.  A pick with no tool-bearing joints to point
+    at -- an unregistered curve, or a bar carrying none -- is the one exception,
+    and the picked object itself is marked instead.
+
+    Only one pick is marked at a time: picking another bar clears the previous
+    mark, and so does leaving the command, because a rejection is a fact about
+    the pick you just made, not a lasting property of the model.
+
+    Returns:
+        tuple | None: ``("support", bar_id, bar_oid, None, None)`` or
+        ``("assembly", bar_id, bar_oid, left_tuple, right_tuple)``, or None
+        on cancel.
     """
     seq_map = get_bar_seq_map()
-    while True:
-        bar_oid = pick_bar(
-            "Pick the Ln bar to assemble (must have 2 tool-bearing joints with L/R tools placed)"
-        )
-        if bar_oid is None:
-            return None
-        result, err = _resolve_arm_tools_on_bar(bar_oid)
-        if err is not None:
-            print(f"RSIKKeyframe: {err} Pick another bar or press Esc to cancel.")
-            continue
-        bar_id, left, right = result
-        if bar_id not in seq_map:
-            print(
-                f"RSIKKeyframe: bar '{bar_id}' is not in the bar registry. "
-                "Pick another bar or press Esc to cancel."
+    flag_token = None
+
+    def _clear_flag():
+        """Put the last rejected pick back to whatever colors it had before."""
+        nonlocal flag_token
+        if flag_token is not None:
+            restore_object_colors(flag_token)
+            flag_token = None
+
+    def _flag(bar_oid, bar_id, message):
+        """Mark the offending joints (or the pick, if it has none) and say why."""
+        nonlocal flag_token
+        _clear_flag()
+        # Snapshot rather than reset-to-by-layer on the way out: these blocks
+        # may already carry a sequence color or a broken-link mark, and this
+        # flag must not swallow it.
+        targets = _males_on_bar(bar_id) if bar_id else []
+        targets = [oid for oid in targets if rs.IsObject(oid)]
+        if not targets:
+            targets = [bar_oid]
+        flag_token = snapshot_object_colors(targets)
+        for oid in targets:
+            rs.ObjectColorSource(oid, 1)  # by object, so the flag beats the layer
+            rs.ObjectColor(oid, COLOR_FAILED)
+        rs.Redraw()
+        print(f"RSIKKeyframe: {message} Pick another bar or press Esc to cancel.")
+
+    try:
+        while True:
+            bar_oid = pick_bar(
+                "Pick the bar to keyframe (assembly flow; re-click a solved "
+                "unstable bar for support)"
             )
-            continue
-        return bar_id, bar_oid, left, right
+            if bar_oid is None:
+                return None
+            bar_id = rs.GetUserText(bar_oid, BAR_ID_KEY)
+            # Registry membership first: _detect_flow reads the bar's hold state
+            # and solved-keyframe state, both of which assume a registered bar.
+            if not bar_id or bar_id not in seq_map:
+                named = f"bar '{bar_id}'" if bar_id else "the picked curve"
+                _flag(bar_oid, bar_id, f"{named} is not in the bar registry.")
+                continue
+            flow = _detect_flow(bar_oid, bar_id)
+            if flow is None:
+                return None
+            if flow == "support":
+                return "support", bar_id, bar_oid, None, None
+            result, err = _resolve_arm_tools_on_bar(bar_oid)
+            if err is not None:
+                _flag(bar_oid, bar_id, err)
+                continue
+            _bid, left, right = result
+            return "assembly", bar_id, bar_oid, left, right
+    finally:
+        _clear_flag()
+        rs.Redraw()
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +648,13 @@ def _world_from_base_doc_xform(origin_doc, normal_doc, heading_doc_vec):
     return xform
 
 
+# Context previews (holding robots at their frozen held poses) that must stay
+# on screen through the base pick. Set by the assembly flow while it runs; read
+# by `_bake_robot_meshes_at_zero`, because harvesting ghost meshes hides the
+# whole IK cache layer and would otherwise take the context down with it.
+_ACTIVE_CONTEXT_LAYER_KEYS = []
+
+
 def _bake_robot_meshes_at_zero():
     """Return Rhino meshes for every robot link at zero config (for the ghost preview).
 
@@ -512,19 +662,348 @@ def _bake_robot_meshes_at_zero():
     :func:`ik_viz.get_robot_link_meshes_at_zero` -- baking only happens on the
     first call and is shared with the rest of the IK preview pipeline (so the
     bake cost is amortized rather than thrown away).
+
+    The harvest hides the whole IK cache layer on exit (it assumes the ghost
+    should be the only robot on screen). When context previews are active --
+    support robots frozen holding a bar during this step -- the cache root is
+    turned back on and only the assembly bundle is hidden, so the ghost still
+    reads as the only MOVING robot while the frozen ones stay visible. Same
+    treatment ``support_grasp_pick.support_robot_ghost_meshes`` gives the frozen
+    Cindy backdrop in the support flow.
     """
-    return ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+    meshes = ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+    if _ACTIVE_CONTEXT_LAYER_KEYS:
+        if rs.IsLayer(config.LAYER_IK_CACHE):
+            rs.LayerVisible(config.LAYER_IK_CACHE, True)
+        # Hide the static zero-pose bake the ghost was harvested from; the
+        # conduit draws the moving copy.
+        ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
+        for layer_key in _ACTIVE_CONTEXT_LAYER_KEYS:
+            ik_viz.set_layer_visible(layer_key, True)
+    return meshes
 
 
-def _pick_base_frame_on_walkable(brep_id):
+def _reach_sphere_meshes(rcell):
+    """Return the two arm reach-volume spheres, or ``[]`` if unavailable.
+
+    Handed to the ghost conduit as ``extra_meshes`` so they follow the candidate
+    base with the robot. Never raises: a failed preview must not break the pick.
+    """
+    try:
+        return reach_viz.reach_sphere_meshes(rcell.robot_model)
+    except Exception as exc:  # noqa: BLE001 -- preview must not break the pick
+        print(f"RSIKKeyframe: reach spheres unavailable ({exc}).")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Base-placement guide lines
+# ---------------------------------------------------------------------------
+
+
+def _draw_base_guides_for_bar(bar_oid, bar_id, joint_a_mm, joint_b_mm,
+                              standoff_mm=None, flip=False):
+    """Bake the 5 base-placement guide lines for one bar; return its diag or None.
+
+    Drawn right after the bar pick so the guides are on screen through the
+    walkable-ground pick and both phases of the base pick: the user can read the
+    375 / 500 / 625 mm standoffs straight off the ground and drop the base on the
+    yellow extension line. Bars with no assigned / meshable WalkableGround are
+    skipped with a note rather than blocking the pick.
+
+    Args:
+        flip (bool): negate the resolved heading, putting the guides -- and so
+            the base that follows them -- on the OTHER side of the bar. There
+            are exactly two sensible sides (see
+            ``base_guide_geom.perpendicular_headings``) and
+            ``resolve_bar_heading`` picks one automatically, so this is the
+            user's override when it picks the awkward one. The returned diag
+            carries the flipped heading, which keeps the L/R tool assignment
+            downstream consistent with what is drawn.
+    """
+    standoff = float(config.IK_BASE_STANDOFF_MM if standoff_mm is None else standoff_mm)
+    try:
+        grounds = rhino_walkable_ground.get_all_walkable_grounds()
+        soups = rhino_walkable_ground._bar_ground_soups(bar_oid, grounds)
+        if not soups:
+            print(f"RSIKKeyframe: bar '{bar_id}' has no assigned WalkableGround; "
+                  "skipping the base guide lines.")
+            return None
+        center_mm = 0.5 * (np.asarray(joint_a_mm, dtype=float)
+                           + np.asarray(joint_b_mm, dtype=float))
+        ground_point, ground_normal = (
+            rhino_walkable_ground._walkable_np.closest_point_on_meshes(soups, center_mm)
+        )
+        if ground_point is None:
+            return None
+        diag = rhino_walkable_ground.resolve_bar_heading(
+            bar_oid, bar_id, soups, ground_point, ground_normal, standoff,
+            verbose=True,
+        )
+        if flip and diag.get("heading") is not None:
+            # The two sides are +n / -n about the bar, so the flip is a straight
+            # negation -- no need to re-resolve anything.
+            diag["heading"] = -np.asarray(diag["heading"], dtype=float)
+        guides = base_guide_geom.build_base_guides(
+            soups, joint_a_mm, joint_b_mm, diag["heading"]
+        )
+        base_guide_viz.draw_base_guides({bar_id: guides})
+        sc.doc.Views.Redraw()
+        diag["ground_normal"] = ground_normal
+        return diag
+    except Exception as exc:  # noqa: BLE001 -- guides are an aid, never a blocker
+        print(f"RSIKKeyframe: base guide lines unavailable ({exc}).")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Reach-circle clip geometry (obstacle footprints + walkable boundary)
+# ---------------------------------------------------------------------------
+
+
+def _walkable_ground_plane(brep):
+    """Return a representative ``Rhino.Geometry.Plane`` for a walkable brep.
+
+    Origin = area centroid snapped onto the brep; normal = the surface normal
+    there. This is the flat-ground plane the reach-circle clip curves live in.
+    Returns None if no plane can be derived.
+    """
+    try:
+        amp = Rhino.Geometry.AreaMassProperties.Compute(brep)
+    except Exception:
+        amp = None
+    if amp is not None:
+        pt, normal = _closest_point_on_brep(brep, amp.Centroid)
+        if pt is not None and normal is not None:
+            return Rhino.Geometry.Plane(pt, normal)
+    try:
+        face = brep.Faces[0]
+        u = face.Domain(0).Mid
+        v = face.Domain(1).Mid
+        return Rhino.Geometry.Plane(face.PointAt(u, v), face.NormalAt(u, v))
+    except Exception:
+        return None
+
+
+def _rect_curve_in_plane(plane, bbox_in_plane):
+    """Return a closed rectangle curve (world/doc coords) for a plane-aligned
+    bounding box -- the obstacle footprint fallback when a brep does not section
+    the ground plane."""
+    lo = bbox_in_plane.Min
+    hi = bbox_in_plane.Max
+    corners = [
+        plane.PointAt(lo.X, lo.Y),
+        plane.PointAt(hi.X, lo.Y),
+        plane.PointAt(hi.X, hi.Y),
+        plane.PointAt(lo.X, hi.Y),
+        plane.PointAt(lo.X, lo.Y),
+    ]
+    poly = Rhino.Geometry.Polyline()
+    for c in corners:
+        poly.Add(c)
+    return poly.ToNurbsCurve()
+
+
+def _brep_footprint_in_plane(brep, plane, tol):
+    """Return the obstacle brep's footprint curves in ``plane``: the section
+    where the brep crosses the plane, or a bbox rectangle fallback when it floats
+    clear of the plane. Curves need not be closed (obstacles clip by crossing)."""
+    curves = None
+    try:
+        rc, xs, _pts = Rhino.Geometry.Intersection.BrepPlane(brep, plane, tol)
+        if rc and xs:
+            curves = list(xs)
+    except Exception:
+        curves = None
+    if curves:
+        joined = Rhino.Geometry.Curve.JoinCurves(curves, tol)
+        return [c for c in (joined or curves) if c is not None]
+    try:
+        bb = brep.GetBoundingBox(plane)
+    except Exception:
+        bb = None
+    if bb is not None and bb.IsValid:
+        rect = _rect_curve_in_plane(plane, bb)
+        if rect is not None:
+            return [rect]
+    return []
+
+
+def _mesh_footprint_in_plane(mesh, plane, tol):
+    """Return an obstacle mesh's footprint curves in ``plane``: the section where
+    the mesh crosses the plane, or a plane-aligned bbox rectangle fallback when it
+    floats clear of (or sits coincident with) the plane."""
+    polylines = None
+    try:
+        polylines = Rhino.Geometry.Intersection.MeshPlane(mesh, plane)
+    except Exception:
+        polylines = None
+    curves = []
+    for pl in polylines or []:
+        if pl is not None and pl.Count >= 2:
+            c = pl.ToNurbsCurve()
+            if c is not None:
+                curves.append(c)
+    if curves:
+        joined = Rhino.Geometry.Curve.JoinCurves(curves, tol)
+        return [c for c in (joined or curves) if c is not None]
+    try:
+        bb = mesh.GetBoundingBox(plane)
+    except Exception:
+        bb = None
+    if bb is not None and bb.IsValid:
+        rect = _rect_curve_in_plane(plane, bb)
+        if rect is not None:
+            return [rect]
+    return []
+
+
+def _obstacle_footprints_in_plane(oid, plane, tol):
+    """Footprint curves of an environment obstacle in ``plane``, for either a
+    mesh or a brep/surface/polysurface/extrusion object.
+
+    Environment obstacles are typically meshes by the time RSIKKeyframe runs (see
+    ``env_collision`` -- non-mesh env objects are converted to mesh), so a
+    brep-only path would drop them and the reach circle would never clamp against
+    them. Meshes are sectioned with ``MeshPlane``; brep-like objects reuse
+    ``env_collision._coerce_env_brep`` + ``_brep_footprint_in_plane``."""
+    if rs.IsMesh(oid):
+        mesh = rs.coercemesh(oid)
+        if mesh is None:
+            return []
+        return _mesh_footprint_in_plane(mesh, plane, tol)
+    try:
+        brep = env_collision._coerce_env_brep(oid)
+    except Exception:
+        brep = None
+    if brep is None:
+        return []
+    return _brep_footprint_in_plane(brep, plane, tol)
+
+
+def _walkable_boundary_loop(brep, tol):
+    """Return the walkable brep's outer boundary as one closed curve (longest
+    joined naked-edge loop), or None. Used to clamp the reach circle to the
+    ground edge."""
+    try:
+        edges = brep.DuplicateNakedEdgeCurves(True, False)
+    except Exception:
+        edges = None
+    if not edges:
+        return None
+    joined = Rhino.Geometry.Curve.JoinCurves(list(edges), tol)
+    if not joined:
+        return None
+    best = None
+    best_len = -1.0
+    for c in joined:
+        if c is None:
+            continue
+        try:
+            length = c.GetLength()
+        except Exception:
+            continue
+        if length > best_len:
+            best_len = length
+            best = c
+    return best
+
+
+def _plane_from_frame_mm(frame_mm):
+    """Return a doc-unit ``Plane`` at a base frame's origin, normal = base +Z."""
+    origin_doc, _x_axis_doc, z_axis_doc = _frame_mm_to_doc_marker(frame_mm)
+    return Rhino.Geometry.Plane(origin_doc, z_axis_doc)
+
+
+def _curve_to_plane_polygon(curve, plane, count=64):
+    """Sample ``curve`` into a list of (u, v) points in ``plane`` coordinates.
+
+    The reach-circle clip runs pure-2D math against these polygons (see
+    ``dynamic_preview.compute_reach_outline``), so we tessellate each Rhino curve
+    ONCE here instead of intersecting NURBS geometry on every mouse-move.
+    """
+    pts = []
+    try:
+        params = curve.DivideByCount(count, True)
+    except Exception:
+        params = None
+    if not params:
+        try:
+            params = [curve.Domain.Min, curve.Domain.Max]
+        except Exception:
+            return pts
+    for t in params:
+        p = curve.PointAt(t)
+        ok, pp = plane.RemapToPlaneSpace(p)
+        if ok:
+            pts.append((pp.X, pp.Y))
+    return pts
+
+
+def _gather_reach_clip_curves(plane, walkable_brep=None):
+    """Precompute the reach-circle clip polygons in ``plane`` (2D plane coords).
+
+    Obstacle footprints come from every object on ``config.LAYER_ENVIRONMENT``
+    (meshes and brep-like objects alike, via ``_obstacle_footprints_in_plane``);
+    the walkable boundary (when ``walkable_brep`` is given) clamps the circle to
+    the ground edge. Curves are tessellated to polygons up front so the live
+    preview clamp is cheap float math. Returns ``{"plane": Plane,
+    "boundary": [(u,v),...] | None, "obstacles": [[(u,v),...], ...]}``.
+    """
+    if plane is None:
+        return {"plane": None, "boundary": None, "obstacles": []}
+    tol = sc.doc.ModelAbsoluteTolerance
+    obstacles = []
+    if rs.IsLayer(config.LAYER_ENVIRONMENT):
+        for oid in rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or []:
+            try:
+                footprints = _obstacle_footprints_in_plane(oid, plane, tol)
+            except Exception:
+                footprints = []
+            for footprint in footprints:
+                poly = _curve_to_plane_polygon(footprint, plane)
+                if len(poly) >= 2:
+                    obstacles.append(poly)
+    boundary = None
+    if walkable_brep is not None:
+        loop = _walkable_boundary_loop(walkable_brep, tol)
+        if loop is not None:
+            bpoly = _curve_to_plane_polygon(loop, plane)
+            if len(bpoly) >= 3:
+                boundary = bpoly
+    return {"plane": plane, "boundary": boundary, "obstacles": obstacles}
+
+
+def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
     """Pick base origin + heading on the walkable brep, with the dual-arm
     robot's mesh tracking the cursor. Returns
     (base_origin_mm, base_normal, heading_mm, seed_base_frame_mm) or all None.
+
+    ``reach_meshes`` (from :func:`_reach_sphere_meshes`) are drawn as translucent
+    arm reach volumes moving with the ghost robot.
     """
     brep = _as_brep(brep_id)
     robot_meshes = _bake_robot_meshes_at_zero()
 
-    with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4) as conduit:
+    # Reach-circle preview: obstacle footprints + walkable boundary in the brep's
+    # tangent plane, precomputed once (static) and reused on every mouse-move.
+    radius_doc = float(config.IK_BASE_SAMPLE_RADIUS) / doc_unit_scale_to_mm()
+    tol = sc.doc.ModelAbsoluteTolerance
+    clip_curves = _gather_reach_clip_curves(_walkable_ground_plane(brep), brep)
+
+    with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4,
+                                      extra_meshes=reach_meshes) as conduit:
+        def _update_reach(center_pt, normal_v):
+            """Rebuild the clipped reach outline at ``center_pt`` and push it to the
+            ghost-preview conduit (drawn on the same redraw tick as the ghost)."""
+            try:
+                curve, overlaps = dynamic_preview.compute_reach_outline(
+                    center_pt, normal_v, radius_doc, clip_curves, tol
+                )
+                conduit.set_reach_outline(curve, overlaps)
+            except Exception as exc:  # noqa: BLE001 -- preview must not break the pick
+                print(f"RSIKKeyframe: reach outline failed ({exc}).")
+
         # Phase A: base origin on brep.
         def _xform_phase_a(cursor_doc):
             """Ghost-robot transform while picking the base origin.
@@ -542,6 +1021,7 @@ def _pick_base_frame_on_walkable(brep_id):
             close_pt, normal = _closest_point_on_brep(brep, cursor_doc)
             if close_pt is None:
                 return None
+            _update_reach(close_pt, normal)
             world_x = Rhino.Geometry.Vector3d(1.0, 0.0, 0.0)
             return _world_from_base_doc_xform(close_pt, normal, world_x)
 
@@ -554,6 +1034,7 @@ def _pick_base_frame_on_walkable(brep_id):
         close_pt, normal = _closest_point_on_brep(brep, picked_doc)
         if close_pt is None:
             return None, None, None, None
+        _update_reach(close_pt, normal)  # lock the circle at the confirmed origin
 
         # Phase B: heading point.
         def _xform_phase_b(cursor_doc):
@@ -769,25 +1250,37 @@ def _ask_accept_with_pose_preview(
 
 
 def _ask_reuse_saved_base():
-    """Prompt 'Reuse saved base frame?' with [Reuse|NewPick]; default = Reuse.
+    """Prompt 'Reuse saved base frame?' with [Reuse|NewPick|Flip]; default = Reuse.
 
-    Returns True to reuse, False to pick a new base, or None on Esc.
+    ``Flip`` stands the robot on the OTHER side of the bar. The side is normally
+    decided for you by ``resolve_bar_heading`` (it averages the anchor insertion
+    axes), and until now the only way to overrule it was to run RSIKKeyframeAll
+    and use its FlipOne -- this is the single-bar equivalent.
+
+    Returns:
+        str: ``"reuse"`` / ``"new"`` / ``"flip"``, or ``None`` on Esc.
     """
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Saved base frame found on this bar; press Enter to reuse")
+    go.SetCommandPrompt(
+        "Saved base frame found on this bar; press Enter to reuse, or Flip to "
+        "stand on the other side of the bar"
+    )
     reuse_idx = go.AddOption("Reuse")
     new_idx = go.AddOption("NewPick")
+    flip_idx = go.AddOption("Flip")
     go.AcceptNothing(True)
     while True:
         result = go.Get()
         if result == Rhino.Input.GetResult.Nothing:
-            return True
+            return "reuse"
         if result == Rhino.Input.GetResult.Option:
             chosen = go.OptionIndex()
             if chosen == reuse_idx:
-                return True
+                return "reuse"
             if chosen == new_idx:
-                return False
+                return "new"
+            if chosen == flip_idx:
+                return "flip"
             continue
         return None
 
@@ -803,16 +1296,22 @@ def _ask_save_base_or_continue():
     reads exactly this saved base). Enter / the default is ``Continue`` so the
     normal solve-in-Rhino path is unchanged for anyone who just presses Enter.
 
+    ``Repick`` is the way back: the base you just placed is the one thing you
+    cannot re-judge until you see the robot standing at it, and before this the
+    only escape was Esc and re-running the whole command.
+
     Returns:
         str: ``"continue"`` to solve the IK chain in Rhino now, ``"save_and_exit"``
-        to keep the already-saved base and stop, or ``"cancel"`` on Esc.
+        to keep the already-saved base and stop, ``"repick"`` to go back and
+        choose another base, or ``"cancel"`` on Esc.
     """
     go = Rhino.Input.Custom.GetOption()
     go.SetCommandPrompt(
-        "Base frame set -- Continue to the in-Rhino IK solve, or save the base "
-        "and exit (to solve the keyframes headlessly)"
+        "Base frame set -- Continue to the in-Rhino IK solve, Repick the base, "
+        "or save the base and exit (to solve the keyframes headlessly)"
     )
     continue_idx = go.AddOption("Continue")
+    repick_idx = go.AddOption("Repick")
     save_exit_idx = go.AddOption("SaveBaseAndExit")
     go.SetCommandPromptDefault("Continue")
     go.AcceptNothing(True)
@@ -824,6 +1323,8 @@ def _ask_save_base_or_continue():
             chosen = go.OptionIndex()
             if chosen == continue_idx:
                 return "continue"
+            if chosen == repick_idx:
+                return "repick"
             if chosen == save_exit_idx:
                 return "save_and_exit"
             continue
@@ -853,21 +1354,18 @@ def _hide_inactive_tool_blocks(active_bar_id):
     if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
         return []
     active_joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             if (
-                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-                and rs.GetUserText(oid, "joint_id")
+                rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
+                and rs.GetUserText(oid, jnc.UT_JOINT_ID)
             ):
-                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
+                active_joint_ids.add(rs.GetUserText(oid, jnc.UT_JOINT_ID))
     hidden = []
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        jid = rs.GetUserText(oid, "joint_id")
+        jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if jid in active_joint_ids:
             continue
         if rs.IsObjectHidden(oid):
@@ -918,7 +1416,8 @@ def _frame_mm_to_doc_marker(frame_mm):
     return origin_doc, x_axis_doc, z_axis_doc
 
 
-def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm):
+def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm, clip_curves=None,
+                        robot_meshes=None):
     """Create + enable an IK-sampling viz conduit and draw the seed marker + circle.
 
     Draws seed origin + X-axis arrow + sampling circle in the seed's tangent plane
@@ -933,9 +1432,20 @@ def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm):
 
     Redraw is forced on so the conduit renders even when the surrounding command has
     suspended redraws; the caller restores the redraw state.
+
+    Args:
+        seed_base_frame_mm (np.ndarray): 4x4 mm base frame the search starts at.
+        sample_radius_mm (float): the sampling circle's radius.
+        clip_curves (dict | None): precomputed reach-clip polygons.
+        robot_meshes (list | None): the ghost robot's link meshes at zero
+            config; ``None`` uses the assembly robot's (the support flow
+            passes its own robot's meshes instead).
     """
     rs.EnableRedraw(True)
-    robot_meshes = ik_viz.get_robot_link_meshes_at_zero(layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+    if robot_meshes is None:
+        # Via the shared helper so any active context previews (frozen holding
+        # robots) survive the harvest's cache-layer hide.
+        robot_meshes = _bake_robot_meshes_at_zero()
     scale_from_mm = 1.0 / doc_unit_scale_to_mm()
     arrow_len_mm = max(50.0, 0.4 * float(sample_radius_mm))
     origin_doc, x_axis_doc, z_axis_doc = _frame_mm_to_doc_marker(seed_base_frame_mm)
@@ -947,6 +1457,8 @@ def _open_ik_sample_viz(seed_base_frame_mm, sample_radius_mm):
         z_axis_doc,
         float(sample_radius_mm) * scale_from_mm,
         arrow_len_mm * scale_from_mm,
+        clip_curves=clip_curves,
+        tol=sc.doc.ModelAbsoluteTolerance,
     )
     return conduit
 
@@ -1055,7 +1567,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                 f"at ({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
             )
             if viz is not None:
-                viz.set_ghost_xform(_np_mm_to_rhino_xform(base_frame))
+                viz.set_ghost_xform(np_mm_to_xform(base_frame))
             solved = ik_keyframe.solve_keyframe_chain(
                 planner,
                 ordered,
@@ -1083,40 +1595,6 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
         f"Consider increasing IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER in config.py."
     )
     return None, None
-
-
-# ---------------------------------------------------------------------------
-# Payload
-# ---------------------------------------------------------------------------
-
-
-def _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell):
-    """Assemble the legacy bundled ``ik_assembly`` payload dict.
-
-    Bundles the robot base frame plus the per-arm joint configs for the final
-    (assembled) and approach poses, matching the schema older readers expect.
-
-    Args:
-        base_frame_mm (np.ndarray): 4x4 mm robot base frame.
-        final_state (RobotCellState): the assembled-pose cell state.
-        approach_state (RobotCellState): the approach-pose cell state.
-        rcell (RobotCell): used to name the per-group joints.
-
-    Returns:
-        dict: the JSON-serializable ``ik_assembly`` payload.
-    """
-    return {
-        "robot_id": config.ROBOT_ID,
-        "base_frame_world_mm": np.asarray(base_frame_mm, dtype=float).tolist(),
-        "final": {
-            "left": dual_arm_ik.extract_group_config(final_state, config.LEFT_GROUP, rcell),
-            "right": dual_arm_ik.extract_group_config(final_state, config.RIGHT_GROUP, rcell),
-        },
-        "approach": {
-            "left": dual_arm_ik.extract_group_config(approach_state, config.LEFT_GROUP, rcell),
-            "right": dual_arm_ik.extract_group_config(approach_state, config.RIGHT_GROUP, rcell),
-        },
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1184,18 +1662,6 @@ def _write_assembly_keyframes(bar_oid, approach_state, assembled_state, retreat_
     )
 
 
-def _write_legacy_assembly_blob(bar_oid, base_frame_mm, final_state, approach_state, rcell):
-    """Back-compat: also write the legacy bundled `ik_assembly` blob.
-
-    `rs_ik_support_keyframe.py` and `rs_show_ik.py` still read this single
-    key. Drop this dual-write once both have been migrated to the
-    `KEY_ASSEMBLY_*` split keys.
-    """
-    payload = _build_assembly_payload(base_frame_mm, final_state, approach_state, rcell)
-    rs.SetUserText(bar_oid, IK_ASSEMBLY_KEY, json.dumps(payload))
-    print(f"RSIKKeyframe: also wrote legacy '{IK_ASSEMBLY_KEY}' blob (back-compat).")
-
-
 def _read_saved_assembly_base_frame(bar_oid):
     """Return previously-saved base frame as a 4x4 np.ndarray (mm), or None."""
     raw = rs.GetUserText(bar_oid, config.KEY_ASSEMBLY_BASE_FRAME)
@@ -1252,8 +1718,8 @@ def _collect_target_context(
     extra_hidden_tools = _hide_inactive_tool_blocks(target_bar_id)
 
     # tool0 (flange frame) IS the tool block instance world transform.
-    tool0_left_final = _block_instance_xform_mm(left_tool_oid)
-    tool0_right_final = _block_instance_xform_mm(right_tool_oid)
+    tool0_left_final = block_instance_xform_mm(left_tool_oid)
+    tool0_right_final = block_instance_xform_mm(right_tool_oid)
     print(
         f"RSIKKeyframe: target Ln bar = {target_bar_id} "
         f"(left tool = {rs.BlockInstanceName(left_tool_oid)}, "
@@ -1270,6 +1736,11 @@ def _resolve_seed_base_frame(
     brep_id,
     heading_mm,
     allow_saved_base_prompt,
+    reach_meshes=None,
+    bar_oid=None,
+    bar_id=None,
+    joint_a_mm=None,
+    joint_b_mm=None,
 ):
     """Decide which robot base frame to seed the IK solve with.
 
@@ -1292,6 +1763,14 @@ def _resolve_seed_base_frame(
             None to derive it during this call.
         allow_saved_base_prompt: When True, offer to reuse ``saved_base``;
             set False on retries so the prompt does not reappear.
+        reach_meshes: Arm reach-volume spheres shown with the ghost robot
+            during the pick (see :func:`_reach_sphere_meshes`).
+        bar_oid: The bar centerline curve id, needed only by the ``Flip``
+            answer to re-place the base on the other side. Omit and Flip
+            degrades to a normal new pick.
+        bar_id (str): The bar id, same purpose as *bar_oid*.
+        joint_a_mm, joint_b_mm: The two anchor-joint centers (mm), used to
+            re-draw the guide lines on the flipped side.
 
     Returns:
         The tuple ``(seed_base_frame, brep_id, heading_mm,
@@ -1304,14 +1783,79 @@ def _resolve_seed_base_frame(
     if allow_saved_base_prompt and saved_base is not None:
         # Default mesh-mode for the preview matches the user's last choice.
         preview_mode = ik_viz.get_mesh_mode()
-        _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
-        answer = _ask_reuse_saved_base()
+        # Flip does NOT leave this prompt: it moves the candidate base to the
+        # other side, redraws the ghost + guides there, and asks again -- so you
+        # can look at both sides before committing, and a second Flip puts you
+        # back. `flip_state` is what makes that toggle: the base is always
+        # re-derived from the bar, never mirrored from the previous answer, so
+        # repeated flips cannot drift.
+        flip_state = False
+        while True:
+            _preview_robot_at_base(planner, template_state, saved_base, preview_mode)
+            # Reach circle at the candidate base, clipped against obstacles + the
+            # nearest walkable brep's edge (this path never picks a brep of its own).
+            with dynamic_preview.reach_circle_viz() as _reach:
+                try:
+                    reuse_brep_id = _resolve_sampling_brep_for_base(saved_base, None)
+                    reuse_brep = _as_brep(reuse_brep_id) if reuse_brep_id is not None else None
+                    clip_curves = _gather_reach_clip_curves(
+                        _plane_from_frame_mm(saved_base), reuse_brep
+                    )
+                    radius_doc = float(config.IK_BASE_SAMPLE_RADIUS) / doc_unit_scale_to_mm()
+                    origin_doc, _x, z_axis_doc = _frame_mm_to_doc_marker(saved_base)
+                    _reach.set_reach_outline(
+                        *dynamic_preview.compute_reach_outline(
+                            origin_doc, z_axis_doc, radius_doc, clip_curves,
+                            sc.doc.ModelAbsoluteTolerance,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 -- preview must not break the prompt
+                    print(f"RSIKKeyframe: reach preview failed ({exc}).")
+                answer = _ask_reuse_saved_base()
+
+            if answer != "flip":
+                break
+
+            if bar_oid is None:
+                print("RSIKKeyframe: cannot flip -- this run has no bar geometry "
+                      "in hand; use NewPick instead.")
+                continue
+            # Re-derive from the bar with the heading negated rather than
+            # mirroring the matrix: default_base_frame_for_bar also re-snaps the
+            # origin onto the ground, which a mirrored matrix would not do (the
+            # two sides of a bar are rarely at the same height).
+            flip_diag = {}
+            flipped = rhino_walkable_ground.default_base_frame_for_bar(
+                bar_oid, bar_id, flip=not flip_state,
+                diag_out=flip_diag, verbose=True,
+            )
+            if flipped is None:
+                print("RSIKKeyframe: cannot flip -- no assigned/meshable "
+                      "WalkableGround on the other side; the base is unchanged.")
+                continue
+            flip_state = not flip_state
+            saved_base = flipped
+            side = "the other side" if flip_state else "the original side"
+            print(f"RSIKKeyframe: base moved to {side} of the bar. "
+                  "Flip again to go back, or Enter to use it.")
+            # Keep the guides on the side the base now stands, so what is on
+            # screen matches where the robot is.
+            if joint_a_mm is not None and joint_b_mm is not None:
+                _draw_base_guides_for_bar(
+                    bar_oid, bar_id, joint_a_mm, joint_b_mm, flip=flip_state
+                )
+
         if answer is None:
             print("RSIKKeyframe: cancelled at base-frame reuse prompt.")
             ik_viz.end_session()
             return None
-        if answer:
-            print("RSIKKeyframe: reusing saved base frame (skipping walkable-ground pick).")
+        if answer == "reuse":
+            if flip_state:
+                print("RSIKKeyframe: using the flipped base (skipping "
+                      "walkable-ground pick).")
+            else:
+                print("RSIKKeyframe: reusing saved base frame (skipping "
+                      "walkable-ground pick).")
             seed_base_frame = saved_base
             heading_mm = _heading_mm_from_base_frame(saved_base)
             # brep_id stays None -> sampling fallback is disabled in this run.
@@ -1322,7 +1866,7 @@ def _resolve_seed_base_frame(
         if brep_id is None:
             return None
         _base_origin_mm, _base_normal, heading_mm, seed_base_frame = (
-            _pick_base_frame_on_walkable(brep_id)
+            _pick_base_frame_on_walkable(brep_id, reach_meshes=reach_meshes)
         )
         if seed_base_frame is None:
             return None
@@ -1335,22 +1879,26 @@ def _resolve_seed_base_frame(
 # ---------------------------------------------------------------------------
 
 
-def _ask_chain_failure(allow_inspect: bool):
-    """Prompt after a failed IK chain: inspect candidates / retry / give up.
+def _ask_chain_failure(allow_inspect: bool, prompt: str = None):
+    """Prompt after a failed IK solve: inspect candidates / retry / give up.
 
     Like ``_ask_accept(allow_accept=False)`` but adds an ``InspectCandidates``
-    option (only when the ssik backend can enumerate candidate pairs). Enter/Esc
-    give up.
+    option (only when the backend can enumerate candidates). Enter/Esc give up.
 
     Args:
-        allow_inspect (bool): show the ``InspectCandidates`` option (ssik only).
+        allow_inspect (bool): show the ``InspectCandidates`` option.
+        prompt (str | None): command-line prompt; ``None`` uses the dual-arm
+            chain wording (the support flow passes its own).
 
     Returns:
         str: ``"inspect"`` / ``"retry_same_base"`` / ``"retry_new_base"`` /
         ``"give_up"``.
     """
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("IK chain failed. Inspect candidates, retry the same base, retry a new base, or give up")
+    go.SetCommandPrompt(
+        prompt
+        or "IK chain failed. Inspect candidates, retry the same base, retry a new base, or give up"
+    )
     inspect_idx = go.AddOption("InspectCandidates") if allow_inspect else None
     retry_same_idx = go.AddOption("RetrySameBase")
     retry_new_idx = go.AddOption("RetryNewBase")
@@ -1374,7 +1922,7 @@ def _ask_chain_failure(allow_inspect: bool):
         return "give_up"
 
 
-def _oids_for_offenders(offenders, env_geom, mesh_mode):
+def _oids_for_offenders(offenders, env_geom, mesh_mode, rcell=None, layer_key=None):
     """Map resolved ``(kind, name)`` offenders to the Rhino oids to red-highlight.
 
     ``offenders`` come already named + classified from
@@ -1389,13 +1937,20 @@ def _oids_for_offenders(offenders, env_geom, mesh_mode):
             "tool", "rigid_body"}``.
         env_geom (dict): ``{canonical_name: body_info}`` for the active bar's bodies.
         mesh_mode (str): which mesh mode's link/tool GUIDs to color.
+        rcell (RobotCell | None): the cell whose baked bundle holds the link /
+            tool geometry; ``None`` uses the dual-arm cell.
+        layer_key (str | None): that bundle's sub-layer key; ``None`` uses the
+            assembly layer. The support inspector passes its own cell + layer.
 
     Returns:
         list: Rhino object ids to highlight (may repeat; caller dedups on apply).
     """
-    rcell = robot_cell.get_or_load_robot_cell()
-    link_geom = ik_viz.get_link_native_geometry(rcell, ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
-    tool_geom = ik_viz.get_tool_native_geometry(rcell, ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
+    if rcell is None:
+        rcell = robot_cell.get_or_load_robot_cell()
+    if layer_key is None:
+        layer_key = ik_viz.LAYER_KEY_ASSEMBLY
+    link_geom = ik_viz.get_link_native_geometry(rcell, layer_key, mesh_mode)
+    tool_geom = ik_viz.get_tool_native_geometry(rcell, layer_key, mesh_mode)
 
     oids = []
     for kind, name in offenders:
@@ -1587,6 +2142,570 @@ def _inspect_ssik_candidates(planner, movements, base_frame_mm, include_self, in
 
 
 # ---------------------------------------------------------------------------
+# Support flow (the staged re-click path for bars that need holding)
+# ---------------------------------------------------------------------------
+
+
+# ik_viz sub-layer the support robot's solved / candidate poses are drawn on.
+SUPPORT_SOLVE_LAYER_KEY = "SupportSolve"
+
+
+def _ask_accept_support(prompt: str) -> bool:
+    """Simple Accept/Reject prompt for the support flow."""
+    answer = rs.GetString(prompt, "Accept", ["Accept", "Reject"])
+    if answer is None:
+        return False
+    return str(answer).strip().lower().startswith("a")
+
+
+def _render_support_pose(sr_cell, state, mesh_mode):
+    """Draw one support-robot pose on its solve sub-layer (pure viz, no push)."""
+    rs.EnableRedraw(False)
+    try:
+        ik_viz.update_state(state, robot_cell=sr_cell, layer_key=SUPPORT_SOLVE_LAYER_KEY)
+        ik_viz.set_active_mesh_mode(SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
+    finally:
+        rs.EnableRedraw(True)
+        sc.doc.Views.Redraw()
+
+
+def _cycle_support_candidates(sr_cell, label, candidates, env_geom):
+    """Step through support IK candidates, red-highlighting each pose's offenders.
+
+    The single-arm twin of :func:`_cycle_ssik_candidates`: renders one
+    candidate at a time in collision meshes (so overlaps are visible),
+    highlights the colliding links / tools / bars red, and prints the
+    collision summary. Enter / ``Next`` advance, ``Prev`` goes back,
+    ``Done`` / Esc exit. Highlights are always cleared on exit.
+
+    Args:
+        sr_cell (RobotCell): the support robot's cell (for geometry lookup).
+        label (str): which target these candidates are for ("held"/"approach").
+        candidates (list): ``enumerate_support_ik_candidates`` candidate dicts.
+        env_geom (dict): ``{name: body_info}`` for rigid-body oid resolution.
+    """
+    mesh_mode = ik_viz.MESH_MODE_COLLISION
+    idx = 0
+    highlighted = []
+
+    def _show(i):
+        _revert_red_highlight(highlighted)
+        cand = candidates[i]
+        _render_support_pose(sr_cell, cand["state"], mesh_mode)
+        new_oids = _apply_red_highlight(
+            _oids_for_offenders(
+                cand["offenders"], env_geom, mesh_mode,
+                rcell=sr_cell, layer_key=SUPPORT_SOLVE_LAYER_KEY,
+            )
+        )
+        sc.doc.Views.Redraw()
+        status = "CLEAR (no collision)" if not cand["in_collision"] else cand["summary"]
+        print(f"RSIKKeyframe(support): [{label}] candidate {i + 1}/{len(candidates)} -- {status}")
+        return new_oids
+
+    highlighted = _show(idx)
+    try:
+        while True:
+            cand = candidates[idx]
+            tag = "clear" if not cand["in_collision"] else f"{cand['num_offending_pairs']} hit(s)"
+            go = Rhino.Input.Custom.GetOption()
+            go.SetCommandPrompt(
+                f"[{label}] candidate {idx + 1}/{len(candidates)} ({tag}). "
+                "Enter/Next, Prev, or Done"
+            )
+            next_idx = go.AddOption("Next")
+            prev_idx = go.AddOption("Prev")
+            done_idx = go.AddOption("Done")
+            go.AcceptNothing(True)
+            result = go.Get()
+            if result == Rhino.Input.GetResult.Nothing:
+                idx = (idx + 1) % len(candidates)
+                highlighted = _show(idx)
+                continue
+            if result == Rhino.Input.GetResult.Option:
+                chosen = go.OptionIndex()
+                if chosen == next_idx:
+                    idx = (idx + 1) % len(candidates)
+                elif chosen == prev_idx:
+                    idx = (idx - 1) % len(candidates)
+                elif chosen == done_idx:
+                    break
+                else:
+                    continue
+                highlighted = _show(idx)
+                continue
+            break
+    finally:
+        _revert_red_highlight(highlighted)
+        sc.doc.Views.Redraw()
+
+
+def _inspect_support_candidates(sr_planner, sr_cell, template_state, held_bar_id, base_frame_mm,
+                                tool0_grasp_mm, include_self, include_env,
+                                mesh_mode, env_geom):
+    """Diagnose a support IK failure by cycling the failing target's candidates.
+
+    Finds which of the two targets fails at ``base_frame_mm`` (held first,
+    then approach), enumerates every REACHABLE solution for it (colliding
+    ones included — see
+    ``robot_cell_support.enumerate_support_ik_candidates``) and lets the user
+    step through them with the offenders highlighted. An empty candidate list
+    is itself the answer: the target is unreachable from this base, which is a
+    base-placement / grasp problem rather than a collision one.
+
+    Args:
+        sr_planner: the support robot's planner.
+        sr_cell (RobotCell): its cell.
+        template_state (RobotCellState): the hold scene state
+            (``hold_action_builder.build_hold_scene_state``).
+        held_bar_id (str): the held bar (its gripper contact differs between
+            the held and the approach target).
+        base_frame_mm (np.ndarray): the base the user is on.
+        tool0_grasp_mm (np.ndarray): the flange target at the grasp.
+        include_self, include_env (bool): collision toggles (their OR drives checks).
+        mesh_mode (str): the user's normal mesh mode, restored on exit.
+        env_geom (dict): ``{name: body_info}`` for oid resolution.
+    """
+    check_collision = bool(include_self or include_env)
+    approach_tool0_mm = hold_action_builder.approach_tool0_from_grasp(tool0_grasp_mm)
+
+    print("RSIKKeyframe(support): locating which target fails at this base ...")
+    held_state, approach_state = hold_action_builder.solve_hold_pair(
+        sr_planner, template_state, held_bar_id, base_frame_mm, tool0_grasp_mm,
+        check_collision=check_collision,
+    )
+    if held_state is None:
+        # Same scene the held solve used: the gripper may touch the held bar.
+        seed_state = template_state.copy()
+        hold_action_builder.set_gripper_bar_contact(seed_state, held_bar_id, allowed=True)
+        label, target_mm = "held", tool0_grasp_mm
+    else:
+        if approach_state is not None:
+            rs.MessageBox(
+                "Both targets solved on this re-run, so there are no failing "
+                "candidates to inspect. (Gradient IK is non-deterministic -- try "
+                "the solve again.)",
+                0, "RSIKKeyframe",
+            )
+            return
+        # Same scene the approach solve used: no gripper contact, held config as seed.
+        seed_state = hold_action_builder.approach_seed_state(template_state, held_bar_id, held_state)
+        label, target_mm = "approach", approach_tool0_mm
+
+    print(f"RSIKKeyframe(support): enumerating reachable '{label}' solutions ...")
+    result = robot_cell_support.enumerate_support_ik_candidates(
+        sr_planner, seed_state, base_frame_mm, target_mm,
+    )
+    candidates = result["candidates"]
+    print(
+        f"RSIKKeyframe(support): '{label}' -> {result['n_reachable']} reachable "
+        f"solution(s), {sum(1 for c in candidates if not c['in_collision'])} collision-free."
+    )
+    if not candidates:
+        rs.MessageBox(
+            f"The '{label}' target is UNREACHABLE from this base -- the solver found "
+            "no arm pose that gets there at all, with collision checking off.\n\n"
+            "That is a placement problem, not a collision one: move the robot base "
+            "(RetryNewBase) or re-pick the grasp pose.",
+            0, "RSIKKeyframe",
+        )
+        return
+
+    # Show collision meshes so overlaps are visible; restore the user's mode after.
+    ik_viz.set_active_mesh_mode(SUPPORT_SOLVE_LAYER_KEY, ik_viz.MESH_MODE_COLLISION)
+    try:
+        _cycle_support_candidates(sr_cell, label, candidates, env_geom)
+    finally:
+        ik_viz.set_active_mesh_mode(SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
+        sc.doc.Views.Redraw()
+
+
+def _solve_support_pair_with_sampling(
+    sr_planner,
+    template_state,
+    held_bar_id,
+    seed_base_frame_mm,
+    tool0_grasp_mm,
+    brep_id,
+    heading_mm,
+    include_self,
+    include_env,
+    viz=None,
+):
+    """Solve the HELD then the APPROACH keyframe, sampling bases on failure.
+
+    Per base attempt: solve IK for the flange AT the grasp (held); if that
+    works, solve the approach pose (grasp backed off along tool0 -Z by
+    ``SUPPORT_LM_DISTANCE_MM``) seeded from the held configuration, so the
+    two configs sit on the same IK branch and the linear approach between
+    them stays short. Both must succeed at the SAME base. The pair is solved
+    by ``hold_action_builder.solve_hold_pair`` (gripper may touch the held bar
+    at the held pose, not at the approach pose).
+
+    Args:
+        sr_planner: the support robot's planner (cell pushed).
+        template_state (RobotCellState): scene state to fork per attempt.
+        held_bar_id (str): the held bar.
+        seed_base_frame_mm (np.ndarray): the user-picked base (first attempt).
+        tool0_grasp_mm (np.ndarray): flange pose at the grasp, world mm.
+        brep_id: WalkableGround object id for snapping base samples.
+        heading_mm (np.ndarray): heading point fixing sampled bases' +X.
+        include_self (bool): include robot self-collision in the check.
+        include_env (bool): include environment collision in the check.
+        viz: optional ``IKSampleVizConduit`` -- the ghost robot is moved to
+            each attempt's base before solving and a success/fail marker is
+            added after, so the user can see which bases were tried.
+
+    Returns:
+        tuple: ``(held_state, approach_state, used_base_frame_mm)`` or
+        ``(None, None, None)`` when every attempt failed.
+    """
+    check_collision = bool(include_self or include_env)
+
+    attempts = [np.asarray(seed_base_frame_mm, dtype=float)]
+    brep = support_grasp_pick.as_brep(brep_id)
+    for offset in _sample_base_offsets(config.IK_BASE_SAMPLE_MAX_ITER, config.IK_BASE_SAMPLE_RADIUS):
+        sample_origin_mm = attempts[0][:3, 3] + offset
+        snapped_origin, normal = support_grasp_pick.snap_to_brep(brep, sample_origin_mm)
+        if snapped_origin is None:
+            continue
+        try:
+            sample_frame = support_grasp_pick.frame_from_origin_normal_heading(
+                snapped_origin, normal, heading_mm
+            )
+        except RuntimeError:
+            continue
+        attempts.append(sample_frame)
+
+    # Force redraws on while the viz drives the ghost preview; the caller may
+    # have suspended them, which would otherwise swallow the conduit updates.
+    prev_redraw = rs.EnableRedraw(True) if viz is not None else None
+
+    total = len(attempts)
+    try:
+        for idx, base_frame in enumerate(attempts):
+            label = "seed" if idx == 0 else f"sample {idx}/{total - 1}"
+            origin = base_frame[:3, 3]
+            print(
+                f"RSIKKeyframe(support): trying base ({label}) at "
+                f"({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
+            )
+            if viz is not None:
+                viz.set_ghost_xform(np_mm_to_xform(base_frame))
+            # Held first; the approach is seeded from it (same branch, short move).
+            held_state, approach_state = hold_action_builder.solve_hold_pair(
+                sr_planner, template_state, held_bar_id, base_frame, tool0_grasp_mm,
+                check_collision=check_collision, verbose_pairs=check_collision,
+            )
+            solved = held_state is not None and approach_state is not None
+            # Marker for every sampled base (idx 0 is the seed, already marked
+            # by the seed arrow), so the tried/failed history stays on screen.
+            if viz is not None and idx > 0:
+                sample_origin_doc, sample_x_doc, _z = _frame_mm_to_doc_marker(base_frame)
+                viz.add_tried(sample_origin_doc, sample_x_doc, success=solved)
+            if held_state is None:
+                print(f"RSIKKeyframe(support): [x] held IK failed ({label}).")
+                continue
+            if approach_state is None:
+                print(f"RSIKKeyframe(support): [x] held OK but approach failed ({label}).")
+                continue
+            print(
+                f"RSIKKeyframe(support): [OK] held + approach solved on attempt "
+                f"{idx + 1}/{total} ({label})."
+            )
+            return held_state, approach_state, base_frame
+    finally:
+        if prev_redraw is not None:
+            rs.EnableRedraw(prev_redraw)
+    print(
+        f"RSIKKeyframe(support): [X] all {total} base attempt(s) failed. Consider "
+        "increasing IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER, or re-pick the grasp."
+    )
+    return None, None, None
+
+
+def _run_support_flow(bar_id: str, bar_oid):
+    """The support-robot half of the button: hold keyframe for one held bar.
+
+    Steps: derive the hold plan (which robot, until when) -> freeze the scene
+    (Cindy at her assembled pose, any other holding robot at its held pose,
+    absent robots parked) -> pick the grasp (ghost gripper) -> pick the base
+    (ghost robot) -> solve held + approach IK with base sampling ->
+    checkpoint-1 partial release check -> preview -> write the split
+    KEY_SUPPORT_* user-text on accept.
+
+    Args:
+        bar_id (str): the held bar's id.
+        bar_oid: the held bar's Rhino object id.
+    """
+    # * ---- 1. Hold plan: which robot takes this bar, and until when.
+    bar_seq, supported = collect_hold_inputs()
+    try:
+        hold_plan = hold_schedule.derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        return
+    if bar_id not in hold_plan:
+        rs.MessageBox(
+            f"Bar {bar_id} has supported_until set, but every stabilizer is "
+            "assembled EARLIER — it never needs a hold. Nothing to solve.",
+            0,
+            "RSIKKeyframe",
+        )
+        return
+    entry = hold_plan[bar_id]
+    robot_name = entry["robot_name"]
+    print(
+        f"RSIKKeyframe(support): {robot_name} holds {bar_id} from step "
+        f"{entry['hold_start_seq']} until after {entry['release_after_bar_id']} "
+        f"(step {entry['release_after_seq']})."
+    )
+
+    # * ---- 2. That robot's own PyBullet session (cell pushed on first use).
+    try:
+        _sr_client, sr_planner, sr_cell = robot_cell_support.ensure_support_cell_pushed(robot_name)
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        return
+
+    # * ---- 3. Scene at the held bar's own step.
+    bar_map = get_bar_seq_map()
+    try:
+        assembled = hold_action_builder.load_assembly_payload(bar_oid)
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+        return
+
+    # ! Focus the canvas on this step, exactly like the assembly flow does:
+    # bars later in the sequence are HIDDEN (only the already-built structure
+    # plus the held bar remain), and tool blocks belonging to other bars go
+    # away. Without this the whole model stays on screen and the preview no
+    # longer matches the collision scene being solved against. The held bar's
+    # own stabilizers stay visible in purple on purpose -- that is the
+    # "what must be built before this hold can release" cue.
+    show_sequence_colors(bar_id, show_unbuilt=False)
+    extra_hidden_tools = _hide_inactive_tool_blocks(bar_id)
+
+    gripper_ghost = None
+    env_token = None
+    keep_highlight = False
+    # Everything past the canvas focus lives in this try, so every exit path --
+    # solved, cancelled, or an error -- restores the hidden bars + tools.
+    try:
+        # Register the FULL env once (all bars/joints); each scene state then only
+        # flips per-body visibility — no cell re-uploads when the release check
+        # later needs a different moment's scene.
+        env_union = hold_action_builder.get_env_union(bar_map)
+        hold_action_builder.ensure_support_env_registered(sr_cell, sr_planner, env_union)
+        # The hold scene, shared with the batch re-solve and the __H export:
+        # the RELEASE-time built set (every stabilizing bar that will exist
+        # before this hold ends, the held bar included), Cindy frozen at her
+        # assembled pose (she still grips the bar while the support robot
+        # approaches), the other support robot frozen at its held pose if it
+        # is deployed now (raises if its hold is unsolved). The hold pose has
+        # to clear the whole window, not just grasp time: a pose that only
+        # fits the grasp-time world can sit exactly where a later stabilizing
+        # bar must go, and then block the very bars the hold exists to enable.
+        try:
+            template_state, _skipped = hold_action_builder.build_hold_scene_state(
+                robot_name, bar_id, hold_plan, env_union, bar_map, skip_unsolved=False,
+            )
+        except RuntimeError as exc:
+            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+            return
+        env_scene = hold_action_builder.collect_hold_window_geometry(
+            bar_id, hold_plan, bar_map=bar_map, env_union=env_union,
+        )
+        print(f"RSIKKeyframe(support): env collision -- {env_collision.list_env_summary(env_scene)}")
+
+        bar_curve = rs.coercecurve(bar_oid)
+        if bar_curve is None:
+            rs.MessageBox("Could not coerce the held bar to a Curve.", 0, "RSIKKeyframe")
+            return
+
+        # Frozen Cindy at the assembled pose: the collision context the user
+        # picks the grasp around. Drawn on its own ik_viz sub-layer, so the
+        # later ghost harvesting / previews never wipe it. Visual only;
+        # best-effort.
+        try:
+            support_grasp_pick.show_dual_arm_context(assembled, ik_viz.get_mesh_mode())
+        except Exception as exc:
+            print(f"RSIKKeyframe(support): dual-arm context preview failed ({exc}); proceeding without.")
+
+        # The OTHER support robot, if one is frozen holding a bar during this
+        # step: it is in this solve's collision scene (frozen just above), so
+        # draw it too rather than leaving it an invisible obstacle.
+        try:
+            hold_action_builder.show_frozen_holders_context(
+                hold_plan, entry["hold_start_seq"], ik_viz.get_mesh_mode(),
+                bar_map=bar_map, exclude_robot=robot_name,
+            )
+        except Exception as exc:  # noqa: BLE001 -- context viz must not block the pick
+            print(f"RSIKKeyframe(support): holding-robot context preview failed ({exc}).")
+
+        # * ---- 4. Grasp pick (persisted immediately).
+        grasp_mm, tool0_mm = support_grasp_pick.pick_grasp_frame_on_bar(bar_curve)
+        if grasp_mm is None:
+            return
+        hold_action_builder.write_support_grasp_frame(bar_oid, grasp_mm)
+
+        # Keep a see-through gripper at the picked pose on screen from here
+        # through the base pick and the solve preview (a display conduit, not
+        # a baked object — no layers involved, always visible).
+        ghost_meshes = support_grasp_pick.gripper_block_meshes()
+        if ghost_meshes is None:
+            return
+        gripper_ghost = dynamic_preview.MeshPreviewConduit(ghost_meshes, alpha=0.35)
+        gripper_ghost.update_xform(np_mm_to_xform(tool0_mm))
+        gripper_ghost.Enabled = True
+        sc.doc.Views.Redraw()
+        if not _ask_accept_support(
+            "Inspect the gripper preview at the picked grasp pose. "
+            "Accept to proceed to base-point selection"
+        ):
+            print("RSIKKeyframe(support): cancelled at gripper preview.")
+            return
+
+        # * ---- 5. Base pick (persisted immediately; ghost = assigned robot).
+        brep_id = support_grasp_pick.pick_walkable_brep()
+        if brep_id is None:
+            return
+
+        env_token = highlight_env.highlight_env_for_ik(bar_id)
+        collision_opts = _ask_collision_options(env_count=len(env_scene))
+        if collision_opts is None:
+            return
+        include_self, include_env, mesh_mode = collision_opts
+
+        # * ---- 6. Base + solve loop: pick a base, solve held + approach with
+        # base sampling, and on failure let the user inspect the candidates and
+        # retry the same or a new base (mirrors the assembly flow).
+        seed_base_frame = None
+        heading_mm = None
+        # The support robot's own ghost meshes drive the sampling viz.
+        sampling_ghost_meshes = support_grasp_pick.support_robot_ghost_meshes(robot_name)
+        held_state = approach_state = used_base = None
+        while True:
+            if seed_base_frame is None:
+                _origin_mm, _normal, heading_mm, seed_base_frame = (
+                    support_grasp_pick.pick_base_frame_on_walkable(brep_id, robot_name)
+                )
+                if seed_base_frame is None:
+                    return
+                hold_action_builder.write_support_base_frame(bar_oid, seed_base_frame)
+
+            # Sampling circle + seed arrow + per-attempt markers, kept alive
+            # PAST the solve so the tried/failed history is still on screen
+            # while the user decides what to do next.
+            solve_brep = support_grasp_pick.as_brep(brep_id)
+            solve_clip = _gather_reach_clip_curves(
+                _plane_from_frame_mm(seed_base_frame), solve_brep
+            )
+            viz = _open_ik_sample_viz(
+                seed_base_frame, config.IK_BASE_SAMPLE_RADIUS, solve_clip,
+                robot_meshes=sampling_ghost_meshes,
+            )
+            try:
+                print(f"RSIKKeyframe(support): solving {robot_name}'s held + approach IK ...")
+                held_state, approach_state, used_base = _solve_support_pair_with_sampling(
+                    sr_planner, template_state, bar_id, seed_base_frame,
+                    tool0_mm, brep_id, heading_mm, include_self, include_env,
+                    viz=viz,
+                )
+                # Drop the moving ghost but keep the circle + markers on screen.
+                viz.set_ghost_xform(None)
+                if held_state is not None:
+                    break
+
+                while True:
+                    action = _ask_chain_failure(
+                        allow_inspect=True,
+                        prompt=(
+                            f"{robot_name}'s support IK failed at every sampled base. "
+                            "Inspect candidates, retry the same base, retry a new base, or give up"
+                        ),
+                    )
+                    if action == "inspect":
+                        _inspect_support_candidates(
+                            sr_planner, sr_cell, template_state, bar_id, seed_base_frame,
+                            tool0_mm, include_self, include_env, mesh_mode, env_union,
+                        )
+                        continue
+                    break
+            finally:
+                _close_ik_sample_viz(viz)
+
+            if action == "retry_same_base":
+                print("RSIKKeyframe(support): retrying with the same base frame.")
+                continue
+            if action == "retry_new_base":
+                print("RSIKKeyframe(support): retrying with a different base frame.")
+                seed_base_frame = None
+                heading_mm = None
+                continue
+            print("RSIKKeyframe(support): gave up after the IK failure.")
+            return
+
+        held_cfg = robot_cell_support.extract_group_config(held_state, config.SUPPORT_GROUP, sr_cell)
+        approach_cfg = robot_cell_support.extract_group_config(
+            approach_state, config.SUPPORT_GROUP, sr_cell
+        )
+
+        # * ---- 7. Checkpoint 1: partial release check (what is knowable now).
+        try:
+            skipped = hold_action_builder.validate_release_confs(
+                sr_planner, sr_cell, robot_name, bar_id, hold_plan,
+                used_base, approach_cfg, held_cfg,
+                partial=True, bar_map=bar_map,
+            )
+            for other_robot, other_bar in skipped:
+                print(
+                    f"RSIKKeyframe(support): release check skipped {other_robot} "
+                    f"(bar {other_bar} not solved yet) — the full check re-runs "
+                    f"when {entry['release_after_bar_id']} is keyframed."
+                )
+            print("RSIKKeyframe(support): checkpoint-1 release check passed.")
+        except RuntimeError as exc:
+            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+            return
+
+        # * ---- 8. Preview + accept -> write the split keys.
+        robot_cell_support.set_cell_state(sr_planner, held_state)
+        _render_support_pose(sr_cell, held_state, mesh_mode)
+        print(f"RSIKKeyframe(support): {robot_name}'s held pose reachable. Previewing...")
+
+        if _ask_accept_support(
+            f"Accept {robot_name}'s support keyframe and save it on bar {bar_id}"
+        ):
+            hold_action_builder.write_bar_support_keyframe(
+                bar_oid, robot_name, used_base, grasp_mm, approach_cfg, held_cfg,
+            )
+            print(
+                f"RSIKKeyframe(support): saved {robot_name}'s support keyframe "
+                f"(split keys) on bar {bar_id}."
+            )
+            keep_highlight = True
+        else:
+            print("RSIKKeyframe(support): rejected; bar user-text keeps only the grasp/base picks.")
+
+    finally:
+        if gripper_ghost is not None:
+            gripper_ghost.Enabled = False
+        if env_token is not None and not keep_highlight:
+            highlight_env.revert_env_highlight(env_token)
+        ik_viz.clear_scene()
+        # Restore the canvas: un-hide the other bars' tool blocks and drop the
+        # sequence colors / hidden unbuilt bars. Own try/except so a failure
+        # here can never mask the real outcome (same as the assembly flow).
+        try:
+            _show_objects(extra_hidden_tools)
+            reset_sequence_colors()
+        except Exception as exc:  # noqa: BLE001
+            print(f"RSIKKeyframe(support): failed to restore the canvas ({exc}); continuing.")
+        sc.doc.Views.Redraw()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1614,10 +2733,8 @@ def main():
         return
     _client, planner = robot_cell.get_planner()
     rcell = robot_cell.get_or_load_robot_cell()
-    # The dual-arm solvers are cache-free now (they read the cell already on the
-    # planner), so swapping back from a support-cell session is this command's
-    # job -- do it once up front.
-    robot_cell.ensure_dual_arm_cell(planner)
+    # No cell swapping anymore: Cindy's planner permanently owns the dual-arm
+    # cell (support robots run in their own PyBullet sessions).
 
     if not robot_cell.prompt_if_cell_stale(rcell, planner):
         print("RSIKKeyframe: aborted (stale collision cell).")
@@ -1628,11 +2745,50 @@ def main():
     neutral_seed_state = robot_cell.default_cell_state()
 
     rs.UnselectAllObjects()
-    picked = _pick_bar_with_arm_tools()
+    picked = _pick_bar_and_detect_flow()
     if picked is None:
         return
-    # Male-joint oids are not needed past the pick (the tool blocks carry tool0).
-    target_bar_id, target_bar_oid, (_, left_tool_oid), (_, right_tool_oid) = picked
+    flow, target_bar_id, target_bar_oid, left_tuple, right_tuple = picked
+    if flow == "support":
+        _run_support_flow(target_bar_id, target_bar_oid)
+        return
+    # The male/ground joint oids ARE needed past the pick now: their block origins
+    # are the two grab points the base guide lines are built from.
+    (left_joint_oid, left_tool_oid) = left_tuple
+    (right_joint_oid, right_tool_oid) = right_tuple
+
+    # Base-placement guides: drawn before the walkable-ground pick so they are on
+    # screen for the whole base pick. The heading they are built on also fixes the
+    # bar's L/R tool layout -- see below.
+    joint_a_mm = block_instance_xform_mm(left_joint_oid)[:3, 3]
+    joint_b_mm = block_instance_xform_mm(right_joint_oid)[:3, 3]
+    guide_diag = _draw_base_guides_for_bar(
+        target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm
+    )
+
+    # Which end of the bar carries the LEFT tool follows from where the robot
+    # stands (see core.rhino_tool_place.assign_tool_sides_from_heading). Correct
+    # it NOW, before the movements are built from the tool frames -- re-placing a
+    # tool after the build would leave the movements pointing at the old poses.
+    if guide_diag is not None:
+        try:
+            n_sides = rhino_tool_place.assign_tool_sides_from_heading(
+                target_bar_id, guide_diag["heading"], guide_diag["ground_normal"],
+                verbose=True,
+            )
+            if n_sides:
+                # Re-resolve: the pick's tool oids point at the now-deleted
+                # instances that place_tool_at_block_instance replaced.
+                result, err = _resolve_arm_tools_on_bar(target_bar_oid)
+                if err is not None:
+                    rs.MessageBox(err, 0, "RSIKKeyframe")
+                    base_guide_viz.clear_base_guides()
+                    return
+                _bid, (left_joint_oid, left_tool_oid), (right_joint_oid, right_tool_oid) = result
+                print(f"RSIKKeyframe: {n_sides} tool(s) re-placed to match the "
+                      "robot's approach side.")
+        except Exception as exc:  # noqa: BLE001 -- never block the solve on this
+            print(f"RSIKKeyframe: tool-side check skipped ({exc}).")
 
     extra_hidden_tools, tool0_left_final, tool0_right_final = _collect_target_context(
         target_bar_id,
@@ -1640,13 +2796,13 @@ def main():
         right_tool_oid,
     )
 
-    # * Build the M1-M4 movements ONCE from the cached cell + the two placed tool
-    # blocks (tool0 at the assembled pose). Configs stay unsolved -- the IK chain
-    # fills them in. The movement EE targets (approach / assembled / retreat) are
-    # world-fixed, so the identity base frame here does not matter: every solve
-    # overrides the base with the sampled frame.
+    # * Build the jointing + release movements ONCE from the cached cell + the
+    # two placed tool blocks (tool0 at the assembled pose). Configs stay
+    # unsolved -- the IK chain fills them in. The movement EE targets (approach
+    # / assembled / retreat) are world-fixed, so the identity base frame here
+    # does not matter: every solve overrides the base with the sampled frame.
     try:
-        movements, env_geom = bar_action.build_assembly_movements(
+        jointing_mvts, release_mvts, env_geom = bar_action.build_split_assembly_movements(
             rcell, planner, target_bar_id,
             np.eye(4, dtype=float),
             tool0_left_final, tool0_right_final,
@@ -1654,6 +2810,18 @@ def main():
     except (RuntimeError, ValueError) as exc:
         rs.MessageBox(str(exc), 0, "RSIKKeyframe")
         return
+    # The IK chain's solver-facing roles map onto the split movements (looked
+    # up by NAME -- their numbers differ between normal and ground bars):
+    # approach = the bar-held transfer's goal, assembled = the linear insert's
+    # goal, retreat = the per-arm retreat's goal, and home comes from the
+    # free-home movement. Keeping the old M1..M4 labels here means the
+    # solve/preview code below stays unchanged.
+    movements = {
+        "M1": jointing_mvts[bar_action.MV_TRANSFER],
+        "M2": jointing_mvts[bar_action.MV_LM_INSERT],
+        "M3": release_mvts[bar_action.MV_LM_RETREAT],
+        "M4": release_mvts[bar_action.MV_FREE_HOME],
+    }
 
     env_token = None
     keep_highlight = False
@@ -1667,11 +2835,32 @@ def main():
             return
         include_self, include_env, mesh_mode = collision_opts
 
+        # * Draw the support robots that are frozen holding a bar during THIS
+        # step, at the same held poses the collision scene uses. They are real
+        # obstacles for this solve, so the base pick has to be able to see them.
+        # Purely visual -- the collision side was already stamped onto the
+        # movement states by build_split_assembly_movements.
+        try:
+            ctx_bar_map = get_bar_seq_map()
+            ctx_bar_seq, ctx_supported = collect_hold_inputs(ctx_bar_map)
+            ctx_hold_plan = hold_schedule.derive_hold_plan(
+                ctx_bar_seq, ctx_supported, config.SUPPORT_ROBOT_NAMES
+            )
+            _ACTIVE_CONTEXT_LAYER_KEYS[:] = hold_action_builder.show_frozen_holders_context(
+                ctx_hold_plan, int(ctx_bar_seq[target_bar_id]), mesh_mode,
+                bar_map=ctx_bar_map,
+            )
+        except Exception as exc:  # noqa: BLE001 -- context viz must not block the solve
+            _ACTIVE_CONTEXT_LAYER_KEYS[:] = []
+            print(f"RSIKKeyframe: holding-robot context preview skipped ({exc}).")
+
         seed_base_frame = None
         brep_id = None
         heading_mm = None
         saved_base = _read_saved_assembly_base_frame(target_bar_oid)
         allow_saved_base_prompt = True
+        # Arm reach volumes, built once and reused by every ghost this run.
+        reach_meshes = _reach_sphere_meshes(rcell)
 
         while True:
             # A base is "freshly decided" this turn only when we don't already
@@ -1687,6 +2876,11 @@ def main():
                 brep_id,
                 heading_mm,
                 allow_saved_base_prompt,
+                reach_meshes=reach_meshes,
+                bar_oid=target_bar_oid,
+                bar_id=target_bar_id,
+                joint_a_mm=joint_a_mm,
+                joint_b_mm=joint_b_mm,
             )
             if base_resolution is None:
                 return
@@ -1695,6 +2889,19 @@ def main():
             # Persist the base frame ASAP so a Ctrl+C mid-IK still leaves it on
             # the bar for the next run's reuse path.
             _write_assembly_base_frame(target_bar_oid, seed_base_frame)
+
+            # The tool sides were set from the AUTO heading before the movements
+            # were built. If the user hand-picked a base on the other side of the
+            # bar, the arms are now crossed -- warn rather than silently re-place,
+            # because re-placing a tool here would leave `movements` pointing at
+            # the old tool poses.
+            if guide_diag is not None and base_freshly_decided:
+                if float(np.dot(seed_base_frame[:3, 0], guide_diag["heading"])) < 0.0:
+                    print("RSIKKeyframe: WARNING - the picked base faces the OPPOSITE "
+                          "way to the base guide lines, so the bar's L/R tools are on "
+                          "the wrong ends for this approach.\n"
+                          "  Re-run the command to have the tool sides re-derived from "
+                          "this base, or pick a base on the guide side.")
 
             # ! Off-ramp: with the base pose now set + saved, let the user stop
             # here and run the (slow) keyframe IK solve headlessly instead of in
@@ -1708,10 +2915,11 @@ def main():
                 # vanish the moment the base pick finished (the pick's own
                 # mesh_preview conduit closed on return).
                 base_ghost = dynamic_preview.MeshPreviewConduit(
-                    _bake_robot_meshes_at_zero(), alpha=0.4
+                    _bake_robot_meshes_at_zero(), alpha=0.4,
+                    extra_meshes=reach_meshes,
                 )
                 base_ghost.Enabled = True
-                base_ghost.update_xform(_np_mm_to_rhino_xform(seed_base_frame))
+                base_ghost.update_xform(np_mm_to_xform(seed_base_frame))
                 try:
                     decision = _ask_save_base_or_continue()
                 finally:
@@ -1721,6 +2929,21 @@ def main():
                     print("RSIKKeyframe: cancelled at the base save/continue "
                           "prompt (base frame still saved on the bar).")
                     return
+                if decision == "repick":
+                    # Straight back to the top of this loop, which re-resolves a
+                    # base whenever seed_base_frame is None.  Unlike the
+                    # RetryNewBase paths below, allow_saved_base_prompt stays
+                    # TRUE on purpose: Repick means "take me back to the
+                    # Reuse / NewPick / Flip prompt", and the base just placed
+                    # becomes the candidate there -- so Flip can move it to the
+                    # other side without re-picking from scratch.
+                    print("RSIKKeyframe: back to the base-frame prompt.")
+                    saved_base = seed_base_frame
+                    seed_base_frame = None
+                    heading_mm = None
+                    brep_id = None
+                    allow_saved_base_prompt = True
+                    continue
                 if decision == "save_and_exit":
                     print(
                         f"RSIKKeyframe: base frame saved on bar '{target_bar_id}'; "
@@ -1739,7 +2962,13 @@ def main():
             # drawn circle + tried-sample markers + seed arrow stay visible through
             # the accept/retry prompt below (the user can see which bases were
             # tried). It is torn down in the `finally` once they decide.
-            viz = _open_ik_sample_viz(seed_base_frame, config.IK_BASE_SAMPLE_RADIUS)
+            _solve_brep = _as_brep(brep_id) if brep_id is not None else None
+            _solve_clip = _gather_reach_clip_curves(
+                _plane_from_frame_mm(seed_base_frame), _solve_brep
+            )
+            viz = _open_ik_sample_viz(
+                seed_base_frame, config.IK_BASE_SAMPLE_RADIUS, _solve_clip
+            )
             try:
                 # * S
                 print("RSIKKeyframe: solving M1->M2->M3 IK chain ...")
@@ -1843,9 +3072,27 @@ def main():
                 _write_assembly_keyframes(
                     target_bar_oid, approach_state, assembled_state, retreat_state, rcell,
                 )
-                _write_legacy_assembly_blob(
-                    target_bar_oid, stored_base, assembled_state, approach_state, rcell,
-                )
+                # ! Checkpoint 2 of the deferred release validation: if any
+                # ! hold's LAST stabilizing bar is THIS bar, the release scene
+                # ! is now fully determined — re-check every such hold's
+                # ! held/retreat configs against it. Report-only: the accepted
+                # ! assembly keyframe is never lost to a support-side problem.
+                try:
+                    release_report = hold_action_builder.validate_releases_after_bar(target_bar_id)
+                    failures = []
+                    for held_bar, verdict in sorted(release_report.items()):
+                        print(f"RSIKKeyframe: release check for held bar {held_bar}: {verdict}")
+                        if verdict != "OK":
+                            failures.append(f"{held_bar}: {verdict}")
+                    if failures:
+                        rs.MessageBox(
+                            "Release-time validation flagged problems now that "
+                            f"{target_bar_id} is keyframed:\n\n" + "\n".join(failures),
+                            0,
+                            "RSIKKeyframe",
+                        )
+                except Exception as exc:  # noqa: BLE001 -- never lose the accept to this
+                    print(f"RSIKKeyframe: release checkpoint skipped ({exc}).")
                 keep_highlight = True
                 break
 
@@ -1876,8 +3123,21 @@ def main():
     finally:
         rs.EnableRedraw(True)
         ik_viz.end_session()
+        # The holding-robot context previews go down with end_session (it hides
+        # the whole cache layer), but this module stays loaded between runs --
+        # so forget them, or the next run's ghost harvest would try to re-show
+        # context that belongs to another bar's step.
+        _ACTIVE_CONTEXT_LAYER_KEYS[:] = []
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)
+        # Base guide lines are transient: gone on EVERY exit -- solved, ESC at any
+        # prompt, or an exception. Its own try/except so a failure here can never
+        # mask the real outcome (same reason as the color restore below).
+        try:
+            base_guide_viz.clear_base_guides()
+            sc.doc.Views.Redraw()
+        except Exception as exc:  # noqa: BLE001
+            print(f"RSIKKeyframe: failed to clear base guide lines ({exc}); continuing.")
         # Restore canvas exactly like RSSequenceEdit exit path.
         try:
             _show_objects(extra_hidden_tools)

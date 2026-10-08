@@ -1,6 +1,7 @@
 """Joint pair data model, registry, and forward kinematics.
 
-A joint pair is described by two halves (female and male).  Each half maps
+A joint pair (a mate) is described by two halves: a receiver (Female, or the
+MoCap half of the same Type) and a male.  Each half maps
 a bar line and two scalar DOFs (`jp`, `jr`) to a block pose and a screw
 frame via two constant 4x4 transforms:
 
@@ -8,7 +9,7 @@ frame via two constant 4x4 transforms:
     block_frame = bar_frame @ T_z(jp) @ R_z(jr) @ half.M_block_from_bar
     screw_frame = block_frame @ half.M_screw_from_block
 
-The optimizer aligns the female and male `screw_frame` origins and local
+The optimizer aligns the receiver's and male's `screw_frame` origins and local
 Z axes; roll about Z is unobservable and arbitrary.
 """
 
@@ -22,6 +23,7 @@ from typing import Iterable
 
 import numpy as np
 
+from core import joint_name_conventions as jnc
 from core.transforms import (
     frame_from_axes,
     orthogonal_to,
@@ -52,7 +54,27 @@ def _as_4x4(value: Iterable[Iterable[float]]) -> np.ndarray:
     return out
 
 
-VALID_HALF_KINDS = ("male", "female")
+# ---------------------------------------------------------------------------
+# Half kinds
+# ---------------------------------------------------------------------------
+# A half's ``kind`` is its Subtype's role ("T20_MoCap" -> "mocap"); see
+# ``core.joint_name_conventions``.  It is stored in the registry for a readable
+# JSON file and checked against the block name on load, so the two can never
+# disagree.
+#
+# A MoCap half is used TWO ways with the same registry entry -- only the
+# PLACEMENT differs:
+#
+#   paired      the receiver of its Type's mate (``with_receiver(T20, MOCAP)``):
+#               a male screws into it exactly as into a Female.  Gets a
+#               ``J<le>-<ln>`` id and carries ``joint_pair_name`` /
+#               ``male_parent_bar``.
+#   standalone  placed on one bar with no mate, purely to carry markers.  Gets
+#               an ``M<bar>-<Type>-<i>`` id and carries none of those keys.
+#
+# ``marker_points_mm`` matters in BOTH cases, so the MoCap LAYER is exactly the
+# set of marker-bearing joints, while ``male_parent_bar`` says whether one is
+# also structural.
 
 
 @dataclass(frozen=True)
@@ -62,7 +84,9 @@ class JointHalfDef:
     block_name: str
     M_block_from_bar: np.ndarray
     M_screw_from_block: np.ndarray
-    kind: str = "male"                 # "male" or "female"
+    # The Subtype's role ("female" / "male" / "mocap").  Empty -> derived
+    # from the block name; anything else must agree with it.
+    kind: str = ""
     asset_filename: str = ""           # e.g. "typical_female.3dm" under asset/
     mesh_filename: str = ""            # URDF mesh, optional
     mesh_scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
@@ -73,14 +97,78 @@ class JointHalfDef:
     # definition's local frame. Empty string -> fallback to slow Rhino
     # block-def render-mesh path.
     collision_filename: str = ""
+    # True for cradle-style female halves (the subfloor receivers): the OTHER
+    # bar physically rests INSIDE this block at the assembled pose, so the IK
+    # allowed-contact policy must let the incoming bar (and its male) touch
+    # this female during the approach + insert movements. Normal clamp-style
+    # females keep the default False.
+    bar_cradle: bool = False
+    # Centres of the OptiTrack marker spheres this half carries: {Motive label ->
+    # (x, y, z)} in MILLIMETRES, in the BLOCK DEFINITION's own frame.  POINTS, not
+    # frames -- a sphere is rotationally symmetric and Motive reports a position
+    # only, so unlike `M_screw_from_block` there is no axis to record.
+    #
+    # Block-local so the numbers describe the PART, not wherever the block sat
+    # when it was defined: a placed instance's predicted world positions are
+    # `block_world @ point`.  Labelled because pairing a measured marker with the
+    # modelled one needs its identity, not just a nearby position.
+    #
+    # NOTE those predictions are in DOCUMENT coordinates, while Motive reports in
+    # its own calibrated lab frame -- the two have different origins, so a
+    # predicted and a measured position cannot be compared until something
+    # registers one frame onto the other (today `rs_align_model_three_bars` does
+    # that from three bar axes).  Only the leftover after that registration is
+    # build error.
+    #
+    # `default_factory` rather than `= {}` because a mutable default would be
+    # SHARED by every instance of this class.  Empty for every half carrying no
+    # markers; registries written before this field existed omit it -> {}.
+    marker_points_mm: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
         object.__setattr__(self, "M_screw_from_block", _as_4x4(self.M_screw_from_block))
-        if self.kind not in VALID_HALF_KINDS:
+        subtype = jnc.block_subtype(self.block_name)
+        if subtype not in jnc.HALF_SUBTYPES:
             raise ValueError(
-                f"JointHalfDef.kind must be one of {VALID_HALF_KINDS}, got {self.kind!r}"
+                f"{self.block_name!r} is a {subtype} block; only "
+                f"{jnc.HALF_SUBTYPES} are joint halves (ground joints are "
+                "GroundJointDef)."
             )
+        if not self.kind:
+            object.__setattr__(self, "kind", jnc.role(subtype))
+        elif self.kind != jnc.role(subtype):
+            raise ValueError(
+                f"JointHalfDef {self.block_name!r} has kind={self.kind!r}, but its "
+                f"block name says {jnc.role(subtype)!r} (<Type>_<Subtype>)."
+            )
+        # Same normalize-on-construction job `_as_4x4` does for the matrices
+        # above.  Callers hand in numpy arrays (every Rhino pick path produces
+        # them), lists, or ints -- and numpy values do NOT survive `json.dump`,
+        # which would fail at save time with a traceback pointing at json rather
+        # than at the bad input.  A wrong-length point raises here, naming the
+        # label, instead of much later inside `block_world @ point`.  Keys are
+        # forced to str because JSON object keys always come back as strings.
+        points = {}
+        for label, point in dict(self.marker_points_mm).items():
+            coords = tuple(float(c) for c in point)
+            if len(coords) != 3:
+                raise ValueError(
+                    f"marker_points_mm[{label!r}] must have 3 coordinates, "
+                    f"got {len(coords)}"
+                )
+            points[str(label)] = coords
+        object.__setattr__(self, "marker_points_mm", points)
+
+    @property
+    def subtype(self) -> str:
+        """``"Female"`` / ``"Male"`` / ``"MoCap"`` -- from the block name."""
+        return jnc.block_subtype(self.block_name)
+
+    @property
+    def type(self) -> str:
+        """``"T20"`` -- the product family, from the block name."""
+        return jnc.block_type(self.block_name)
 
     def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
         return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
@@ -97,6 +185,13 @@ class JointHalfDef:
             "mesh_scale": list(self.mesh_scale),
             "preferred_robotic_tool_name": self.preferred_robotic_tool_name,
             "collision_filename": self.collision_filename,
+            "bar_cradle": self.bar_cradle,
+            # A JSON object: {label: [x, y, z]}.  Lists, not tuples -- `json`
+            # writes both as arrays, but reading back always yields lists, and
+            # `__post_init__` re-tuples them on the way in.
+            "marker_points_mm": {
+                label: list(point) for label, point in self.marker_points_mm.items()
+            },
             "M_block_from_bar": self.M_block_from_bar.tolist(),
             "M_screw_from_block": self.M_screw_from_block.tolist(),
         }
@@ -107,12 +202,18 @@ class JointHalfDef:
             block_name=str(data["block_name"]),
             M_block_from_bar=np.asarray(data["M_block_from_bar"], dtype=float),
             M_screw_from_block=np.asarray(data["M_screw_from_block"], dtype=float),
-            kind=str(data.get("kind", "male")),
+            kind=str(data.get("kind", "")),
             asset_filename=str(data.get("asset_filename", "")),
             mesh_filename=str(data.get("mesh_filename", "")),
             mesh_scale=tuple(float(v) for v in data.get("mesh_scale", (1.0, 1.0, 1.0))),
             preferred_robotic_tool_name=str(data.get("preferred_robotic_tool_name", "")),
             collision_filename=str(data.get("collision_filename", "")),
+            # Registries written before this flag existed simply omit it -> False.
+            bar_cradle=bool(data.get("bar_cradle", False)),
+            # Likewise absent from registries written before markers existed -> {}.
+            # `__post_init__` does the float/length normalizing, so the raw dict
+            # is handed straight through.
+            marker_points_mm=dict(data.get("marker_points_mm", {})),
         )
 
 
@@ -124,6 +225,14 @@ class GroundJointDef:
     environment.  It exposes the same `(jp, jr)` DOFs as a regular joint
     half (slide along the bar, rotate about it), but has no `M_screw_from_block`
     because there is no mating partner.
+
+    `M_tool_from_block` decouples the robotic tool's attach frame from the
+    block frame.  It is needed because the two are governed by different
+    constraints: `core.single_sided_placement.auto_jr_y_down` requires the block's
+    local +Y to point at the ground (the foot must sit down), while the arm
+    may have to approach with its TCP rolled relative to that.  Identity --
+    the default, and what every male half does implicitly -- means the
+    tool attaches on the block frame itself.
     """
 
     name: str
@@ -133,9 +242,30 @@ class GroundJointDef:
     collision_filename: str = ""
     jp_range: tuple[float, float] = DEFAULT_JP_RANGE
     jr_range: tuple[float, float] = DEFAULT_JR_RANGE
+    # Constant BLOCK-LOCAL rotation from the ground block's frame to the frame
+    # the robotic tool's TCP is attached at.  ROTATION ONLY: `__post_init__`
+    # forces the translation to zero, so the TCP always stays on the block
+    # origin and the 50 mm TCP probe in `core.joint_relink._tool_edit` is
+    # unaffected.  Being block-local, it rides along with the `flip` operation
+    # (`core.single_sided_placement.effective_M_block_from_bar`) automatically; note
+    # that flip reverses block-local +Z, so a 180 deg roll about Z is exactly
+    # invariant under a flip while a general angle reverses sense.
+    M_tool_from_block: np.ndarray = field(default_factory=lambda: np.eye(4))
 
     def __post_init__(self) -> None:
+        if jnc.block_subtype(self.block_name) != jnc.GROUND:
+            raise ValueError(
+                f"ground joint block {self.block_name!r} must be named <Type>_Ground"
+            )
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
+        tool_from_block = _as_4x4(self.M_tool_from_block)
+        tool_from_block[:3, 3] = 0.0
+        object.__setattr__(self, "M_tool_from_block", tool_from_block)
+
+    @property
+    def type(self) -> str:
+        """``"T20"`` -- the product family, which also goes into the joint id."""
+        return jnc.block_type(self.block_name)
 
     def asset_path(self, asset_dir: str = DEFAULT_ASSET_DIR) -> str:
         return os.path.join(asset_dir, self.asset_filename) if self.asset_filename else ""
@@ -152,6 +282,8 @@ class GroundJointDef:
             "jp_range": list(self.jp_range),
             "jr_range": list(self.jr_range),
             "M_block_from_bar": self.M_block_from_bar.tolist(),
+            # Emitted even when identity so the knob is discoverable in the file.
+            "M_tool_from_block": self.M_tool_from_block.tolist(),
         }
 
     @classmethod
@@ -164,12 +296,28 @@ class GroundJointDef:
             collision_filename=str(data.get("collision_filename", "")),
             jp_range=tuple(float(v) for v in data.get("jp_range", DEFAULT_JP_RANGE)),
             jr_range=tuple(float(v) for v in data.get("jr_range", DEFAULT_JR_RANGE)),
+            # Absent from registries written before the tool-attach frame existed
+            # -> identity -> the historical "the tool attaches on the block frame".
+            M_tool_from_block=np.asarray(
+                data.get("M_tool_from_block", np.eye(4)), dtype=float
+            ),
         )
 
 
 @dataclass(frozen=True)
 class JointPairDef:
-    """A pair of joint halves (female + male) with shared screw axis at mate."""
+    """A mate: a receiver half and a male half that screw together.
+
+    Example -- the mate ``T20`` is ``T20_Female`` + ``T20_Male`` with
+    ``contact_distance_mm = 36``: when the two halves are screwed together, the
+    two bar axes are exactly 36 mm apart.  RSBarSnap / RSBarBrace use that
+    distance to place a new bar; RSJointPlace solves both halves onto two bars.
+
+    The receiving slot is named ``female`` because that is its name on disk
+    (``female_block_name`` in the ``mates`` table).  It holds a Female, or --
+    via :func:`with_receiver` -- the MoCap half of the same Type.  New code
+    reads :attr:`receiver`.
+    """
 
     name: str
     female: JointHalfDef
@@ -177,6 +325,32 @@ class JointPairDef:
     contact_distance_mm: float
     jp_range: tuple[float, float] = DEFAULT_JP_RANGE
     jr_range: tuple[float, float] = DEFAULT_JR_RANGE
+
+    @property
+    def receiver(self) -> JointHalfDef:
+        """The half the male seats INTO -- female or mocap.
+
+        The same object as :attr:`female`; this name is the one that stays true
+        whichever kind of receiving half the mate carries.
+        """
+        return self.female
+
+    @property
+    def receiver_subtype(self) -> str:
+        """``"Female"`` or ``"MoCap"`` -- decides the placed receiver's layer,
+        object name and collision key."""
+        return self.female.subtype
+
+    def __post_init__(self) -> None:
+        if self.female.subtype not in jnc.RECEIVER_SUBTYPES:
+            raise ValueError(
+                f"mate {self.name!r}: receiver {self.female.block_name!r} is not one "
+                f"of {jnc.RECEIVER_SUBTYPES}"
+            )
+        if self.male.subtype != jnc.MALE:
+            raise ValueError(
+                f"mate {self.name!r}: {self.male.block_name!r} is not a Male half"
+            )
 
     def to_dict(self) -> dict:
         return {
@@ -273,6 +447,19 @@ class JointRegistry:
     mates: dict[str, JointPairDef] = field(default_factory=dict)
     ground_joints: dict[str, GroundJointDef] = field(default_factory=dict)
 
+    def definitions(self) -> list:
+        """Every block definition: the halves, then the ground joints."""
+        return [*self.halves.values(), *self.ground_joints.values()]
+
+    def definition(self, block_name: str):
+        """The half or ground definition for *block_name*, or ``None``."""
+        if block_name in self.halves:
+            return self.halves[block_name]
+        return next(
+            (g for g in self.ground_joints.values() if g.block_name == block_name),
+            None,
+        )
+
 
 def _mate_to_dict(pair: JointPairDef) -> dict:
     return {
@@ -303,7 +490,7 @@ def load_joint_registry(path: str = DEFAULT_REGISTRY_PATH) -> JointRegistry:
         mname = str(entry["male_block_name"])
         if fname not in halves:
             raise KeyError(
-                f"Mate {name!r} references unknown female half block_name={fname!r}"
+                f"Mate {name!r} references unknown receiver half block_name={fname!r}"
             )
         if mname not in halves:
             raise KeyError(
@@ -374,7 +561,7 @@ def save_joint_pair(
 ) -> None:
     """Insert/overwrite a mate entry; also upsert its two halves.
 
-    When `overwrite_halves` is True (default), the female/male halves carried
+    When `overwrite_halves` is True (default), the receiver/male halves carried
     by `pair` overwrite any existing halves with the same `block_name`.  Set
     to False to preserve the existing half geometry (useful when the caller
     only wants to update mate-level fields like `contact_distance_mm`).
@@ -388,21 +575,77 @@ def save_joint_pair(
 
 
 def get_joint_pair(
-    name: str, *, path: str = DEFAULT_REGISTRY_PATH
+    name: str, receiver_subtype: str | None = None, *, path: str = DEFAULT_REGISTRY_PATH
 ) -> JointPairDef:
-    pairs = load_joint_pairs(path)
-    if name not in pairs:
+    """Mate *name*; with *receiver_subtype*, that Type's receiver swapped in.
+
+    ``get_joint_pair("T20")`` holds ``T20_Female``;
+    ``get_joint_pair("T20", "MoCap")`` holds ``T20_MoCap``.  RSJointEdit rebuilds
+    a placed pair this way: the mate name from the block's ``joint_pair_name``
+    user text, the receiver Subtype from the layer its receiver block sits on.
+    """
+    registry = load_joint_registry(path)
+    if name not in registry.mates:
         raise KeyError(f"Joint pair {name!r} not found in {path}.")
-    return pairs[name]
+    pair = registry.mates[name]
+    if receiver_subtype is None:
+        return pair
+    return with_receiver(pair, receiver_subtype, registry.halves)
 
 
 def list_joint_pair_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
     return sorted(load_joint_pairs(path).keys())
 
 
-def list_joint_half_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
-    return sorted(load_joint_registry(path).halves.keys())
+# ---------------------------------------------------------------------------
+# Receiver variants: a MoCap half is placed through its Type's Female mate
+# ---------------------------------------------------------------------------
+# ``T20_MoCap`` is ``T20_Female`` with a marker plate on its back, so it has no
+# mate of its own: placing a T20 joint with a MoCap receiver uses mate ``T20``
+# with ``T20_MoCap`` swapped into the receiving slot.  The solver then uses the
+# MoCap block's own matrices, so this is right even if the plate changes how
+# the block sits on the bar.
 
 
-def list_ground_joint_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
-    return sorted(load_joint_registry(path).ground_joints.keys())
+def receiver_subtypes(pair: JointPairDef, halves: dict) -> list:
+    """Receivers registered for *pair*'s Type, Female first.
+
+    ``["Female"]`` today; ``["Female", "MoCap"]`` once ``T20_MoCap`` is
+    registered.  RSJointPlace asks which one only when there is a choice.
+    """
+    type_ = pair.receiver.type
+    return [s for s in jnc.RECEIVER_SUBTYPES if jnc.block_name(type_, s) in halves]
+
+
+def with_receiver(pair: JointPairDef, subtype: str, halves: dict) -> JointPairDef:
+    """*pair* with its Type's *subtype* half in the receiving slot.
+
+    ``with_receiver(T20, "MoCap", halves)`` -> mate ``T20`` holding
+    ``T20_MoCap`` + ``T20_Male``.  Returns *pair* unchanged when it already
+    holds that receiver.  Raises ``KeyError`` when the block is not registered.
+    """
+    if pair.receiver_subtype == subtype:
+        return pair
+    name = jnc.block_name(pair.receiver.type, subtype)
+    if name not in halves:
+        raise KeyError(
+            f"mate {pair.name!r} has no registered {subtype} receiver {name!r}"
+        )
+    return JointPairDef(
+        name=pair.name,
+        female=halves[name],
+        male=pair.male,
+        contact_distance_mm=pair.contact_distance_mm,
+        jp_range=pair.jp_range,
+        jr_range=pair.jr_range,
+    )
+
+
+def swapped_receiver(pair: JointPairDef, halves: dict) -> JointPairDef:
+    """*pair* with its receiver swapped Female <-> MoCap (RSJointEdit > ReplaceJoint).
+
+    ``T20`` holding ``T20_Female`` -> ``T20`` holding ``T20_MoCap``, and back.
+    Raises ``KeyError`` when the Type has no block of the other kind.
+    """
+    other = jnc.MOCAP if pair.receiver_subtype == jnc.FEMALE else jnc.FEMALE
+    return with_receiver(pair, other, halves)

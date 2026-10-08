@@ -314,3 +314,31 @@ Persists into `mates[]` (overwrite if `name` already exists).
   with a pre-saved OBJ options string.
 * Whether `RSDefineJointMate` should also accept Y-axis sign of the screw
   for orientation disambiguation (currently only Z-antiparallel checked).
+
+---
+
+## Extension (2026-10): one naming rule, and the MoCap joint
+
+Added after this spec was completed; the body above is left as it was.
+
+* **Naming rule.** Every joint block is named `<Type>_<Subtype>`, Subtype one of
+  `Female`, `Male`, `Ground`, `MoCap`. Layer, joint id, object name, collision
+  key and user-text keys are all derived from it in
+  `scripts/core/joint_name_conventions.py`; no other module slices a name.
+  `T20Ground` was renamed `T20_Ground`; mates were renamed by Type (`T20`,
+  `T20Deck12`, `T20SubLeft`, `T20SubRight`). Old documents are converted on the
+  first command by `scripts/core/joint_name_migration.py`.
+* **Kind from the name.** `RSDefineJointHalf` no longer asks for the kind: it
+  reads it from the block name, and the registry's `kind` is checked against
+  that name on load. Step 0 above ("prompt the kind first") no longer applies.
+* **MoCap joint** (`T20_MoCap`): a Female with an OptiTrack marker plate. It
+  receives a male like a Female but never carries a tool. It has **no mate of
+  its own** -- it is the receiver variant of its Type's Female mate
+  (`joint_pair.with_receiver`). Placed paired (RSJointPlace > JointPairAndTool,
+  receiving joint MoCap) or standalone on one bar (RSJointPlace > JointOnly);
+  swapped with a Female by RSJointEdit > ReplaceJoint. Its marker spheres are
+  stored block-local in `JointHalfDef.marker_points_mm`, recorded by
+  RSDefineJointHalf, and exported by RSExportPrefab in the bar frame.
+* **RSGroundPlace** was folded into RSJointPlace > JointOnly
+  (`core/ground_placement.py` -> `core/single_sided_placement.py`, serving
+  Ground and standalone MoCap).

@@ -309,7 +309,7 @@ def main():
             "                       solve_dual_arm_ik · solve_dual_arm_ik_ssik · set_cell_state · extract_group_config\n"
             "core/env_collision.py  collect_assembly_geometry · collect_environment_geometry\n"
             "core/ik_collision_setup.py  prepare_assembly_collision_state · build_full_assembly_state\n"
-            "core/bar_action.py     build_assembly_movements · _classify_male_joints_per_arm ·\n"
+            "core/bar_action.py     build_assembly_movements · _classify_joints_per_arm ·\n"
             "                       _set_active_attachments · _apply_movement_touch_policy · _build_m0 … _build_m4\n"
             "core/ik_keyframe.py    solve_keyframe_chain          core/ik_viz.py  update_state · begin_session\n"
             "scripts/rs_ik_keyframe.py · scripts/rs_show_ik.py   the two consumer commands (column 4)",

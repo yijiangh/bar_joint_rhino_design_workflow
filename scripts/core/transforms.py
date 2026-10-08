@@ -70,6 +70,26 @@ def frame_from_axes(
     return make_transform(rotation=rotation, translation=origin)
 
 
+def frame_from_x_and_y_hint(
+    origin: Iterable[float],
+    x_dir: Iterable[float],
+    y_hint: Iterable[float],
+) -> np.ndarray:
+    """Build a right-handed orthonormal frame from an exact X and a Y hint.
+
+    ``X = unit(x_dir)``.  ``Z = unit(X x y_hint)``.  ``Y = Z x X``.  The hint
+    only picks Z's sign / removes the roll ambiguity: any non-collinear vector
+    on the +Y side gives the same frame, so the caller may pick it loosely.
+
+    Raises ``ValueError`` when the two directions are (near-)parallel, i.e.
+    when the hint carries no roll information.
+    """
+    x_axis = unit(x_dir)
+    z_axis = unit(np.cross(x_axis, as_vector(y_hint)))
+    y_axis = unit(np.cross(z_axis, x_axis))
+    return frame_from_axes(origin, x_axis, y_axis, z_axis)
+
+
 def invert_transform(transform: Iterable[Iterable[float]]) -> np.ndarray:
     matrix = np.asarray(transform, dtype=float)
     if matrix.shape != (4, 4):

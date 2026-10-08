@@ -11,6 +11,11 @@ Rhino's per-user settings, NOT in the .rui, so this script bridges the two:
     ``RSDefineRoboticTool``) and whose EXPANSION is the macro's ``<script>``
     line (the same ``! _-ScriptEditor _R "rs_*.py"`` the button runs).
 
+Each macro gets TWO aliases: the full command name and the same name with the
+``RS`` prefix dropped, so ``RSIKKeyframe`` can also be typed as ``IKKeyframe``.
+The short one is skipped when it would shadow a real Rhino command (so a macro
+named ``RSExport`` would never steal Rhino's own ``Export``).
+
 Run this ONCE per machine (e.g. from the ScriptEditor:
 ``_-ScriptEditor _R "register_command_aliases.py"``). The aliases persist across
 Rhino sessions. Re-run it whenever the toolbar macros change so the aliases
@@ -31,6 +36,10 @@ RUI_PATH = os.path.join(REPO_ROOT, "scaffolding_toolbar.rui")
 # Rhino stores UI text under an English (US) locale tag; every macro name and
 # script line we care about lives inside this child element.
 _LOCALE_TAG = "locale_1033"
+
+# Every macro in our toolbar starts with this prefix. Stripping it gives the
+# short alias (RSIKKeyframe -> IKKeyframe).
+_COMMAND_PREFIX = "RS"
 
 
 def _macro_entries(rui_path: str):
@@ -58,8 +67,42 @@ def _macro_entries(rui_path: str):
             yield name, macro_script
 
 
+def _short_name(name: str) -> str:
+    """Return the macro name with the ``RS`` prefix dropped, or an empty string.
+
+    Args:
+        name (str): the macro's full command name, e.g. ``RSIKKeyframe``.
+
+    Returns:
+        str: the shortened name (``IKKeyframe``), or ``""`` when the macro does
+        not carry the prefix or is nothing but the prefix.
+    """
+    if not name.startswith(_COMMAND_PREFIX):
+        return ""
+    return name[len(_COMMAND_PREFIX):]
+
+
+def _register_alias(name: str, macro_script: str) -> str:
+    """Point one alias at a macro script, replacing any alias of the same name.
+
+    Args:
+        name (str): the keyword to type in the command line, e.g. ``IKKeyframe``.
+        macro_script (str): the macro line the keyword should expand to.
+
+    Returns:
+        str: ``"added"``, ``"replaced"`` or ``"failed"``.
+    """
+    # Replace an existing alias so re-runs pick up macro edits cleanly.
+    already_present = rs.IsAlias(name)
+    if already_present:
+        rs.DeleteAlias(name)
+    if not rs.AddAlias(name, macro_script):
+        return "failed"
+    return "replaced" if already_present else "added"
+
+
 def main() -> None:
-    """Register one command alias per toolbar macro, then print a summary.
+    """Register the full and short command alias per toolbar macro, then report.
 
     Returns:
         None.
@@ -71,27 +114,44 @@ def main() -> None:
     added = 0
     replaced = 0
     failed = 0
+    shadowed = []
     for name, macro_script in _macro_entries(RUI_PATH):
-        # Replace an existing alias so re-runs pick up macro edits cleanly.
-        already_present = rs.IsAlias(name)
-        if already_present:
-            rs.DeleteAlias(name)
-        if rs.AddAlias(name, macro_script):
-            if already_present:
+        # * Full name first (RSIKKeyframe), then the short one (IKKeyframe).
+        alias_names = [name]
+        short = _short_name(name)
+        # ! Never register a short alias that a real Rhino command already owns
+        # ! -- typing it should keep running Rhino's command, not our macro.
+        # An alias we registered on an earlier run is fine to overwrite, and on
+        # some Rhino versions those also answer True to IsCommand, so let an
+        # existing alias of that name through.
+        if short and not (rs.IsCommand(short) and not rs.IsAlias(short)):
+            alias_names.append(short)
+        elif short:
+            shadowed.append(short)
+
+        for alias_name in alias_names:
+            outcome = _register_alias(alias_name, macro_script)
+            if outcome == "added":
+                added += 1
+            elif outcome == "replaced":
                 replaced += 1
             else:
-                added += 1
-        else:
-            failed += 1
-            print(f"  [alias] FAILED to register '{name}'.")
+                failed += 1
+                print(f"  [alias] FAILED to register '{alias_name}'.")
 
     print(
         f"RSRegisterAliases: {added} added, {replaced} replaced, {failed} failed."
     )
+    if shadowed:
+        print(
+            "  Short aliases skipped (a Rhino command already owns the name): "
+            + ", ".join(sorted(set(shadowed)))
+        )
     if failed == 0:
         print(
-            "  Done -- type any command name (e.g. RSDefineRoboticTool) in the "
-            "Rhino command line to run it. Aliases persist across sessions."
+            "  Done -- type any command name (e.g. RSIKKeyframe) or its short "
+            "form without the RS (e.g. IKKeyframe) in the Rhino command line to "
+            "run it. Aliases persist across sessions."
         )
 
 

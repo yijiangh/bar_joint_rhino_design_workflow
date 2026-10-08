@@ -9,9 +9,14 @@ core math stack (`numpy` + `scipy`) and is split into two stages:
 - **T2 – Joint placement**: place connector blocks on a bar pair using a
   4-DOF optimizer that aligns the female and male screw holes.
 
-  Each connector family is described by a **joint pair**: a female + male
-  block definition with the geometry needed to drive the optimizer. Joint
-  pairs are authored interactively in Rhino with `RSDefineJointHalf` /
+  Each connector family is described by a **joint pair** (a *mate*): a
+  receiver + male block definition with the geometry needed to drive the
+  optimizer. The receiver is a Female, or the MoCap variant of the same Type
+  (a Female with an OptiTrack marker plate). Every joint block is named
+  `<Type>_<Subtype>` (`T20_Female`, `T20_Male`, `T20_Ground`, `T20_MoCap`), and
+  every other name -- layer, joint id, object name, collision key -- is derived
+  from it in `scripts/core/joint_name_conventions.py`. Joint blocks are
+  authored interactively in Rhino with `RSDefineJointHalf` /
   `RSDefineJointMate` and
   stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
   assets in `asset/`.
@@ -89,7 +94,8 @@ Example install location:
    `C:\Users\<your-user>\Documents\bar_joint_rhino_design_workflow\scripts`
 3. Open **Tools -> Toolbars -> File -> Open Toolbar File...**.
 4. Select `scaffolding_toolbar.rui` from the repository root.
-5. Show and dock the **RSDesign** and **RSSetup** toolbars.
+5. Show and dock the **RSDesign** and **RSSetup** toolbars (plus **RSStability**
+   if you exchange layouts with the stability simulation).
 
 ### 3. Run any toolbar command once
 
@@ -195,6 +201,31 @@ for the canonical Rhino entrypoint reference:
 - Run **RSCreateBar** to register that line as your first bar and generate its preview.
 - Draw a second line and repeat **RSCreateBar** if you want to test **RSBarSnap** and **RSBarBrace** next.
 - Use joint-definition tools only after you author or import matching block definitions for your chosen joint family.
+
+### Stability-simulation exchange (RSStability toolbar)
+
+The stability simulation exchanges whole layouts as a `node_list` /
+`rod_list` / `coupler_list` JSON (see `large_scaffold.json`), where each rod
+is one bar (`rod_id` = the Rhino `bar_id`) and `coupler_list` holds the
+rod-to-rod connectivity:
+
+1. **RSImportScaffoldJSON** — pick the JSON; it bakes one registered bar per
+   rod, named `B<rod_id>`, sequenced bottom-up by `layer_id` then `rod_id`.
+   Every field of the source file is stored (per-rod fields on the bar
+   curve, `coupler_list` and anything else in document user text) so nothing
+   is lost by the trip through Rhino.
+2. Design as usual — **RSBarSnap** to push each coupled bar out to its joint
+   contact distance, then joint placement.
+3. **RSExportScaffoldJSON** — writes the same schema back out with the
+   node positions taken from the snapped geometry. A node whose bars have
+   been pulled apart is split into one node per position (the original id
+   stays with the lowest-numbered rod); connectivity is unaffected because
+   it lives in `coupler_list`. Before saving it prints a sanity report:
+   the actual gap for every coupled pair, plus any uncoupled bars whose
+   tubes overlap.
+
+With nothing moved between import and export, the exported file is
+identical to the imported one (covered by `tests/test_scaffold_json.py`).
 
 ## Standalone Developer Tools
 
@@ -359,14 +390,19 @@ scripts/
     rhino_bar_registry.py               # Bar registry CRUD + bar metadata in Rhino user text
     geometry.py                         # Core geometry and S2-T1 solver utilities
     joint_pair_solver.py                # Pair-specific joint solving utilities
-    joint_placement.py                  # Joint placement computation and bake helpers
-    ground_placement.py                 # Ground-joint placement logic
+    joint_name_conventions.py            # Every joint/bar/tool/collision NAME, from <Type>_<Subtype>
+    joint_name_migration.py             # One-off rename of legacy names in old .3dm files
+    joint_placement.py                  # Joint pair placement computation and bake helpers
+    single_sided_placement.py           # Ground / standalone MoCap placement on one bar
+    marker_points.py                    # MoCap marker spheres between block / world / bar frames
     robot_cell.py                       # Dual-arm robot cell bootstrap + planner access (IK solvers live in the tamp submodule)
     robot_cell_support.py               # Support-arm robot cell helpers
     env_collision.py                    # Environment collision geometry collection/registration
     ik_collision_setup.py               # Allowed-touch and IK collision-state preparation
     ik_viz.py                           # Rhino visualization cache/session for IK scenes
     bar_action.py                       # Movement/BarAssemblyAction builders for export workflows
+    scaffold_json.py                    # node/rod/coupler layout-JSON round trip, for the
+                                        #   stability-simulation exchange (see RSStability below)
     robotic_tool.py                     # Robotic tool registry helpers
     capture_io.py                       # Persist/reload IK captures
 
@@ -377,7 +413,6 @@ scripts/
   rs_sequence_edit.py
   rs_joint_place.py
   rs_joint_edit.py
-  rs_ground_place.py
   rs_bar_edit.py
   rs_define_joint_half.py
   rs_define_joint_mate.py
@@ -398,6 +433,10 @@ scripts/
   rs_export_robotcell.py
   rs_read_mocap_bar.py
   rs_align_model_three_bars.py
+
+  # RSStability toolbar: exchange with the stability simulation / layout generator
+  rs_import_scaffold_json.py            # layout JSON -> registered bars (bar_id = B<rod_id>)
+  rs_export_scaffold_json.py            # registered bars -> the same JSON schema
 
 tests/
   test_geometry.py

@@ -7,7 +7,7 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSPBStop - Disconnect the shared PyBullet client."""
+"""RSPBStop - Disconnect ALL per-robot PyBullet sessions."""
 
 from __future__ import annotations
 
@@ -19,15 +19,19 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from core.robot_cell import is_pb_running, stop_pb_client
+from core.robot_cell import _STICKY, _STICKY_PB_SESSIONS, stop_pb_client
 
 
 def main() -> None:
-    if not is_pb_running():
-        print("RSPBStop: No PyBullet client is currently running.")
+    # Check the raw session registry, NOT is_pb_running(): that helper only
+    # answers for Cindy, and we must still clean up when Cindy's GUI died but
+    # the headless support sessions are alive. stop_pb_client() itself is
+    # robust to sessions in any state.
+    if not _STICKY.get(_STICKY_PB_SESSIONS):
+        print("RSPBStop: No PyBullet sessions are currently running.")
         return
     stop_pb_client()
-    print("RSPBStop: Disconnected.")
+    print("RSPBStop: Disconnected all sessions.")
 
 
 if __name__ == "__main__":

@@ -37,27 +37,31 @@ REPO_ROOT = os.path.dirname(SCRIPTS_DIR)
 # ! put on sys.path here -- config.py is imported first by every entry script,
 # ! which wires the path for all later `husky_assembly_tamp.*` imports too.
 _TAMP_ROOT = os.path.join(REPO_ROOT, "external", "husky_assembly_tamp")
-if not os.path.isdir(os.path.join(_TAMP_ROOT, "husky_assembly_tamp")):
-    raise RuntimeError(
-        f"husky_assembly_tamp submodule missing at {_TAMP_ROOT}. "
-        "Run `git submodule update --init --recursive`."
-    )
-if _TAMP_ROOT not in sys.path:
+#: Whether the tamp submodule is checked out. ! The IK commands need it; the schema 2 export and RSCheckDesign do not.
+HAS_TAMP = os.path.isdir(os.path.join(_TAMP_ROOT, "husky_assembly_tamp"))
+if HAS_TAMP and _TAMP_ROOT not in sys.path:
     sys.path.insert(0, _TAMP_ROOT)
 
-# Solver tuning is owned by the solver package; re-imported here so Rhino-side
-# call sites keep reading `config.IK_*` with ONE definition project-wide. This
-# import is cheap (os/sys only -- no compas / pybullet).
-from husky_assembly_tamp.keyframe.config import (  # noqa: E402
-    IK_BACKEND,
-    IK_BASE_SAMPLE_RADIUS,
-    IK_BASE_SAMPLE_MAX_ITER,
-    IK_BASE_STANDOFF_MM,
-    IK_MAX_DESCEND_ITERATIONS,
-    IK_MAX_RESTART_ITER,
-    IK_TOLERANCE_POSITION,
-    IK_TOLERANCE_ORIENTATION,
-)
+if HAS_TAMP:
+    # Solver tuning is owned by the solver package; re-imported here so Rhino-side
+    # call sites keep reading `config.IK_*` with ONE definition project-wide. This
+    # import is cheap (os/sys only -- no compas / pybullet).
+    from husky_assembly_tamp.keyframe.config import (  # noqa: E402
+        IK_BACKEND,
+        IK_BASE_SAMPLE_RADIUS,
+        IK_BASE_SAMPLE_MAX_ITER,
+        IK_BASE_STANDOFF_MM,
+        IK_MAX_DESCEND_ITERATIONS,
+        IK_MAX_RESTART_ITER,
+        IK_TOLERANCE_POSITION,
+        IK_TOLERANCE_ORIENTATION,
+    )
+else:
+    # * Without tamp the IK tuning is unknown; the IK commands fail on these Nones.
+    print(f"core.config: husky_assembly_tamp submodule missing at {_TAMP_ROOT}; "
+          "IK commands are unavailable (run `git submodule update --init --recursive`).")
+    IK_BACKEND = IK_MAX_DESCEND_ITERATIONS = IK_MAX_RESTART_ITER = None
+    IK_TOLERANCE_POSITION = IK_TOLERANCE_ORIENTATION = None
 
 
 def _as_matrix(value) -> np.ndarray:

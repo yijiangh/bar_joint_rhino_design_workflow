@@ -1,0 +1,297 @@
+"""
+Build a schema 2 design's actions from Rhino's per-bar keyframe records, with one running state through the schedule.
+
+Rhino-free (numpy and the core only), so pytest covers it. `core.design_source` reads the records from the document.
+Procedure per action (`doc/schema2_integration.md`):
+
+- J (Cindy): load, mount, grasp, transfer, insert (one movement that drives `tighten`; the bar is built at its end);
+- R (Cindy), form B: ungrasp, linear retreat, home. ? No untighten before the ungrasp (open decision);
+- H (support robot): free approach, open, linear onto the bar, close (it now holds the built bar too);
+- HR: open, linear retreat; then the robot drives away.
+
+`on` changes between movements (a target cannot carry it yet): set after the mount and after the support's linear
+approach, cleared after the retreats.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
+from bar_assembly_core.design import (Action, Design, Holder, LineSpec, Movement, RobotState, State, Target,
+                                      ToolState)
+from bar_assembly_core.geometry import Pose, compose, invert
+
+#: Schedule kind -> action type and the suffix of its action id.
+KINDS = {"J": ("bar_jointing", "J"), "R": ("bar_release", "R"), "H": ("bar_holding", "H"),
+         "HR": ("bar_holding_release", "HR")}
+
+Joints = Dict[str, float]
+Vector = Tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class BarRecord:
+    """What Rhino stores for one bar Cindy assembles, in metres; joints are None until IK solved them.
+
+    Attributes:
+        bar: Bar id, e.g. "bars/B10".
+        robot: The assembly robot's id.
+        tools: Flange link id -> its tool id.
+        tool0: Flange link id -> the flange's world pose at the assembled keyframe (the placed tool block).
+        on: Flange link id -> the half its tool is on (a male or a ground half of this bar).
+        insert_direction: Unit world direction the bar moves during the insert.
+        retreat_direction: Flange link id -> unit world direction of its retreat.
+        base: Cindy's base (URDF root link pose), or None before IK.
+        approach, assembled, retreat: Joint values at the keyframes, or None.
+        home: Joint values Cindy returns to.
+        ground: Ground ids the base may stand on.
+    """
+
+    bar: str
+    robot: str
+    tools: Dict[str, str]
+    tool0: Dict[str, Pose]
+    on: Dict[str, str]
+    insert_direction: Vector
+    retreat_direction: Dict[str, Vector]
+    base: Optional[Pose] = None
+    approach: Optional[Joints] = None
+    assembled: Optional[Joints] = None
+    retreat: Optional[Joints] = None
+    home: Optional[Joints] = None
+    ground: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class HoldRecord:
+    """What Rhino stores for one hold of a built bar by a support robot, in metres.
+
+    Attributes:
+        bar: The held bar.
+        robot: The support robot's id.
+        flange: Its flange link id; `tool` the tool mounted there.
+        tool0: The flange's world pose when it holds the bar.
+        grasp: The bar's pose in the flange frame.
+        base, approach, held: Base and joint values at the approach and the grasp, or None before IK.
+        supports_until: Bars that must be built before the hold is released.
+    """
+
+    bar: str
+    robot: str
+    flange: str
+    tool: str
+    tool0: Pose
+    grasp: Pose
+    base: Optional[Pose] = None
+    approach: Optional[Joints] = None
+    held: Optional[Joints] = None
+    supports_until: Tuple[str, ...] = ()
+    ground: Tuple[str, ...] = ()
+
+
+@dataclass
+class BuildResult:
+    """The design with its actions, and what the builder had to leave out (one line each)."""
+
+    design: Design
+    problems: List[str] = field(default_factory=list)
+
+
+def shifted(pose: Pose, direction: Sequence[float], distance: float) -> Pose:
+    """A pose moved by `distance` along a world `direction`, its orientation kept."""
+    return Pose.from_arrays(np.add(pose.position, np.multiply(direction, distance)), pose.orientation)
+
+
+def z_axis(pose: Pose) -> Vector:
+    """The world direction of a pose's z axis."""
+    return tuple(float(v) for v in pose.matrix()[:3, 2])
+
+
+def grasp_of(tool0: Pose, body: Pose) -> Pose:
+    """A body's pose in a flange's frame, both given in world."""
+    return compose(invert(tool0), body)
+
+
+class Builder:
+    """One running state threaded through the schedule; each movement starts where the last one ended."""
+
+    def __init__(self, design: Design, insert_distance: float, retreat_distance: float, support_distance: float):
+        """Start with every robot and tool absent and only the ground present."""
+        self.design = design
+        self.insert_distance, self.retreat_distance = insert_distance, retreat_distance
+        self.support_distance = support_distance
+        grounds = frozenset(body for body in design.bodies if body.startswith("ground/"))
+        tools = {tool: None for robot in design.robots.values() for tool in robot.tools.values()}
+        self.state = State(robots={robot: None for robot in design.robots}, present=grounds, tools=tools)
+        self.movements: List[Movement] = []
+
+    def emit(self, id_: str, label: str, target: Optional[Target] = None, **parts) -> None:
+        """Add a movement starting at the running state, then advance the state to its end."""
+        self.movements.append(Movement(id=id_, label=label, start=self.state, target=target, **parts))
+        s = self.state
+        if target is None:
+            return
+        robots = dict(s.robots)
+        for robot, joints in target.joints.items():
+            robots[robot] = RobotState(robots[robot].base, dict(joints))
+        for arm in parts.get("arms", ()):  # * an arm motion without target joints ends unknown
+            robot = "/".join(arm.split("/")[:2])
+            if robot not in target.joints and robots[robot] is not None:
+                robots[robot] = RobotState(robots[robot].base, None)
+        tools = {t: (replace(v, grip=target.tools[t]) if t in target.tools else v) for t, v in s.tools.items()}
+        attached = s.attached if target.attached is None else target.attached
+        built = s.built if target.built is None else target.built
+        self.state = replace(s, robots=robots, tools=tools, attached=dict(attached), built=frozenset(built),
+                             present=s.present | set(attached) | built)
+
+    def set(self, **changes) -> None:
+        """Change the running state between movements: what a target cannot say (`on`, robots arriving)."""
+        self.state = replace(self.state, **changes)
+
+    def on(self, tool_on: Dict[str, Optional[str]]) -> None:
+        """Set the body each tool is on."""
+        tools = dict(self.state.tools)
+        for tool, body in tool_on.items():
+            tools[tool] = replace(tools[tool], on=body)
+        self.set(tools=tools)
+
+    def arrive(self, robot: str, base: Optional[Pose], tools: Dict[str, ToolState]) -> None:
+        """A robot drives to `base` (its joints unknown); its tools keep their state, or take `tools` if absent."""
+        robots, states = dict(self.state.robots), dict(self.state.tools)
+        robots[robot] = RobotState(base, None)
+        for tool, default in tools.items():
+            states[tool] = states[tool] or default
+        self.set(robots=robots, tools=states)
+
+    def without(self, bar: str, links: Sequence[str]) -> Dict[str, Tuple[Holder, ...]]:
+        """The attached map with `links` no longer holding `bar`."""
+        attached = {k: v for k, v in self.state.attached.items() if k != bar}
+        rest = tuple(h for h in self.state.attached.get(bar, ()) if h.to not in links)
+        if rest:
+            attached[bar] = rest
+        return attached
+
+    # * Cindy: jointing (merged insert) and release (form B, no untighten).
+
+    def jointing(self, r: BarRecord) -> None:
+        """Load, mount, grasp, transfer, insert."""
+        p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
+        tools = {r.tools[a]: ToolState("open", None) for a in arms}
+        self.arrive(r.robot, r.base, tools)
+        bar_pose = self.design.bodies[r.bar].pose
+        approach_links = {a: shifted(r.tool0[a], r.insert_direction, -self.insert_distance) for a in arms}
+
+        def joints(values: Optional[Joints]) -> Dict[str, Joints]:
+            return {r.robot: values} if values else {}
+
+        self.emit(f"{p}_J_load", "Free to the loading pose", arms=arms, path="free", controller="position")
+        holders = tuple(Holder(a, grasp_of(r.tool0[a], bar_pose)) for a in arms)
+        self.emit(f"{p}_J_mount", "Operator mounts the bar", ends_on="operator",
+                  target=Target(attached={**self.state.attached, r.bar: holders}))
+        self.on({r.tools[a]: r.on[a] for a in arms})
+        self.emit(f"{p}_J_grasp", "Grasp", ends_on="tools", target=Target(tools={r.tools[a]: "closed" for a in arms}))
+        self.emit(f"{p}_J_transfer", "Transfer to the approach", arms=arms, path="free", coupled=True,
+                  controller="position", target=Target(joints=joints(r.approach), links=approach_links))
+        self.emit(f"{p}_J_insert", "Insert", arms=arms, path="linear", coupled=True, controller="compliant",
+                  ends_on="tools", drives={r.tools[a]: "tighten" for a in arms},
+                  line={a: LineSpec(r.insert_direction, self.insert_distance) for a in arms},
+                  target=Target(joints=joints(r.assembled), links=dict(r.tool0), built=self.state.built | {r.bar}))
+
+    def release(self, r: BarRecord) -> None:
+        """Ungrasp (form B), careful retreat, home."""
+        p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
+        self.emit(f"{p}_R_ungrasp", "Ungrasp (form B)", ends_on="tools",
+                  target=Target(tools={r.tools[a]: "open" for a in arms}, attached=self.without(r.bar, arms)))
+        retreat_links = {a: shifted(r.tool0[a], r.retreat_direction[a], self.retreat_distance) for a in arms}
+        self.emit(f"{p}_R_retreat", "Careful retreat", arms=arms, path="linear", controller="position",
+                  line={a: LineSpec(r.retreat_direction[a], self.retreat_distance) for a in arms},
+                  target=Target(joints={r.robot: r.retreat} if r.retreat else {}, links=retreat_links))
+        self.on({r.tools[a]: None for a in arms})
+        self.emit(f"{p}_R_home", "Home", arms=arms, path="free", controller="position",
+                  target=Target(joints={r.robot: r.home} if r.home else {}))
+
+    # * Support robot: hold (grasps a built bar Cindy still holds) and release.
+
+    def holding(self, h: HoldRecord) -> None:
+        """Free approach, open, linear onto the bar, close."""
+        p = h.bar.split("/")[1]
+        robots, tools = dict(self.state.robots), dict(self.state.tools)
+        robots[h.robot] = RobotState(h.base, None)
+        tools[h.tool] = ToolState(None, None)  # * arrives; its grip is unknown until it opens
+        self.set(robots=robots, tools=tools)
+        down = z_axis(h.tool0)
+        approach_link = shifted(h.tool0, down, -self.support_distance)
+        self.emit(f"{p}_H_approach", "Free to the approach", arms=(h.flange,), path="free", controller="position",
+                  target=Target(joints={h.robot: h.approach} if h.approach else {}, links={h.flange: approach_link}))
+        self.emit(f"{p}_H_open", "Gripper opens", ends_on="tools", target=Target(tools={h.tool: "open"}))
+        self.emit(f"{p}_H_to_grasp", "Linear onto the bar", arms=(h.flange,), path="linear", controller="position",
+                  line={h.flange: LineSpec(down, self.support_distance)},
+                  target=Target(joints={h.robot: h.held} if h.held else {}, links={h.flange: h.tool0}))
+        self.on({h.tool: h.bar})
+        attached = dict(self.state.attached)
+        attached[h.bar] = attached.get(h.bar, ()) + (Holder(h.flange, h.grasp),)
+        self.emit(f"{p}_H_close", "Gripper closes", ends_on="tools",
+                  target=Target(tools={h.tool: "closed"}, attached=attached))
+
+    def holding_release(self, h: HoldRecord) -> None:
+        """Open, linear retreat; then the robot drives away."""
+        p = h.bar.split("/")[1]
+        up = tuple(-v for v in z_axis(h.tool0))
+        self.emit(f"{p}_HR_open", "Gripper opens", ends_on="tools",
+                  target=Target(tools={h.tool: "open"}, attached=self.without(h.bar, (h.flange,))))
+        self.emit(f"{p}_HR_retreat", "Linear retreat", arms=(h.flange,), path="linear", controller="position",
+                  line={h.flange: LineSpec(up, self.support_distance)},
+                  target=Target(joints={h.robot: h.approach} if h.approach else {},
+                                links={h.flange: shifted(h.tool0, up, self.support_distance)}))
+        robots, tools = dict(self.state.robots), dict(self.state.tools)
+        robots[h.robot], tools[h.tool] = None, None  # * drives away
+        self.set(robots=robots, tools=tools)
+
+
+def build_actions(design: Design, schedule: Sequence[Tuple[str, str]], bars: Dict[str, BarRecord],
+                  holds: Dict[str, HoldRecord], *, insert_distance: float = 0.015, retreat_distance: float = 0.05,
+                  support_distance: float = 0.1) -> BuildResult:
+    """Add the actions and the schedule to a design that holds its robots, tools, bodies and mates.
+
+    Args:
+        design: The design without actions.
+        schedule: (kind, bar id) in execution order; kind is "J", "R", "H" or "HR".
+        bars: Bar id -> its record, for J and R.
+        holds: Held bar id -> its record, for H and HR.
+        insert_distance, retreat_distance: Cindy's insert and retreat lengths, metres.
+        support_distance: The support robot's linear approach and retreat length, metres.
+
+    Returns:
+        BuildResult: The design, and one line per action left out (a bar or a hold without a record).
+    """
+    builder = Builder(design, insert_distance, retreat_distance, support_distance)
+    actions: Dict[str, Action] = {}
+    order: List[str] = []
+    problems: List[str] = []
+    for kind, bar in schedule:
+        record = bars.get(bar) if kind in ("J", "R") else holds.get(bar)
+        if record is None:
+            problems.append(f"{bar} {kind}: no {'keyframe' if kind in ('J', 'R') else 'hold'} record; "
+                            f"action left out")
+            continue
+        first = len(builder.movements)
+        {"J": builder.jointing, "R": builder.release, "H": builder.holding,
+         "HR": builder.holding_release}[kind](record)
+        type_, suffix = KINDS[kind]
+        action_id = f"{bar.split('/')[1]}_{suffix}"
+        supports = record.supports_until if kind == "H" else ()
+        actions[action_id] = Action(id=action_id, type=type_, robot=record.robot, bar=bar,
+                                    movements=tuple(builder.movements[first:]), ground=tuple(record.ground),
+                                    supports_until=tuple(supports), label=_label(kind, bar, record.robot))
+        order.append(action_id)
+    return BuildResult(replace(design, actions=actions, schedule=tuple(order), folder=None), problems)
+
+
+def _label(kind: str, bar: str, robot: str) -> str:
+    """Display text of an action, e.g. "cindy joints B10"."""
+    verb = {"J": "joints", "R": "releases", "H": "holds", "HR": "lets go of"}[kind]
+    return f"{robot.split('/')[1]} {verb} {bar.split('/')[1]}"

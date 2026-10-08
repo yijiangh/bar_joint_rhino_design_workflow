@@ -5,6 +5,17 @@
 Scans all placed joint block instances, reads flat user text keys written
 by RSJointPlace, and writes a JSON file compatible with the joint jig
 controller.
+
+A MoCap joint's entry additionally carries::
+
+    "mocap": {"paired": true,                       # J... id; false for a standalone M...
+              "markers_mm": {"M1": [x, y, z], ...}}  # sphere centres in the bar frame
+
+The bar frame is the one ``position_mm`` / ``rotation_deg`` are measured in:
+origin at the bar start, z along the bar, x = world Z x bar (world X x bar for a
+near-vertical bar).  Coordinates are document units, taken as mm like the rest
+of this export.  ``markers_mm`` is empty until the markers are recorded on the
+block with RSDefineJointHalf.
 """
 
 import importlib
@@ -23,6 +34,8 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config
 from core import joint_name_conventions as jnc
+from core import marker_points
+from core.joint_pair import load_joint_registry
 from core.rhino_helpers import curve_endpoints
 from core.rhino_bar_registry import (
     get_all_bars,
@@ -149,6 +162,7 @@ def _collect_joint_blocks():
             joint_type, subtype = _prefab_type_subtype(obj_id)
             data = {
                 "obj_id": obj_id,
+                "layer": layer,
                 "joint_id": joint_id,
                 "type": joint_type,
                 "subtype": subtype,
@@ -157,6 +171,23 @@ def _collect_joint_blocks():
             }
             results.append(data)
     return results
+
+
+def _mocap_entry(obj_id, joint_id, halves, bar_start, bar_x, bar_dir):
+    """``{"paired": ..., "markers_mm": {...}}`` for one placed MoCap block."""
+    half = halves.get(rs.BlockInstanceName(obj_id) or "")
+    markers = {}
+    if half is not None and half.marker_points_mm:
+        xf = rs.BlockInstanceXform(obj_id)
+        block_world = [[xf[r, c] for c in range(4)] for r in range(4)]
+        bar_frame = marker_points.frame_from_axes(bar_start, bar_x, bar_dir)
+        markers = marker_points.in_frame_mm(
+            marker_points.to_world_mm(block_world, half.marker_points_mm), bar_frame
+        )
+    return {
+        "paired": jnc.single_sided_subtype_of_id(joint_id) is None,
+        "markers_mm": markers,
+    }
 
 
 def _bar_sort_key(bar_id):
@@ -215,6 +246,7 @@ def main():
     # 4. Build export
     errors = []
     bar_entries = []
+    halves = load_joint_registry().halves  # for MoCap marker points
 
     for bid in sorted(joints_per_bar.keys(), key=_bar_sort_key):
         if bid not in bars_by_id:
@@ -252,16 +284,19 @@ def main():
             # rotation_deg: angle from bar X-axis to joint Z-axis about bar Z
             rot = round(_compute_rotation_deg(joint_z, bar_x, bar_dir), 2)
 
-            joint_entries.append(
-                {
-                    "joint_id": joint_id,
-                    "type": data["type"],
-                    "subtype": data["subtype"],
-                    "ori": ori,
-                    "position_mm": pos,
-                    "rotation_deg": rot,
-                }
-            )
+            entry = {
+                "joint_id": joint_id,
+                "type": data["type"],
+                "subtype": data["subtype"],
+                "ori": ori,
+                "position_mm": pos,
+                "rotation_deg": rot,
+            }
+            if jnc.subtype_of_layer(data["layer"]) == jnc.MOCAP:
+                entry["mocap"] = _mocap_entry(
+                    obj_id, joint_id, halves, bar_start, bar_x, bar_dir
+                )
+            joint_entries.append(entry)
 
         joint_entries.sort(key=lambda j: j["position_mm"])
         bar_entries.append(

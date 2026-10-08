@@ -101,7 +101,7 @@ from core.rhino_bar_registry import (
 
 
 # Bound at import so the helpers below work even before main() runs; main()
-# rebinds them to freshly reloaded copies (the Su_note.md 9 reload idiom).
+# rebinds them to freshly reloaded copies (the note.md 9 reload idiom).
 base_guide_geom = _base_guide_geom_module
 base_guide_viz = _base_guide_viz_module
 rhino_tool_place = _rhino_tool_place_module
@@ -546,7 +546,7 @@ def main():
 
     # Place a base on every processable bar (fast); collect prerequisite failures.
     # One shared soup cache: tessellating a WalkableGround brep is the expensive
-    # step and every bar would otherwise redo it (see Su_note.md 14).
+    # step and every bar would otherwise redo it (see note.md 14).
     grounds = rwg.get_all_walkable_grounds()
     soup_cache = {}
     placed = []   # (bar_id, curve, base_frame, left_tool, right_tool, diag)

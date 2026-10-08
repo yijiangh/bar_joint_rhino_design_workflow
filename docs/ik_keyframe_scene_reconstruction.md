@@ -118,7 +118,7 @@ This is where the scene gets its geometry. It:
    for every current body (lines 1404–1418):
 
    ```python
-   managed_prefixes = (CANONICAL_BAR_PREFIX, CANONICAL_JOINT_PREFIX, OBSTACLE_PREFIX)
+   managed_prefixes = (jnc.BAR_KEY_PREFIX, jnc.JOINT_KEY_PREFIX, jnc.OBSTACLE_KEY_PREFIX)
    desired = {name: bi["rigid_body"] for name, bi in collision_bodies.items()}
    existing_managed = {n for n in robot_cell.rigid_body_models if n.startswith(managed_prefixes)}
    for stale in existing_managed - set(desired):
@@ -231,29 +231,30 @@ Three collectors feed the static cell:
 
 ### 4.1 Naming conversion — the exact rules
 
-Prefixes (lines 49–53): `CANONICAL_BAR_PREFIX = "bar_"`,
-`CANONICAL_JOINT_PREFIX = "joint_"`, `OBSTACLE_PREFIX = "obstacle_"`.
+Prefixes, all in `core/joint_name_conventions.py`: `BAR_KEY_PREFIX = "bar_"`,
+`JOINT_KEY_PREFIX = "joint_"`, `OBSTACLE_KEY_PREFIX = "obstacle_"` (the support cell uses
+`ENV_BAR_KEY_PREFIX` / `ENV_JOINT_KEY_PREFIX`, `env_bar_` / `env_joint_`).
 
 | Body | Name | Source of the variable part |
 |---|---|---|
 | Bar | `bar_<bid>` | `<bid>` = the `bar_id` **key** of `bar_seq_map` (not read from user-text here) |
-| Joint half | `joint_<jid>_<subtype>` | `<jid>` = `rs.GetUserText(oid,"joint_id")` (falls back to the object GUID); `<subtype>` lowercased |
+| Joint half | `joint_<jid>_<role>` | `<jid>` = `rs.GetUserText(oid,"joint_id")` (falls back to the object GUID); `<role>` = the Subtype of the block's **layer**, lowercased (`female` / `male` / `ground` / `mocap`) |
 | Obstacle | `obstacle_<name>` | `<name>` = sanitized `rs.ObjectName(oid)` (falls back to `env<i>`), de-duplicated with `_1`, `_2`, … |
 
 The joint tag is built identically in both collectors:
 
 ```python
-subtype = (rs.GetUserText(joint_oid, "joint_subtype")   # "Male" / "Female"
-           or rs.GetUserText(joint_oid, "joint_type")   # ground joints -> "ground"
-           or "Joint")                                   # last resort
-tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-out[f"{CANONICAL_JOINT_PREFIX}{tag}"] = { ... }
+subtype = jnc.subtype_of_layer(layer)                   # the layer is the authority
+key = jnc.joint_key(joint_id or str(joint_oid), subtype)  # "joint_J40-53_mocap"
+out[key] = { ... }
 ```
 
-So typical names are `joint_J12_male`, `joint_J12_female`, `joint_J7_ground`. The
-3-level `subtype` fallback exists because ground joints carry `joint_type="ground"`
-but no `joint_subtype`, and we want the suffix to read `_ground` rather than a
-meaningless `_joint`.
+(`jnc` = `core.joint_name_conventions`, which builds and parses every one of these
+names.) So typical names are `joint_J40-53_male`, `joint_J40-53_female`,
+`joint_J40-53_mocap`, `joint_G4-T20-0_ground`, `joint_M7-T20-0_mocap`. The suffix
+comes from the layer rather than from `joint_subtype` user text, because user text
+is copied verbatim onto a duplicated block and the layer is what decides a block's
+role everywhere else.
 
 The obstacle name is sanitized by `_sanitize_obstacle_name` (line 447): every
 character that is not alphanumeric / `-` / `_` becomes `_`; an empty result
@@ -274,7 +275,7 @@ local frame, radius `config.BAR_RADIUS = 10.0` mm. The bar's world pose rides on
 the frame, not baked into the mesh.
 
 **Joints — block instance transform + a mesh loaded from OBJ.** Joints are Rhino
-block instances. `_block_instance_xform_mm(oid)` (line 251) coerces the object to a
+block instances. `core.rhino_helpers.block_instance_xform_mm(oid)` coerces the object to a
 `Rhino.DocObjects.InstanceObject`, reads `.InstanceXform`, and scales only the
 translation column to mm — this is `frame_world_mm`. The mesh is loaded once per
 `block_name` from the joint's collision OBJ (`Mesh.from_obj`,
@@ -298,7 +299,7 @@ obstacle's pose is baked into the mesh and its `frame_world_mm` is **identity**.
 ### 4.3 Unit conversion
 
 The single source of the doc→mm factor is
-`core.rhino_frame_io.doc_unit_scale_to_mm()`
+`core.rhino_helpers.doc_unit_scale_to_mm()`
 (= `Rhino.RhinoMath.UnitScale(doc units → Millimeters)`).
 
 | Body | Frame convention | `RigidBody.native_scale` |
@@ -438,9 +439,9 @@ transform because they co-grip one rigid bar), and **Free** (joint-space goal) v
 Setup shared by all five (lines 949–968):
 
 - `template_state, env_geom = prepare_assembly_collision_state(...)`.
-- `arm_to_male = _classify_male_joints_per_arm(bar_id)` — `{joint_id: 'left'|'right'}`,
+- `arm_to_male = _classify_joints_per_arm(bar_id, jnc.MALE)` — `{joint_id: 'left'|'right'}`,
   routed by each male's tool's L/R suffix (`AT3L`→left, `AT3R`→right).
-- `arm_to_ground = _classify_ground_joints_per_arm(bar_id)` — same map for
+- `arm_to_ground = _classify_joints_per_arm(bar_id, jnc.GROUND)` — same map for
   tool-bearing ground joints (ground bars); empty for a normal bar.
 - `active_keys` = every `env_geom` name whose `parent_bar_id == bar_id`.
 - `bar_key = f"bar_{bar_id}"`; `tool_ids = {"left":"AT3L","right":"AT3R"}`.
@@ -450,7 +451,7 @@ Setup shared by all five (lines 949–968):
 **Ground-anchor path (ground bars).** A ground bar has no male halves: the arm
 tools grasp its ground joints directly, and each ground joint behaves like a
 female half permanently bonded to the bar (rides with it while gripped, stays in
-world after release). `_classify_ground_joints_per_arm` mirrors the male
+world after release). `_classify_joints_per_arm(bar_id, jnc.GROUND)` runs the male
 classifier over the ground-instance layer, so a tool-bearing
 `joint_<jid>_ground`:
 
@@ -566,12 +567,19 @@ copied user text cannot misroute it. Clamp-style females (default
 |---|---|---|---|---|---|---|---|---|---|
 | **M0** | IndependentDualArmFreeMovement | `None` (live current) | — | — | ✔ | `[]` | `[]` | `[]` | `None` (goal back-filled from M1 start) |
 | **M1** | EndEffectorConstrainedDualArmFreeMovement | `None` (planner-filled, seeded from M0 end) | left `tool0` | its-arm `tool0` | — | `{tool, bar}` | `[bar]` | `{AT3L, AT3R}` | approach = −avg(tool z)·15 mm |
-| **M2** | EndEffectorConstrainedDualArmLinearMovement | approach config | left `tool0` | its-arm `tool0` | — | `{tool, bar, female(jid) + female's bar if key exists}` | `[bar]` | `{AT3L, AT3R}` | assembled `tool0` frames |
+| **M2** | EndEffectorConstrainedDualArmLinearMovement | approach config | left `tool0` | its-arm `tool0` | — | `{tool, bar, receiver(jid) + receiver's bar if key exists}` | `[bar]` | `{AT3L, AT3R}` | assembled `tool0` frames |
 | **M3** | IndependentDualArmLinearMovement | assembled config | — | — | ✔ | `{tool}` | `[]` | `{AT3L, AT3R}` | per-arm retreat = joint −Z·50 mm |
 | **M4** | IndependentDualArmFreeMovement | `None` → retreat config | — | — | ✔ | `[]` | `[]` | `[]` | `None`; `target_configuration` = HOME |
 
 - `tool` for a male = its own arm's tool (`AT3L` if left-classified, `AT3R` if
   right-classified).
+- **"female" columns cover MoCap too.** A MoCap half receives a male exactly like
+  a Female, so every receiver rule applies to both: the M2 mate is
+  `joint_<jid>_female` **or** `joint_<jid>_mocap`, whichever exists
+  (`bar_action._receiver_key`), and a carried receiver of either kind gets `[bar]`
+  in M1/M2. A **standalone** MoCap joint (`joint_M7-T20-0_mocap`, one bar, no male)
+  follows the same carried-receiver row while its bar is being assembled, and is a
+  plain static obstacle once built. MoCap never carries a tool.
 - Two LM offsets, both in `core.config`: `LM_APPROACH_DISTANCE = 15.0` mm and
   `LM_RETREAT_DISTANCE = 50.0` mm. Approach targets: `_compute_approach_targets_mm`
   shifts both assembled flanges by `−unit(avg(left z, right z)) · LM_APPROACH`.
@@ -715,8 +723,9 @@ remain important:
 | Area | Current implementation status |
 |---|---|
 | Startup | `RSPBStart` auto-builds Stage 1 after loading the low-level bare cell; `RSRebuildRobotCell` is a refresh/fallback, not a mandatory second startup click. |
-| Ground anchors | Implemented: `_classify_ground_joints_per_arm` routes grasped grounds to their own arms (attachment + male-minus-mate ACM + M3 retreat via ground block −Z); insertion runs along the Walkable Ground normal. Mixed male+ground bars untargeted; the floor is still not collision geometry. |
+| Ground anchors | Implemented: `_classify_joints_per_arm(bar_id, jnc.GROUND)` routes grasped grounds to their own arms (attachment + male-minus-mate ACM + M3 retreat via ground block −Z); insertion runs along the Walkable Ground normal. Mixed male+ground bars untargeted; the floor is still not collision geometry. |
 | Subfloor cradle mates | Implemented: females flagged `bar_cradle` in `joint_pairs.json` (T20Sub*) get the male↔mate whitelist in M1 too, the bar whitelists its cradle mates in M1/M2, and the seating male's own arm tool is allowed against the cradle in M1–M3 (PyBullet convex-hulls every OBJ, so the cradle is effectively a solid 60×72×80 mm brick). Detection uses the live block-definition name, immune to stale `joint_id` user text. |
+| MoCap receivers | Implemented: a MoCap half (`T20_MoCap`) is a receiver like a Female in every touch rule above -- M2 mate lookup via `_receiver_key`, carried-receiver `[bar]` in M1/M2, rides the bar's arm. It is never tool-bearing, so a bar's exactly-two tool-bearing halves are unaffected. |
 | Duplicate joint ids | Both collectors now RAISE when two blocks compute the same canonical body name (copied `joint_id` user text), instead of silently dropping one — a dropped body is in no collision scene at all. Blocks whose `parent_bar_id` is not a live bar are reported too. |
 | Fake bars | A bar marked `scaffolding.fake_bar` (RSBarEdit > FakeBar) is a modeling artifact that only poses a real bar's male half: it and every joint half mounted on it are excluded from every collision scene, in both collectors. The real bar's male is parented to the real bar and survives. The mark is in the staleness fingerprint, and building an assembly action for a fake bar raises. |
 | Hold scenes | Support keyframes solve against the RELEASE-time built set (`collect_hold_window_geometry`), not the grasp-time scene: the pose must clear every stabilizing bar installed before the hold ends, so it cannot block the bars the hold exists to enable. |
@@ -759,7 +768,6 @@ ground-anchor gap is closed (see the ground-anchor path in §6).
 | | `prompt_if_cell_stale` | 1712 | Rebuild / Proceed / Abort |
 | | `ensure_assembly_cell` | 1771 | cached `collision_bodies` (no re-scan) |
 | `core/env_collision.py` | `_bar_world_frame_mm` | 162 | bar frame from curve endpoints |
-| | `_block_instance_xform_mm` | 251 | joint block `InstanceXform` → mm |
 | | `collect_built_geometry` | 267 | support-cell collector (`env_*`) |
 | | `collect_assembly_geometry` | 364 | canonical bars + joints (`bar_*`/`joint_*`) |
 | | `_sanitize_obstacle_name` | 447 | obstacle name cleanup |

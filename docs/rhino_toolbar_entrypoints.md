@@ -17,23 +17,21 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSDesign | RSBarBrace | `rs_bar_brace.py` | Solve and pick brace-bar candidates between two bars | Workshop participants |
 | RSDesign | RSBarSubfloor | `rs_bar_subfloor.py` | Add a subfloor bar between two existing bars, with independent left/right joint pairs | Workshop participants |
 | RSDesign | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer/editor | Workshop participants |
-| RSDesign | RSJointPlace | `rs_joint_place.py` | Place female/male connector blocks on a selected bar pair | Workshop participants |
-| RSDesign | RSGroundPlace | `rs_ground_place.py` | Place and orient a ground joint on a bar | Workshop participants |
-| RSDesign | RSJointEdit | `rs_joint_edit.py` | Re-edit orientation of a previously placed joint pair | Workshop participants |
+| RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
+| RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
 | RSDesign | RSBarEdit | `rs_bar_edit.py` | Color, filter, and resize bars by length | Workshop participants |
 | RSDesign | RSSelectBar | `rs_select_bar.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: type a length in mm to select every bar of that length plus their male/ground joints, grouped exactly as RSBarEdit groups them. Both loop. Read-only. | Workshop participants |
 | RSDesign | RSSelectJoint | `rs_select_joint.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
-| RSDesign | RSTempPlace | `rs_temp_place.py` | **Temporary, mock-up only.** For every male/ground joint with no female yet, create a 200 mm stub bar centred under where its female belongs: **PlaceFemaleJointBar** adds the mating female half too, **PlaceBar** adds the bar only. Ground joints have no mate frame in `joint_pairs.json`, so you pick which pair's male plug they mate like. Stub bars are marked **fake** — they sequence and the IK sees their joints, but the prefab / bar-action / robot-cell exports skip them. | Workshop participants |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
 | RSDesign | RSShowAssemblyPlan | `rs_show_assembly_plan.py` | Step through the WHOLE assembly movement by movement: every bar's poses concatenated in sequence order, with support robots appearing/leaving per the hold schedule. Enter=next, Prev/Jump/GoToBar, or click a bar to jump there. | Advanced IK users |
 | RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's timeline (approach / assembled / hold / retreat / home + base frame), with support robots appearing per pose exactly as the hold schedule says; the last stabilizer of a hold also plays that hold's release pose. Right-click (`rs_show_bar_action_plan_motion.py`): load the bar's planned motion if needed and scrub the trajectory with a slider. | Advanced IK users |
 | RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
-| RSSetup | RSDefineJointHalf | `rs_define_joint_half.py` | Define one joint half (Male/Female/Ground) and collision mesh | Joint-library authors |
-| RSSetup | RSDefineJointMate | `rs_define_joint_mate.py` | Define mate between existing joint halves | Joint-library authors |
+| RSSetup | RSDefineJointHalf | `rs_define_joint_half.py` | Define one joint block (Female / Male / Ground / MoCap, read from its `<Type>_<Subtype>` name), its collision mesh, and a MoCap block's marker spheres | Joint-library authors |
+| RSSetup | RSDefineJointMate | `rs_define_joint_mate.py` | Define the mate between an existing Female and Male half (a MoCap half needs none) | Joint-library authors |
 | RSSetup | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite lines | Workshop participants |
 | RSSetup | RSUpdatePreview | `rs_update_preview.py` | Left-click: one idempotent repair pass -- rebuild stale/missing bar tube previews, reload joint blocks whose `asset/*.3dm` changed (in place), restore/re-side/re-snap robotic tools, then report unmated joint pairs and broken bar/joint/tool links. Never moves a joint. Then paints the IK + broken-link overlay and pops up a tally — there is no longer a job prompt, the overlay is always painted. Right-click, **RSClearColorPreview** (`rs_clear_color_preview.py`): clear every color preview. | Workshop participants |
 | RSSetup | RSReorderBarID | `rs_reorder_bar_id.py` | Renumber bars to match sequence and cascade IDs | Workshop participants |
-| RSSetup | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication JSON | Workshop participants |
+| RSSetup | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication JSON; MoCap joints also carry `paired` and their marker positions in the bar frame | Workshop participants |
 | RSSetup | RSExportBarTool0TF | `rs_export_bar_tool0_tf.py` | Pick a bar; export its bar-OCF -> `tool0_left` / `tool0_right` transforms to `<root>/BarTool0TF/<bar_id>.json` | Advanced IK users |
 | RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
 | RSSetup | RSDefineRoboticTool | `rs_define_robotic_tool.py` | AssemblyTool mode: define a tool candidate (block + TCP points + picked collision meshes, exports `.3dm` + `.obj`). SupportGripper mode: export bar-grasp -> tool0 transform | Advanced IK users |
@@ -79,23 +77,45 @@ This is the canonical Rhino entrypoint reference for this repository.
 
 ### RSJointPlace (`rs_joint_place.py`)
 
-- Picks two registered bars, then assigns lower sequence as female (`Le`) and later sequence as male (`Ln`).
-- Solves assembly variants and lets users click female or male block to flip orientation.
-- Enter / `Accept` bakes selected orientation.
+Three modes, chosen at the first prompt (Enter = JointPairAndTool):
 
-### RSGroundPlace (`rs_ground_place.py`)
+- **JointPairAndTool** — pick the mate and two registered bars. The bar with the
+  lower sequence gets the receiving half (`Le`), the later one the male (`Ln`).
+  When the mate's Type also has a MoCap block (`T20_MoCap` beside `T20_Female`),
+  a **Receiving joint: Female | MoCap** prompt chooses which one (Enter = Female);
+  a MoCap receiver bakes as `J40-53_mocap` on the Joint MoCap Instances layer.
+  Solves the assembly variants; click the receiver or male block to flip it;
+  Enter / `Accept` bakes, and the male gets its tool.
+- **ToolOnly** — pick a male or ground joint and put a tool on it (Flip swaps L/R).
+- **JointOnly** — place ONE single-sided joint on one bar: pick the bar, a point
+  on it, and the joint (`T20_Ground` / `T20_MoCap`; skipped when only one is
+  registered). **Ground**: `Accept | Flip` — its angle about the bar is automatic
+  (block +Y, the foot, faces the floor); Flip turns it end-for-end. **MoCap**:
+  `Accept | Rotate` — it starts with its marker plate (block +Z) facing up, or +X
+  on a bar within 15° of vertical; Rotate turns it about the bar by the angle you
+  type. Bakes `G4-T20-0_ground` / `M7-T20-0_mocap`. **No tool is placed**: a
+  Ground joint prints a reminder to add one with ToolOnly, and the next
+  RSUpdatePreview gives it the default tool if you have not. A ground tool is
+  rolled by the definition's `M_tool_from_block` (picked in RSDefineJointHalf);
+  that rotation moves the **tool only**, never the ground block.
 
-- Anchors a ground joint to a selected bar and point.
-- Uses an auto-`jr` heuristic to align block +Y toward world up.
-- The robotic tool it auto-places is rolled by the definition's
-  `M_tool_from_block` (picked in RSDefineJointHalf, see below). That rotation
-  moves the **tool only** — never the ground block, whose own orientation stays
-  pinned by the auto-`jr` heuristic above.
+RSGroundPlace was removed: JointOnly does the same placement.
 
 ### RSJointEdit (`rs_joint_edit.py`)
 
-- Re-opens orientation editing for an existing placed joint pair.
-- Reads stored orientation state from user-text.
+Three modes, chosen at the first prompt (Enter = FlipJoint):
+
+- **FlipJoint** — click a placed pair's receiver or male to flip that side and
+  re-solve (a MoCap receiver stays MoCap); click a Ground joint to flip it
+  end-for-end (its tool follows); click a standalone MoCap joint to re-aim it
+  with the `Accept | Rotate` preview. Reads stored orientation state from user-text.
+- **MoveJoint** — slide a paired joint along its bar (see the command's docstring).
+  Single-sided joints are not counted among the two joints a moved bar carries.
+- **ReplaceJoint** — click any half of a placed pair; its receiver swaps
+  `T20_Female` ↔ `T20_MoCap`, keeping the joint id, both bars and the tool
+  (`J40-53_female` ↔ `J40-53_mocap`). The pair is re-solved with the new block,
+  and the collision mesh follows in the same Rhino session. A standalone MoCap has
+  no male and so cannot be swapped: delete it and place a pair.
 - Clicking a **tool instance** toggles it between the active pair's L/R tools. That is
   treated as a deliberate hand-pick: it stamps `config.KEY_TOOL_SIDE_MANUAL` on the joint
   block, and from then on the automatic approach-based side rule (RSUpdatePreview step 4,
@@ -120,20 +140,32 @@ Two modes, chosen at the first prompt: **SelectByName** (the default — press E
 
 ### RSSelectJoint (`rs_select_joint.py`)
 
-- Type a joint id at the command line — `J40-53_female`, `j40-53_male`, or `G4-floor-0_ground` (all case-insensitive) — and it selects that placed joint block instance, then `ZoomSelected` frames it. Handy for finding one joint in a crowded model.
+- Type a joint id at the command line — `J40-53_female`, `j40-53_male`, `J40-53_mocap`, `G4-T20-0_ground` or `M7-T20-0_mocap` (all case-insensitive) — and it selects that placed joint block instance, then `ZoomSelected` frames it. Handy for finding one joint in a crowded model.
 - The role suffix is optional: `J40-53` selects **both** halves of the pair at once, and bare pair numbers (`40-53`) get the `J` prefix added automatically.
 - Canonical PyBullet body keys like `joint_J25-26_male` work too — paste them straight from a collision log and the `joint_` prefix is stripped.
 - Comma-separate ids (`J40-53_female,J12-7`) to select several at once. The prompt loops so you can jump from joint to joint; each entry **replaces** the selection. Enter on an empty prompt (or Esc) ends the command.
-- Matches blocks by the object-name convention `{joint_id}_{female|male|ground}` written at placement time, with a fallback to the `joint_id` user text + instance layer for blocks that lost their name. Tool blocks are never selected (they carry `joint_id` user text too, but live on the tool layer).
+- Matches blocks by the object-name convention `<joint id>_<female|male|ground|mocap>` written at placement time, with a fallback to the `joint_id` user text + instance layer for blocks that lost their name. Tool blocks are never selected (they carry `joint_id` user text too, but live on the tool layer).
 - **Read-only** — never edits the document, so it is safe to run any time. No PyBullet needed. On the RSDesign toolbar.
 
 ### RSDefineJointHalf (`rs_define_joint_half.py`)
 
-- Defines one half: `Male`, `Female`, or `Ground`.
+- Defines one block. **Its kind comes from its name**, `<Type>_<Subtype>` with
+  Subtype `Female`, `Male`, `Ground` or `MoCap` (`T20_MoCap`); the command shows
+  what it read and asks you to confirm. A block named otherwise is refused with
+  an explanation — rename the block definition first. See
+  `core/joint_name_conventions.py` for every name derived from it.
+- A **MoCap** block whose Type already has a registered Female can copy that
+  Female's two frames (`CopyFromFemale`) instead of the bar / screw picks — right
+  only when the MoCap block was modelled on the Female's origin.
+- A **MoCap** block then asks for its **marker spheres**: pick the sphere objects,
+  each one is selected in turn and you type its Motive label (default `M1`, `M2`,
+  …). Centres (bounding-box centres) are stored in the block's own frame as
+  `marker_points_mm`. Enter without a pick keeps the markers already recorded.
 - Exports `asset/<block_name>.3dm` and collision `asset/<block_name>.obj`.
-- Upserts half data in `scripts/core/joint_pairs.json`.
+- Upserts the entry in `scripts/core/joint_pairs.json`; re-defining keeps the
+  entry's `bar_cradle`, preferred tool and markers.
 - **Ground picks two direction points, not a bar axis line.** A ground block's
-  own orientation is not free — RSGroundPlace's auto-`jr` rotates it about the
+  own orientation is not free — RSJointPlace › JointOnly's auto-`jr` rotates it about the
   bar until its local +Y points at the floor — so the frame the arm approaches
   on has to be chosen separately. It is picked the same way RSDefineRoboticTool
   picks a TCP frame, except the **origin is not picked**: it is the ground
@@ -150,18 +182,23 @@ Two modes, chosen at the first prompt: **SelectByName** (the default — press E
     at tool-placement time. Run RSUpdatePreview afterwards to re-snap tools that
     are already placed.
   - Anchoring the bar axis at the block origin gives `M_block_from_bar` a **zero
-    translation**, so RSGroundPlace lands the block origin exactly on the point
+    translation**, so JointOnly lands the block origin exactly on the point
     you click on the bar. Ground joints defined with the older bar-axis-*line*
     pick carry whatever offset that line's start point happened to have
-    (`T20Ground`: 25 mm), so re-defining one shifts where a given `jp` puts it.
+    (`T20_Ground`: 25 mm), so re-defining one shifts where a given `jp` puts it.
   - The +X *direction* also sets the sense of the bar axis, so re-defining can
-    flip which way new placements face along the bar — RSGroundPlace's `Flip`
+    flip which way new placements face along the bar — JointOnly's `Flip`
     covers that. Already-baked instances never move either way.
 
 ### RSDefineJointMate (`rs_define_joint_mate.py`)
 
-- Selects female and male halves, computes `contact_distance_mm`, and saves the named mate.
+- Selects a Female and a Male half, computes `contact_distance_mm`, and saves the named mate.
 - Requires both halves to exist first.
+- Proposes the mate name from the two Types: the shared Type (`T20_Female` +
+  `T20_Male` → `T20`), or the Type of the variant half (`T20SubLeft_Female` +
+  `T20_Male` → `T20SubLeft`). Accept or type another.
+- A MoCap half gets no mate of its own: it is placed through its Type's Female
+  mate (RSJointPlace asks which receiver to use).
 
 ### RSMeasureGap (`rs_measure_gap.py`)
 
@@ -220,13 +257,13 @@ changes nothing. In order:
    the blocks' **actual** transforms, so it says where the joints really are.
 6. **Counts what cannot be repaired automatically** (`find_broken_links`): a joint
    that lost its bar **or its other half** (a female with no male is as broken as
-   one with no bar — there is nothing for it to mate with; ground joints are
-   single-sided by design and exempt), a tool that lost its joint or is no longer
+   one with no bar — there is nothing for it to mate with; Ground and standalone
+   MoCap joints are single-sided by design and exempt), a tool that lost its joint or is no longer
    on it, and a registered bar carrying no joint. Detached tools come from
    `core.rhino_tool_place.find_detached_tools`, which shares `is_tool_on_joint`
    with the re-snap pass — so "attached" means one thing everywhere. They are
    painted, selected and listed in the popup tally at the end of every run. Fix
-   them with RSJointPlace / RSGroundPlace, or delete the orphan.
+   them with RSJointPlace, or delete the orphan.
 
 ### RSClearColorPreview (`rs_clear_color_preview.py`)
 
@@ -264,17 +301,28 @@ time you tidy up.
 stored `(jp, jr)` is not a reliable enough authority to act on silently — earlier
 attempts moved joints that were correct — so joints are only ever reported. One
 consequence: editing `M_block_from_bar` in `joint_pairs.json` affects only NEWLY
-placed joints; re-place an existing one with RSJointEdit / RSGroundPlace to adopt a
+placed joints; re-place an existing one with RSJointEdit / RSJointPlace to adopt a
 changed transform.
 
 ### RSReorderBarID (`rs_reorder_bar_id.py`)
 
 - Renumbers bars so `B<n>` matches sequence `n`.
-- Cascades updated IDs into dependent joint/ground/tool metadata.
+- Cascades updated IDs into dependent joint/ground/MoCap/tool metadata
+  (`J7-9` → `J12-9`, `G7-T20-0` → `G12-T20-0`, `M7-T20-0` → `M12-T20-0`).
 
 ### RSExportPrefab (`rs_export_prefab.py`)
 
 - Exports prefabrication JSON from current bar/joint state.
+- A MoCap joint's entry also carries
+  `"mocap": {"paired": true|false, "markers_mm": {"M1": [x, y, z], …}}`:
+  `paired` is false for a standalone MoCap (`M…` id), and `markers_mm` are its
+  marker-sphere centres in the same **bar frame** `position_mm` / `rotation_deg`
+  use (origin at the bar start, z along the bar). Empty until the markers are
+  recorded with RSDefineJointHalf.
+- Every joint exports its block's Type and Subtype: `T20_Female` → `"type": "T20",
+  "subtype": "Female"`, and Ground joints the same way, `T20_Ground` → `"T20"` /
+  `"Ground"` (they used to export as `"ground"` / `""`). The BOM lists them as
+  `T20/Ground`.
 
 ### RSBakeFrame (`rs_bake_frame.py`)
 
@@ -479,19 +527,6 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Select bars — centerlines or tube previews, either works — and give them a `layer_id`.
 - `layer_id 0` also sets `grounded` **true**; any other value sets it **false**. The two fields are not independent, so there is one prompt, not two.
 - Both values are written as user-text and go straight into `rod_list` on the next RSExportScaffoldJSON. Bars that were never given a layer export as `layer_id` 0 / `grounded` false — see the RSExportScaffoldJSON notes above.
-
-### RSTempPlace (`rs_temp_place.py`)
-
-> **Temporary, mock-up only.** A one-click way to give the robot cell and bar actions something to run simple IK tests against — not a design tool.
-
-- Two modes, neither of them the Enter default (you pick):
-  - **PlaceFemaleJointBar** — for every male/ground joint with no female yet, place the mating female half plus a **200 mm stub bar** centred under it.
-  - **PlaceBar** — the same stub bar in the same place, without the female block.
-- The bar is centred on the **female block**, not on the bar-frame origin those two are ~20–30 mm apart along the bar (`M_block_from_bar`), so centring on the origin would put the bar's midpoint on the joint's face. 200 mm rather than 100 so the joint stays well inside the bar after a flip, which moves the mate ~60 mm along it (see `docs/Su_note.md` §27).
-- Ground joints carry no mate frame in `joint_pairs.json`, so you are asked which pair's male plug they should be treated as mating like.
-- **Stub bars are marked fake automatically.** They sequence normally and the IK still sees their joints, but the prefab, bar-action and robot-cell exports skip them. Delete them when the mock-up is done, or clear the mark with RSBarEdit > FakeBar > Delete.
-- **The female is not optional for IK.** At M2 the male seats into it, and `core.bar_action` whitelists that contact by looking up `joint_<jid>_female`; with no female present the mate reads as a real collision. The stub bar is what keeps the collision scene honest about what will physically be there.
-- **Check stubs near subfloor joints by eye.** A female is placed from the mate frame alone, which says where the half must sit — not whether there is room for a bar behind it. Where a stub runs through another bar, delete it and copy the real bar from the design instead.
 
 ### RSRegisterAliases (`register_command_aliases.py`)
 

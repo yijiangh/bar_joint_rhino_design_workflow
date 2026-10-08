@@ -43,7 +43,7 @@ def _walkable_np():
     guide-line builder needs it, so it is imported inside the functions that use
     it -- keeping the heading / arm-side maths in this module importable (and
     testable) anywhere. Same reasoning as the lazy Rhino imports documented in
-    ``docs/Su_note.md`` section 12.
+    ``docs/note.md`` section 12.
     """
     from husky_assembly_tamp.keyframe import walkable_ground  # noqa: PLC0415
 

@@ -617,6 +617,24 @@
       </tooltip>
       <script>! _-ScriptEditor _R "rs_sequence_renumber.py"</script>
     </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-0000000000a0">
+      <text>
+        <locale_1033>RSExportDesign</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Write the document as a schema 2 design folder through bar_assembly_core, then print the file checks (A) and plan checks (B).</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_export_design.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-0000000000a1">
+      <text>
+        <locale_1033>RSCheckDesign</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Read a schema 2 design folder and print its file checks (A) and plan checks (B).</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_check_design.py"</script>
+    </macro_item>
   </macros>
   <icons>
     <icon guid="352fc154-0f90-54b8-abe0-c6515c86f7cf" name="352fc154-0f90-54b8-abe0-c6515c86f7cf.svg">

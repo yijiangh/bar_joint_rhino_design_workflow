@@ -7,7 +7,12 @@
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
+# r: trimesh==4.12.2
 """RSExportAllBarActions - Batch-export every bar's action files + the schedule.
+
+Asks for the format first. ``Schema2`` (default) writes a schema 2 design folder through the shared core
+(``rs_export_design.export``; no PyBullet, compas_fab or tamp needed). ``Legacy`` is the old export below, kept for
+tamp's headless planner until it reads schema 2.
 
 Right-click companion to ``RSExportBarAction`` (left-click = single picked bar).
 Walks every registered bar in assembly-sequence order and writes per-action
@@ -46,15 +51,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from core import bar_action as _bar_action_module
 from core import config as _config_module
-from core import hold_action_builder as _hold_action_builder_module
-from core import ik_collision_setup as _ik_collision_setup_module
-from core import robot_cell as _robot_cell_module
-from core import robot_cell_support as _robot_cell_support_module
 from core.rhino_bar_registry import repair_on_entry
-
-from compas import json_dump
 
 
 EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
@@ -74,6 +72,26 @@ def _prompt_export_root() -> str | None:
 
 
 def main() -> None:
+    choice = rs.GetString("Export format", "Schema2", ["Schema2", "Legacy"])
+    if choice is None:
+        print("RSExportAllBarActions: cancelled.")
+        return
+    if choice.lower() != "legacy":
+        import rs_export_design
+        importlib.reload(rs_export_design).export("RSExportAllBarActions")
+        return
+    _legacy_main()
+
+
+def _legacy_main() -> None:
+    """The old compas_fab export (BarActions/, RobotCell*.json, WalkableGround.json, ActionSchedule.json)."""
+    from core import bar_action as _bar_action_module
+    from core import hold_action_builder as _hold_action_builder_module
+    from core import ik_collision_setup as _ik_collision_setup_module
+    from core import robot_cell as _robot_cell_module
+    from core import robot_cell_support as _robot_cell_support_module
+    from compas import json_dump
+
     robot_cell = importlib.reload(_robot_cell_module)
     config = importlib.reload(_config_module)
     importlib.reload(_ik_collision_setup_module)

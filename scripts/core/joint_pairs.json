@@ -348,7 +348,18 @@
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20_MoCap.obj",
       "bar_cradle": false,
-      "marker_points_mm": {},
+      "marker_points_mm": {
+        "M1": [
+          -9.999999999927478,
+          24.15000057220459,
+          25.500000000000043
+        ],
+        "M2": [
+          -9.999999999886786,
+          -24.15000057220459,
+          25.500000000000043
+        ]
+      },
       "M_block_from_bar": [
         [
           -2.886579864025407e-15,

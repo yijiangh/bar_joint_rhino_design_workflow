@@ -151,6 +151,7 @@ class RhinoDesignSource:
         self.bodies: Dict[str, BodySpec] = {}
         self.duplicates: List[str] = []
         self.ground_oids: Dict[str, object] = {}
+        self.tool_names: Dict[str, str] = {}
         self._meshes: Dict[str, TriMesh] = {}
 
     def build(self) -> SourceResult:
@@ -358,17 +359,40 @@ class RhinoDesignSource:
 
     # * Robots, tools, mates
 
-    def _robots_and_tools(self) -> Tuple[Dict[str, RobotSpec], Dict[str, Tool]]:
-        """Cindy with the active tool pair, Alice and Belle with the Robotiq gripper."""
-        from core.robotic_tool import get_active_pair
+    def _assembly_tools(self) -> Dict[str, object]:
+        """Side -> the tool Cindy carries for the whole design: the one placed most often, else the active pair's.
 
+        ? Schema 2 has one tool per flange; bars placed with another variant are reported in their records.
+        """
+        import rhinoscriptsyntax as rs
+        from collections import Counter
+        from core.robotic_tool import arm_side_from_tool_name, get_active_pair, load_robotic_tools
+
+        registry = load_robotic_tools()
+        placed = {"left": Counter(), "right": Counter()}
+        layer = config.LAYER_TOOL_INSTANCES
+        for oid in (rs.ObjectsByLayer(layer) or []) if rs.IsLayer(layer) else []:
+            name = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
+            side = arm_side_from_tool_name(name)
+            if side in placed and name in registry:
+                placed[side][name] += 1
+        chosen = dict(get_active_pair())
+        for side, counts in placed.items():
+            if counts:
+                chosen[side] = registry[counts.most_common(1)[0][0]]
+        return chosen
+
+    def _robots_and_tools(self) -> Tuple[Dict[str, RobotSpec], Dict[str, Tool]]:
+        """Cindy with her tool pair (`_assembly_tools`), Alice and Belle with the Robotiq gripper."""
         robots, tools = {}, {}
         pkg = config.HUSKY_PKG_PATH
         cindy = robot_id(config.ASSEMBLY_ROBOT_NAME)
         urdf = Path(pkg, config.HUSKY_URDF_PKG_NAME, "urdf", config.HUSKY_URDF_FILENAME)
         srdf = Path(pkg, config.HUSKY_URDF_PKG_NAME, config.HUSKY_SRDF_REL_PATH)
         flanges = {}
-        for side, tool in get_active_pair().items():
+        self.tool_names = {}
+        for side, tool in self._assembly_tools().items():
+            self.tool_names[side] = tool.name
             tool_id = f"tools/{tool.name}"
             mesh = self._mesh(tool.collision_path())
             shapes = (mesh,) if mesh is not None else ()
@@ -428,10 +452,10 @@ class RhinoDesignSource:
         """Cindy's record of one bar: placed tools, the halves they are on, keyframes. None if a tool is missing."""
         from core.rhino_helpers import block_instance_xform_mm
         from core.rhino_tool_place import find_tool_for_joint
-        from core.robotic_tool import arm_side_from_tool_name, get_active_pair_names
+        from core.robotic_tool import arm_side_from_tool_name
 
         cindy = robot_id(config.ASSEMBLY_ROBOT_NAME)
-        active = get_active_pair_names()
+        active = self.tool_names
         tool0, on, retreat, tool_ids, z_axes, ground_points = {}, {}, {}, {}, [], []
         for half, (jid, subtype, parent) in sorted(halves.items()):
             if parent != bar or subtype not in jnc.TOOL_BEARING_SUBTYPES:
@@ -445,8 +469,8 @@ class RhinoDesignSource:
                 self.problems.append(f"{bar}: tool on {half} has no L/R suffix ({name!r})")
                 continue
             if name != active.get(side):
-                self.problems.append(f"{bar}: tool {name} on {half}; the design uses the active pair's "
-                                     f"{active.get(side)} on the {side} flange")
+                self.problems.append(f"{bar}: tool {name} on {half}, but the design's {side} tool is "
+                                     f"{active.get(side)} (B14 will flag the grasp)")
             flange = f"{cindy}/{config.ASSEMBLY_TOOL0_LINKS[side]}"
             if flange in tool0:
                 self.problems.append(f"{bar}: two {side} tools; bar left out")
@@ -479,7 +503,7 @@ class RhinoDesignSource:
                                                          "").split(",") if f"ground/{g.strip()}" in self.bodies)
         return BarRecord(
             bar=f"bars/{bar}", robot=cindy, tools=tool_ids, tool0=tool0, on=on, insert_direction=insert,
-            retreat_direction=retreat, base=pose_from_mm(_json(base_raw)) if solved else None,
+            retreat_direction=retreat, base=pose_from_mm(_json(base_raw)) if _json(base_raw) else None,
             approach=joints_from_groups(keyframes[config.KEY_ASSEMBLY_IK_APPROACH]) if solved else None,
             assembled=joints_from_groups(keyframes[config.KEY_ASSEMBLY_IK_ASSEMBLED]) if solved else None,
             retreat=joints_from_groups(keyframes[config.KEY_ASSEMBLY_IK_RETREAT]) if solved else None,

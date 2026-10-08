@@ -64,8 +64,7 @@ def source():
     doc.objects[b2].text[config.KEY_SUPPORT_GRASP_FRAME] = str(grasp.tolist())
     fake_rhino.install(doc)
     try:
-        from core import design_source
-        yield importlib.reload(design_source)
+        yield importlib.import_module("core.design_source")  # * fresh: uninstall() drops it from sys.modules
     finally:
         fake_rhino.uninstall()
 
@@ -102,3 +101,20 @@ def test_keyframe_groups_merge():
     assert joints_from_groups(groups) == {"a": 1.0, "b": 2.0, "c": 3.0}
     assert joints_from_groups({"joint_names": ["x"], "joint_values": [0.5]}) == {"x": 0.5}
     assert joints_from_groups(None) is None
+
+
+@pytest.mark.parametrize("name, actions", [("YH_ik_test.3dm", 2), ("examples/Example4_two_box.3dm", 36)])
+def test_real_documents_write(name, actions, tmp_path):
+    """Real documents (read with rhino3dm) become designs that pass the file checks; bars without tools are named."""
+    pytest.importorskip("rhino3dm")
+    from pathlib import Path
+    from bar_assembly_core.design import write
+
+    fake_rhino.install(fake_rhino.doc_from_3dm(Path(__file__).resolve().parents[1] / name))
+    try:
+        result = importlib.import_module("core.design_source").RhinoDesignSource("RSExportDesign").build()
+    finally:
+        fake_rhino.uninstall()
+    design = write(result.design, tmp_path / "design", package_dirs=[PKG])
+    assert len(design.actions) == actions
+    assert any("needs a left and a right tool" in p for p in result.problems)

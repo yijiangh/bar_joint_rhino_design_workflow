@@ -1,3 +1,4 @@
 -r requirements.txt
 matplotlib
 pytest
+rhino3dm  # tests/test_design_source.py reads real .3dm files with it

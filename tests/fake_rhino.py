@@ -150,3 +150,27 @@ def uninstall() -> List[str]:
     for name in names:
         sys.modules.pop(name, None)
     return names
+
+
+def doc_from_3dm(path) -> Doc:
+    """A real .3dm file's curves, block instances and user text, read with rhino3dm (`pip install rhino3dm`).
+
+    ? Breps are not read: walkable ground and obstacles come out empty.
+    """
+    import rhino3dm
+
+    model = rhino3dm.File3dm.Read(str(path))
+    layers = {i: layer.FullPath for i, layer in enumerate(model.Layers)}
+    blocks = {str(d.Id): d.Name for d in model.InstanceDefinitions}
+    doc = Doc()
+    for o in model.Objects:
+        attributes, geometry = o.Attributes, o.Geometry
+        obj = Obj(layers.get(attributes.LayerIndex, ""), dict(attributes.GetUserStrings()), name=attributes.Name or "")
+        if isinstance(geometry, rhino3dm.InstanceReference):
+            obj.block = blocks.get(str(geometry.ParentIdefId), "")
+            obj.xform = np.array(geometry.Xform.ToFloatArray(True), dtype=float).reshape(4, 4)
+        elif isinstance(geometry, rhino3dm.Curve):
+            start, end = geometry.PointAtStart, geometry.PointAtEnd
+            obj.start, obj.end = (start.X, start.Y, start.Z), (end.X, end.Y, end.Z)
+        doc.objects[str(attributes.Id)] = obj
+    return doc

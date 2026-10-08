@@ -48,8 +48,6 @@ import importlib
 import os
 import sys
 
-import numpy as np
-import Rhino
 import rhinoscriptsyntax as rs
 
 
@@ -65,7 +63,7 @@ from core import rhino_walkable_ground as _walkable_rhino_module
 from core import robot_cell as _robot_cell_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
-from core.rhino_frame_io import doc_unit_scale_to_mm
+from core.rhino_helpers import np_mm_to_xform
 
 
 # Command name used in every command-line message + dialog title.
@@ -134,29 +132,6 @@ def _compute_default_base_frame_mm(bar_id, bar_oid, grounds_map):
         print(f"{CMD}: could not compute a default mobile base for bar '{bar_id}' "
               "(no meshable WalkableGround, unreadable bar, or degenerate heading).")
     return frame
-
-
-def _np_mm_to_rhino_xform(matrix_mm):
-    """Convert a 4x4 mm transform to a ``Rhino.Geometry.Transform`` in doc units.
-
-    Only the translation column is scaled from mm to the document unit; the
-    rotation columns are unitless. Used to rigidly place the ghost robot (whose
-    link meshes were harvested at a worldXY base) onto the computed base frame.
-
-    Args:
-        matrix_mm (np.ndarray): a 4x4 transform with mm translation.
-
-    Returns:
-        Rhino.Geometry.Transform: the same transform in document units.
-    """
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    m = np.array(matrix_mm, dtype=float, copy=True)
-    m[:3, 3] *= scale_from_mm
-    xform = Rhino.Geometry.Transform(1.0)
-    for i in range(4):
-        for j in range(4):
-            xform[i, j] = float(m[i, j])
-    return xform
 
 
 def _prepare_ghost_meshes():
@@ -290,7 +265,7 @@ def _show_and_ask_change(bar_id, bar_oid, ground_ids, grounds_map, robot_meshes)
             )
             base_frame_viz.draw_base_frame(bar_id, base_mm)
             baked_base = True
-            base_xform = _np_mm_to_rhino_xform(base_mm)
+            base_xform = np_mm_to_xform(base_mm)
 
         # Show the translucent ghost (if available) for the duration of the prompt.
         if robot_meshes and base_xform is not None:

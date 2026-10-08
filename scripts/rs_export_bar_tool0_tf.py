@@ -13,7 +13,7 @@ each arm's ``tool0``:
 Bar OCF: origin at bar start, Z along bar axis (see
 ``core.env_collision._bar_world_frame_mm``). Tool0 world: block instance
 world xform of the placed arm tool (see
-``core.env_collision._block_instance_xform_mm``). All translations are
+``core.rhino_helpers.block_instance_xform_mm``). All translations are
 in millimeters.
 
 Output: ``<root>/BarTool0TF/<bar_id>.json``. Root is the same sticky
@@ -42,6 +42,7 @@ from core import env_collision as _env_collision_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
+from core.rhino_helpers import block_instance_xform_mm
 from core.transforms import invert_transform
 
 
@@ -104,8 +105,8 @@ def main() -> None:
         )
         return
 
-    tool0_left_world_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
-    tool0_right_world_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
+    tool0_left_world_mm = block_instance_xform_mm(arm_tools["left"])
+    tool0_right_world_mm = block_instance_xform_mm(arm_tools["right"])
 
     inv_bar = invert_transform(bar_world_mm)
     bar_to_tool0_left_mm = inv_bar @ tool0_left_world_mm

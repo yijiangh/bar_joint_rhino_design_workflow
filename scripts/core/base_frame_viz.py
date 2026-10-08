@@ -20,7 +20,7 @@ import numpy as np
 import rhinoscriptsyntax as rs
 
 from core import config
-from core.rhino_frame_io import doc_unit_scale_to_mm
+from core.rhino_helpers import doc_unit_scale_to_mm
 
 
 # User-text key stamped on every marker object so a pick resolves to its bar.

@@ -32,7 +32,7 @@ from core import joint_name_conventions as jnc
 # The numpy half moved into the tamp submodule with the solvers (core.config
 # put it on sys.path); imported under the same private name as before.
 from husky_assembly_tamp.keyframe import walkable_ground as _walkable_np
-from core.rhino_frame_io import doc_unit_scale_to_mm
+from core.rhino_helpers import block_instance_xform_mm, doc_unit_scale_to_mm
 
 
 # Object types accepted on the WalkableGround layer (same set rs_ik_keyframe uses).
@@ -411,9 +411,6 @@ def anchor_insertion_axes_mm(bar_id):
     Returns:
         list: ``[(oid, np.ndarray unit +Z), ...]``; empty when none are readable.
     """
-    # Lazy import: keep this Rhino module import-light and avoid import cycles.
-    from core import env_collision
-
     axes = []
     for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
@@ -422,7 +419,7 @@ def anchor_insertion_axes_mm(bar_id):
             if rs.GetUserText(oid, jnc.UT_PARENT_BAR) != bar_id:
                 continue
             try:
-                frame_mm = np.asarray(env_collision._block_instance_xform_mm(oid), dtype=float)
+                frame_mm = block_instance_xform_mm(oid)
             except Exception:
                 continue
             z_axis = frame_mm[:3, 2]

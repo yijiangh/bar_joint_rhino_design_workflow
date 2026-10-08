@@ -1602,7 +1602,7 @@ def build_bar_assembly_actions(rcell, planner, bar_id: str, bar_oid, allow_missi
     """
     import rhinoscriptsyntax as rs  # noqa: F401  (kept; surrounding helpers import lazily)
     from core import config
-    from core import env_collision
+    from core.rhino_helpers import block_instance_xform_mm
     from core import ik_collision_setup
     from core.rhino_bar_registry import get_bar_seq_map
     from core.rhino_walkable_ground import get_bar_ground_ids
@@ -1641,8 +1641,8 @@ def build_bar_assembly_actions(rcell, planner, bar_id: str, bar_oid, allow_missi
         raise RuntimeError(f"Bar '{bar_id}': {err}")
 
     # 3) Tool0 world transforms at IK_ASSEMBLED (= placed tool block instance xforms).
-    tool0_left_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["left"])
-    tool0_right_assembled_mm = env_collision._block_instance_xform_mm(arm_tools["right"])
+    tool0_left_assembled_mm = block_instance_xform_mm(arm_tools["left"])
+    tool0_right_assembled_mm = block_instance_xform_mm(arm_tools["right"])
 
     # 4) Build both movement halves from the cell + tool placements + the saved
     #    keyframe configs (approach/assembled are None when the bar has no IK yet).

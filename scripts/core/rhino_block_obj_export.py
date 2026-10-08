@@ -23,7 +23,7 @@ def export_block_definition_to_obj_mm(block_name: str, output_path: str) -> bool
     import Rhino  # noqa: PLC0415
     import scriptcontext as sc  # noqa: PLC0415
 
-    from core.rhino_frame_io import doc_unit_scale_to_mm  # noqa: PLC0415
+    from core.rhino_helpers import doc_unit_scale_to_mm  # noqa: PLC0415
 
     output_path = os.path.normpath(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -116,7 +116,7 @@ def export_picked_meshes_to_obj_mm(
     import Rhino  # noqa: PLC0415
     import scriptcontext as sc  # noqa: PLC0415
 
-    from core.rhino_frame_io import doc_unit_scale_to_mm  # noqa: PLC0415
+    from core.rhino_helpers import doc_unit_scale_to_mm  # noqa: PLC0415
 
     output_path = os.path.normpath(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -127,10 +127,9 @@ def export_picked_meshes_to_obj_mm(
 
     # Build inverse(block_xform) as a Rhino.Geometry.Transform so we can
     # apply it directly to a Rhino mesh (avoids a numpy roundtrip per vertex).
-    rh_xform = Rhino.Geometry.Transform(0.0)
-    for r in range(4):
-        for c in range(4):
-            rh_xform[r, c] = float(block_xform_doc[r, c])
+    from core.rhino_helpers import numpy_to_xform  # noqa: PLC0415
+
+    rh_xform = numpy_to_xform(block_xform_doc)
     ok_inv, rh_xform_inv = rh_xform.TryGetInverse()
     if not ok_inv:
         print(

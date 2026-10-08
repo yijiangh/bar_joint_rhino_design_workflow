@@ -132,7 +132,7 @@ def _native_scale_for_doc() -> float:
     Returns:
         float: meters per document unit.
     """
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
 
     # `doc_unit_scale_to_mm()` gives "millimeters per document unit". Dividing by
     # 1000 turns that into "meters per document unit", which is what the base

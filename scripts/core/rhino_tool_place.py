@@ -77,16 +77,6 @@ def set_default_tool_name(name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _numpy_to_rhino_transform(matrix: np.ndarray):
-    import Rhino  # noqa: PLC0415
-
-    xform = Rhino.Geometry.Transform(1.0)
-    for row in range(4):
-        for col in range(4):
-            xform[row, col] = float(matrix[row, col])
-    return xform
-
-
 def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
     """Make sure the tool's block definition is loaded in the active doc.
 
@@ -111,17 +101,13 @@ def _import_tool_block_definition(tool: _robotic_tool.RoboticToolDef) -> bool:
 
 
 def _block_instance_world_xform(block_id) -> np.ndarray:
-    """Return the world transform of any inserted block instance."""
-    import Rhino  # noqa: PLC0415
-    import scriptcontext as sc  # noqa: PLC0415
+    """World transform of any inserted block instance (doc units).
 
-    rh_obj = sc.doc.Objects.FindId(block_id)
-    if rh_obj is None or not isinstance(rh_obj, Rhino.DocObjects.InstanceObject):
-        raise ValueError(f"Object {block_id} is not a block instance.")
-    xform = rh_obj.InstanceXform
-    return np.array(
-        [[xform[r, c] for c in range(4)] for r in range(4)], dtype=float
-    )
+    Kept as this module's own name because the headless tests replace it.
+    """
+    from core.rhino_helpers import block_instance_xform  # noqa: PLC0415
+
+    return block_instance_xform(block_id)
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +264,9 @@ def place_tool_at_block_instance(
     if tool_oid is None:
         print(f"  WARNING: failed to insert tool block '{tool.block_name}'.")
         return None
-    rs.TransformObject(tool_oid, _numpy_to_rhino_transform(world_tool_block))
+    from core.rhino_helpers import numpy_to_xform  # noqa: PLC0415
+
+    rs.TransformObject(tool_oid, numpy_to_xform(world_tool_block))
     rs.ObjectLayer(tool_oid, config.LAYER_TOOL_INSTANCES)
 
     tool_id = jnc.tool_id(joint_id)
@@ -903,7 +891,7 @@ def _bar_anchor_joints(bar_id):
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    from core import env_collision  # noqa: PLC0415  (Rhino-only, avoids a cycle)
+    from core.rhino_helpers import block_instance_xform_mm  # noqa: PLC0415
 
     anchors = []
     seen: set = set()
@@ -918,9 +906,7 @@ def _bar_anchor_joints(bar_id):
                 continue
             seen.add(joint_id)
             try:
-                center = np.asarray(
-                    env_collision._block_instance_xform_mm(block_id), dtype=float
-                )[:3, 3]
+                center = block_instance_xform_mm(block_id)[:3, 3]
             except Exception:
                 continue
             anchors.append((joint_id, block_id, center))

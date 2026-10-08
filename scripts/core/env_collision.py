@@ -177,7 +177,7 @@ def _bar_world_frame_mm(bar_oid):
     so the in-Rhino tube preview and the local-frame cylinder mesh align.
     """
     import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
     from core.transforms import frame_from_axes, orthogonal_to, unit
 
     s = doc_unit_scale_to_mm()
@@ -258,22 +258,6 @@ def _get_or_build_bar_rigid_body(bar_oid, length_mm, radius_mm, deps):
     return rb, False
 
 
-def _block_instance_xform_mm(oid):
-    """Read a Rhino block instance's world transform as a 4x4 matrix in mm."""
-    import Rhino
-    import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
-
-    rh = rs.coercerhinoobject(oid, True, True)
-    if not isinstance(rh, Rhino.DocObjects.InstanceObject):
-        raise RuntimeError(f"Object {oid} is not a block instance.")
-    scale = doc_unit_scale_to_mm()
-    xf = rh.InstanceXform
-    matrix = np.array([[float(xf[i, j]) for j in range(4)] for i in range(4)], dtype=float)
-    matrix[:3, 3] *= scale
-    return matrix
-
-
 def _raise_on_duplicate_joint_key(out: dict, key: str, joint_oid, collector: str) -> None:
     """Refuse to build a collision scene when two joint blocks claim one name.
 
@@ -345,6 +329,7 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_fake_bar_ids
+    from core.rhino_helpers import block_instance_xform_mm
 
     deps = _import_deps_for_rb()
 
@@ -417,7 +402,7 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
             if rb is None:
                 continue
             j_hits += int(hit); j_misses += int(not hit)
-            xform_mm = _block_instance_xform_mm(joint_oid)
+            xform_mm = block_instance_xform_mm(joint_oid)
             key = jnc.joint_key(joint_id or str(joint_oid), subtype, env=True)
             _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_built_geometry")
             out[key] = {
@@ -477,6 +462,7 @@ def collect_assembly_geometry(bar_seq_map):
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_fake_bar_ids
+    from core.rhino_helpers import block_instance_xform_mm
 
     deps = _import_deps_for_rb()
     t_total = time.perf_counter()
@@ -534,7 +520,7 @@ def collect_assembly_geometry(bar_seq_map):
             if rb is None:
                 continue
             j_hits += int(hit); j_misses += int(not hit)
-            xform_mm = _block_instance_xform_mm(joint_oid)
+            xform_mm = block_instance_xform_mm(joint_oid)
             key = jnc.joint_key(joint_id or str(joint_oid), subtype)
             _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_assembly_geometry")
             out[key] = {
@@ -667,7 +653,7 @@ def collect_environment_geometry():
         directly.
     """
     import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
 
     deps = _import_deps_for_rb()
     Mesh = deps["Mesh"]

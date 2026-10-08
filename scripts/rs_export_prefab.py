@@ -37,7 +37,7 @@ from core import joint_name_conventions as jnc
 from core import marker_points
 from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
 from core.joint_placement import block_orientation_tag
-from core.rhino_helpers import curve_endpoints
+from core.rhino_helpers import block_instance_xform, curve_endpoints
 from core.rhino_bar_registry import (
     get_all_bars,
     is_fake_bar,
@@ -58,12 +58,6 @@ def _bar_endpoints(curve_id):
 def _bar_length(curve_id):
     start, end = _bar_endpoints(curve_id)
     return round(float(np.linalg.norm(end - start)), 2)
-
-
-def _block_world(obj_id) -> np.ndarray:
-    """A block instance's world transform (document units, taken as mm)."""
-    xf = rs.BlockInstanceXform(obj_id)
-    return np.array([[xf[r, c] for c in range(4)] for r in range(4)], dtype=float)
 
 
 def _rotation_deg(joint_z, bar_frame) -> float:
@@ -194,7 +188,7 @@ def main():
 
             # All three exported quantities derived from world geometry
             try:
-                block_world = _block_world(obj_id)
+                block_world = block_instance_xform(obj_id)
             except Exception as exc:
                 errors.append(
                     f"Joint {joint_id} on {bid}: could not read transform ({exc})"

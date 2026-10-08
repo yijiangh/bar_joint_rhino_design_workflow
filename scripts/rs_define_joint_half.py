@@ -91,7 +91,7 @@ from core import joint_pick_helpers as _picks_module
 from core import marker_points
 from core.rhino_block_export import export_block_definition_to_3dm
 from core.rhino_block_obj_export import export_picked_meshes_to_obj_mm
-from core.rhino_helpers import delete_objects, suspend_redraw
+from core.rhino_helpers import delete_objects, doc_unit_scale_to_mm, suspend_redraw
 from core.transforms import (
     frame_from_x_and_y_hint,
     invert_transform,
@@ -377,7 +377,7 @@ def _pick_ground_tool_frame(block_id, selected, scale_to_mm):
 def main() -> None:
     _reload()
     rs.UnselectAllObjects()
-    scale_to_mm = picks.doc_unit_scale_to_mm()
+    scale_to_mm = doc_unit_scale_to_mm()
     print(f"{_DIALOG}: scale_to_mm = {scale_to_mm:g}")
 
     selected: list = []

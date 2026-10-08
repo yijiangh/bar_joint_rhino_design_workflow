@@ -13,22 +13,15 @@ from __future__ import annotations
 import contextlib
 
 import numpy as np
-import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
-from core.rhino_helpers import point_to_array
+from core.rhino_helpers import block_instance_xform, point_to_array
 
 
 # ---------------------------------------------------------------------------
 # Doc-unit scaling
 # ---------------------------------------------------------------------------
-
-
-def doc_unit_scale_to_mm() -> float:
-    return float(
-        Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters)
-    )
 
 
 def frame_to_mm(matrix: np.ndarray, scale_to_mm: float) -> np.ndarray:
@@ -100,17 +93,10 @@ def pick_meshes(prompt: str):
 
 
 def block_instance_frame(block_instance_id) -> tuple[np.ndarray, str]:
-    rh_obj = sc.doc.Objects.FindId(block_instance_id)
-    if rh_obj is None or not isinstance(rh_obj, Rhino.DocObjects.InstanceObject):
-        raise ValueError("Selected object is not a block instance.")
-    xform = rh_obj.InstanceXform
-    matrix = np.array(
-        [[xform[r, c] for c in range(4)] for r in range(4)],
-        dtype=float,
-    )
-    instance_def = rh_obj.InstanceDefinition
-    block_name = instance_def.Name if instance_def is not None else ""
-    return matrix, block_name
+    """``(world transform in doc units, block definition name)`` of a block
+    instance.  Raises ``ValueError`` when the object is not a block instance."""
+    matrix = block_instance_xform(block_instance_id)
+    return matrix, rs.BlockInstanceName(block_instance_id) or ""
 
 
 def screw_frame_world(block_instance_id, half) -> np.ndarray:

@@ -31,7 +31,7 @@ from core import ik_viz
 from core import robot_cell
 from core import robot_cell_support
 from core.rhino_block_import import has_block_definition
-from core.rhino_frame_io import doc_unit_scale_to_mm
+from core.rhino_helpers import doc_unit_scale_to_mm, np_mm_to_xform, xform_to_np_mm
 
 
 # ik_viz sub-layer (bundle) keys owned by the support flow. Distinct from the
@@ -43,40 +43,6 @@ SUPPORT_GHOST_LAYER_PREFIX = "SupportGhost"        # per-robot harvest bundles
 # ---------------------------------------------------------------------------
 # * Rhino <-> numpy helpers (doc units -> mm)
 # ---------------------------------------------------------------------------
-
-
-def rhino_xform_to_np_mm(xform):
-    """A Rhino Transform (doc units) as a 4x4 numpy matrix with mm translation.
-
-    Args:
-        xform (Rhino.Geometry.Transform): transform in document units.
-
-    Returns:
-        np.ndarray: 4x4 matrix, translation scaled to mm.
-    """
-    scale = doc_unit_scale_to_mm()
-    matrix = np.array([[float(xform[i, j]) for j in range(4)] for i in range(4)], dtype=float)
-    matrix[:3, 3] *= scale
-    return matrix
-
-
-def np_mm_to_rhino_xform(matrix: np.ndarray):
-    """A 4x4 numpy matrix (mm translation) as a Rhino Transform in doc units.
-
-    Args:
-        matrix (np.ndarray): 4x4 matrix, translation in mm.
-
-    Returns:
-        Rhino.Geometry.Transform: the same transform in document units.
-    """
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    doc_matrix = np.array(matrix, dtype=float, copy=True)
-    doc_matrix[:3, 3] *= scale_from_mm
-    xform = Rhino.Geometry.Transform(1.0)
-    for i in range(4):
-        for j in range(4):
-            xform[i, j] = float(doc_matrix[i, j])
-    return xform
 
 
 def point_to_mm(point) -> np.ndarray:
@@ -141,10 +107,10 @@ def bar_frame_doc_at_param(curve, t, heading_doc=None):
 def compose_grasp_to_tool0_doc_xform(grasp_xform_doc, gripper_kind: str = "Robotiq"):
     """Doc-unit transform placing the gripper block (origin == tool0) at the
     world tool0 frame, given a doc-unit grasp frame."""
-    grasp_mm = rhino_xform_to_np_mm(grasp_xform_doc)
+    grasp_mm = xform_to_np_mm(grasp_xform_doc)
     bar_grasp_to_tool0_mm = np.asarray(config.BAR_GRASP_TO_TOOL0[gripper_kind], dtype=float)
     tool0_mm = grasp_mm @ bar_grasp_to_tool0_mm
-    return np_mm_to_rhino_xform(tool0_mm)
+    return np_mm_to_xform(tool0_mm)
 
 
 def _world_from_base_doc_xform(origin_doc, normal_doc, heading_doc_vec):
@@ -450,7 +416,7 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
             return None, None
 
     grasp_xform_doc, _, _, _ = bar_frame_doc_at_param(bar_curve, t, heading_doc=heading_doc)
-    grasp_mm = rhino_xform_to_np_mm(grasp_xform_doc)
+    grasp_mm = xform_to_np_mm(grasp_xform_doc)
     tool0_mm = grasp_mm @ np.asarray(config.BAR_GRASP_TO_TOOL0[gripper_kind], dtype=float)
     return grasp_mm, tool0_mm
 

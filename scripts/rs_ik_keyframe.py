@@ -110,8 +110,12 @@ from core.rhino_bar_registry import (  # noqa: E402 -- must follow the reload
     show_sequence_colors,
     snapshot_object_colors,
 )
-from core.rhino_frame_io import doc_unit_scale_to_mm
-from core.rhino_helpers import suspend_redraw
+from core.rhino_helpers import doc_unit_scale_to_mm
+from core.rhino_helpers import (
+    block_instance_xform_mm,
+    np_mm_to_xform,
+    suspend_redraw,
+)
 from core.rhino_tool_place import find_tool_for_joint
 from core.robotic_tool import arm_side_from_tool_name, get_robotic_tool
 from core import joint_name_conventions as jnc
@@ -180,52 +184,6 @@ _reload_runtime_modules()
 # ---------------------------------------------------------------------------
 # Rhino <-> numpy helpers (doc units -> mm)
 # ---------------------------------------------------------------------------
-
-
-def _rhino_xform_to_np_mm(xform):
-    """Convert a Rhino transform to a 4x4 numpy matrix with translation in mm.
-
-    Args:
-        xform (Rhino.Geometry.Transform): a document-unit transform.
-
-    Returns:
-        np.ndarray: the same transform as a 4x4 float matrix, with the
-        translation column scaled from document units into millimeters.
-    """
-    scale = doc_unit_scale_to_mm()
-    matrix = np.array([[float(xform[i, j]) for j in range(4)] for i in range(4)], dtype=float)
-    matrix[:3, 3] *= scale  # translation -> mm
-    return matrix
-
-
-def _np_mm_to_rhino_xform(matrix: np.ndarray):
-    """Convert a 4x4 mm numpy matrix back into a document-unit Rhino transform.
-
-    Inverse of :func:`_rhino_xform_to_np_mm`: the translation column is scaled
-    from millimeters back into the document's units.
-
-    Args:
-        matrix (np.ndarray): a 4x4 transform with translation in mm.
-
-    Returns:
-        Rhino.Geometry.Transform: the equivalent transform in document units.
-    """
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    doc_matrix = np.array(matrix, dtype=float, copy=True)
-    doc_matrix[:3, 3] *= scale_from_mm
-    xform = Rhino.Geometry.Transform(1.0)
-    for i in range(4):
-        for j in range(4):
-            xform[i, j] = float(doc_matrix[i, j])
-    return xform
-
-
-def _block_instance_xform_mm(object_id) -> np.ndarray:
-    """Return the block instance's world transform as a 4x4 numpy matrix in mm."""
-    obj = rs.coercerhinoobject(object_id, True, True)
-    if not isinstance(obj, Rhino.DocObjects.InstanceObject):
-        raise RuntimeError(f"Object {object_id} is not a block instance.")
-    return _rhino_xform_to_np_mm(obj.InstanceXform)
 
 
 def _point_to_mm(point) -> np.ndarray:
@@ -1575,7 +1533,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                 f"at ({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
             )
             if viz is not None:
-                viz.set_ghost_xform(_np_mm_to_rhino_xform(base_frame))
+                viz.set_ghost_xform(np_mm_to_xform(base_frame))
             solved = ik_keyframe.solve_keyframe_chain(
                 planner,
                 ordered,
@@ -1726,8 +1684,8 @@ def _collect_target_context(
     extra_hidden_tools = _hide_inactive_tool_blocks(target_bar_id)
 
     # tool0 (flange frame) IS the tool block instance world transform.
-    tool0_left_final = _block_instance_xform_mm(left_tool_oid)
-    tool0_right_final = _block_instance_xform_mm(right_tool_oid)
+    tool0_left_final = block_instance_xform_mm(left_tool_oid)
+    tool0_right_final = block_instance_xform_mm(right_tool_oid)
     print(
         f"RSIKKeyframe: target Ln bar = {target_bar_id} "
         f"(left tool = {rs.BlockInstanceName(left_tool_oid)}, "
@@ -2392,7 +2350,7 @@ def _solve_support_pair_with_sampling(
                 f"({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
             )
             if viz is not None:
-                viz.set_ghost_xform(_np_mm_to_rhino_xform(base_frame))
+                viz.set_ghost_xform(np_mm_to_xform(base_frame))
             held_state = robot_cell_support.solve_support_ik(
                 sr_planner,
                 template_state,
@@ -2582,7 +2540,7 @@ def _run_support_flow(bar_id: str, bar_oid):
         if ghost_meshes is None:
             return
         gripper_ghost = dynamic_preview.MeshPreviewConduit(ghost_meshes, alpha=0.35)
-        gripper_ghost.update_xform(_np_mm_to_rhino_xform(tool0_mm))
+        gripper_ghost.update_xform(np_mm_to_xform(tool0_mm))
         gripper_ghost.Enabled = True
         sc.doc.Views.Redraw()
         if not _ask_accept_support(
@@ -2786,8 +2744,8 @@ def main():
     # Base-placement guides: drawn before the walkable-ground pick so they are on
     # screen for the whole base pick. The heading they are built on also fixes the
     # bar's L/R tool layout -- see below.
-    joint_a_mm = _block_instance_xform_mm(left_joint_oid)[:3, 3]
-    joint_b_mm = _block_instance_xform_mm(right_joint_oid)[:3, 3]
+    joint_a_mm = block_instance_xform_mm(left_joint_oid)[:3, 3]
+    joint_b_mm = block_instance_xform_mm(right_joint_oid)[:3, 3]
     guide_diag = _draw_base_guides_for_bar(
         target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm
     )
@@ -2944,7 +2902,7 @@ def main():
                     extra_meshes=reach_meshes,
                 )
                 base_ghost.Enabled = True
-                base_ghost.update_xform(_np_mm_to_rhino_xform(seed_base_frame))
+                base_ghost.update_xform(np_mm_to_xform(seed_base_frame))
                 try:
                     decision = _ask_save_base_or_continue()
                 finally:

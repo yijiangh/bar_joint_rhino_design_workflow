@@ -101,7 +101,6 @@ from core.single_sided_placement import is_single_sided_block, place_single_side
 from core.joint_pair import get_joint_pair, load_joint_registry, swapped_receiver
 from core.joint_pick_helpers import screw_frame_world
 from core.joint_placement import (
-    _numpy_to_rhino_transform,
     compute_variant_with_recovery,
     find_joint_blocks,
     place_joint_blocks,
@@ -120,7 +119,7 @@ from core.rhino_bar_registry import (
     reset_bar_color,
 )
 from core.rhino_block_import import require_block_definition
-from core.rhino_helpers import curve_endpoints
+from core.rhino_helpers import curve_endpoints, numpy_to_xform
 from core.transforms import align_vectors
 from core.rhino_tool_place import (
     cycle_tool_at_tool_instance,
@@ -538,7 +537,7 @@ def _run_move_joint():
         cur_start, cur_end = curve_endpoints(moving_curve)
         rs.TransformObject(
             moving_curve,
-            _numpy_to_rhino_transform(
+            numpy_to_xform(
                 _rigid_move_matrix(cur_start, cur_end, orig_start, orig_end)
             ),
         )
@@ -688,7 +687,7 @@ def _run_move_joint():
                 # instead of being dragged onto their centre-lines.
                 rs.TransformObject(
                     moving_curve,
-                    _numpy_to_rhino_transform(
+                    numpy_to_xform(
                         _rigid_move_matrix(
                             near_anchor, far_anchor, target_pt, landing
                         )

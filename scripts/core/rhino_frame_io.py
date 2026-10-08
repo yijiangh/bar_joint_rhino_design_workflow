@@ -10,19 +10,13 @@ millimeters.
 from __future__ import annotations
 
 import numpy as np
-import Rhino
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 from core.transforms import frame_from_axes, orthonormalize_rotation
 
 
 AXIS_OBJECT_NAMES = ("frame_x_axis", "frame_y_axis", "frame_z_axis")
 _LINE_TOL = 1e-6
-
-
-def doc_unit_scale_to_mm() -> float:
-    return float(Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Millimeters))
 
 
 def _point_to_mm(point, scale_to_mm: float) -> np.ndarray:

@@ -34,6 +34,7 @@ from core.joint_pair_solver import (
 from core.rhino_block_import import require_block_definition
 from core.rhino_helpers import (
     curve_endpoints,
+    numpy_to_xform,
     set_object_color,
     set_objects_layer,
     suspend_redraw,
@@ -89,16 +90,6 @@ def variant_flags(idx: int) -> tuple[bool, bool]:
 # ---------------------------------------------------------------------------
 
 
-def _numpy_to_rhino_transform(matrix):
-    import Rhino  # noqa: PLC0415
-
-    xform = Rhino.Geometry.Transform(1.0)
-    for row in range(4):
-        for col in range(4):
-            xform[row, col] = float(matrix[row, col])
-    return xform
-
-
 def insert_block_instance(
     block_name, frame, *, layer_name=None, color=None, subtype=None
 ):
@@ -113,7 +104,7 @@ def insert_block_instance(
     oid = rs.InsertBlock(block_name, [0, 0, 0])
     if oid is None:
         raise RuntimeError(f"Failed to insert Rhino block '{block_name}'.")
-    rs.TransformObject(oid, _numpy_to_rhino_transform(frame))
+    rs.TransformObject(oid, numpy_to_xform(frame))
     if layer_name:
         set_objects_layer(oid, layer_name)
     if color is not None:

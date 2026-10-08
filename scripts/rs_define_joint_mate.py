@@ -48,6 +48,7 @@ if SCRIPT_DIR not in sys.path:
 from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module
 from core import joint_pick_helpers as _picks_module
+from core.rhino_helpers import doc_unit_scale_to_mm
 
 
 def _reload():
@@ -85,7 +86,7 @@ def _ask_accept_edit(default_value_mm: float) -> float | None:
 def main() -> None:
     _reload()
     rs.UnselectAllObjects()
-    scale_to_mm = picks.doc_unit_scale_to_mm()
+    scale_to_mm = doc_unit_scale_to_mm()
     print(f"{_DIALOG}: scale_to_mm = {scale_to_mm:g}")
 
     registry = jp_mod.load_joint_registry()

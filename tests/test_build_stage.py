@@ -1,6 +1,6 @@
 """Tests for the pure build-stage resolution behind the persistent HideUnbuilt filter.
 
-Run with ``python -m pytest tests/test_build_stage.py -v``.  See ``docs/Su_note.md``
+Run with ``python -m pytest tests/test_build_stage.py -v``.  See ``docs/note.md``
 section 19 for what pytest, ``assert`` and ``@pytest.mark.parametrize`` actually do.
 
 ``core.build_stage`` imports nothing from Rhino, so these run in a plain terminal with

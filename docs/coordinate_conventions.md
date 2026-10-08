@@ -55,7 +55,14 @@ Joint blocks are Rhino block definitions. The geometry of a block is defined rel
 | **X** | Points towards one of the two possible directions of the bar's centerline. Defines orientation — see §4 |
 | **Y** | `bar_Z × bar_X` (right-handed) |
 
-The Z-axes of a correctly assembled female–male pair are anti-parallel and co-linear (screw enters from the male Z direction; female receives it from its own −Z direction).
+The Z-axes of a correctly assembled female–male pair are **parallel** and co-linear: the screw travels along the male's +Z into the female, and continues along the female's +Z. Measured on a solved `T20` pair (female bar along world X, male bar 36 mm above it): both blocks' +Z point straight down, and the vector from the female origin to the male origin has a negative component along the female's +Z — so a Female's +Z points **away from its male**, toward the back of the block.
+
+### MoCap joint
+
+`T20_MoCap` is a `T20_Female` with an OptiTrack marker plate bolted to its back. Its block frame follows the Female table above, so the plate faces along the block's **+Z** (the back, away from the male). A male screws into it exactly as into a Female.
+
+- It is placed either **paired** — the receiver of its Type's mate (`J40-53_mocap`, chosen at RSJointPlace's *Receiving joint* prompt) — or **standalone** on one bar (`M7-T20-0_mocap`, RSJointPlace › JointOnly). A standalone joint starts with its plate facing world +Z, or +X on a bar within 15° of vertical, and is turned about the bar with Rotate.
+- `marker_points_mm` in `joint_pairs.json` holds its marker-sphere centres, `{Motive label: [x, y, z]}`, in mm, in the **block's own frame**. A placed instance predicts them as `block_world @ point`; RSExportPrefab writes them in the bar frame of §5.
 
 ### Where a joint's Z actually points in the world — and why it can cancel
 
@@ -81,25 +88,36 @@ length + a minimum-horizontal filter) rather than being averaged blindly — see
 
 During design, the **single source of truth** for any joint's position and orientation is the **world transform of the block instance in the Rhino document**. Derived quantities such as `position_mm` and `rotation_deg` are computed from this transform at export time, they may be cached but are not considered as the authoritative record.
 
-Joint blocks are placed on two layers:
+Every joint block is named `<Type>_<Subtype>` (`T20_Female`, `T20_Male`, `T20_Ground`, `T20_MoCap`), and its layer, id, object name and collision key are derived from that name in `scripts/core/joint_name_conventions.py`. Joint blocks are placed on four layers, one per Subtype; **the layer is the authority for a placed block's role**:
 
-- `FemaleJointPlacedInstances`
-- `MaleJointPlacedInstances`
+- `MANAGED Scaffolding::Joint Female Instances`
+- `MANAGED Scaffolding::Joint Male Instances`
+- `MANAGED Scaffolding::Joint Ground Instances`
+- `MANAGED Scaffolding::Joint MoCap Instances`
 
-Each placed instance carries user text keys written by RSJointPlace:
+| Joint | Id | Object name |
+|---|---|---|
+| pair (receiver + male) | `J<receiver bar>-<male bar>`, e.g. `J40-53` | `J40-53_female` / `J40-53_mocap`, `J40-53_male` |
+| Ground | `G<bar>-<Type>-<i>`, e.g. `G4-T20-0` | `G4-T20-0_ground` |
+| standalone MoCap | `M<bar>-<Type>-<i>`, e.g. `M7-T20-0` | `M7-T20-0_mocap` |
+
+Each placed pair half carries user text keys written by RSJointPlace:
 
 | Key | Content | Authoritative? |
 |-----|---------|----------------|
 | `joint_id` | e.g. `J1-2` | ✓ |
-| `joint_type` | e.g. `T20` | ✓ |
-| `joint_subtype` | e.g. `Female` | ✓ |
+| `joint_type` | the block's Type, e.g. `T20` | ✓ |
+| `joint_subtype` | the block's Subtype, e.g. `Female`, `MoCap` (informational — the layer decides the role) | ✓ |
+| `joint_pair_name` | the mate it was placed from, e.g. `T20` (also for a MoCap receiver) | ✓ |
 | `parent_bar_id` | Bar this joint is mounted on | ✓ |
 | `connected_bar_id` | The other bar in the pair | ✓ |
-| `female_parent_bar` | Le bar ID (same for both blocks in a pair) | ✓ |
+| `female_parent_bar` | Le (receiver) bar ID (same for both blocks in a pair; named "female" also for a MoCap receiver) | ✓ |
 | `male_parent_bar` | Ln bar ID (same for both blocks in a pair) | ✓ |
 | `ori` | `"P"` or `"N"` — cached from placement, consistent with §5 | convenience |
 | `position_mm` | Cached from solver DOF (FJP/MJP). Matches §5 for female; may differ for male due to negated FK convention. **Not used by RSExportPrefab.** | convenience |
 | `rotation_deg` | Cached from solver DOF (FJR/MJR) in degrees. Uses a different zero reference than the geometric §5 convention. **Not used by RSExportPrefab.** | convenience |
+
+A single-sided block (Ground, standalone MoCap) carries `joint_id`, `joint_type`, `joint_subtype`, `block_name`, `parent_bar_id`, `position_mm`, `rotation_deg` and `flipped`, and no pair keys.
 
 RSExportPrefab ignores all cached convenience values and recomputes `position_mm`, `ori`, and `rotation_deg` fresh from the block's world transform (see §5).
 
@@ -143,6 +161,14 @@ rotation_deg = atan2(dot(cross(bar_X, proj), bar_Z), dot(bar_X, proj))
 
 At `rotation_deg = 0` the joint's assembly axis (Z) is aligned with the bar's X-axis.  
 Positive rotation is counter-clockwise about bar Z (right-hand rule).
+
+### `mocap` (MoCap joints only)
+
+```
+"mocap": {"paired": true, "markers_mm": {"M1": [x, y, z], ...}}
+```
+
+`paired` is false for a standalone MoCap joint. `markers_mm` are its marker-sphere centres in the bar frame used above — origin at `bar_start`, Z = `bar_Z`, X = `bar_X` (world Z × bar, or world X × bar for a near-vertical bar), Y = Z × X — rounded to 0.01 mm.
 
 ---
 

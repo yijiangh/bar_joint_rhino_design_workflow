@@ -39,6 +39,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import scaffold_json as sj
 from core.rhino_bar_registry import (
     BAR_GUID_KEY,
@@ -100,17 +101,13 @@ def _purge_previous_import(bar_oids):
 
     joint_oids = []
     joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            if rs.GetUserText(oid, "parent_bar_id") in bar_ids:
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in bar_ids:
                 joint_oids.append(oid)
-                joint_id = rs.GetUserText(oid, "joint_id")
+                joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
                 if joint_id:
                     joint_ids.add(joint_id)
 
@@ -119,7 +116,7 @@ def _purge_previous_import(bar_oids):
         tool_oids = [
             oid
             for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []
-            if rs.GetUserText(oid, "joint_id") in joint_ids
+            if rs.GetUserText(oid, jnc.UT_JOINT_ID) in joint_ids
         ]
 
     tube_oids = []
@@ -292,7 +289,7 @@ def main():
             if curve_id is None:
                 skipped.append(f"rod {rod['rod_id']} (Rhino refused to add the line)")
                 continue
-            bar_id = f"B{rod['rod_id']}"
+            bar_id = jnc.bar_id(rod["rod_id"])
             _register_bar(curve_id, bar_id, seq)
             _write_rod_user_text(
                 curve_id, rod, start_xyz, end_xyz, coupled.get(rod["rod_id"], [])

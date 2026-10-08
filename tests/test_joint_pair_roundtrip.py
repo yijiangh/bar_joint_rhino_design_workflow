@@ -228,8 +228,8 @@ def test_joint_pair_def_serialization_roundtrip(tmp_path):
 
 def _ground_def(**kwargs) -> GroundJointDef:
     return GroundJointDef(
-        name="T20Ground",
-        block_name="T20Ground",
+        name="T20_Ground",
+        block_name="T20_Ground",
         M_block_from_bar=np.eye(4),
         **kwargs,
     )

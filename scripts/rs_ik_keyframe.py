@@ -125,10 +125,15 @@ from core.rhino_bar_registry import (  # noqa: E402 -- must follow the reload
     show_sequence_colors,
     snapshot_object_colors,
 )
-from core.rhino_frame_io import doc_unit_scale_to_mm
-from core.rhino_helpers import suspend_redraw
+from core.rhino_helpers import doc_unit_scale_to_mm
+from core.rhino_helpers import (
+    block_instance_xform_mm,
+    np_mm_to_xform,
+    suspend_redraw,
+)
 from core.rhino_tool_place import find_tool_for_joint
 from core.robotic_tool import arm_side_from_tool_name, get_robotic_tool
+from core import joint_name_conventions as jnc
 # Base-frame math shared with the headless sampler. These are pure numpy (no
 # Rhino), so they live in the tamp `keyframe.walkable_ground` module and are
 # imported under the private names this script already uses at its call sites.
@@ -199,52 +204,6 @@ _reload_runtime_modules()
 # ---------------------------------------------------------------------------
 # Rhino <-> numpy helpers (doc units -> mm)
 # ---------------------------------------------------------------------------
-
-
-def _rhino_xform_to_np_mm(xform):
-    """Convert a Rhino transform to a 4x4 numpy matrix with translation in mm.
-
-    Args:
-        xform (Rhino.Geometry.Transform): a document-unit transform.
-
-    Returns:
-        np.ndarray: the same transform as a 4x4 float matrix, with the
-        translation column scaled from document units into millimeters.
-    """
-    scale = doc_unit_scale_to_mm()
-    matrix = np.array([[float(xform[i, j]) for j in range(4)] for i in range(4)], dtype=float)
-    matrix[:3, 3] *= scale  # translation -> mm
-    return matrix
-
-
-def _np_mm_to_rhino_xform(matrix: np.ndarray):
-    """Convert a 4x4 mm numpy matrix back into a document-unit Rhino transform.
-
-    Inverse of :func:`_rhino_xform_to_np_mm`: the translation column is scaled
-    from millimeters back into the document's units.
-
-    Args:
-        matrix (np.ndarray): a 4x4 transform with translation in mm.
-
-    Returns:
-        Rhino.Geometry.Transform: the equivalent transform in document units.
-    """
-    scale_from_mm = 1.0 / doc_unit_scale_to_mm()
-    doc_matrix = np.array(matrix, dtype=float, copy=True)
-    doc_matrix[:3, 3] *= scale_from_mm
-    xform = Rhino.Geometry.Transform(1.0)
-    for i in range(4):
-        for j in range(4):
-            xform[i, j] = float(doc_matrix[i, j])
-    return xform
-
-
-def _block_instance_xform_mm(object_id) -> np.ndarray:
-    """Return the block instance's world transform as a 4x4 numpy matrix in mm."""
-    obj = rs.coercerhinoobject(object_id, True, True)
-    if not isinstance(obj, Rhino.DocObjects.InstanceObject):
-        raise RuntimeError(f"Object {object_id} is not a block instance.")
-    return _rhino_xform_to_np_mm(obj.InstanceXform)
 
 
 def _point_to_mm(point) -> np.ndarray:
@@ -319,16 +278,13 @@ def _males_on_bar(bar_id):
     code that just consumes opaque block-instance oids.
     """
     out = []
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         out.extend(
             oid
             for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out
 
@@ -348,7 +304,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
     if len(males) != 2:
         # Name them: the count says the bar is wrong, the ids say which joints
         # to go and look at.
-        found = [rs.GetUserText(oid, "joint_id") or "<no joint_id>" for oid in males]
+        found = [rs.GetUserText(oid, jnc.UT_JOINT_ID) or "<no joint_id>" for oid in males]
         listed = ", ".join(sorted(found)) if found else "none"
         message = (
             f"Bar '{bar_id}' has {len(males)} tool-bearing joint block(s) "
@@ -372,8 +328,8 @@ def _resolve_arm_tools_on_bar(bar_oid):
     # motor on a ground bar; the screws tighten on a normal one).
     male_ids, ground_ids = [], []
     for moid in males:
-        jid = rs.GetUserText(moid, "joint_id") or str(moid)
-        if rs.ObjectLayer(moid) == config.LAYER_JOINT_GROUND_INSTANCES:
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID) or str(moid)
+        if rs.ObjectLayer(moid) == jnc.LAYER_GROUND:
             ground_ids.append(jid)
         else:
             male_ids.append(jid)
@@ -383,7 +339,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
 
     left = right = None
     for moid in males:
-        jid = rs.GetUserText(moid, "joint_id")
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
         if not jid:
             return None, f"Male block on bar '{bar_id}' is missing 'joint_id' user-text."
         toid = find_tool_for_joint(jid)
@@ -392,7 +348,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
                 f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed. "
                 "Run RSJointEdit / tool-cycle first."
             )
-        tname = rs.GetUserText(toid, "tool_name") or ""
+        tname = rs.GetUserText(toid, jnc.UT_TOOL_NAME) or ""
         side = arm_side_from_tool_name(tname)
         if side is None:
             return None, (
@@ -1398,21 +1354,18 @@ def _hide_inactive_tool_blocks(active_bar_id):
     if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
         return []
     active_joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             if (
-                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-                and rs.GetUserText(oid, "joint_id")
+                rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
+                and rs.GetUserText(oid, jnc.UT_JOINT_ID)
             ):
-                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
+                active_joint_ids.add(rs.GetUserText(oid, jnc.UT_JOINT_ID))
     hidden = []
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        jid = rs.GetUserText(oid, "joint_id")
+        jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if jid in active_joint_ids:
             continue
         if rs.IsObjectHidden(oid):
@@ -1614,7 +1567,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                 f"at ({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
             )
             if viz is not None:
-                viz.set_ghost_xform(_np_mm_to_rhino_xform(base_frame))
+                viz.set_ghost_xform(np_mm_to_xform(base_frame))
             solved = ik_keyframe.solve_keyframe_chain(
                 planner,
                 ordered,
@@ -1765,8 +1718,8 @@ def _collect_target_context(
     extra_hidden_tools = _hide_inactive_tool_blocks(target_bar_id)
 
     # tool0 (flange frame) IS the tool block instance world transform.
-    tool0_left_final = _block_instance_xform_mm(left_tool_oid)
-    tool0_right_final = _block_instance_xform_mm(right_tool_oid)
+    tool0_left_final = block_instance_xform_mm(left_tool_oid)
+    tool0_right_final = block_instance_xform_mm(right_tool_oid)
     print(
         f"RSIKKeyframe: target Ln bar = {target_bar_id} "
         f"(left tool = {rs.BlockInstanceName(left_tool_oid)}, "
@@ -2438,7 +2391,7 @@ def _solve_support_pair_with_sampling(
                 f"({origin[0]:.1f}, {origin[1]:.1f}, {origin[2]:.1f}) mm ..."
             )
             if viz is not None:
-                viz.set_ghost_xform(_np_mm_to_rhino_xform(base_frame))
+                viz.set_ghost_xform(np_mm_to_xform(base_frame))
             # Held first; the approach is seeded from it (same branch, short move).
             held_state, approach_state = hold_action_builder.solve_hold_pair(
                 sr_planner, template_state, held_bar_id, base_frame, tool0_grasp_mm,
@@ -2603,7 +2556,7 @@ def _run_support_flow(bar_id: str, bar_oid):
         if ghost_meshes is None:
             return
         gripper_ghost = dynamic_preview.MeshPreviewConduit(ghost_meshes, alpha=0.35)
-        gripper_ghost.update_xform(_np_mm_to_rhino_xform(tool0_mm))
+        gripper_ghost.update_xform(np_mm_to_xform(tool0_mm))
         gripper_ghost.Enabled = True
         sc.doc.Views.Redraw()
         if not _ask_accept_support(
@@ -2807,8 +2760,8 @@ def main():
     # Base-placement guides: drawn before the walkable-ground pick so they are on
     # screen for the whole base pick. The heading they are built on also fixes the
     # bar's L/R tool layout -- see below.
-    joint_a_mm = _block_instance_xform_mm(left_joint_oid)[:3, 3]
-    joint_b_mm = _block_instance_xform_mm(right_joint_oid)[:3, 3]
+    joint_a_mm = block_instance_xform_mm(left_joint_oid)[:3, 3]
+    joint_b_mm = block_instance_xform_mm(right_joint_oid)[:3, 3]
     guide_diag = _draw_base_guides_for_bar(
         target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm
     )
@@ -2966,7 +2919,7 @@ def main():
                     extra_meshes=reach_meshes,
                 )
                 base_ghost.Enabled = True
-                base_ghost.update_xform(_np_mm_to_rhino_xform(seed_base_frame))
+                base_ghost.update_xform(np_mm_to_xform(seed_base_frame))
                 try:
                     decision = _ask_save_base_or_continue()
                 finally:

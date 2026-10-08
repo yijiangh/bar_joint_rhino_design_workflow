@@ -86,6 +86,7 @@ from core import rhino_tool_place as _rhino_tool_place_module
 from husky_assembly_tamp.keyframe import walkable_ground as _wg_np_module
 from core import rhino_walkable_ground as _rwg_module
 from core.rhino_bar_pick import bar_or_tube_filter, resolve_picked_to_bar_curve
+from core.rhino_helpers import block_instance_xform_mm
 # IK preview colors + the show helper live in rhino_bar_registry (single source of
 # truth, shared with RSUpdatePreview / RSClearColorPreview) -- see that module's
 # "IK color preview" section. This command paints the same COLOR_HAS_IK /
@@ -100,7 +101,7 @@ from core.rhino_bar_registry import (
 
 
 # Bound at import so the helpers below work even before main() runs; main()
-# rebinds them to freshly reloaded copies (the Su_note.md 9 reload idiom).
+# rebinds them to freshly reloaded copies (the note.md 9 reload idiom).
 base_guide_geom = _base_guide_geom_module
 base_guide_viz = _base_guide_viz_module
 rhino_tool_place = _rhino_tool_place_module
@@ -148,8 +149,8 @@ def _assembly_joint_centers_mm(left, right):
     the robot grabs, so these two points are what the base guide lines join and
     what their midpoint (the base's reference point) is taken from.
     """
-    origin_l = ikf._block_instance_xform_mm(left[0])[:3, 3]
-    origin_r = ikf._block_instance_xform_mm(right[0])[:3, 3]
+    origin_l = block_instance_xform_mm(left[0])[:3, 3]
+    origin_r = block_instance_xform_mm(right[0])[:3, 3]
     return (np.asarray(origin_l, dtype=float), np.asarray(origin_r, dtype=float))
 
 
@@ -214,8 +215,8 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
 def _solve_one(planner, rcell, ctx, include_self, include_env):
     """Solve one bar's IK chain once at its placed base. Return True on success."""
     bar_id, curve, base_frame, left_tool_oid, right_tool_oid, _diag = ctx
-    tool0_left = ikf._block_instance_xform_mm(left_tool_oid)
-    tool0_right = ikf._block_instance_xform_mm(right_tool_oid)
+    tool0_left = block_instance_xform_mm(left_tool_oid)
+    tool0_right = block_instance_xform_mm(right_tool_oid)
     try:
         jointing_mvts, release_mvts, _env_geom = ikf.bar_action.build_split_assembly_movements(
             rcell, planner, bar_id, base_frame, tool0_left, tool0_right,
@@ -550,7 +551,7 @@ def main():
 
     # Place a base on every processable bar (fast); collect prerequisite failures.
     # One shared soup cache: tessellating a WalkableGround brep is the expensive
-    # step and every bar would otherwise redo it (see Su_note.md 14).
+    # step and every bar would otherwise redo it (see note.md 14).
     grounds = rwg.get_all_walkable_grounds()
     soup_cache = {}
     placed = []   # (bar_id, curve, base_frame, left_tool, right_tool, diag)

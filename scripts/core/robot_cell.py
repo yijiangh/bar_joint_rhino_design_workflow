@@ -37,6 +37,7 @@ import time
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 # Tool registry: the L/R naming rule + the active candidate pair. Rhino-free,
 # so importing at the top keeps this module headless-importable.
 from core.robotic_tool import (
@@ -673,7 +674,7 @@ def _live_assembly_fingerprint():
             pass
     n_joints = 0
     # The naming inputs of `env_collision.collect_assembly_geometry`: bar ids
-    # plus each joint block's id / subtype-or-type / parent bar. Plain user-text
+    # plus each joint block's id / layer Subtype / parent bar. Plain user-text
     # reads, no meshes -- cheap enough for the every-command staleness probe.
     # The FAKE mark rides along because a fake bar (and its joint halves) is
     # dropped from the collision scene, so toggling it changes the scene while
@@ -688,22 +689,16 @@ def _live_assembly_fingerprint():
         f"@{rs.GetUserText(oid, config.KEY_BAR_WALKABLE_GROUND_IDS) or ''}"
         for bid, (oid, _seq) in seq_map.items()
     )
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         if rs.IsLayer(layer):
             joint_oids = rs.ObjectsByLayer(layer) or []
             n_joints += len(joint_oids)
+            # The collision key's suffix comes from the layer, so the layer's
+            # Subtype is what the fingerprint must track.
+            subtype = jnc.subtype_of_layer(layer)
             for joint_oid in joint_oids:
-                jid = rs.GetUserText(joint_oid, "joint_id") or ""
-                subtype = (
-                    rs.GetUserText(joint_oid, "joint_subtype")
-                    or rs.GetUserText(joint_oid, "joint_type")
-                    or ""
-                )
-                parent = rs.GetUserText(joint_oid, "parent_bar_id") or ""
+                jid = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID) or ""
+                parent = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) or ""
                 name_parts.append(f"{jid}:{subtype}:{parent}")
     n_env = (
         len(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or [])

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core import config
+from core import joint_name_conventions as jnc
 from core import robot_cell
 # Body kinds that exist at every assembly step (obstacles, floors).
 from core.env_collision import STATIC_KINDS
@@ -59,7 +59,7 @@ def mixed_ground_male_error(bar_id: str, male_joint_ids, ground_joint_ids):
         f"male joint(s) {sorted(male_joint_ids)}. A bar is either a ground bar "
         "(two ground joints, no jointing motor, the operator fixes the "
         "foundation) or a normal bar (two male joints) -- not both. Fix the "
-        "joints on this bar (RSJointEdit / RSGroundPlace)."
+        "joints on this bar (RSJointEdit, or RSJointPlace > JointOnly for ground joints)."
     )
 
 
@@ -77,16 +77,18 @@ def _anchor_blocks_on_bar(bar_id: str) -> dict:
     import rhinoscriptsyntax as rs
 
     out = {"male": [], "ground": []}
+    # The layer a block sits on is what decides its kind (see
+    # core.joint_name_conventions); the two tool-bearing kinds only.
     for kind, layer in (
-        ("male", config.LAYER_JOINT_MALE_INSTANCES),
-        ("ground", config.LAYER_JOINT_GROUND_INSTANCES),
+        ("male", jnc.LAYER_MALE),
+        ("ground", jnc.LAYER_GROUND),
     ):
         if not rs.IsLayer(layer):
             continue
         out[kind].extend(
             oid
             for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out
 
@@ -134,13 +136,13 @@ def resolve_arm_tools_on_bar(bar_id: str):
         )
     sides = {"left": None, "right": None}
     for moid in males:
-        jid = rs.GetUserText(moid, "joint_id")
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
         if not jid:
             return None, f"Joint block on bar '{bar_id}' missing 'joint_id'."
         toid = find_tool_for_joint(jid)
         if toid is None:
             return None, f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed."
-        side = arm_side_from_tool_name(rs.GetUserText(toid, "tool_name") or "")
+        side = arm_side_from_tool_name(rs.GetUserText(toid, jnc.UT_TOOL_NAME) or "")
         if side is None:
             return None, f"Tool on joint '{jid}' has no L/R suffix; cannot decide arm side."
         if sides[side] is not None:
@@ -168,7 +170,7 @@ def resolve_tool_collision_paths(left_tool_oid, right_tool_oid):
 
     out = {"left": "", "right": ""}
     for side, oid in (("left", left_tool_oid), ("right", right_tool_oid)):
-        tname = rs.GetUserText(oid, "tool_name") or ""
+        tname = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
         if not tname:
             continue
         try:

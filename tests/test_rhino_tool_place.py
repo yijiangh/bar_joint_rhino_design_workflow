@@ -62,7 +62,7 @@ def _side_fixture(monkeypatch, tool_by_joint):
     deterministic rule must hand ``G1-0`` the document default's side.
     Returns the list that records ``(joint_id, tool_name)`` re-placements.
     """
-    from core import config
+    from core import joint_name_conventions as jnc
 
     user_text = {
         "j-near": {"joint_id": "G1-0", "parent_bar_id": "B1", "position_mm": "100.0"},
@@ -73,8 +73,8 @@ def _side_fixture(monkeypatch, tool_by_joint):
     # The male layer is empty; both joints are ground joints on one bar. Listing
     # the far joint FIRST is the point: the result must not depend on this order.
     by_layer = {
-        config.LAYER_JOINT_MALE_INSTANCES: [],
-        config.LAYER_JOINT_GROUND_INSTANCES: ["j-far", "j-near"],
+        jnc.LAYER_MALE: [],
+        jnc.LAYER_GROUND: ["j-far", "j-near"],
     }
 
     fake_rs = SimpleNamespace(
@@ -206,8 +206,8 @@ def test_find_detached_tools_reports_a_tool_that_drifted_off_its_joint(monkeypat
     block_world = _translation(100.0)
 
     # `tool_attach_offset` also asks the JOINT block (b-J1-2 / b-J3-4) for its
-    # `ground_joint_name`, so every lookup must tolerate an unknown oid/key and
-    # answer "" -- which is exactly the male-joint path: no name -> identity.
+    # `block_name`, so every lookup must tolerate an unknown oid/key and answer
+    # "" -- which is exactly the male-joint path: no ground block -> identity.
     fake_rs = SimpleNamespace(
         IsLayer=lambda name: name == config.LAYER_TOOL_INSTANCES,
         ObjectsByLayer=lambda _name: ["t-attached", "t-flying"],
@@ -215,7 +215,6 @@ def test_find_detached_tools_reports_a_tool_that_drifted_off_its_joint(monkeypat
         GetUserText=lambda oid, key: {
             "joint_id": {"t-attached": "J1-2", "t-flying": "J3-4"}.get(oid, ""),
             "tool_name": "AT4L",
-            "ground_joint_name": "",
         }.get(key, ""),
     )
     monkeypatch.setitem(sys.modules, "rhinoscriptsyntax", fake_rs)
@@ -303,8 +302,8 @@ def _write_registry(tmp_path, ground_entry):
 
     path = tmp_path / "joint_pairs.json"
     entry = {
-        "name": "T20Ground",
-        "block_name": "T20Ground",
+        "name": "T20_Ground",
+        "block_name": "T20_Ground",
         "M_block_from_bar": _identity().tolist(),
     }
     entry.update(ground_entry)
@@ -321,7 +320,7 @@ def test_ground_tool_attach_offset_reads_the_stored_rotation(tmp_path):
 
     path = _write_registry(tmp_path, {"M_tool_from_block": _rz(np.pi).tolist()})
 
-    offset = rhino_tool_place.ground_tool_attach_offset("T20Ground", path)
+    offset = rhino_tool_place.ground_tool_attach_offset("T20_Ground", path)
 
     assert np.allclose(offset, _rz(np.pi), atol=1e-12)
     # Pure rotation: the TCP stays on the block origin, so joint_relink's
@@ -336,7 +335,7 @@ def test_ground_tool_attach_offset_defaults_to_identity_for_a_legacy_entry(tmp_p
     path = _write_registry(tmp_path, {})
 
     assert np.allclose(
-        rhino_tool_place.ground_tool_attach_offset("T20Ground", path), _identity()
+        rhino_tool_place.ground_tool_attach_offset("T20_Ground", path), _identity()
     )
 
 
@@ -352,7 +351,7 @@ def test_ground_tool_attach_offset_is_identity_for_unknown_and_empty_names(tmp_p
 
 
 def test_tool_attach_offset_is_identity_for_a_male_block(monkeypatch):
-    """Male/female blocks carry no `ground_joint_name` -> untouched behaviour."""
+    """Male blocks carry no `block_name` user text -> untouched behaviour."""
     import numpy as np
 
     monkeypatch.setitem(
@@ -372,7 +371,7 @@ def test_clear_tool_attach_cache_picks_up_a_registry_edit(tmp_path):
 
     path = _write_registry(tmp_path, {"M_tool_from_block": _rz(np.pi).tolist()})
     assert np.allclose(
-        rhino_tool_place.ground_tool_attach_offset("T20Ground", path), _rz(np.pi)
+        rhino_tool_place.ground_tool_attach_offset("T20_Ground", path), _rz(np.pi)
     )
 
     data = json.loads(open(path, encoding="utf-8").read())
@@ -381,7 +380,7 @@ def test_clear_tool_attach_cache_picks_up_a_registry_edit(tmp_path):
     rhino_tool_place.clear_tool_attach_cache()
 
     assert np.allclose(
-        rhino_tool_place.ground_tool_attach_offset("T20Ground", path), _identity()
+        rhino_tool_place.ground_tool_attach_offset("T20_Ground", path), _identity()
     )
 
 

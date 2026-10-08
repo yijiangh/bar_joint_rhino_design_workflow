@@ -141,7 +141,8 @@ display materials, not object colours, so they vanish when the conduit closes:
 | green | `60, 200, 90` | WalkableGround highlight | [rs_assign_and_show_walkable_ground.py:87](scripts/rs_assign_and_show_walkable_ground.py#L87) |
 | green | `60, 200, 90` | WalkableGround highlight (**duplicated constant**) | [rs_show_bar_action_plan.py:86](scripts/rs_show_bar_action_plan.py#L86) |
 | green | `60, 179, 60` | env geometry highlighted for IK | [highlight_env.py:22](scripts/core/highlight_env.py#L22) |
-| amber | `180, 120, 60` | ground joint preview | [ground_placement.py:84](scripts/core/ground_placement.py#L84) |
+| amber | `180, 120, 60` | Ground joint preview (RSJointPlace › JointOnly) | [single_sided_placement.py:56](scripts/core/single_sided_placement.py#L56) |
+| steel blue | `60, 150, 200` | standalone MoCap joint preview (RSJointPlace › JointOnly) | [single_sided_placement.py:57](scripts/core/single_sided_placement.py#L57) |
 
 ## Joint / bar placement previews
 
@@ -149,10 +150,28 @@ display materials, not object colours, so they vanish when the conduit closes:
 
 | Colour | RGB | Meaning | Defined at |
 | --- | --- | --- | --- |
-| red / blue / green / amber | `230,80,80` · `80,80,230` · `80,200,80` · `200,160,50` | joint variant 0-3 | [joint_placement.py:55-60](scripts/core/joint_placement.py#L55-L60) |
+| red / blue / green / amber | `230,80,80` · `80,80,230` · `80,200,80` · `200,160,50` | joint variant 0-3 | [joint_placement.py:48-53](scripts/core/joint_placement.py#L48-L53) |
 | red / blue / green / amber | same four | brace candidate index | [rs_bar_brace.py:64-69](scripts/rs_bar_brace.py#L64-L69) |
 | red / blue / green / amber | same four | subfloor candidate index | [rs_bar_subfloor.py:79](scripts/rs_bar_subfloor.py#L79) |
 | blue | `30, 100, 220` | selected bar | [config.py:86](scripts/core/config.py#L86) |
+
+### Joint LAYER colours — the resting look of a baked joint
+
+Not a state, and not a preview: this is the by-layer colour a placed joint block
+renders in once it is committed. Applied by `enforce_managed_layers`, so every
+command entry re-asserts them.
+
+| Colour | RGB | Layer | Defined at |
+| --- | --- | --- | --- |
+| near-white | `230, 230, 230` | Joint Female Instances | [rhino_bar_registry.py:1647](scripts/core/rhino_bar_registry.py#L1647) |
+| mid grey | `105, 105, 105` | Joint Male Instances | [rhino_bar_registry.py:1646](scripts/core/rhino_bar_registry.py#L1646) |
+| warm grey | `200, 185, 170` | Joint Ground Instances | [rhino_bar_registry.py:1648](scripts/core/rhino_bar_registry.py#L1648) |
+| pale green-grey | `200, 220, 210` | Joint MoCap Instances | [rhino_bar_registry.py:1649](scripts/core/rhino_bar_registry.py#L1649) |
+
+The ground layer used to be amber `180, 120, 60`; it was muted to a warm grey when
+the MoCap layer was added, so the four joint roles read as one family. The amber is
+still in use for the ground *preview* (see [Ground and environment](#ground-and-environment)) —
+the preview is a transient state, the layer colour is the resting look.
 
 ## Robotic tools
 

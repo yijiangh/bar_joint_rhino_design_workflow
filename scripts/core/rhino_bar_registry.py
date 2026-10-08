@@ -18,6 +18,7 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.build_stage import (
     BUILD_STAGE_KEY,
     STATUS_CLEAR,
@@ -86,16 +87,6 @@ _POINT_TOL = 1e-3  # mm tolerance for endpoint cache comparison
 # ---------------------------------------------------------------------------
 
 
-def _parse_bar_number(bar_id):
-    """Extract integer from a bar_id like 'B7' → 7.  Return None on failure."""
-    if not bar_id or not bar_id.upper().startswith("B"):
-        return None
-    try:
-        return int(bar_id[1:])
-    except (ValueError, IndexError):
-        return None
-
-
 def _parse_bar_seq(s):
     """Parse a stored sequence string to int, or None on failure."""
     if not s:
@@ -111,10 +102,10 @@ def next_bar_id():
     max_num = 0
     for oid in rs.AllObjects():
         if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-            num = _parse_bar_number(rs.GetUserText(oid, BAR_ID_KEY))
+            num = jnc.bar_number(rs.GetUserText(oid, BAR_ID_KEY))
             if num is not None and num > max_num:
                 max_num = num
-    return f"B{max_num + 1}"
+    return jnc.bar_id(max_num + 1)
 
 
 def next_bar_seq():
@@ -347,7 +338,7 @@ def repair_bar_sequences():
         if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
             continue
         bar_id = rs.GetUserText(oid, BAR_ID_KEY)
-        bar_id_num = _parse_bar_number(bar_id) or 0
+        bar_id_num = jnc.bar_number(bar_id) or 0
         old_seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
         bar_data.append((oid, bar_id, bar_id_num, old_seq))
 
@@ -778,13 +769,9 @@ def _bar_curve_and_tube(curve_id, tube_index=None):
 
 
 def _joint_layer_objects():
-    """All joint block instance ids on the female + male + ground layers."""
+    """All joint block instance ids, every joint role."""
     out = []
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         if rs.IsLayer(layer):
             out.extend(rs.ObjectsByLayer(layer) or [])
     return out
@@ -808,24 +795,21 @@ def get_active_tool_oids(active_bar_id):
     if not active_bar_id:
         return []
     active_joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             if (
-                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-                and rs.GetUserText(oid, "joint_id")
+                rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
+                and rs.GetUserText(oid, jnc.UT_JOINT_ID)
             ):
-                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
+                active_joint_ids.add(rs.GetUserText(oid, jnc.UT_JOINT_ID))
     if not active_joint_ids:
         return []
     return [
         oid
         for oid in _tool_layer_objects()
-        if rs.GetUserText(oid, "joint_id") in active_joint_ids
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) in active_joint_ids
     ]
 
 
@@ -1088,7 +1072,7 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
     # by-object color on the block instance lets nested sub-objects that
     # are set to "by parent" inherit it automatically.
     for joint_oid in _joint_layer_objects():
-        parent_bar_id = rs.GetUserText(joint_oid, "parent_bar_id")
+        parent_bar_id = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
         visible = bar_visible_by_id.get(parent_bar_id, True)
         color = bar_color_by_id.get(parent_bar_id)
         if color is not None:
@@ -1267,22 +1251,22 @@ def apply_build_stage_visibility(caller=None, verbose=True):
             if not visible:
                 n_hidden += 1
 
-        # Joints, one pass over the three layers.  Iterated per layer rather than
+        # Joints, one pass over every joint layer.  Iterated per layer rather than
         # through _joint_layer_objects() because we need to know WHICH layer each
-        # instance came from: only the male/ground halves answer "whose tool is
-        # this?" (see get_active_tool_oids), and the female half would give the
+        # instance came from: only the tool-bearing halves answer "whose tool is
+        # this?" (see get_active_tool_oids), and a receiving half would give the
         # opposite answer for the same joint_id.
         tool_owner_bar_by_joint_id = {}
-        for layer in (
-            config.LAYER_JOINT_FEMALE_INSTANCES,
-            config.LAYER_JOINT_MALE_INSTANCES,
-            config.LAYER_JOINT_GROUND_INSTANCES,
-        ):
+        for layer in jnc.JOINT_LAYERS:
             if not rs.IsLayer(layer):
                 continue
-            is_tool_side = layer != config.LAYER_JOINT_FEMALE_INSTANCES
+            # Asked positively, against the tool-bearing set.  Phrased as
+            # "anything but the female layer" this silently made every NEW role
+            # a tool owner -- a mocap half would have claimed its joint's tool
+            # and dragged tool visibility onto the wrong bar.
+            is_tool_side = layer in jnc.TOOL_BEARING_LAYERS
             for joint_oid in rs.ObjectsByLayer(layer) or []:
-                parent_bar_id = rs.GetUserText(joint_oid, "parent_bar_id")
+                parent_bar_id = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
                 # Unknown parent -> leave visible.  An orphaned joint that is also
                 # invisible is one the user can never find and fix.
                 visible = bar_visible_by_id.get(parent_bar_id, True)
@@ -1290,14 +1274,14 @@ def apply_build_stage_visibility(caller=None, verbose=True):
                 if not visible:
                     n_hidden += 1
                 if is_tool_side:
-                    joint_id = rs.GetUserText(joint_oid, "joint_id")
+                    joint_id = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID)
                     if joint_id:
                         tool_owner_bar_by_joint_id[joint_id] = parent_bar_id
 
         # Tools follow the bar owning their male/ground half.
         for tool_oid in _tool_layer_objects():
             owner_bar_id = tool_owner_bar_by_joint_id.get(
-                rs.GetUserText(tool_oid, "joint_id")
+                rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
             )
             visible = bar_visible_by_id.get(owner_bar_id, True)
             _set_visible(tool_oid, visible)
@@ -1651,7 +1635,7 @@ def _enforce_joint_layer(caller, layer):
     strays = [
         oid
         for oid in (rs.ObjectsByLayer(layer) or [])
-        if not rs.GetUserText(oid, "joint_id")
+        if not rs.GetUserText(oid, jnc.UT_JOINT_ID)
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
 
@@ -1663,7 +1647,7 @@ def _enforce_tool_layer(caller, layer):
     strays = [
         oid
         for oid in (rs.ObjectsByLayer(layer) or [])
-        if not rs.GetUserText(oid, "tool_id")
+        if not rs.GetUserText(oid, jnc.UT_TOOL_ID)
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
 
@@ -1675,9 +1659,10 @@ def enforce_managed_layers(caller="RSScaffolding"):
     user is prompted."""
     # Ensure the default + all managed layers exist and are visible.
     _JOINT_LAYER_COLORS = {
-        config.LAYER_JOINT_MALE_INSTANCES: (105, 105, 105),
-        config.LAYER_JOINT_FEMALE_INSTANCES: (230, 230, 230),
-        config.LAYER_JOINT_GROUND_INSTANCES: (180, 120, 60),
+        jnc.LAYER_MALE: (105, 105, 105),
+        jnc.LAYER_FEMALE: (230, 230, 230),
+        jnc.LAYER_GROUND: (200, 185, 170),
+        jnc.LAYER_MOCAP: (200, 220, 210),
     }
     ensure_layer(config.DEFAULT_LAYER)
     ensure_layer(config.MANAGED_LAYER_ROOT)
@@ -1686,9 +1671,8 @@ def enforce_managed_layers(caller="RSScaffolding"):
     # Sweep each managed sublayer.
     _enforce_tube_layer(caller)
     _enforce_centerline_layer(caller)
-    _enforce_joint_layer(caller, config.LAYER_JOINT_FEMALE_INSTANCES)
-    _enforce_joint_layer(caller, config.LAYER_JOINT_MALE_INSTANCES)
-    _enforce_joint_layer(caller, config.LAYER_JOINT_GROUND_INSTANCES)
+    for layer in jnc.JOINT_LAYERS:
+        _enforce_joint_layer(caller, layer)
     _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
 
 
@@ -1710,7 +1694,13 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
     3 both *show* things (``enforce_managed_layers`` force-shows every managed
     layer, and a regenerated tube is born visible), so the filter has to run last
     or the unbuilt parts leak back one command later.
+
+    Before all of that, documents saved before the ``<Type>_<Subtype>`` naming
+    rule get their legacy joint names rewritten (``core.joint_name_migration``).
     """
+    from core.joint_name_migration import migrate_legacy_joint_names  # noqa: PLC0415
+
+    migrate_legacy_joint_names(caller)
     enforce_managed_layers(caller)
     changed = repair_bar_sequences()
     n = update_all_previews(bar_radius)

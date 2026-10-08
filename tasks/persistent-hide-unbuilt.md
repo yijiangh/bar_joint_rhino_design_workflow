@@ -134,7 +134,7 @@ Recorded so nobody re-does work that was deliberately undone.
 | 10 | registry — tube creation chokepoint | landed `3c46b98` |
 | **11** | `rs_reorder_bar_id.py` — remap the stage bar id | **not started** |
 | **12** | `rs_create_bar.py`, `rs_import_scaffold_json.py` — warnings | **not started** |
-| 13 | `Su_note.md` §20 done; **`rhino_toolbar_entrypoints.md` not started** | partial |
+| 13 | `note.md` §20 done; **`rhino_toolbar_entrypoints.md` not started** | partial |
 | 14 | `tests/test_build_stage.py` — 24 tests | landed `3c46b98` |
 
 **Nothing has been verified in Rhino yet**, and nothing is committed.

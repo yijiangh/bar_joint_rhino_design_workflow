@@ -36,7 +36,7 @@ Storage locations rewritten (all inside the Rhino doc):
 - Bar centerline curve: ``bar_id`` user-text, ObjectName, ``bar_seq``
 - Tube preview Brep: ``tube_bar_id`` user-text
 - Bar centerline curve: ``supported_until`` comma-list (per-token remap)
-- Joint female/male block instance: ``parent_bar_id``, ``connected_bar_id``,
+- Joint receiver/male block instance: ``parent_bar_id``, ``connected_bar_id``,
   ``female_parent_bar``, ``male_parent_bar``, ``joint_id``, ObjectName
 - Ground block instance: ``parent_bar_id``, ``joint_id``, ObjectName
 - Robotic tool block instance: ``joint_id``, ``tool_id``, ObjectName
@@ -55,6 +55,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import joint_relink
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
@@ -67,6 +68,7 @@ from core.rhino_bar_registry import (
     repair_on_entry,
 )
 from core.rhino_helpers import suspend_redraw
+from core.single_sided_placement import is_single_sided_block
 
 
 _PRINT_CAP = 30
@@ -95,12 +97,7 @@ def _assert_seqs_tight(seq_map, all_bars):
 
 def _build_bar_rename(seq_map):
     """seq_map: {bar_id: (oid, seq)}.  Returns {old_bar_id: new_bar_id}."""
-    return {bid: f"B{seq}" for bid, (_, seq) in seq_map.items()}
-
-
-def _num(bar_id):
-    """'B7' -> '7'.  Caller must guarantee bar_id is valid."""
-    return bar_id.lstrip("B")
+    return {bid: jnc.bar_id(seq) for bid, (_, seq) in seq_map.items()}
 
 
 def _layers_for(*names):
@@ -108,19 +105,23 @@ def _layers_for(*names):
 
 
 def _iter_joint_block_oids():
-    """All female + male joint instance object IDs (oids)."""
+    """Halves placed by a mate: receiver (Female / MoCap) + Male, ``J…`` ids."""
     out = []
-    for layer in _layers_for(
-        config.LAYER_JOINT_FEMALE_INSTANCES, config.LAYER_JOINT_MALE_INSTANCES
-    ):
-        out.extend(rs.ObjectsByLayer(layer) or [])
+    for layer in _layers_for(*jnc.PAIRED_LAYERS):
+        out.extend(
+            oid for oid in rs.ObjectsByLayer(layer) or [] if not is_single_sided_block(oid)
+        )
     return out
 
 
-def _iter_ground_block_oids():
-    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
-        return []
-    return list(rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or [])
+def _iter_single_sided_block_oids():
+    """Ground blocks, and MoCap blocks placed alone on a bar (``M…`` ids)."""
+    out = []
+    for layer in _layers_for(*jnc.SINGLE_SIDED_LAYERS):
+        out.extend(
+            oid for oid in rs.ObjectsByLayer(layer) or [] if is_single_sided_block(oid)
+        )
+    return out
 
 
 def _iter_tool_block_oids():
@@ -138,17 +139,18 @@ def _build_joint_id_remap(bar_rename):
     remap = {}
 
     for oid in _iter_joint_block_oids():
-        old_jid = rs.GetUserText(oid, "joint_id")
+        old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if not old_jid:
             continue
-        le_old = rs.GetUserText(oid, "female_parent_bar")
-        ln_old = rs.GetUserText(oid, "male_parent_bar")
+        le_old = rs.GetUserText(oid, jnc.UT_RECEIVER_BAR)
+        ln_old = rs.GetUserText(oid, jnc.UT_MALE_BAR)
         # Fallbacks - if female_/male_parent_bar were ever missing.
         if not le_old or not ln_old:
-            parent = rs.GetUserText(oid, "parent_bar_id")
-            connected = rs.GetUserText(oid, "connected_bar_id")
-            # Subtype tells us which side `parent` is on.
-            if rs.GetUserText(oid, "joint_subtype") == "Female":
+            parent = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
+            connected = rs.GetUserText(oid, jnc.UT_CONNECTED_BAR)
+            # The LAYER tells us which side `parent` is on -- a receiver
+            # (female or mocap) sits on the le bar.
+            if rs.ObjectLayer(oid) in jnc.RECEIVER_LAYERS:
                 le_old, ln_old = parent, connected
             else:
                 le_old, ln_old = connected, parent
@@ -156,20 +158,16 @@ def _build_joint_id_remap(bar_rename):
             continue
         le_new = bar_rename.get(le_old, le_old)
         ln_new = bar_rename.get(ln_old, ln_old)
-        new_jid = f"J{_num(le_new)}-{_num(ln_new)}"
-        remap[old_jid] = new_jid
+        remap[old_jid] = jnc.pair_joint_id(le_new, ln_new)
 
-    for oid in _iter_ground_block_oids():
-        old_jid = rs.GetUserText(oid, "joint_id")
-        parent_old = rs.GetUserText(oid, "parent_bar_id")
-        ground_name = rs.GetUserText(oid, "ground_joint_name")
-        if not (old_jid and parent_old and ground_name):
+    for oid in _iter_single_sided_block_oids():
+        old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+        parent_old = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
+        if not (old_jid and parent_old) or jnc.split_single_joint_id(old_jid) is None:
             continue
-        # Trailing index from the old jid: "G7-Wood-2" -> "2"
-        idx_tail = old_jid.rsplit("-", 1)[-1]
+        # Same Type and index, new bar: "G7-T20-2" on B7 -> B12 is "G12-T20-2".
         parent_new = bar_rename.get(parent_old, parent_old)
-        new_jid = f"G{_num(parent_new)}-{ground_name}-{idx_tail}"
-        remap[old_jid] = new_jid
+        remap[old_jid] = jnc.rebar_single_joint_id(old_jid, parent_new)
 
     return remap
 
@@ -275,7 +273,7 @@ def _remap_supported_until(curve_oid, bar_rename):
 
 
 def _apply_rename(bar_rename, jid_remap, seq_map):
-    n_bars = n_tubes = n_supp = n_joints = n_grounds = n_tools = 0
+    n_bars = n_tubes = n_supp = n_joints = n_singles = n_tools = 0
 
     bar_oids = {bid: oid for bid, (oid, _) in seq_map.items()}
 
@@ -285,7 +283,7 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
             oid = bar_oids[old]
             rs.SetUserText(oid, BAR_ID_KEY, new)
             rs.ObjectName(oid, new)
-            rs.SetUserText(oid, BAR_SEQ_KEY, _num(new))
+            rs.SetUserText(oid, BAR_SEQ_KEY, jnc.bar_num(new))
             if old != new:
                 n_bars += 1
 
@@ -310,46 +308,47 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
             if _remap_supported_until(oid, bar_rename):
                 n_supp += 1
 
-        # 5. Joint female/male instances.
+        # 5. Joint receiver/male instances.
         for oid in _iter_joint_block_oids():
-            old_jid = rs.GetUserText(oid, "joint_id")
+            old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             new_jid = jid_remap.get(old_jid, old_jid)
             for key in (
-                "parent_bar_id",
-                "connected_bar_id",
-                "female_parent_bar",
-                "male_parent_bar",
+                jnc.UT_PARENT_BAR,
+                jnc.UT_CONNECTED_BAR,
+                jnc.UT_RECEIVER_BAR,
+                jnc.UT_MALE_BAR,
             ):
                 v = rs.GetUserText(oid, key)
                 if v and v in bar_rename and bar_rename[v] != v:
                     rs.SetUserText(oid, key, bar_rename[v])
             if new_jid and new_jid != old_jid:
-                rs.SetUserText(oid, "joint_id", new_jid)
-                subtype = rs.GetUserText(oid, "joint_subtype") or ""
-                suffix = "female" if subtype.lower() == "female" else "male"
-                rs.ObjectName(oid, f"{new_jid}_{suffix}")
+                rs.SetUserText(oid, jnc.UT_JOINT_ID, new_jid)
+                # Subtype from the layer, the role authority.
+                subtype = jnc.subtype_of_layer(rs.ObjectLayer(oid))
+                rs.ObjectName(oid, jnc.object_name(new_jid, subtype))
                 n_joints += 1
 
-        # 6. Ground instances.
-        for oid in _iter_ground_block_oids():
-            old_jid = rs.GetUserText(oid, "joint_id")
+        # 6. Single-sided instances (Ground, standalone MoCap).
+        for oid in _iter_single_sided_block_oids():
+            old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             new_jid = jid_remap.get(old_jid, old_jid)
-            parent_old = rs.GetUserText(oid, "parent_bar_id")
+            parent_old = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
             if parent_old and parent_old in bar_rename and bar_rename[parent_old] != parent_old:
-                rs.SetUserText(oid, "parent_bar_id", bar_rename[parent_old])
+                rs.SetUserText(oid, jnc.UT_PARENT_BAR, bar_rename[parent_old])
             if new_jid and new_jid != old_jid:
-                rs.SetUserText(oid, "joint_id", new_jid)
-                rs.ObjectName(oid, f"{new_jid}_ground")
-                n_grounds += 1
+                rs.SetUserText(oid, jnc.UT_JOINT_ID, new_jid)
+                subtype = jnc.subtype_of_layer(rs.ObjectLayer(oid))
+                rs.ObjectName(oid, jnc.object_name(new_jid, subtype))
+                n_singles += 1
 
         # 7. Tool instances - inherit joint_id from jid_remap.
         for oid in _iter_tool_block_oids():
-            old_jid = rs.GetUserText(oid, "joint_id")
+            old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             new_jid = jid_remap.get(old_jid, old_jid)
             if new_jid and new_jid != old_jid:
-                rs.SetUserText(oid, "joint_id", new_jid)
-                new_tool_id = f"T{new_jid}"
-                rs.SetUserText(oid, "tool_id", new_tool_id)
+                rs.SetUserText(oid, jnc.UT_JOINT_ID, new_jid)
+                new_tool_id = jnc.tool_id(new_jid)
+                rs.SetUserText(oid, jnc.UT_TOOL_ID, new_tool_id)
                 rs.ObjectName(oid, new_tool_id)
                 n_tools += 1
 
@@ -357,7 +356,7 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
     print(
         f"RSReorderBarID: applied. bars={n_bars}, tubes={n_tubes}, "
         f"supported_until={n_supp}, "
-        f"joints={n_joints}, grounds={n_grounds}, tools={n_tools}"
+        f"joints={n_joints}, ground/mocap singles={n_singles}, tools={n_tools}"
     )
 
 
@@ -374,7 +373,7 @@ def _verify_after(expected_n):
             f"RSReorderBarID: post-check seq mismatch: bar {bid} has seq={seq}, "
             f"expected {i}."
         )
-        assert bid == f"B{i}", (
+        assert bid == jnc.bar_id(i), (
             f"RSReorderBarID: post-check id mismatch: seq {i} -> bar {bid}, "
             f"expected B{i}."
         )

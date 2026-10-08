@@ -12,6 +12,8 @@
       ],
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20Deck12_Male.obj",
+      "bar_cradle": false,
+      "marker_points_mm": {},
       "M_block_from_bar": [
         [
           0.0,
@@ -78,6 +80,7 @@
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20SubLeft_Female.obj",
       "bar_cradle": true,
+      "marker_points_mm": {},
       "M_block_from_bar": [
         [
           9.547918011776346e-15,
@@ -144,6 +147,7 @@
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20SubRight_Female.obj",
       "bar_cradle": true,
+      "marker_points_mm": {},
       "M_block_from_bar": [
         [
           9.547918011776346e-15,
@@ -209,6 +213,8 @@
       ],
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20_Female.obj",
+      "bar_cradle": false,
+      "marker_points_mm": {},
       "M_block_from_bar": [
         [
           -2.886579864025407e-15,
@@ -274,6 +280,8 @@
       ],
       "preferred_robotic_tool_name": "AT3L",
       "collision_filename": "T20_Male.obj",
+      "bar_cradle": false,
+      "marker_points_mm": {},
       "M_block_from_bar": [
         [
           -3.774758283725532e-15,
@@ -326,6 +334,84 @@
           1.0
         ]
       ]
+    },
+    {
+      "block_name": "T20_MoCap",
+      "kind": "mocap",
+      "asset_filename": "T20_MoCap.3dm",
+      "mesh_filename": "",
+      "mesh_scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "preferred_robotic_tool_name": "",
+      "collision_filename": "T20_MoCap.obj",
+      "bar_cradle": false,
+      "marker_points_mm": {
+        "M1": [
+          -9.999999999927478,
+          24.15000057220459,
+          25.500000000000043
+        ],
+        "M2": [
+          -9.999999999886786,
+          -24.15000057220459,
+          25.500000000000043
+        ]
+      },
+      "M_block_from_bar": [
+        [
+          -2.886579864025407e-15,
+          1.0,
+          -2.2204460492503146e-16,
+          -2.866802999959735e-14
+        ],
+        [
+          6.8833827526759706e-15,
+          -2.2204460492501159e-16,
+          -1.0,
+          7.141872502504085e-14
+        ],
+        [
+          -1.0,
+          -2.886579864025407e-15,
+          -6.88338275267597e-15,
+          19.99999999999565
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "M_screw_from_block": [
+        [
+          1.0,
+          9.861437856570238e-26,
+          7.82045773169195e-12,
+          -1.0005201701801525e-05
+        ],
+        [
+          0.0,
+          1.0,
+          -1.2609796248379856e-14,
+          -1.0005052899941802e-05
+        ],
+        [
+          -7.82045773169195e-12,
+          1.2609796248379856e-14,
+          1.0,
+          -20.000000000000654
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
     }
   ],
   "mates": [
@@ -344,7 +430,7 @@
       "male_block_name": "T20_Male"
     },
     {
-      "name": "T20Deck12_Pair",
+      "name": "T20Deck12",
       "contact_distance_mm": 35.99999999999991,
       "jp_range": [
         -500.0,
@@ -358,7 +444,7 @@
       "male_block_name": "T20Deck12_Male"
     },
     {
-      "name": "T20SFloorLeft",
+      "name": "T20SubLeft",
       "contact_distance_mm": 39.99999999949113,
       "jp_range": [
         -500.0,
@@ -372,7 +458,7 @@
       "male_block_name": "T20_Male"
     },
     {
-      "name": "T20SFloorRight",
+      "name": "T20SubRight",
       "contact_distance_mm": 39.99999999949109,
       "jp_range": [
         -500.0,
@@ -388,10 +474,10 @@
   ],
   "ground_joints": [
     {
-      "name": "T20Ground",
-      "block_name": "T20Ground",
-      "asset_filename": "T20Ground.3dm",
-      "collision_filename": "T20Ground.obj",
+      "name": "T20_Ground",
+      "block_name": "T20_Ground",
+      "asset_filename": "T20_Ground.3dm",
+      "collision_filename": "T20_Ground.obj",
       "jp_range": [
         -500.0,
         500.0

@@ -22,7 +22,7 @@ definitions the *creation* side already owns, and report:
 * whether a joint/tool still has a bar, and whether a bar has any joint.
 
 Anything that fails is surfaced (selected + listed) for the user to fix with
-RSJointEdit / RSJointPlace / RSGroundPlace.  Re-deriving a solved placement from
+RSJointEdit / RSJointPlace.  Re-deriving a solved placement from
 stored ``(jp, jr)`` is deliberately not attempted: the reconstruction is not a
 trustworthy authority on where a solved joint belongs, and acting on it moved
 correct joints.
@@ -36,13 +36,11 @@ import numpy as np
 import rhinoscriptsyntax as rs
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.joint_pair import load_joint_registry
 from core.joint_pair_solver import screw_alignment_diagnostics
-from core.joint_pick_helpers import block_instance_frame
-from core.joint_placement import (
-    VARIANT_OK_ORIGIN_TOL_MM,
-    VARIANT_OK_Z_AXIS_TOL_RAD,
-)
+from core.joint_pick_helpers import screw_frame_world
+from core.joint_placement import interface_ok
 from core.rhino_bar_registry import (
     _bar_curve_and_tube,
     get_bar_seq_map,
@@ -55,18 +53,6 @@ from core.rhino_block_import import (
     update_block_definition_geometry,
 )
 from core.rhino_helpers import ensure_layer, set_object_color, suspend_redraw
-
-
-# ---------------------------------------------------------------------------
-# Layers
-# ---------------------------------------------------------------------------
-
-#: Layers holding baked joint block instances, in the order they are scanned.
-JOINT_LAYERS = (
-    config.LAYER_JOINT_FEMALE_INSTANCES,
-    config.LAYER_JOINT_MALE_INSTANCES,
-    config.LAYER_JOINT_GROUND_INSTANCES,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +75,7 @@ def _reset_color(oid) -> None:
 
 def _joint_block_instances():
     """Yield ``(oid, layer, joint_id, block_name)`` per baked joint block."""
-    for layer in JOINT_LAYERS:
+    for layer in jnc.JOINT_LAYERS:
         for oid in _layer_oids(layer):
             # Stray non-block objects on a managed layer are not our business
             # (repair_on_entry evicts them).
@@ -98,7 +84,7 @@ def _joint_block_instances():
             yield (
                 oid,
                 layer,
-                rs.GetUserText(oid, "joint_id") or "",
+                rs.GetUserText(oid, jnc.UT_JOINT_ID) or "",
                 rs.BlockInstanceName(oid) or "",
             )
 
@@ -135,12 +121,7 @@ def refresh_stale_joint_blocks(verbose: bool = False) -> int:
     for _oid, layer, _joint_id, block_name in _joint_block_instances():
         if not block_name or block_name in candidates:
             continue
-        half = registry.halves.get(block_name)
-        ground = next(
-            (g for g in registry.ground_joints.values() if g.block_name == block_name),
-            None,
-        )
-        definition = half or ground
+        definition = registry.definition(block_name)
         if definition is None:
             if verbose:
                 print(
@@ -180,31 +161,18 @@ def refresh_stale_joint_blocks(verbose: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _screw_frame(oid, half) -> np.ndarray:
-    """World screw frame of a placed half: ``block_world @ M_screw_from_block``.
-
-    The same composition ``core.joint_pair.fk_half_from_bar_frame`` uses, but
-    driven by the block's ACTUAL transform in the document rather than a
-    recomputed one -- so this reports where the joint really is.
-    """
-    block_world, _name = block_instance_frame(oid)
-    return np.asarray(block_world, dtype=float) @ np.asarray(
-        half.M_screw_from_block, dtype=float
-    )
-
-
 def report_unmated_joints(verbose: bool = False) -> list:
-    """List placed female/male pairs whose halves no longer mate.  Read-only.
+    """List placed receiver/male pairs whose halves no longer mate.  Read-only.
 
-    Reuses the creation-side definition of a good interface: the female and male
-    screw frames must coincide within ``VARIANT_OK_ORIGIN_TOL_MM`` /
-    ``VARIANT_OK_Z_AXIS_TOL_RAD``, measured by
-    ``core.joint_pair_solver.screw_alignment_diagnostics`` -- exactly the check
-    ``core.joint_placement.is_variant_acceptable`` applies when the solver picks
-    a variant.  So "mated" means the same thing here as it did at placement time.
+    Reuses the creation-side definition of a good interface,
+    ``core.joint_placement.interface_ok``, on the errors
+    ``core.joint_pair_solver.screw_alignment_diagnostics`` measures -- the check
+    the solver accepts a variant with.  So "mated" means the same thing here as
+    it did at placement time.
 
-    Ground joints have no partner and are not checked (a ground joint can only be
-    broken by losing its bar, which :func:`find_broken_links` covers).
+    Single-sided joints (Ground, standalone MoCap) have no partner and are not
+    checked (one can only be broken by losing its bar, which
+    :func:`find_broken_links` covers).
 
     Args:
         verbose (bool): print each offending joint with its measured errors.
@@ -215,38 +183,34 @@ def report_unmated_joints(verbose: bool = False) -> list:
     """
     registry = load_joint_registry()
 
-    # joint_id -> {"female": (oid, half), "male": (oid, half)}
+    # joint_id -> {"receiver": (oid, half), "male": (oid, half)}.  A receiver is
+    # Female OR MoCap -- both seat a male the same way.
     pairs: dict = {}
     for oid, layer, joint_id, block_name in _joint_block_instances():
-        if not joint_id or layer == config.LAYER_JOINT_GROUND_INSTANCES:
+        if not joint_id or not jnc.is_paired_half(jnc.subtype_of_layer(layer), joint_id):
             continue
         half = registry.halves.get(block_name)
         if half is None:
             continue
-        role = (
-            "female" if layer == config.LAYER_JOINT_FEMALE_INSTANCES else "male"
-        )
-        pairs.setdefault(joint_id, {})[role] = (oid, half)
+        side = "receiver" if layer in jnc.RECEIVER_LAYERS else "male"
+        pairs.setdefault(joint_id, {})[side] = (oid, half)
 
     unmated = []
     for joint_id in sorted(pairs):
         sides = pairs[joint_id]
-        if "female" not in sides or "male" not in sides:
+        if "receiver" not in sides or "male" not in sides:
             continue  # half a pair -- find_broken_links reports the survivor
         try:
-            female = _screw_frame(*sides["female"])
-            male = _screw_frame(*sides["male"])
+            receiver = screw_frame_world(*sides["receiver"])
+            male = screw_frame_world(*sides["male"])
         except (ValueError, AttributeError) as exc:
             if verbose:
                 print(f"  [joint] {joint_id}: cannot read block frame ({exc}).")
             continue
-        diag = screw_alignment_diagnostics(female, male)
+        diag = screw_alignment_diagnostics(receiver, male)
         origin_err = diag["origin_error_mm"]
         z_err = diag["z_axis_error_rad"]
-        if (
-            origin_err <= VARIANT_OK_ORIGIN_TOL_MM
-            and abs(z_err) <= VARIANT_OK_Z_AXIS_TOL_RAD
-        ):
+        if interface_ok(origin_err, z_err):
             continue
         unmated.append((joint_id, origin_err, z_err))
         if verbose:
@@ -273,7 +237,8 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
     misses. This pass surfaces exactly that:
 
     - **name mismatch**: object name != ``<joint_id>_<role>`` (role from the
-      layer: female / male / ground) -- the decisive copied-user-text signal;
+      layer: female / male / ground / mocap) -- the decisive copied-user-text
+      signal;
     - **duplicate id**: two blocks on the same layer sharing a ``joint_id``;
     - **missing user text**: no ``joint_id`` or no ``parent_bar_id``.
 
@@ -287,16 +252,12 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
         list[tuple]: ``(oid, kind, message)`` per issue, ``kind`` in
         ``{"name_mismatch", "duplicate_id", "missing_usertext"}``.
     """
-    role_by_layer = {
-        config.LAYER_JOINT_FEMALE_INSTANCES: "female",
-        config.LAYER_JOINT_MALE_INSTANCES: "male",
-        config.LAYER_JOINT_GROUND_INSTANCES: "ground",
-    }
     issues = []
     # (layer, joint_id) -> [(oid, object_name), ...] for the duplicate check.
     seen: dict = {}
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        role = role_by_layer.get(layer, "joint")
+        subtype = jnc.subtype_of_layer(layer)
+        role = jnc.role(subtype)
         obj_name = rs.ObjectName(oid) or ""
         if not joint_id:
             issues.append((
@@ -305,16 +266,16 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
             ))
         else:
             seen.setdefault((layer, joint_id), []).append((oid, obj_name))
-            expected = f"{joint_id}_{role}"
+            expected = jnc.object_name(joint_id, subtype)
             if obj_name != expected:
                 issues.append((
                     oid, "name_mismatch",
                     f"'{obj_name or '<unnamed>'}' ({role}): joint_id user text says "
                     f"'{joint_id}' (expected object name '{expected}') -- likely "
                     f"COPIED user text; the collision scene calls this body "
-                    f"'joint_{joint_id}_{role}'.",
+                    f"'{jnc.joint_key(joint_id, subtype)}'.",
                 ))
-        if not rs.GetUserText(oid, "parent_bar_id"):
+        if not rs.GetUserText(oid, jnc.UT_PARENT_BAR):
             issues.append((
                 oid, "missing_usertext",
                 f"'{obj_name or oid}' ({role}): no parent_bar_id user text.",
@@ -323,7 +284,7 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
     for (layer, jid), entries in sorted(seen.items(), key=lambda kv: str(kv[0])):
         if len(entries) < 2:
             continue
-        role = role_by_layer.get(layer, "joint")
+        role = jnc.role(jnc.subtype_of_layer(layer))
         names = ", ".join(name or str(o) for o, name in entries)
         issues.append((
             entries[0][0], "duplicate_id",
@@ -356,7 +317,7 @@ def find_broken_links() -> dict:
         ``"tool"``.
 
         * *orphans* -- joint instances whose ``parent_bar_id`` is empty or names a
-          bar that is not in the document; female/male halves whose partner half
+          bar that is not in the document; receiver/male halves whose partner half
           is missing (a joint is only a joint with both sides); plus every tool
           ``core.rhino_tool_place.find_detached_tools`` reports (no joint, joint
           gone, or geometrically off its joint).  A tool whose joint survives but
@@ -365,7 +326,7 @@ def find_broken_links() -> dict:
         * *bare_bars* -- registered bars carrying no joint instance at all.
 
     None of these can be repaired automatically: the bar is gone, or the joint
-    needs RSJointPlace / RSGroundPlace.
+    needs RSJointPlace.
     """
     from core.rhino_tool_place import find_detached_tools  # noqa: PLC0415
 
@@ -374,30 +335,27 @@ def find_broken_links() -> dict:
     bars_with_joints: set = set()
     orphan_joint_ids: set = set()
 
-    # Pass 1: which joint_ids have which halves?  A female with no male (or the
-    # reverse) is as broken as one with no bar -- there is nothing for it to mate
-    # with.  Ground joints are single-sided by design and never counted here.
+    # Pass 1: which joint_ids have which halves?  A receiver with no male (or
+    # the reverse) is as broken as one with no bar -- there is nothing for it to
+    # mate with.  Single-sided joints (Ground, standalone MoCap) have no partner
+    # by design and are never counted.
     halves_by_joint: dict = {}
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        if not joint_id or layer == config.LAYER_JOINT_GROUND_INSTANCES:
+        if not joint_id or not jnc.is_paired_half(jnc.subtype_of_layer(layer), joint_id):
             continue
         halves_by_joint.setdefault(joint_id, set()).add(layer)
 
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        bar_id = rs.GetUserText(oid, "parent_bar_id") or ""
+        bar_id = rs.GetUserText(oid, jnc.UT_PARENT_BAR) or ""
         reason = ""
         if not bar_id or bar_id not in bar_map:
             reason = f"parent bar {bar_id or '<none>'} is gone"
         elif (
             joint_id
-            and layer != config.LAYER_JOINT_GROUND_INSTANCES
+            and jnc.is_paired_half(jnc.subtype_of_layer(layer), joint_id)
             and len(halves_by_joint.get(joint_id, ())) < 2
         ):
-            missing = (
-                "male"
-                if layer == config.LAYER_JOINT_FEMALE_INSTANCES
-                else "female"
-            )
+            missing = "male" if layer in jnc.RECEIVER_LAYERS else "receiving"
             reason = f"its {missing} half is missing"
 
         if not reason:
@@ -424,7 +382,7 @@ def find_broken_links() -> dict:
     for tool_oid in _layer_oids(config.LAYER_TOOL_INSTANCES):
         if tool_oid in reported_tools:
             continue
-        joint_id = rs.GetUserText(tool_oid, "joint_id") or ""
+        joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID) or ""
         if joint_id not in orphan_joint_ids:
             continue
         label = rs.ObjectName(tool_oid) or str(tool_oid)
@@ -528,7 +486,7 @@ def clear_broken_link_marks() -> int:
         # `ensure_bar_preview` REUSES a geometrically-current tube without
         # repainting it, which is why clearing here is the only thing that can
         # remove a preview color.
-        for layer in JOINT_LAYERS + (
+        for layer in jnc.JOINT_LAYERS + (
             config.LAYER_TOOL_INSTANCES,
             config.LAYER_BAR_CENTERLINES,
             config.LAYER_BAR_TUBE_PREVIEWS,
@@ -558,7 +516,7 @@ def broken_link_legend_lines() -> list:
         "(its asset has baked colors).",
         "  dark indigo = registered bar carrying no joint. Its centre-line AND "
         "its tube preview are both selected, so Delete removes the whole bar; "
-        "or give it a joint with RSJointPlace / RSGroundPlace.",
+        "or give it a joint with RSJointPlace.",
         "  RSUpdatePreview right-click (RSClearColorPreview) clears all of this.",
     ]
 
@@ -615,7 +573,6 @@ def show_colors_preview() -> dict:
 
 
 __all__ = [
-    "JOINT_LAYERS",
     "broken_link_legend_lines",
     "clear_broken_link_marks",
     "find_broken_links",

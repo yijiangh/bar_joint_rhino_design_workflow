@@ -89,7 +89,7 @@ from core.rhino_bar_registry import (
     set_build_stage,
     show_sequence_colors,
 )
-from core.rhino_helpers import suspend_redraw
+from core.rhino_helpers import block_instance_xform_mm, suspend_redraw
 
 
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
@@ -823,8 +823,8 @@ class _PreviewSession:
         arm_tools, err = ik_collision_setup.resolve_arm_tools_on_bar(self.active_bar_id)
         if err is not None:
             raise RuntimeError(err)
-        tool0_left = env_collision._block_instance_xform_mm(arm_tools["left"])
-        tool0_right = env_collision._block_instance_xform_mm(arm_tools["right"])
+        tool0_left = block_instance_xform_mm(arm_tools["left"])
+        tool0_right = block_instance_xform_mm(arm_tools["right"])
         base_mm = (
             payload["base_frame_world_mm"] if payload is not None
             else np.eye(4, dtype=float)

@@ -43,6 +43,7 @@ topic, ordered basic → advanced inside each group.
 | § | topic |
 |---|-------|
 | 8 | the `.rui` toolbar file and macros |
+| 30 | one naming rule — every joint name from `<Type>_<Subtype>` *(convention)* |
 | 24 | `BeginUndoRecord` — one Ctrl+Z for a whole command |
 | 23 | which module a preview belongs in (the four viz mechanisms) |
 | 25 | Grasshopper components vs Rhino commands |
@@ -122,14 +123,15 @@ assembled are all present and valid. So in our command we just call
 
 ---
 
-## 3. Reading `origin_r = ikf._block_instance_xform_mm(right[0])[:3, 3]`
+## 3. Reading `origin_r = block_instance_xform_mm(right[0])[:3, 3]`
 
 Step by step:
 
 - `right` is a tuple `(male_joint_oid, tool_oid)` that came from
   `ikf._resolve_arm_tools_on_bar(curve)`. So `right[0]` = the **male joint's oid**
   (first item of the tuple), `right[1]` = the tool's oid.
-- `ikf._block_instance_xform_mm(right[0])` returns a **4×4 NumPy matrix** = that
+- `block_instance_xform_mm(right[0])` (from `core/rhino_helpers.py`) returns a
+  **4×4 NumPy matrix** = that
   joint block's position + orientation in the world, in millimetres.
 - A 4×4 transform matrix looks like this — the last column is the XYZ position:
 
@@ -943,7 +945,7 @@ of that block. Only `jp` and `jr` vary.
 
 ### "Used up"
 
-For a **ground** joint the foot has to touch the floor. `ground_placement.auto_jr_y_down`
+For a **ground** joint the foot has to touch the floor. `single_sided_placement.auto_jr_y_down`
 solves for the `jr` that points the block's local +Y at world down, and it returns **one
 number**:
 
@@ -989,7 +991,7 @@ matrix[:3, 3]   # its origin   <- see §3
 ```
 
 That's the whole idea. `_bar_axis_mm` reads column 2 to get a direction;
-`_block_instance_xform_mm(oid)[:3, 3]` reads column 3 to get a position. Same object,
+`block_instance_xform_mm(oid)[:3, 3]` reads column 3 to get a position. Same object,
 different slice.
 
 ### Why 4x4 and not a 3x3 plus a separate position?
@@ -1092,7 +1094,7 @@ class GroundJointDef:
     M_tool_from_block: np.ndarray = field(default_factory=lambda: np.eye(4))
 ```
 
-For free you get `__init__` (so `GroundJointDef(name="T20Ground", ...)` just works),
+For free you get `__init__` (so `GroundJointDef(name="T20_Ground", ...)` just works),
 `__repr__` (printing shows the field values, not `<object at 0x...>`), and `__eq__` (two
 with equal fields compare equal).
 
@@ -1451,7 +1453,7 @@ Now each line means something concrete:
 
 Every female half and every stub bar that exists in the document becomes collision
 geometry (`core/env_collision.py` registers them as rigid bodies). So placing extra
-females/bars -- e.g. with `RSTempPlaceFemaleJoint` -- **can turn a bar that used to solve
+females/bars -- e.g. with `RSTempPlaceFemaleJoint` (since removed) -- **can turn a bar that used to solve
 into one that fails**. In the other screenshot the carried `joint_J49-51_male` hits
 `joint_J8-9_female`: a female belonging to a *different* joint, sitting in the arm's path.
 
@@ -2211,7 +2213,7 @@ is hand-written, about 20 lines, and there are **four different shapes**:
 | shape | how Enter behaves | where |
 |---|---|---|
 | Enter takes a default | `SetCommandPromptDefault` + `AcceptNothing(True)` | RSBarEdit, RSJointEdit, RSJointPlace, RSSelectBar |
-| must choose | `AcceptNothing(False)`, no default line | RSReorderBarID x2, RSTempPlace |
+| must choose | `AcceptNothing(False)`, no default line | RSReorderBarID x2 |
 | default set but never *shown* | `AcceptNothing(True)` but **no** `SetCommandPromptDefault` | `rs_ik_keyframe._ask_reuse_saved_base` |
 | default, but Esc returns `"cancel"` not `None` | | `rs_ik_keyframe._ask_save_base_or_continue` |
 
@@ -2325,3 +2327,121 @@ per-step copy, never the cached master.
 
 > Rule of thumb: about to modify something that is cached or shared? `.copy()` it
 > first. Same instinct as §13's `np.array(x, copy=True)`.
+
+---
+
+## 30. One naming rule — every joint name comes from `<Type>_<Subtype>`
+
+Labelled as always: **convention** = a choice this repo made, **real Python** = the language.
+Everything here lives in one file, `scripts/core/joint_name_conventions.py` (imported as
+`jnc`). If this note and that file disagree, the file is right.
+
+### The rule — *(convention)*
+
+Every joint block is **named** `<Type>_<Subtype>`:
+
+| block | Type | Subtype | what it is |
+|---|---|---|---|
+| `T20_Female` | `T20` | `Female` | receives a male |
+| `T20_Male` | `T20` | `Male` | screws into a receiver; carries the robot tool |
+| `T20_Ground` | `T20` | `Ground` | anchors a bar to the floor; carries the robot tool |
+| `T20_MoCap` | `T20` | `MoCap` | a Female with an OptiTrack marker plate; fitted by hand |
+| `T20SubLeft_Female` | `T20SubLeft` | `Female` | the subfloor variant of a Female |
+
+**Type** is the product family. **Subtype** is one of four words, declared once:
+`jnc.SUBTYPES = ("Female", "Male", "Ground", "MoCap")`. Every other name is computed from these
+two — nothing is typed twice. Example, `T20_MoCap` as the receiver of a pair between bars
+`B40` and `B53`:
+
+| name | rule | example |
+|---|---|---|
+| role | Subtype lower-cased | `mocap` |
+| registry `kind` | the role (checked against the block name on load) | `mocap` |
+| Rhino layer | `MANAGED Scaffolding::Joint <Subtype> Instances` | `…::Joint MoCap Instances` |
+| joint id | `J<receiver bar>-<male bar>` | `J40-53` |
+| object name | `<joint id>_<role>` | `J40-53_mocap` |
+| collision (PyBullet) key | `joint_<joint id>_<role>` | `joint_J40-53_mocap` |
+| user text `joint_type` / `joint_subtype` | Type / Subtype | `T20` / `MoCap` |
+
+A joint on **one** bar has its own id shape, with the Type in it:
+`G<bar>-<Type>-<i>` for Ground (`G4-T20-0`) and `M<bar>-<Type>-<i>` for a standalone MoCap
+(`M7-T20-0`). The first letter tells you which: `J` pair, `G` ground, `M` MoCap alone.
+
+**Subtype vs role.** Code compares Subtypes (`if subtype == jnc.MOCAP`). The lower-case role only
+appears *inside strings that go to disk or to PyBullet* (`J40-53_mocap`), and only
+`joint_name_conventions` spells it. That is why `"MoCap"` can have a capital C in the middle:
+nothing ever has to turn `"mocap"` back into `"MoCap"`: code that needs the Subtype reads
+it from the block's layer (`jnc.subtype_of_layer`), never from a role string.
+
+### Where the code reads a block's role — *(convention)*
+
+A placed joint records its role in several places (layer, object name, user text, block name).
+The one the code **trusts** is the **layer**:
+
+```python
+layer   = rs.ObjectLayer(oid)               # "MANAGED Scaffolding::Joint MoCap Instances"
+subtype = jnc.subtype_of_layer(layer)       # "MoCap"   (None for a non-joint layer)
+key     = jnc.joint_key(joint_id, subtype)  # "joint_J40-53_mocap"
+```
+
+Why not the user text? User text is copied **verbatim** onto a duplicated object, so a
+copy-pasted joint carries the original's values and lies about itself (there is a whole
+diagnostic for that, `report_joint_usertext_issues`). The layer survives copy/paste correctly
+and is visible in the UI. The collision key used to be built from `joint_subtype` user text,
+with a special case for ground blocks (which had none); it is now built from the layer, and
+the special case is gone.
+
+### The four sets — *(convention)*
+
+| set | members | the question it answers |
+|---|---|---|
+| `TOOL_BEARING_SUBTYPES` | Male, Ground | "which halves carry a robot tool?" |
+| `RECEIVER_SUBTYPES` | Female, MoCap | "which halves does a male screw into?" |
+| `PAIRED_SUBTYPES` | Female, MoCap, Male | "which halves does a mate place?" |
+| `SINGLE_SIDED_SUBTYPES` | Ground, MoCap | "which can sit alone on one bar?" |
+
+Each has a matching `…_LAYERS` tuple. These are facts about the **hardware**, not patterns in
+the spelling, so they are written out by hand. The tool-bearing set is load-bearing:
+`rs_ik_keyframe._resolve_arm_tools_on_bar` requires **exactly two** tool-bearing halves on the
+bar being assembled — they hold the two grippers. MoCap's absence from that set is the whole of
+"fitted by hand, not by robot".
+
+### A mate, and why MoCap has none of its own — *(convention)*
+
+A **mate** says "this receiver and this male screw together, and then the two bar axes are
+exactly D mm apart". Example: mate `T20` = `T20_Female` + `T20_Male`, `contact_distance_mm`
+= 36. RSBarSnap uses the 36 to place a new bar; RSJointPlace solves both halves onto two bars.
+Mates are named by Type: `T20`, `T20SubLeft`, `T20SubRight`, `T20Deck12`.
+
+`T20_MoCap` is the same part as `T20_Female` plus a plate, so it is a *receiver variant* of mate
+`T20`, not a new mate: `joint_pair.with_receiver(pair, "MoCap", halves)` returns mate `T20` with
+`T20_MoCap` in the receiving slot. RSJointPlace asks *Receiving joint: Female | MoCap*;
+RSJointEdit › ReplaceJoint swaps between the two.
+
+### The string tools underneath — *(real Python)*
+
+- `name.rpartition("_")` splits at the **last** underscore: `"T20_MoCap"` →
+  `("T20", "_", "MoCap")`. Last, not first, so a Type may itself contain `_`; safe because no
+  Subtype or role contains one. (`partition` splits at the first; `rsplit("_", 1)` is the
+  list-returning cousin of `rpartition`.)
+- `re.compile(r"^([A-Z])([^-]+)-(.+)-(\d+)$")` is a **regular expression**: a pattern that both
+  checks and takes apart `G4-T20-0` → `("G", "4", "T20", "0")`. `re` is in the standard library.
+- `str.endswith(("_female", "_mocap"))` accepts a **tuple** and is true if any one matches.
+  Handy, but the touch policy now asks `jnc.is_joint_key(key, jnc.RECEIVER_SUBTYPES)` instead,
+  so the suffixes are spelled in one place.
+
+### Old documents — *(convention)*
+
+Three names changed when the rule arrived: `T20Ground` → `T20_Ground`, ground ids
+`G4-T20Ground-0` → `G4-T20-0`, and the mates `T20Deck12_Pair` / `T20SFloorLeft` /
+`T20SFloorRight` → `T20Deck12` / `T20SubLeft` / `T20SubRight`. A `.3dm` saved before that still
+holds the old strings; `core/joint_name_migration.py` rewrites them the first time any command
+runs (`repair_on_entry` calls it) and prints one line saying what it changed. Save the file
+afterwards.
+
+### Adding a fifth Subtype — *(convention)*
+
+Add the word to `SUBTYPES`, then to whichever of the four sets it genuinely belongs to. Its
+layer, ids, object names and keys exist immediately; every module that loops over joint layers
+picks it up with no further edit. Name its block `<Type>_<NewSubtype>` and define it with
+RSDefineJointHalf.

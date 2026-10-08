@@ -9,9 +9,14 @@ core math stack (`numpy` + `scipy`) and is split into two stages:
 - **T2 – Joint placement**: place connector blocks on a bar pair using a
   4-DOF optimizer that aligns the female and male screw holes.
 
-  Each connector family is described by a **joint pair**: a female + male
-  block definition with the geometry needed to drive the optimizer. Joint
-  pairs are authored interactively in Rhino with `RSDefineJointHalf` /
+  Each connector family is described by a **joint pair** (a *mate*): a
+  receiver + male block definition with the geometry needed to drive the
+  optimizer. The receiver is a Female, or the MoCap variant of the same Type
+  (a Female with an OptiTrack marker plate). Every joint block is named
+  `<Type>_<Subtype>` (`T20_Female`, `T20_Male`, `T20_Ground`, `T20_MoCap`), and
+  every other name -- layer, joint id, object name, collision key -- is derived
+  from it in `scripts/core/joint_name_conventions.py`. Joint blocks are
+  authored interactively in Rhino with `RSDefineJointHalf` /
   `RSDefineJointMate` and
   stored in `scripts/core/joint_pairs.json` along with their `.3dm` block
   assets in `asset/`.
@@ -385,8 +390,11 @@ scripts/
     rhino_bar_registry.py               # Bar registry CRUD + bar metadata in Rhino user text
     geometry.py                         # Core geometry and S2-T1 solver utilities
     joint_pair_solver.py                # Pair-specific joint solving utilities
-    joint_placement.py                  # Joint placement computation and bake helpers
-    ground_placement.py                 # Ground-joint placement logic
+    joint_name_conventions.py            # Every joint/bar/tool/collision NAME, from <Type>_<Subtype>
+    joint_name_migration.py             # One-off rename of legacy names in old .3dm files
+    joint_placement.py                  # Joint pair placement computation and bake helpers
+    single_sided_placement.py           # Ground / standalone MoCap placement on one bar
+    marker_points.py                    # MoCap marker spheres between block / world / bar frames
     robot_cell.py                       # Dual-arm robot cell bootstrap + planner access (IK solvers live in the tamp submodule)
     robot_cell_support.py               # Support-arm robot cell helpers
     env_collision.py                    # Environment collision geometry collection/registration
@@ -405,7 +413,6 @@ scripts/
   rs_sequence_edit.py
   rs_joint_place.py
   rs_joint_edit.py
-  rs_ground_place.py
   rs_bar_edit.py
   rs_define_joint_half.py
   rs_define_joint_mate.py

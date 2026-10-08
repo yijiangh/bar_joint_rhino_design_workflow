@@ -5,14 +5,19 @@
 
 Workflow:
 
-    1. Pick FEMALE block instance.
-    2. Pick FEMALE bar axis line.
-    3. Pick MALE block instance.
-    4. Pick MALE bar axis line.
-    5. Enter the mate name.
+    1. Pick the FEMALE block instance.
+    2. Pick the FEMALE bar axis line.
+    3. Pick the MALE block instance.
+    4. Pick the MALE bar axis line.
+    5. Accept or edit the mate name.  The default follows
+       ``core.joint_name_conventions.default_mate_name``: the shared Type
+       (``T20``), or the Type of the variant half (``T20SubLeft``).
+
+A MoCap block needs no mate of its own: it is placed through its Type's Female
+mate (RSJointPlace asks which receiver to use).
 
 The script:
-  - Looks up the female and male halves in the normalized registry by
+  - Looks up the receiver and male halves in the normalized registry by
     block-definition name.  Both halves MUST already exist
     (use RSDefineJointHalf first).
   - Computes `contact_distance_mm` as the common-perpendicular distance
@@ -40,8 +45,10 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module
 from core import joint_pick_helpers as _picks_module
+from core.rhino_helpers import doc_unit_scale_to_mm
 
 
 def _reload():
@@ -79,7 +86,7 @@ def _ask_accept_edit(default_value_mm: float) -> float | None:
 def main() -> None:
     _reload()
     rs.UnselectAllObjects()
-    scale_to_mm = picks.doc_unit_scale_to_mm()
+    scale_to_mm = doc_unit_scale_to_mm()
     print(f"{_DIALOG}: scale_to_mm = {scale_to_mm:g}")
 
     registry = jp_mod.load_joint_registry()
@@ -152,19 +159,30 @@ def main() -> None:
 
     female_half = registry.halves[female_block_name]
     male_half = registry.halves[male_block_name]
-    if female_half.kind != "female":
-        print(
-            f"{_DIALOG}: WARNING: half '{female_block_name}' is registered as "
-            f"kind={female_half.kind!r}, not 'female'."
+    # A mate pairs a FEMALE with a MALE.  A MoCap half rides on its Type's
+    # Female mate (joint_pair.with_receiver), so it never gets a row here.
+    if female_half.subtype != jnc.FEMALE:
+        rs.MessageBox(
+            f"'{female_block_name}' is a {female_half.subtype} block.  A mate pairs "
+            f"a Female with a Male; a MoCap half is placed through its Type's "
+            f"Female mate ('{jnc.block_name(female_half.type, jnc.FEMALE)}').",
+            0,
+            _DIALOG,
         )
-    if male_half.kind != "male":
-        print(
-            f"{_DIALOG}: WARNING: half '{male_block_name}' is registered as "
-            f"kind={male_half.kind!r}, not 'male'."
+        return
+    if male_half.subtype != jnc.MALE:
+        rs.MessageBox(
+            f"'{male_block_name}' is a {male_half.subtype} block, not a Male.",
+            0,
+            _DIALOG,
         )
+        return
 
     # Mate name
-    mate_name = rs.GetString("Mate name (required)")
+    default_name = jnc.default_mate_name(
+        female_block_name, male_block_name, registry.halves
+    )
+    mate_name = rs.GetString(f"Mate name (default '{default_name}')", default_name)
     if mate_name is None:
         print(f"{_DIALOG}: cancelled at mate name input.")
         return

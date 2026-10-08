@@ -50,17 +50,19 @@ import time
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 
 
 # * ---- Rigid-body names: ONE scheme for every cell ----
 # State-independent ("canonical") names. Cindy's cell and the support cells
 # use exactly the same ones (they used to differ: `env_bar_*` in the support
-# cells, a leftover of an older design).
-CANONICAL_BAR_PREFIX = "bar_"
-CANONICAL_JOINT_PREFIX = "joint_"
+# cells, a leftover of an older design). The prefixes are spelled in
+# core.joint_name_conventions, the home of every naming rule.
+CANONICAL_BAR_PREFIX = jnc.BAR_KEY_PREFIX
+CANONICAL_JOINT_PREFIX = jnc.JOINT_KEY_PREFIX
 # Static environment obstacle meshes (LAYER_ENVIRONMENT). Distinct namespace
 # so it never collides with bar_/joint_ names.
-OBSTACLE_PREFIX = "obstacle_"
+OBSTACLE_PREFIX = jnc.OBSTACLE_KEY_PREFIX
 # Floor slabs, one per walkable ground some bar uses (LAYER_WALKABLE_GROUND).
 # Not "obstacle_": an object named "ground" on the environment layer already
 # becomes `obstacle_ground`.
@@ -70,7 +72,7 @@ MANAGED_BODY_PREFIXES = (CANONICAL_BAR_PREFIX, CANONICAL_JOINT_PREFIX, OBSTACLE_
 # The old support-cell names. Nothing creates them any more; a support cell
 # cached earlier in the same Rhino session may still hold them, so the stale
 # scans drop them too.
-_LEGACY_BODY_PREFIXES = ("env_bar_", "env_joint_")
+_LEGACY_BODY_PREFIXES = (jnc.ENV_BAR_KEY_PREFIX, jnc.ENV_JOINT_KEY_PREFIX)
 
 # * ---- Body kinds (``body_info["kind"]``) ----
 KIND_BAR = "bar"
@@ -105,9 +107,13 @@ def bar_body_name(bar_id: str) -> str:
 def joint_body_name(joint_id: str, subtype: str) -> str:
     """The rigid-body name of a joint half, e.g. ``"joint_J1-3_male"``.
 
+    Same result as ``jnc.joint_key``, but also takes the lower-case role
+    (``"female"``) that the touch-policy code passes around.
+
     Args:
-        joint_id (str): the joint id (``"J1-3"``, ``"G1-T20Ground-0"``).
-        subtype (str): ``"male"``, ``"female"`` or ``"ground"`` (any case).
+        joint_id (str): the joint id (``"J1-3"``, ``"G1-T20-0"``).
+        subtype (str): ``"Male"``, ``"Female"``, ``"Ground"`` or ``"MoCap"``
+            (any case).
     """
     return f"{CANONICAL_JOINT_PREFIX}{joint_id}_{subtype.lower()}"
 
@@ -177,6 +183,24 @@ def _joint_obj_path_map():
     return out
 
 
+def clear_joint_obj_path_cache() -> None:
+    """Forget the ``block_name -> OBJ`` map and every joint ``RigidBody`` built
+    from it, so the next collision build re-reads ``joint_pairs.json``.
+
+    Both live in ``sc.sticky`` for the whole Rhino session, and nothing else
+    ever drops them.  Call after anything that adds or changes a joint's
+    collision OBJ (RSDefineJointHalf) or swaps which block a joint uses.
+
+    Clearing the map alone is not enough: a block looked up BEFORE its OBJ was
+    registered is cached in the RigidBody cache as ``None`` ("missing -- skip
+    this joint"), and would keep being skipped from collision until Rhino
+    restarted.  Every joint OBJ reloads on the next build (a few ms each).
+    """
+    sticky = _sticky_dict()
+    sticky.pop(_STICKY_JOINT_OBJ_PATH_MAP, None)
+    sticky.pop(_STICKY_JOINT_RB_CACHE, None)
+
+
 def _build_bar_cylinder_mesh(length_m: float, radius_m: float, sides: int = BAR_CYLINDER_SIDES):
     """Build a low-poly compas Mesh of a cylinder along +Z, base at origin.
 
@@ -223,7 +247,7 @@ def _bar_world_frame_mm(bar_oid):
     so the in-Rhino tube preview and the local-frame cylinder mesh align.
     """
     import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
     from core.transforms import frame_from_axes, orthogonal_to, unit
 
     s = doc_unit_scale_to_mm()
@@ -304,26 +328,10 @@ def _get_or_build_bar_rigid_body(bar_oid, length_mm, radius_mm, deps):
     return rb, False
 
 
-def _block_instance_xform_mm(oid):
-    """Read a Rhino block instance's world transform as a 4x4 matrix in mm."""
-    import Rhino
-    import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
-
-    rh = rs.coercerhinoobject(oid, True, True)
-    if not isinstance(rh, Rhino.DocObjects.InstanceObject):
-        raise RuntimeError(f"Object {oid} is not a block instance.")
-    scale = doc_unit_scale_to_mm()
-    xf = rh.InstanceXform
-    matrix = np.array([[float(xf[i, j]) for j in range(4)] for i in range(4)], dtype=float)
-    matrix[:3, 3] *= scale
-    return matrix
-
-
 def _raise_on_duplicate_joint_key(out: dict, key: str, joint_oid, collector: str) -> None:
     """Refuse to build a collision scene when two joint blocks claim one name.
 
-    Canonical body names come from the ``joint_id`` + subtype USER TEXT. Two
+    Canonical body names come from the ``joint_id`` USER TEXT + the layer. Two
     blocks carrying the same id (the classic Rhino copy-paste, which clones
     user text) therefore compute the SAME key, and a plain dict assignment
     would silently drop one of them -- its geometry then exists in no collision
@@ -433,6 +441,7 @@ def collect_assembly_geometry(bar_seq_map):
     """
     import rhinoscriptsyntax as rs
     from core.rhino_bar_registry import get_fake_bar_ids
+    from core.rhino_helpers import block_instance_xform_mm
 
     deps = _import_deps_for_rb()
     t_total = time.perf_counter()
@@ -454,7 +463,7 @@ def collect_assembly_geometry(bar_seq_map):
         if rb is None:
             continue
         bar_hits += int(hit); bar_misses += int(not hit)
-        out[bar_body_name(bid)] = {
+        out[jnc.bar_key(bid)] = {
             "rigid_body": rb,
             "frame_world_mm": frame_mm,
             "kind": KIND_BAR,
@@ -462,11 +471,8 @@ def collect_assembly_geometry(bar_seq_map):
             "parent_bar_id": bid,
         }
 
-    joint_layers = (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    )
+    # Every joint role belongs in a collision scene -- the full set, not a subset.
+    joint_layers = jnc.JOINT_LAYERS
     j_hits = j_misses = 0
     # Blocks whose parent bar is unreadable / not a live bar: invisible to every
     # collision scene, so report them rather than dropping them silently.
@@ -475,7 +481,7 @@ def collect_assembly_geometry(bar_seq_map):
         if not rs.IsLayer(layer):
             continue
         for joint_oid in rs.ObjectsByLayer(layer) or []:
-            parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
+            parent_bar = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
             # A half mounted on a fake bar (its female) goes out with the bar;
             # the real bar's male is parented to the REAL bar and stays.
             if parent_bar in fake_bar_ids:
@@ -486,12 +492,8 @@ def collect_assembly_geometry(bar_seq_map):
                     f"(parent={parent_bar or '<none>'})"
                 )
                 continue
-            joint_id = rs.GetUserText(joint_oid, "joint_id")
-            subtype = (
-                rs.GetUserText(joint_oid, "joint_subtype")
-                or rs.GetUserText(joint_oid, "joint_type")
-                or "Joint"
-            )
+            joint_id = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID)
+            subtype = jnc.subtype_of_layer(layer)  # the layer is the authority
             block_name = rs.BlockInstanceName(joint_oid)
             if not block_name:
                 continue
@@ -499,8 +501,8 @@ def collect_assembly_geometry(bar_seq_map):
             if rb is None:
                 continue
             j_hits += int(hit); j_misses += int(not hit)
-            xform_mm = _block_instance_xform_mm(joint_oid)
-            key = joint_body_name(joint_id or str(joint_oid), subtype)
+            xform_mm = block_instance_xform_mm(joint_oid)
+            key = jnc.joint_key(joint_id or str(joint_oid), subtype)
             _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_assembly_geometry")
             out[key] = {
                 "rigid_body": rb,
@@ -632,7 +634,7 @@ def collect_environment_geometry():
         directly.
     """
     import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
 
     deps = _import_deps_for_rb()
     Mesh = deps["Mesh"]
@@ -662,7 +664,7 @@ def collect_environment_geometry():
             name = f"{base}_{k}"
             k += 1
         used.add(name)
-        out[f"{OBSTACLE_PREFIX}{name}"] = {
+        out[jnc.obstacle_key(name)] = {
             "rigid_body": rb,
             "frame_world_mm": np.eye(4, dtype=float),
             "kind": KIND_ENVIRONMENT,
@@ -819,7 +821,7 @@ def collect_floor_geometry() -> dict:
             ground is not a flat, roughly horizontal surface.
     """
     import rhinoscriptsyntax as rs
-    from core.rhino_frame_io import doc_unit_scale_to_mm
+    from core.rhino_helpers import doc_unit_scale_to_mm
     from core.rhino_walkable_ground import get_all_walkable_grounds
 
     deps = _import_deps_for_rb()

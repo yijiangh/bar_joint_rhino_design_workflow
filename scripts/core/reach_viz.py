@@ -163,7 +163,7 @@ def reach_sphere_meshes(robot_model, radius_mm: float = None):
     """
     import Rhino  # noqa: PLC0415  (Rhino runtime)
 
-    from core.rhino_frame_io import doc_unit_scale_to_mm  # noqa: PLC0415
+    from core.rhino_helpers import doc_unit_scale_to_mm  # noqa: PLC0415
 
     frames = arm_mount_frames_mm(robot_model)
     if not frames:

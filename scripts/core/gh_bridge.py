@@ -14,7 +14,7 @@ Module globals do not survive a solve
     The component shims reload their modules on every solve
     (``importlib.reload``), which wipes module-level state.  Anything that must
     persist between solves goes in ``sc.sticky`` -- see :func:`state`, and
-    ``docs/Su_note.md`` section 20 for the four places state can live.
+    ``docs/note.md`` section 20 for the four places state can live.
 
 The document cannot be edited during a solution
     Adding the auto-slider means mutating the GH document while GH is in the
@@ -30,7 +30,7 @@ import Rhino  # noqa: F401  (Rhino 8 .NET assembly, injected by the host)
 import scriptcontext as sc
 
 
-# All sticky keys this repo writes are namespaced ``bar_joint:`` (Su_note 20);
+# All sticky keys this repo writes are namespaced ``bar_joint:`` (note.md 20);
 # GH component state gets its own sub-namespace so it is obvious in a debugger
 # which entries belong to a canvas component rather than to a toolbar command.
 STICKY_PREFIX = "bar_joint:gh:"

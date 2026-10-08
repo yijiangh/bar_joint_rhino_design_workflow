@@ -15,10 +15,10 @@
 <locale_1033>RSDesign</locale_1033>
 <locale_1033>RSExportAllBarActions</locale_1033>
 <locale_1033>RSExportBarAction</locale_1033>
+<locale_1033>RSExportBarTool0TF</locale_1033>
 <locale_1033>RSExportPrefab</locale_1033>
 <locale_1033>RSExportRobotCell</locale_1033>
 <locale_1033>RSExportScaffoldJSON</locale_1033>
-<locale_1033>RSGroundPlace</locale_1033>
 <locale_1033>RSIKKeyframe</locale_1033>
 <locale_1033>RSIKKeyframeAll</locale_1033>
 <locale_1033>RSImportScaffoldJSON</locale_1033>
@@ -40,6 +40,7 @@
 <locale_1033>RSRemoveBar</locale_1033>
 <locale_1033>RSReorderBarID</locale_1033>
 <locale_1033>RSSelectBar</locale_1033>
+<locale_1033>RSSelectJoint</locale_1033>
 <locale_1033>RSSequenceEdit</locale_1033>
 <locale_1033>RSSequencePreview</locale_1033>
 <locale_1033>RSSequenceRenumber</locale_1033>

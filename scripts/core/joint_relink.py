@@ -2,7 +2,7 @@
 
 Motivation
 ----------
-Bars (curves), joint blocks (female/male/ground) and robotic-tool blocks are
+Bars (curves), joint blocks (receiver/male/ground) and robotic-tool blocks are
 tied together purely by *string* ids -- a joint stores ``parent_bar_id`` /
 ``female_parent_bar`` / ``male_parent_bar`` (a bar's ``bar_id``), and a tool
 stores the ``joint_id`` string of the joint it holds. None of them carry a
@@ -39,7 +39,7 @@ so ``tool_frame @ M_tcp_from_block`` reproduces the male/ground block origin --
 we match a tool to the joint block whose origin coincides with that TCP point.
 
 ``tool_attach_frame`` is the block's own world frame post-multiplied by the
-ground definition's ``M_tool_from_block`` (identity for male/female halves).
+ground definition's ``M_tool_from_block`` (identity for male/receiver halves).
 That offset is a PURE ROTATION about the block origin -- ``GroundJointDef``
 zeroes its translation -- so the TCP probe point below is bit-identical either
 way and the ``_TOOL_TCP_TOL_MM`` match is unaffected.  An offset carrying a
@@ -65,6 +65,7 @@ import numpy as np
 import rhinoscriptsyntax as rs
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_helpers import curve_endpoints, suspend_redraw
 from core.joint_pick_helpers import block_instance_frame
 from core.rhino_bar_registry import get_bar_seq_map
@@ -91,11 +92,6 @@ _TOOL_TCP_TOL_MM = 50.0
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
-
-
-def _num(bar_id):
-    """``'B7'`` -> ``'7'``; safe on empty / already-numeric input."""
-    return str(bar_id).lstrip("B") if bar_id else "?"
 
 
 def _parse_float(s):
@@ -161,12 +157,12 @@ def _mark_changed(edit):
 
 
 # ---------------------------------------------------------------------------
-# Female / male joint matching
+# Receiver / male joint matching
 # ---------------------------------------------------------------------------
 
 
 def _pair_confidence(own_dist, conn_dist):
-    """Uncertainty verdict for a two-bar (female/male) match."""
+    """Uncertainty verdict for a two-bar (receiver/male) match."""
     if own_dist > _UNCERTAIN_ABS_MM:
         return True, f"nearest bar {own_dist:.0f}mm away (block not on a bar?)"
     if conn_dist <= 1e-9:
@@ -176,16 +172,20 @@ def _pair_confidence(own_dist, conn_dist):
     return False, ""
 
 
-def _degenerate_edit(oid, kind, reason):
-    """An edit that proposes no change (kept as-is) but is flagged uncertain."""
-    old_jid = rs.GetUserText(oid, "joint_id") or ""
+def _degenerate_edit(oid, subtype, reason):
+    """An edit that proposes no change (kept as-is) but is flagged uncertain.
+
+    *subtype* is the block's Subtype, or ``None`` for a tool.
+    """
+    old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID) or ""
     edit = {
         "oid": oid,
-        "kind": kind,
+        "subtype": subtype,
+        "kind": jnc.role(subtype) if subtype else "tool",
         "old_jid": old_jid,
         "new_jid": old_jid,
-        "old_tid": rs.GetUserText(oid, "tool_id") or "",
-        "new_tid": rs.GetUserText(oid, "tool_id") or "",
+        "old_tid": rs.GetUserText(oid, jnc.UT_TOOL_ID) or "",
+        "new_tid": rs.GetUserText(oid, jnc.UT_TOOL_ID) or "",
         "new_name": rs.ObjectName(oid) or "",
         "usertext": {},
         "parents": "?",
@@ -198,43 +198,45 @@ def _degenerate_edit(oid, kind, reason):
     return edit
 
 
-def _female_male_edit(oid, role, segs):
-    """Plan the relink of one female or male joint block from its position."""
+def _female_male_edit(oid, subtype, segs):
+    """Plan the relink of one receiver (Female / MoCap) or Male joint block
+    from its position."""
     try:
         frame, _block_name = block_instance_frame(oid)
     except Exception as exc:  # not a block instance / exploded
-        return _degenerate_edit(oid, role, f"frame read failed ({exc})")
+        return _degenerate_edit(oid, subtype, f"frame read failed ({exc})")
 
     origin = frame[:3, 3]
     ranked = _rank_bars(origin, segs)
     if len(ranked) < 2:
-        return _degenerate_edit(oid, role, "fewer than 2 bars in document")
+        return _degenerate_edit(oid, subtype, "fewer than 2 bars in document")
 
     own_dist, own_seg = ranked[0]
     conn_dist, conn_seg = ranked[1]
     own_bar, conn_bar = own_seg[0], conn_seg[0]
     uncertain, reason = _pair_confidence(own_dist, conn_dist)
 
-    if role == "female":
+    if subtype in jnc.RECEIVER_SUBTYPES:
         female_bar, male_bar = own_bar, conn_bar
     else:
         male_bar, female_bar = own_bar, conn_bar
-    new_jid = f"J{_num(female_bar)}-{_num(male_bar)}"
+    new_jid = jnc.pair_joint_id(female_bar, male_bar)
 
     edit = {
         "oid": oid,
-        "kind": role,
-        "old_jid": rs.GetUserText(oid, "joint_id") or "",
+        "subtype": subtype,
+        "kind": jnc.role(subtype),
+        "old_jid": rs.GetUserText(oid, jnc.UT_JOINT_ID) or "",
         "new_jid": new_jid,
         "old_tid": None,
         "new_tid": None,
-        "new_name": f"{new_jid}_{role}",
+        "new_name": jnc.object_name(new_jid, subtype),
         "usertext": {
-            "joint_id": new_jid,
-            "parent_bar_id": own_bar,
-            "connected_bar_id": conn_bar,
-            "female_parent_bar": female_bar,
-            "male_parent_bar": male_bar,
+            jnc.UT_JOINT_ID: new_jid,
+            jnc.UT_PARENT_BAR: own_bar,
+            jnc.UT_CONNECTED_BAR: conn_bar,
+            jnc.UT_RECEIVER_BAR: female_bar,
+            jnc.UT_MALE_BAR: male_bar,
         },
         "parents": f"F={female_bar} M={male_bar}",
         "dist": own_dist,
@@ -246,21 +248,22 @@ def _female_male_edit(oid, role, segs):
 
 
 # ---------------------------------------------------------------------------
-# Ground joint matching
+# Single-sided joint matching (Ground, standalone MoCap)
 # ---------------------------------------------------------------------------
 
 
-def _ground_edit_raw(oid, segs):
-    """First pass for a ground block: resolve its bar; index assigned later."""
+def _single_edit_raw(oid, segs, subtype):
+    """First pass for a single-sided block: resolve its bar; index assigned later."""
     try:
-        frame, _block_name = block_instance_frame(oid)
+        frame, block_name = block_instance_frame(oid)
+        type_ = jnc.block_type(block_name)
     except Exception as exc:
-        return _degenerate_edit(oid, "ground", f"frame read failed ({exc})")
+        return _degenerate_edit(oid, subtype, f"frame/name read failed ({exc})")
 
     origin = frame[:3, 3]
     ranked = _rank_bars(origin, segs)
     if not ranked:
-        return _degenerate_edit(oid, "ground", "no bars in document")
+        return _degenerate_edit(oid, subtype, "no bars in document")
 
     own_dist, own_seg = ranked[0]
     own_bar = own_seg[0]
@@ -269,8 +272,9 @@ def _ground_edit_raw(oid, segs):
 
     return {
         "oid": oid,
-        "kind": "ground",
-        "old_jid": rs.GetUserText(oid, "joint_id") or "",
+        "subtype": subtype,
+        "kind": jnc.role(subtype),
+        "old_jid": rs.GetUserText(oid, jnc.UT_JOINT_ID) or "",
         "old_tid": None,
         "new_tid": None,
         "dist": own_dist,
@@ -278,57 +282,54 @@ def _ground_edit_raw(oid, segs):
         "reason": reason,
         "_origin": origin,
         "own_bar": own_bar,
-        "ground_name": rs.GetUserText(oid, "ground_joint_name") or "",
-        "position_mm": _parse_float(rs.GetUserText(oid, "position_mm")),
+        "type": type_,
+        "position_mm": _parse_float(rs.GetUserText(oid, jnc.UT_POSITION)),
     }
 
 
-def _finalize_ground_edit(edit, own_bar, ground_name, index):
-    from core.ground_placement import make_ground_joint_id
-
-    new_jid = make_ground_joint_id(own_bar, ground_name, index=index)
+def _finalize_single_edit(edit, own_bar, type_, index):
+    subtype = edit["subtype"]
+    new_jid = jnc.single_joint_id(subtype, own_bar, type_, index)
     edit["new_jid"] = new_jid
-    edit["new_name"] = f"{new_jid}_ground"
-    edit["usertext"] = {"joint_id": new_jid, "parent_bar_id": own_bar}
+    edit["new_name"] = jnc.object_name(new_jid, subtype)
+    edit["usertext"] = {jnc.UT_JOINT_ID: new_jid, jnc.UT_PARENT_BAR: own_bar}
     edit["parents"] = f"{own_bar}"
     _mark_changed(edit)
 
 
-def _assign_ground_indices(ground_edits):
-    """Assign per-``(bar, ground_name)`` indices, preserving already-valid ones.
+def _assign_single_indices(single_edits):
+    """Assign per-``(Subtype, bar, Type)`` indices, preserving already-valid ones.
 
-    A correctly-linked ORIGINAL ground whose ``joint_id`` already matches its
-    resolved bar keeps its index; copied grounds (whose old id encodes the
-    *source* bar) get the next free index in deterministic position order.
+    A correctly-linked ORIGINAL whose ``joint_id`` already matches its resolved
+    bar keeps its index; copies (whose old id encodes the *source* bar) get the
+    next free index in deterministic position order.
     """
     groups = defaultdict(list)
-    for edit in ground_edits:
+    for edit in single_edits:
         if edit.get("own_bar") is None:  # degenerate; already finalized
             continue
-        groups[(edit["own_bar"], edit["ground_name"])].append(edit)
+        groups[(edit["subtype"], edit["own_bar"], edit["type"])].append(edit)
 
-    for (own_bar, ground_name), members in groups.items():
-        base = f"G{_num(own_bar)}-{ground_name}-"
+    for (subtype, own_bar, type_), members in groups.items():
+        base = jnc.single_joint_id_base(subtype, own_bar, type_)
         used = set()
         pending = []
         for edit in members:
-            old_jid = edit.get("old_jid") or ""
-            tail = old_jid[len(base):] if old_jid.startswith(base) else ""
-            if tail.isdigit() and int(tail) not in used:
-                edit["_idx"] = int(tail)
-                used.add(int(tail))
+            parts = jnc.split_single_joint_id(edit.get("old_jid"))
+            index = parts[3] if parts and jnc.single_joint_id_base(*parts[:3]) == base else None
+            if index is not None and index not in used:
+                edit["_idx"] = index
+                used.add(index)
             else:
                 pending.append(edit)
         for edit in sorted(
             pending, key=lambda e: (e.get("position_mm") or 0.0, str(e["oid"]))
         ):
-            idx = 0
-            while idx in used:
-                idx += 1
+            idx = jnc.next_free_index(used)
             edit["_idx"] = idx
             used.add(idx)
         for edit in members:
-            _finalize_ground_edit(edit, own_bar, ground_name, edit["_idx"])
+            _finalize_single_edit(edit, own_bar, type_, edit["_idx"])
 
 
 # ---------------------------------------------------------------------------
@@ -345,9 +346,9 @@ def _tool_edit(oid, targets, tools_reg):
     try:
         frame, _block_name = block_instance_frame(oid)
     except Exception as exc:
-        return _degenerate_edit(oid, "tool", f"frame read failed ({exc})")
+        return _degenerate_edit(oid, None, f"frame read failed ({exc})")
 
-    tool_name = rs.GetUserText(oid, "tool_name") or ""
+    tool_name = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
     tdef = tools_reg.get(tool_name)
     if tdef is not None:
         # TCP point reproduces the joint block origin the tool was placed on.
@@ -365,8 +366,8 @@ def _tool_edit(oid, targets, tools_reg):
         if best is None or d < best[0]:
             best = (d, t_jid)
 
-    old_jid = rs.GetUserText(oid, "joint_id") or ""
-    old_tid = rs.GetUserText(oid, "tool_id") or ""
+    old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID) or ""
+    old_tid = rs.GetUserText(oid, jnc.UT_TOOL_ID) or ""
     if best is None:
         new_jid, uncertain, reason = old_jid, True, "no male/ground joint block to match"
     else:
@@ -380,16 +381,17 @@ def _tool_edit(oid, targets, tools_reg):
         else:
             uncertain, reason = False, ""
 
-    new_tid = f"T{new_jid}"
+    new_tid = jnc.tool_id(new_jid)
     edit = {
         "oid": oid,
+        "subtype": None,
         "kind": "tool",
         "old_jid": old_jid,
         "new_jid": new_jid,
         "old_tid": old_tid,
         "new_tid": new_tid,
         "new_name": new_tid,
-        "usertext": {"joint_id": new_jid, "tool_id": new_tid},
+        "usertext": {jnc.UT_JOINT_ID: new_jid, jnc.UT_TOOL_ID: new_tid},
         "parents": f"@{new_jid}",
         "dist": best[0] if best else float("nan"),
         "uncertain": uncertain,
@@ -405,23 +407,29 @@ def _tool_edit(oid, targets, tools_reg):
 
 
 def _consistency_warnings(joint_edits):
-    """Flag joints whose female + male halves disagree on the bar pair.
+    """Flag joints whose receiver + male halves disagree on the bar pair.
 
-    Female and male blocks are matched independently; if they resolve to the
+    Receiver and male blocks are matched independently; if they resolve to the
     same joint they must produce the SAME ``joint_id``. A ``new_jid`` that is
-    not backed by exactly one female + one male signals a bad/ambiguous match.
+    not backed by exactly one receiver + one male signals a bad/ambiguous match.
+    A Female and a MoCap half count into the SAME receiver bucket, or every
+    MoCap pair would warn.
     """
-    by_jid = defaultdict(lambda: {"female": [], "male": []})
+    by_jid = defaultdict(lambda: {"receiver": [], "male": []})
     for edit in joint_edits:
-        if edit["kind"] in ("female", "male") and edit.get("new_jid"):
-            by_jid[edit["new_jid"]][edit["kind"]].append(edit)
+        if not edit.get("new_jid"):
+            continue
+        if edit["subtype"] in jnc.RECEIVER_SUBTYPES:
+            by_jid[edit["new_jid"]]["receiver"].append(edit)
+        elif edit["subtype"] == jnc.MALE:
+            by_jid[edit["new_jid"]]["male"].append(edit)
 
     warnings = []
     for jid, halves in sorted(by_jid.items()):
-        nf, nm = len(halves["female"]), len(halves["male"])
+        nf, nm = len(halves["receiver"]), len(halves["male"])
         if nf != 1 or nm != 1:
             warnings.append(
-                f"joint {jid}: resolved {nf} female + {nm} male half(s) "
+                f"joint {jid}: resolved {nf} receiver + {nm} male half(s) "
                 "(expected 1 + 1) -- check the flagged rows."
             )
     return warnings
@@ -438,7 +446,7 @@ def build_plan():
     Plan dict::
 
         {
-          "edits": [edit, ...],   # one per female/male/ground/tool block
+          "edits": [edit, ...],   # one per receiver/male/ground/tool block
           "n_changed": int,
           "n_uncertain": int,
           "warnings": [str, ...],
@@ -450,23 +458,26 @@ def build_plan():
                 "warnings": ["no registered bars in document"]}
 
     joint_edits = []
-    for layer, role in (
-        (config.LAYER_JOINT_FEMALE_INSTANCES, "female"),
-        (config.LAYER_JOINT_MALE_INSTANCES, "male"),
-    ):
+    single_edits = []
+    for layer in jnc.JOINT_LAYERS:
+        subtype = jnc.subtype_of_layer(layer)
         for oid in _layer_oids(layer):
-            joint_edits.append(_female_male_edit(oid, role, segs))
+            # Single-sided: every Ground block, and a MoCap block whose id says
+            # it is standalone (M…) rather than the receiver of a pair (J…).
+            if jnc.is_single_sided(subtype, rs.GetUserText(oid, jnc.UT_JOINT_ID)):
+                single_edits.append(_single_edit_raw(oid, segs, subtype))
+            else:
+                joint_edits.append(_female_male_edit(oid, subtype, segs))
 
-    ground_edits = [_ground_edit_raw(oid, segs)
-                    for oid in _layer_oids(config.LAYER_JOINT_GROUND_INSTANCES)]
-    _assign_ground_indices(ground_edits)
-    joint_edits.extend(ground_edits)
+    _assign_single_indices(single_edits)
+    joint_edits.extend(single_edits)
 
-    # Male + ground blocks are the tool anchors (females never carry a tool).
+    # Male + ground blocks are the tool anchors (receivers never carry a tool).
     targets = [
         (e["oid"], e.get("_origin"), e["new_jid"])
         for e in joint_edits
-        if e["kind"] in ("male", "ground") and e.get("new_jid") and not e["uncertain"]
+        if e["subtype"] in jnc.TOOL_BEARING_SUBTYPES
+        and e.get("new_jid") and not e["uncertain"]
     ]
     tools_reg = load_robotic_tools()
     tool_edits = [_tool_edit(oid, targets, tools_reg)
@@ -483,8 +494,15 @@ def build_plan():
 
 
 def _sort_key(edit):
-    order = {"female": 0, "male": 1, "ground": 2, "tool": 3}
-    return (order.get(edit["kind"], 9), edit["new_jid"] or "", str(edit["oid"]))
+    """Receivers, then males, then grounds, then tools."""
+    subtype = edit["subtype"]
+    if subtype in jnc.RECEIVER_SUBTYPES:
+        rank = 0
+    elif subtype is None:
+        rank = 3
+    else:
+        rank = 1 if subtype == jnc.MALE else 2
+    return (rank, edit["new_jid"] or "", str(edit["oid"]))
 
 
 def print_plan(plan):
@@ -551,23 +569,19 @@ def verify_links():
     bar_ids = set(get_bar_seq_map().keys())
 
     joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         for oid in _layer_oids(layer):
-            jid = rs.GetUserText(oid, "joint_id")
+            jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             if jid:
                 joint_ids.add(jid)
-            pid = rs.GetUserText(oid, "parent_bar_id")
+            pid = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
             if pid and pid not in bar_ids:
                 problems.append(
                     f"{rs.ObjectName(oid) or oid}: parent_bar_id '{pid}' is not a live bar"
                 )
 
     for oid in _layer_oids(config.LAYER_TOOL_INSTANCES):
-        jid = rs.GetUserText(oid, "joint_id")
+        jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if jid and jid not in joint_ids:
             problems.append(
                 f"{rs.ObjectName(oid) or oid}: tool joint_id '{jid}' matches no joint block"

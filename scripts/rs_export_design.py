@@ -106,8 +106,7 @@ def export(command: str = "RSExportDesign") -> None:
     _copy_sources(folder, config)
     report = check_plan(written)
     n = sum(len(a.movements) for a in written.actions.values())
-    solved = sum(1 for a in written.actions.values() if a.type == "bar_jointing"
-                 and a.movements[0].start.robots[a.robot].base is not None)
+    solved = sum(1 for a in written.actions.values() if a.type == "bar_jointing" and a.movements[-1].target.joints)
     jointing = sum(1 for a in written.actions.values() if a.type == "bar_jointing")
     lines += [f"Wrote {folder} in {time.perf_counter() - built:.1f} s: {len(written.bodies)} bodies, "
               f"{len(written.mates)} mates, {len(written.actions)} actions, {n} movements; "

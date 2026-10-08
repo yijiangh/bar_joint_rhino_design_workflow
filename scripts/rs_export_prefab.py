@@ -51,21 +51,6 @@ from core.rhino_bar_registry import (
 _JOINT_INSTANCE_LAYERS = jnc.JOINT_LAYERS
 
 
-def _prefab_type_subtype(obj_id):
-    """``(type, subtype)`` as the joint jig controller expects them.
-
-    Pair halves export their user text (``T20`` / ``Female``).  Ground joints
-    exported ``("ground", "")`` before ground blocks were named
-    ``T20_Ground``; the jig controller lives outside this repo, so that pair is
-    kept until it is updated together with this function.
-    """
-    joint_type = rs.GetUserText(obj_id, jnc.UT_JOINT_TYPE) or ""
-    subtype = rs.GetUserText(obj_id, jnc.UT_JOINT_SUBTYPE) or ""
-    if jnc.subtype_of_layer(rs.ObjectLayer(obj_id)) == jnc.GROUND:
-        return "ground", ""
-    return joint_type, subtype
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -159,13 +144,14 @@ def _collect_joint_blocks():
             joint_id = rs.GetUserText(obj_id, jnc.UT_JOINT_ID)
             if not joint_id:
                 continue
-            joint_type, subtype = _prefab_type_subtype(obj_id)
+            # Every joint, Ground included, exports its block's Type and
+            # Subtype: T20_Ground -> "T20" / "Ground", like T20_Female.
             data = {
                 "obj_id": obj_id,
                 "layer": layer,
                 "joint_id": joint_id,
-                "type": joint_type,
-                "subtype": subtype,
+                "type": rs.GetUserText(obj_id, jnc.UT_JOINT_TYPE) or "",
+                "subtype": rs.GetUserText(obj_id, jnc.UT_JOINT_SUBTYPE) or "",
                 "bar_id": rs.GetUserText(obj_id, jnc.UT_PARENT_BAR) or "",
                 "connected_bar_id": rs.GetUserText(obj_id, jnc.UT_CONNECTED_BAR) or "",
             }

@@ -17,6 +17,10 @@ Workflow:
     Step 3  (Female / Male / MoCap) Pick the screw axis line.
     Step 4  (Female / Male / MoCap) Pick the screw center point.
     Step 5  Pick the collision mesh(es).
+    Step 6  (MoCap only) Pick the marker sphere objects and type each one's
+            Motive label (default M1, M2, ...).  Their centres are stored in
+            the block's own frame as ``marker_points_mm``.  Enter without a
+            pick keeps the markers already recorded.
 
 The registry entry is keyed by the block name.  Re-defining an existing half
 keeps its ``bar_cradle``, preferred tool and marker points.
@@ -84,6 +88,7 @@ if SCRIPT_DIR not in sys.path:
 from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module
 from core import joint_pick_helpers as _picks_module
+from core import marker_points
 from core.rhino_block_export import export_block_definition_to_3dm
 from core.rhino_block_obj_export import export_picked_meshes_to_obj_mm
 from core.rhino_helpers import delete_objects, suspend_redraw
@@ -151,6 +156,53 @@ def _ask_copy_from_female(female_name: str) -> bool | None:
     if answer is None:
         return None
     return answer.strip().lower().startswith("c")
+
+
+def _pick_marker_points(block_frame_mm, scale_to_mm, selected):
+    """Pick a MoCap block's marker spheres; ``{label: block-local mm}``.
+
+    Each sphere's centre is the centre of its bounding box.  The sphere being
+    labelled is selected so you can see which one the prompt means.  Returns
+    ``None`` when nothing is picked (or a label prompt is cancelled), which
+    keeps the markers already recorded.
+    """
+    with picks.temporarily_hidden(selected):
+        sphere_ids = rs.GetObjects(
+            "Pick the marker sphere objects (Enter to keep the recorded markers)",
+            filter=rs.filter.surface | rs.filter.polysurface | rs.filter.mesh,
+            preselect=False,
+            select=False,
+        )
+    if not sphere_ids:
+        return None
+    points: dict = {}
+    for sphere_id in sphere_ids:
+        corners = rs.BoundingBox(sphere_id)
+        if not corners:
+            print(f"{_DIALOG}: skipped an object with no bounding box.")
+            continue
+        centre_doc = marker_points.bounding_box_centre([tuple(c) for c in corners])
+        centre_mm = picks.vec_to_mm(centre_doc, scale_to_mm)
+        default = marker_points.next_default_label(points)
+        rs.SelectObject(sphere_id)
+        try:
+            while True:
+                label = rs.GetString("Motive label for the selected sphere", default)
+                if label is None:
+                    return None
+                label = label.strip() or default
+                if label not in points:
+                    break
+                rs.MessageBox(f"Label '{label}' is already used.", 0, _DIALOG)
+        finally:
+            rs.UnselectObject(sphere_id)
+        points[label] = marker_points.to_block_local_mm(block_frame_mm, centre_mm)
+        print(
+            f"{_DIALOG}: marker {label} at block-local "
+            f"({points[label][0]:.2f}, {points[label][1]:.2f}, {points[label][2]:.2f}) mm"
+        )
+    selected.extend(sphere_ids)
+    return points
 
 
 def _project_screw_origin(screw_point, screw_axis_start, screw_axis_end):
@@ -458,6 +510,12 @@ def main() -> None:
     selected.extend(mesh_ids)
     print(f"{_DIALOG}: collision meshes picked = {len(mesh_ids)}")
 
+    markers = None
+    if subtype == jnc.MOCAP:
+        markers = _pick_marker_points(block_frame_mm, scale_to_mm, selected)
+        if markers is None:
+            print(f"{_DIALOG}: no markers picked; keeping the recorded ones.")
+
     # Asset filenames
     asset_filename = f"{block_def_name}.3dm"
     obj_filename = f"{block_def_name}.obj"
@@ -496,7 +554,10 @@ def main() -> None:
                 previous.preferred_robotic_tool_name if previous else ""
             ),
             bar_cradle=previous.bar_cradle if previous else False,
-            marker_points_mm=previous.marker_points_mm if previous else {},
+            marker_points_mm=(
+                markers if markers is not None
+                else (previous.marker_points_mm if previous else {})
+            ),
         )
         jp_mod.save_joint_half(half)
         print(f"{_DIALOG}: saved half '{block_def_name}' (kind={half.kind}) to registry.")

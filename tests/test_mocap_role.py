@@ -28,6 +28,7 @@ from core.joint_pair import (
     load_joint_registry,
     receiver_subtypes,
     save_joint_registry,
+    swapped_receiver,
     with_receiver,
 )
 
@@ -208,3 +209,22 @@ def test_mocap_needs_no_mate_row(tmp_path, registry):
     assert sorted(m["name"] for m in data["mates"]) == ["T20", "T20Deck12", "T20SubLeft"]
     assert get_joint_pair_variant("T20", "MoCap", path=path).receiver.block_name == "T20_MoCap"
     assert get_joint_pair_variant("T20", path=path).receiver.block_name == "T20_Female"
+
+
+# ---------------------------------------------------------------------------
+# swapped_receiver -- what RSJointEdit > ReplaceJoint applies
+# ---------------------------------------------------------------------------
+
+
+def test_swapped_receiver_goes_female_to_mocap_and_back(registry):
+    t20 = registry.mates["T20"]
+    to_mocap = swapped_receiver(t20, registry.halves)
+    assert to_mocap.receiver.block_name == "T20_MoCap"
+    assert to_mocap.name == "T20" and to_mocap.male is t20.male
+    back = swapped_receiver(to_mocap, registry.halves)
+    assert back.receiver is t20.receiver
+
+
+def test_swapped_receiver_needs_the_other_block(registry):
+    with pytest.raises(KeyError, match="T20SubLeft_MoCap"):
+        swapped_receiver(registry.mates["T20SubLeft"], registry.halves)

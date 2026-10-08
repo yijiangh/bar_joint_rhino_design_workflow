@@ -4,7 +4,18 @@
 # r: scipy==1.13.1
 """RSJointEdit - Re-edit previously placed joint pairs.
 
-Two modes, chosen at the first prompt:
+Three modes, chosen at the first prompt:
+
+**ReplaceJoint** - click any half of a placed pair (Female, MoCap or Male) and
+its receiver swaps Female <-> MoCap of the same Type, keeping the joint:
+
+    J40-53_female  T20_Female  Joint Female Instances
+    J40-53_mocap   T20_MoCap   Joint MoCap Instances     (same J40-53, bars, tool)
+
+The pair is re-solved with the new receiver, so this is right even if the
+MoCap block sits differently on the bar.  The collision mesh follows in the
+same Rhino session.  A standalone MoCap (one bar, no male) has no pair to
+swap: delete it and place a pair with RSJointPlace.
 
 **FlipJoint** (the default, and everything described below) - flip the
 orientation of a joint half by clicking it.  A Ground joint flips end-for-end
@@ -91,7 +102,11 @@ from core.single_sided_placement import (
     place_single_sided_block,
     remove_placed_single,
 )
-from core.joint_pair import get_joint_pair_variant, load_joint_registry
+from core.joint_pair import (
+    get_joint_pair_variant,
+    load_joint_registry,
+    swapped_receiver,
+)
 from core.joint_pick_helpers import block_instance_frame
 from core.joint_placement import (
     _numpy_to_rhino_transform,
@@ -850,14 +865,83 @@ def _edit_single_sided(clicked_id):
         print(f"RSJointEdit: {joint_id} rotated to {math.degrees(jr):.1f} deg.")
 
 
+def _paired_joint_filter(rhino_object, geometry, component_index):
+    """Geometry filter -- any half placed by a mate (Female / MoCap / Male)."""
+    return rs.ObjectLayer(rhino_object.Id) in jnc.PAIRED_LAYERS
+
+
+def _run_replace_joint():
+    """Swap placed pairs' receivers Female <-> MoCap, one click each, until Esc."""
+    from core.env_collision import clear_joint_obj_path_cache  # noqa: PLC0415
+
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt(
+            "Click a joint (Female, MoCap or Male) to swap its receiver "
+            "Female <-> MoCap  (Escape to exit)"
+        )
+        go.EnablePreSelect(False, False)
+        go.SetCustomGeometryFilter(_paired_joint_filter)
+        if go.Get() != Rhino.Input.GetResult.Object:
+            print("RSJointEdit: Done.")
+            return
+        clicked_id = go.Object(0).ObjectId
+
+        if _is_single_sided(clicked_id):
+            print(
+                "RSJointEdit: a standalone MoCap joint has no male, so there is no "
+                "Female to swap to.  Delete it and place a pair with RSJointPlace."
+            )
+            continue
+
+        joint_id = rs.GetUserText(clicked_id, jnc.UT_JOINT_ID)
+        pair_name = rs.GetUserText(clicked_id, jnc.UT_PAIR_NAME)
+        le_bar_id = rs.GetUserText(clicked_id, jnc.UT_RECEIVER_BAR)
+        ln_bar_id = rs.GetUserText(clicked_id, jnc.UT_MALE_BAR)
+        le_rev = rs.GetUserText(clicked_id, jnc.UT_LE_REV) == "True"
+        ln_rev = rs.GetUserText(clicked_id, jnc.UT_LN_REV) == "True"
+        if not (joint_id and pair_name and le_bar_id and ln_bar_id):
+            print(
+                "RSJointEdit: joint metadata incomplete; re-place it with RSJointPlace."
+            )
+            continue
+
+        try:
+            pair = _placed_pair(joint_id, pair_name)
+            new_pair = swapped_receiver(pair, load_joint_registry().halves)
+            require_block_definition(
+                new_pair.receiver.block_name,
+                asset_path=new_pair.receiver.asset_path(),
+            )
+        except (KeyError, RuntimeError) as exc:
+            print(f"RSJointEdit: {joint_id}: cannot swap the receiver -- {exc}")
+            continue
+
+        ok, _le, _ln = _replace_joint_pair(
+            joint_id, le_bar_id, ln_bar_id, new_pair, le_rev, ln_rev
+        )
+        # The collision scene finds a block's OBJ by its block name, cached for
+        # the session; drop the cache so the swapped joint is not checked with
+        # the old block's mesh until Rhino restarts.
+        clear_joint_obj_path_cache()
+        if ok:
+            print(
+                f"RSJointEdit: {joint_id}: {pair.receiver.block_name} -> "
+                f"{new_pair.receiver.block_name}."
+            )
+
+
 def _ask_mode():
-    """FlipJoint (the historical behaviour, and the Enter default) or MoveJoint."""
+    """FlipJoint (the historical behaviour, and the Enter default), MoveJoint
+    or ReplaceJoint."""
     go = Rhino.Input.Custom.GetOption()
     go.SetCommandPrompt(
-        "Flip joint orientations, or move a joint along its bar"
+        "Flip joint orientations, move a joint along its bar, or swap a "
+        "receiver Female <-> MoCap"
     )
     flip_idx = go.AddOption("FlipJoint")
     move_idx = go.AddOption("MoveJoint")
+    replace_idx = go.AddOption("ReplaceJoint")
     go.SetCommandPromptDefault("FlipJoint")
     go.AcceptNothing(True)
     while True:
@@ -870,6 +954,8 @@ def _ask_mode():
                 return "flip"
             if chosen == move_idx:
                 return "move"
+            if chosen == replace_idx:
+                return "replace"
             continue
         return None
 
@@ -883,6 +969,9 @@ def main():
         return
     if mode == "move":
         _run_move_joint()
+        return
+    if mode == "replace":
+        _run_replace_joint()
         return
 
     # Continuous pick loop — no accept/confirm step.  Each click on a joint

@@ -620,6 +620,16 @@ def with_receiver(pair: JointPairDef, subtype: str, halves: dict) -> JointPairDe
     )
 
 
+def swapped_receiver(pair: JointPairDef, halves: dict) -> JointPairDef:
+    """*pair* with its receiver swapped Female <-> MoCap (RSJointEdit > ReplaceJoint).
+
+    ``T20`` holding ``T20_Female`` -> ``T20`` holding ``T20_MoCap``, and back.
+    Raises ``KeyError`` when the Type has no block of the other kind.
+    """
+    other = jnc.MOCAP if pair.receiver_subtype == jnc.FEMALE else jnc.FEMALE
+    return with_receiver(pair, other, halves)
+
+
 def get_joint_pair_variant(
     name: str, receiver_subtype: str | None = None, *, path: str = DEFAULT_REGISTRY_PATH
 ) -> JointPairDef:

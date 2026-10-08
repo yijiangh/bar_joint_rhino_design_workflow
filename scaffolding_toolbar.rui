@@ -149,9 +149,6 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000053" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000053</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000054" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000054</left_macro_id>
-      </tool_bar_item>
     </tool_bar>
   </tool_bars>
   <macros>
@@ -316,15 +313,6 @@
         <locale_1033>Type a joint id like J40-53_female (case-insensitive) to select and zoom to that placed joint block. Drop the suffix (J40-53) to select both halves; ground ids like G4-floor-0 and pasted PyBullet body keys like joint_J25-26_male work too. Comma-separate ids to select several; the prompt loops so you can jump between joints. Read-only.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_select_joint.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000054">
-      <text>
-        <locale_1033>RSTempPlace</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>TEMPORARY (mock-up workflow): for every male / ground joint that has no female yet, create a 200 mm stub bar centred under where its female belongs. Choose PlaceFemaleJointBar (bar + the mating female half) or PlaceBar (the bar only, same length and position). Ground joints have no mate frame in joint_pairs.json, so you pick which pair's male plug they mate like. Stub bars are marked FAKE, so they sequence and the IK still sees their joints, but the prefab / bar-action / robot-cell exports skip them. Check stubs near subfloor joints by eye - a stub can pass straight through another bar.</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_temp_place.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001d">
       <text>

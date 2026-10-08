@@ -15,13 +15,14 @@ Workflow:
 4. ``jr`` is auto-computed via the heuristic
    :func:`core.ground_placement.auto_jr_y_down` so the block's local +Y
    axis points as close to world -Z (ground) as possible.
-5. A preview block is inserted with role=ground.  Click the block to flip
+5. A preview block is inserted, tagged as a Ground preview.  Click it to flip
    ``jr`` by 180 deg; press **Enter** / click **Accept** to bake the
    final instance, **Escape** to cancel.
 
-The baked instance lives on ``LAYER_JOINT_GROUND_INSTANCES`` and carries
-``joint_id`` / ``ground_joint_name`` / ``parent_bar_id`` / ``position_mm``
-/ ``rotation_deg`` UserText so :mod:`rs_joint_edit` can re-edit it.
+The baked instance lives on the Joint Ground Instances layer, is named
+``G<bar>-<Type>-<i>_ground`` (``G4-T20-0_ground``), and carries ``joint_id`` /
+``block_name`` / ``parent_bar_id`` / ``position_mm`` / ``rotation_deg`` /
+``flipped`` UserText so :mod:`rs_joint_edit` can re-edit it.
 """
 
 import importlib
@@ -39,6 +40,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config as _config_module
+from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module
 from core import joint_placement as _joint_placement_module
 from core import ground_placement as _ground_placement_module
@@ -49,13 +51,10 @@ from core.rhino_helpers import curve_endpoints, delete_objects, suspend_redraw
 
 def _reload_runtime_modules():
     global config, joint_pair_module, joint_placement, ground_placement
-    global JOINT_ROLE_GROUND, GROUND_INSTANCES_LAYER
     config = importlib.reload(_config_module)
     joint_pair_module = importlib.reload(_joint_pair_module)
     joint_placement = importlib.reload(_joint_placement_module)
     ground_placement = importlib.reload(_ground_placement_module)
-    JOINT_ROLE_GROUND = ground_placement.JOINT_ROLE_GROUND
-    GROUND_INSTANCES_LAYER = ground_placement.GROUND_INSTANCES_LAYER
 
 
 _reload_runtime_modules()
@@ -163,7 +162,7 @@ class _GroundSession:
 
 def _ground_role_filter(rhino_object, geometry, component_index):
     """Geometry filter -- accept only the live ground preview block."""
-    return rs.GetUserText(rhino_object.Id, "_joint_role") == JOINT_ROLE_GROUND
+    return rs.GetUserText(rhino_object.Id, jnc.UT_PREVIEW_SUBTYPE) == jnc.GROUND
 
 
 def _interactive_loop(session: _GroundSession) -> bool:

@@ -37,6 +37,7 @@ import os
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import robotic_tool as _robotic_tool
 from core.rhino_block_import import refresh_block_definition, require_block_definition
 
@@ -131,7 +132,7 @@ _male_world_frame_from_object = _block_instance_world_xform
 # Tool-attach frame (block frame + optional block-local offset)
 # ---------------------------------------------------------------------------
 
-#: Cache of ``ground_joint_name -> 4x4 block-local tool-attach offset``, keyed by
+#: Cache of ``ground block name -> 4x4 block-local tool-attach offset``, keyed by
 #: the registry file's (path, mtime, size).  `resync_tools_to_joints`,
 #: `restore_missing_tools_at_joints` and `enforce_bar_tool_sides` each walk EVERY
 #: tool in the document on EVERY RSUpdatePreview run, so the registry must not be
@@ -154,7 +155,7 @@ def clear_tool_attach_cache() -> None:
 
 
 def _ground_offsets(path: str | None = None) -> dict:
-    """``{ground_joint_name: 4x4}`` for the whole registry, cached by file stamp."""
+    """``{ground block name: 4x4}`` for the whole registry, cached by file stamp."""
     global _GROUND_OFFSET_STAMP
 
     from core import joint_pair as _joint_pair  # noqa: PLC0415
@@ -179,8 +180,8 @@ def _ground_offsets(path: str | None = None) -> dict:
             "attaching tools on the raw block frames."
         )
     else:
-        for name, ground in registry.ground_joints.items():
-            offsets[name] = np.asarray(
+        for ground in registry.ground_joints.values():
+            offsets[ground.block_name] = np.asarray(
                 getattr(ground, "M_tool_from_block", np.eye(4)), dtype=float
             )
     _GROUND_OFFSET_CACHE.clear()
@@ -190,29 +191,29 @@ def _ground_offsets(path: str | None = None) -> dict:
 
 
 def ground_tool_attach_offset(
-    ground_joint_name: str, path: str | None = None
+    block_name: str, path: str | None = None
 ) -> np.ndarray:
-    """Block-local tool-attach offset for a ground joint DEFINITION (4x4).
+    """Block-local tool-attach offset for a ground joint block (4x4).
 
-    Identity for an empty or unregistered name.  Always a pure rotation about
+    Identity for an empty or unregistered block name (every Male block).  Always a pure rotation about
     the block origin -- ``GroundJointDef`` zeroes the translation -- so the TCP
     probe point in :mod:`core.joint_relink` is unaffected.
     """
-    if not ground_joint_name:
+    if not block_name:
         return np.eye(4)
-    return _ground_offsets(path).get(str(ground_joint_name), np.eye(4))
+    return _ground_offsets(path).get(str(block_name), np.eye(4))
 
 
 def tool_attach_offset(block_id) -> np.ndarray:
     """Block-local offset between a joint block's frame and its tool's TCP frame.
 
-    Ground blocks carry a ``ground_joint_name`` user-text (written by
-    :func:`core.ground_placement.place_ground_block`); male/female blocks do
-    not, so they resolve to identity and their behaviour is unchanged.
+    Ground blocks carry a ``block_name`` user-text (written by
+    :func:`core.ground_placement.place_ground_block`); male blocks do not, so
+    they resolve to identity and their behaviour is unchanged.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    name = rs.GetUserText(block_id, "ground_joint_name") or ""
+    name = rs.GetUserText(block_id, jnc.UT_BLOCK_NAME) or ""
     return ground_tool_attach_offset(name)
 
 
@@ -237,7 +238,7 @@ def remove_tool_for_joint(joint_id: str) -> int:
         return 0
     removed = 0
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             rs.DeleteObject(oid)
             removed += 1
     return removed
@@ -284,12 +285,12 @@ def place_tool_at_block_instance(
     rs.TransformObject(tool_oid, _numpy_to_rhino_transform(world_tool_block))
     rs.ObjectLayer(tool_oid, config.LAYER_TOOL_INSTANCES)
 
-    tool_id = f"T{joint_id}"
+    tool_id = jnc.tool_id(joint_id)
     rs.ObjectName(tool_oid, tool_id)
-    rs.SetUserText(tool_oid, "tool_id", tool_id)
-    rs.SetUserText(tool_oid, "tool_name", tool.name)
-    rs.SetUserText(tool_oid, "joint_id", joint_id)
-    rs.SetUserText(tool_oid, "block_name", tool.block_name)
+    rs.SetUserText(tool_oid, jnc.UT_TOOL_ID, tool_id)
+    rs.SetUserText(tool_oid, jnc.UT_TOOL_NAME, tool.name)
+    rs.SetUserText(tool_oid, jnc.UT_JOINT_ID, joint_id)
+    rs.SetUserText(tool_oid, jnc.UT_BLOCK_NAME, tool.block_name)
     return tool_oid
 
 
@@ -337,8 +338,8 @@ def replace_all_tool_instances(pair: dict) -> dict:
         existing_tool_oids = []
     for oid in existing_tool_oids:
         tool_oids.append(oid)
-        joint_id = rs.GetUserText(oid, "joint_id")
-        tool_name = rs.GetUserText(oid, "tool_name") or ""
+        joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+        tool_name = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
         if not joint_id:
             problems.append(f"  - object {oid}: missing 'joint_id' user-text")
             continue
@@ -530,7 +531,7 @@ def find_tool_for_joint(joint_id: str):
     if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
         return None
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             return oid
     return None
 
@@ -543,7 +544,7 @@ def get_tool_name_for_joint(joint_id: str) -> str | None:
     oid = find_tool_for_joint(joint_id)
     if oid is None:
         return None
-    name = rs.GetUserText(oid, "tool_name")
+    name = rs.GetUserText(oid, jnc.UT_TOOL_NAME)
     return name or None
 
 
@@ -571,13 +572,13 @@ def find_male_block_for_joint(joint_id: str):
     ``{joint_id}_male`` first, then by user-text scan as a fallback."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    ids = rs.ObjectsByName(f"{joint_id}_male") or []
+    ids = rs.ObjectsByName(jnc.object_name(joint_id, jnc.MALE)) or []
     if ids:
         return ids[0]
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
+    if not rs.IsLayer(jnc.LAYER_MALE):
         return None
-    for oid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
+    for oid in rs.ObjectsByLayer(jnc.LAYER_MALE) or []:
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             return oid
     return None
 
@@ -587,23 +588,23 @@ def find_ground_block_for_joint(joint_id: str):
     *joint_id*, or ``None``."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    ids = rs.ObjectsByName(f"{joint_id}_ground") or []
+    ids = rs.ObjectsByName(jnc.object_name(joint_id, jnc.GROUND)) or []
     if ids:
         return ids[0]
-    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
+    if not rs.IsLayer(jnc.LAYER_GROUND):
         return None
-    for oid in rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or []:
-        if rs.GetUserText(oid, "joint_id") == joint_id:
+    for oid in rs.ObjectsByLayer(jnc.LAYER_GROUND) or []:
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             return oid
     return None
 
 
 def find_attached_block_for_joint(joint_id: str):
     """Return the Rhino object id of the joint block (male OR ground) the
-    tool is attached to.  Dispatches by the ``joint_id`` prefix (``J*`` =
-    male pair, ``G*`` = ground), with a search of the other layer as
+    tool is attached to.  Dispatches by the ``joint_id`` (``J40-53`` = male
+    pair, ``G4-T20-0`` = ground), with a search of the other layer as
     fallback so renamed ids still resolve."""
-    if joint_id.startswith("G"):
+    if jnc.single_sided_subtype_of_id(joint_id) == jnc.GROUND:
         oid = find_ground_block_for_joint(joint_id)
         if oid is not None:
             return oid
@@ -681,8 +682,8 @@ def find_detached_tools() -> list:
     for tool_oid in list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []):
         if not rs.IsObject(tool_oid):
             continue
-        joint_id = rs.GetUserText(tool_oid, "joint_id") or ""
-        tool_name = rs.GetUserText(tool_oid, "tool_name") or ""
+        joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID) or ""
+        tool_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
         if not joint_id:
             detached.append((tool_oid, "", "no 'joint_id' user-text"))
             continue
@@ -734,8 +735,8 @@ def resync_tools_to_joints(verbose: bool = False) -> int:
     for tool_oid in list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []):
         if not rs.IsObject(tool_oid):
             continue  # already removed (e.g. a duplicate cleared this pass)
-        joint_id = rs.GetUserText(tool_oid, "joint_id")
-        tool_name = rs.GetUserText(tool_oid, "tool_name")
+        joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
+        tool_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME)
         if not joint_id or not tool_name:
             continue
         tool = all_tools.get(tool_name)
@@ -785,25 +786,25 @@ def _restore_side_tool(block_id, joint_id, active, default_tool):
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    bar_id = rs.GetUserText(block_id, "parent_bar_id")
+    bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
     if not bar_id:
         return default_tool
 
     sibling_sides: set = set()
-    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for other_id in rs.ObjectsByLayer(layer) or []:
-            other_jid = rs.GetUserText(other_id, "joint_id")
+            other_jid = rs.GetUserText(other_id, jnc.UT_JOINT_ID)
             if not other_jid or other_jid == joint_id:
                 continue
-            if rs.GetUserText(other_id, "parent_bar_id") != bar_id:
+            if rs.GetUserText(other_id, jnc.UT_PARENT_BAR) != bar_id:
                 continue
             other_toid = find_tool_for_joint(other_jid)
             if other_toid is None:
                 continue
             side = _robotic_tool.arm_side_from_tool_name(
-                rs.GetUserText(other_toid, "tool_name") or ""
+                rs.GetUserText(other_toid, jnc.UT_TOOL_NAME) or ""
             )
             if side is not None:
                 sibling_sides.add(side)
@@ -872,12 +873,12 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
     default_tool = _resolve_default_active_tool(active)
 
     seen_joint_ids: set = set()
-    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for block_id in list(rs.ObjectsByLayer(layer) or []):
             n["checked"] += 1
-            joint_id = rs.GetUserText(block_id, "joint_id")
+            joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
             if not joint_id:
                 n["no_joint_id"] += 1
                 continue
@@ -903,7 +904,7 @@ def _joint_position_mm(block_id) -> float:
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
     try:
-        return float(rs.GetUserText(block_id, "position_mm"))
+        return float(rs.GetUserText(block_id, jnc.UT_POSITION))
     except (TypeError, ValueError):
         return float("inf")
 
@@ -944,13 +945,13 @@ def _bar_anchor_joints(bar_id):
 
     anchors = []
     seen: set = set()
-    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for block_id in list(rs.ObjectsByLayer(layer) or []):
-            if rs.GetUserText(block_id, "parent_bar_id") != bar_id:
+            if rs.GetUserText(block_id, jnc.UT_PARENT_BAR) != bar_id:
                 continue
-            joint_id = rs.GetUserText(block_id, "joint_id")
+            joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
             if not joint_id or joint_id in seen:
                 continue
             seen.add(joint_id)
@@ -1032,7 +1033,7 @@ def assign_tool_sides_from_heading(bar_id, heading_mm, ground_normal,
         tool_oid = find_tool_for_joint(joint_id)
         if tool_oid is None:
             continue  # restore_missing_tools_at_joints owns this joint this pass
-        current_name = rs.GetUserText(tool_oid, "tool_name") or ""
+        current_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
         if _robotic_tool.arm_side_from_tool_name(current_name) == side:
             continue
         tool = active[side]
@@ -1082,7 +1083,7 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
     heading_done: set = set()
     # Pass 1: every bar whose base heading is resolvable gets both sides derived
     # from it. One shared soup cache -- tessellating a ground brep is the
-    # expensive step and every bar would otherwise redo it (Su_note.md 14).
+    # expensive step and every bar would otherwise redo it (note.md 14).
     try:
         from core import rhino_walkable_ground as _rwg  # noqa: PLC0415  (Rhino-only)
         from core.rhino_bar_registry import get_all_bars  # noqa: PLC0415
@@ -1119,12 +1120,12 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
     # Group every tool-bearing joint (male J* + ground G*) by its parent bar.
     by_bar: dict = {}
     seen_joint_ids: set = set()
-    for layer in (config.LAYER_JOINT_MALE_INSTANCES, config.LAYER_JOINT_GROUND_INSTANCES):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for block_id in list(rs.ObjectsByLayer(layer) or []):
-            joint_id = rs.GetUserText(block_id, "joint_id")
-            bar_id = rs.GetUserText(block_id, "parent_bar_id")
+            joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
+            bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
             if not joint_id or not bar_id or joint_id in seen_joint_ids:
                 continue
             if bar_id in heading_done:
@@ -1154,7 +1155,7 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
             if tool_oid is None:
                 held = []
                 break  # restore_missing_tools_at_joints owns this bar this pass
-            current_name = rs.GetUserText(tool_oid, "tool_name") or ""
+            current_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
             held.append(
                 (
                     joint_id,
@@ -1203,8 +1204,8 @@ def cycle_tool_at_tool_instance(tool_oid, *, pair=None) -> str | None:
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    joint_id = rs.GetUserText(tool_oid, "joint_id")
-    current_name = rs.GetUserText(tool_oid, "tool_name") or ""
+    joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
+    current_name = rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or ""
     if not joint_id:
         print("  [tool] clicked tool has no 'joint_id' user-text; cannot toggle.")
         return None

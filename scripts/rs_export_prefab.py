@@ -22,6 +22,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_helpers import curve_endpoints
 from core.rhino_bar_registry import (
     get_all_bars,
@@ -34,9 +35,22 @@ from core.rhino_bar_registry import (
 # Constants
 # ---------------------------------------------------------------------------
 
-_FEMALE_INSTANCES_LAYER = config.LAYER_JOINT_FEMALE_INSTANCES
-_MALE_INSTANCES_LAYER = config.LAYER_JOINT_MALE_INSTANCES
-_GROUND_INSTANCES_LAYER = config.LAYER_JOINT_GROUND_INSTANCES
+_JOINT_INSTANCE_LAYERS = jnc.JOINT_LAYERS
+
+
+def _prefab_type_subtype(obj_id):
+    """``(type, subtype)`` as the joint jig controller expects them.
+
+    Pair halves export their user text (``T20`` / ``Female``).  Ground joints
+    exported ``("ground", "")`` before ground blocks were named
+    ``T20_Ground``; the jig controller lives outside this repo, so that pair is
+    kept until it is updated together with this function.
+    """
+    joint_type = rs.GetUserText(obj_id, jnc.UT_JOINT_TYPE) or ""
+    subtype = rs.GetUserText(obj_id, jnc.UT_JOINT_SUBTYPE) or ""
+    if jnc.subtype_of_layer(rs.ObjectLayer(obj_id)) == jnc.GROUND:
+        return "ground", ""
+    return joint_type, subtype
 
 
 # ---------------------------------------------------------------------------
@@ -124,32 +138,30 @@ def _compute_rotation_deg(joint_z, bar_x, bar_z):
 def _collect_joint_blocks():
     """Return list of (obj_id, flat_data_dict) for all placed joint blocks."""
     results = []
-    for layer in (_FEMALE_INSTANCES_LAYER, _MALE_INSTANCES_LAYER, _GROUND_INSTANCES_LAYER):
+    for layer in _JOINT_INSTANCE_LAYERS:
         objs = rs.ObjectsByLayer(layer) if rs.IsLayer(layer) else []
         if not objs:
             continue
         for obj_id in objs:
-            joint_id = rs.GetUserText(obj_id, "joint_id")
+            joint_id = rs.GetUserText(obj_id, jnc.UT_JOINT_ID)
             if not joint_id:
                 continue
+            joint_type, subtype = _prefab_type_subtype(obj_id)
             data = {
                 "obj_id": obj_id,
                 "joint_id": joint_id,
-                "type": rs.GetUserText(obj_id, "joint_type") or "",
-                "subtype": rs.GetUserText(obj_id, "joint_subtype") or "",
-                "bar_id": rs.GetUserText(obj_id, "parent_bar_id") or "",
-                "connected_bar_id": rs.GetUserText(obj_id, "connected_bar_id") or "",
+                "type": joint_type,
+                "subtype": subtype,
+                "bar_id": rs.GetUserText(obj_id, jnc.UT_PARENT_BAR) or "",
+                "connected_bar_id": rs.GetUserText(obj_id, jnc.UT_CONNECTED_BAR) or "",
             }
             results.append(data)
     return results
 
 
 def _bar_sort_key(bar_id):
-    num = bar_id.lstrip("B")
-    try:
-        return int(num)
-    except ValueError:
-        return float("inf")
+    number = jnc.bar_number(bar_id)
+    return float("inf") if number is None else number
 
 
 # ---------------------------------------------------------------------------

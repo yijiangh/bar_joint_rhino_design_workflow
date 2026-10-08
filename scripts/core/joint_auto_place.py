@@ -44,7 +44,7 @@ def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
     # only two valid variants), automatically flip the female side once.
     result, _recovered, _le_rev, _ln_rev = compute_variant_with_recovery(
         le_start, le_end, ln_start, ln_end, False, False,
-        pair=pair, recover_side="female",
+        pair=pair, recover_side="receiver",
         log_prefix="auto_place_joint_pair",
     )
     _, male_id, joint_id = place_joint_blocks(

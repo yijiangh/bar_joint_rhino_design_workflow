@@ -50,6 +50,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.joint_pair import (
     canonical_bar_frame_from_line,
     fk_half_from_bar_frame,
@@ -57,7 +58,6 @@ from core.joint_pair import (
 )
 from core.joint_pick_helpers import block_instance_frame
 from core.joint_placement import (
-    FEMALE_INSTANCES_LAYER,
     block_orientation_tag,
     insert_block_instance,
     write_joint_user_text,
@@ -114,8 +114,8 @@ def _block_instances(layer):
 def _placed_female_joint_ids() -> set:
     """``joint_id`` of every female block already in the document."""
     ids = set()
-    for oid in _block_instances(config.LAYER_JOINT_FEMALE_INSTANCES):
-        joint_id = rs.GetUserText(oid, "joint_id")
+    for oid in _block_instances(jnc.LAYER_FEMALE):
+        joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if joint_id:
             ids.add(joint_id)
     return ids
@@ -132,11 +132,11 @@ def _unmated_sources() -> list:
     have_female = _placed_female_joint_ids()
     out = []
     for kind, layer in (
-        ("male", config.LAYER_JOINT_MALE_INSTANCES),
-        ("ground", config.LAYER_JOINT_GROUND_INSTANCES),
+        ("male", jnc.LAYER_MALE),
+        ("ground", jnc.LAYER_GROUND),
     ):
         for oid in _block_instances(layer):
-            joint_id = rs.GetUserText(oid, "joint_id") or ""
+            joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID) or ""
             if not joint_id:
                 print(f"{CMD}: a {kind} block carries no joint_id; skipped.")
                 continue
@@ -159,7 +159,7 @@ def _pair_for_male(oid, block_name, mates):
     that predate that key; a block used by several mates (``T20_Male`` is used
     by three) is genuinely ambiguous and is reported rather than guessed at.
     """
-    name = rs.GetUserText(oid, "joint_pair_name") or ""
+    name = rs.GetUserText(oid, jnc.UT_PAIR_NAME) or ""
     if name in mates:
         return mates[name]
     candidates = [p for p in mates.values() if p.male.block_name == block_name]
@@ -322,11 +322,11 @@ def _copy_variant_flags(source_oid):
     before the keys existed reads as anyway.
     """
     try:
-        var_idx = int(rs.GetUserText(source_oid, "variant_index") or 0)
+        var_idx = int(rs.GetUserText(source_oid, jnc.UT_VARIANT) or 0)
     except (TypeError, ValueError):
         var_idx = 0
-    le_rev = (rs.GetUserText(source_oid, "le_rev") or "") == "True"
-    ln_rev = (rs.GetUserText(source_oid, "ln_rev") or "") == "True"
+    le_rev = (rs.GetUserText(source_oid, jnc.UT_LE_REV) or "") == "True"
+    ln_rev = (rs.GetUserText(source_oid, jnc.UT_LN_REV) or "") == "True"
     return le_rev, ln_rev, var_idx
 
 
@@ -380,9 +380,9 @@ def _place_one(source_oid, kind, joint_id, pair, bar_radius, place_female=True):
         pair.female.block_name, asset_path=pair.female.asset_path()
     )
     female_oid = insert_block_instance(
-        female_block_name, female_frame, layer_name=FEMALE_INSTANCES_LAYER
+        female_block_name, female_frame, layer_name=jnc.LAYER_FEMALE
     )
-    rs.ObjectName(female_oid, f"{joint_id}_female")
+    rs.ObjectName(female_oid, jnc.object_name(joint_id, jnc.FEMALE))
 
     bar_frame, jp, jr = _jp_jr(p0, p1, axis_frame)
     # Self-check: the (jp, jr) about to be written must reproduce the block that
@@ -396,14 +396,12 @@ def _place_one(source_oid, kind, joint_id, pair, bar_radius, place_female=True):
             "placed pose; the block is correct, its UserText may not be."
         )
 
-    female_type, _, female_subtype = female_block_name.partition("_")
-    source_bar = rs.GetUserText(source_oid, "parent_bar_id") or ""
+    source_bar = rs.GetUserText(source_oid, jnc.UT_PARENT_BAR) or ""
     le_rev, ln_rev, var_idx = _copy_variant_flags(source_oid)
     write_joint_user_text(
         female_oid,
         joint_id=joint_id,
-        block_type=female_type,
-        block_subtype=female_subtype,
+        block_name=female_block_name,
         pair_name=pair.name,
         parent_bar=bar_id,
         connected_bar=source_bar,

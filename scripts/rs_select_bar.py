@@ -40,6 +40,7 @@ if SCRIPT_DIR not in sys.path:
 
 import rs_bar_edit as _bar_edit_module
 from core import config
+from core import joint_name_conventions as jnc
 from core import rhino_bar_registry as _registry_module
 from core.rhino_bar_registry import BAR_ID_KEY, BAR_TYPE_KEY, BAR_TYPE_VALUE
 
@@ -74,14 +75,7 @@ def _normalize_bar_id(token: str):
     Returns:
         str | None: the canonical ``B<n>`` id, or ``None`` if it can't be parsed.
     """
-    text = (token or "").strip().upper()
-    if not text:
-        return None
-    if text.startswith("B"):
-        text = text[1:]
-    if not text.isdigit():
-        return None
-    return f"B{int(text)}"
+    return jnc.parse_bar_id(token)
 
 
 def _scan_bars() -> dict:
@@ -142,16 +136,13 @@ def _bar_joint_oids(bar_ids) -> list:
     """
     wanted = set(bar_ids)
     out = []
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         out.extend(
             oid
             for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") in wanted
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in wanted
         )
     return out
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import robot_cell
 # Single home of the L/R tool-name suffix rule.
 from core.robotic_tool import arm_side_from_tool_name
@@ -46,16 +47,13 @@ def _males_on_bar(bar_id: str) -> list:
     import rhinoscriptsyntax as rs
 
     out = []
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         out.extend(
             oid
             for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out
 
@@ -80,13 +78,13 @@ def resolve_arm_tools_on_bar(bar_id: str):
         )
     sides = {"left": None, "right": None}
     for moid in males:
-        jid = rs.GetUserText(moid, "joint_id")
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
         if not jid:
             return None, f"Joint block on bar '{bar_id}' missing 'joint_id'."
         toid = find_tool_for_joint(jid)
         if toid is None:
             return None, f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed."
-        side = arm_side_from_tool_name(rs.GetUserText(toid, "tool_name") or "")
+        side = arm_side_from_tool_name(rs.GetUserText(toid, jnc.UT_TOOL_NAME) or "")
         if side is None:
             return None, f"Tool on joint '{jid}' has no L/R suffix; cannot decide arm side."
         if sides[side] is not None:
@@ -114,7 +112,7 @@ def resolve_tool_collision_paths(left_tool_oid, right_tool_oid):
 
     out = {"left": "", "right": ""}
     for side, oid in (("left", left_tool_oid), ("right", right_tool_oid)):
-        tname = rs.GetUserText(oid, "tool_name") or ""
+        tname = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
         if not tname:
             continue
         try:

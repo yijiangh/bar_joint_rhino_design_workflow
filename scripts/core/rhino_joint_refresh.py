@@ -36,6 +36,7 @@ import numpy as np
 import rhinoscriptsyntax as rs
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.joint_pair import load_joint_registry
 from core.joint_pair_solver import screw_alignment_diagnostics
 from core.joint_pick_helpers import block_instance_frame
@@ -62,11 +63,8 @@ from core.rhino_helpers import ensure_layer, set_object_color, suspend_redraw
 # ---------------------------------------------------------------------------
 
 #: Layers holding baked joint block instances, in the order they are scanned.
-JOINT_LAYERS = (
-    config.LAYER_JOINT_FEMALE_INSTANCES,
-    config.LAYER_JOINT_MALE_INSTANCES,
-    config.LAYER_JOINT_GROUND_INSTANCES,
-)
+#: Kept as a module-level name because it is exported and reused below.
+JOINT_LAYERS = jnc.JOINT_LAYERS
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +96,7 @@ def _joint_block_instances():
             yield (
                 oid,
                 layer,
-                rs.GetUserText(oid, "joint_id") or "",
+                rs.GetUserText(oid, jnc.UT_JOINT_ID) or "",
                 rs.BlockInstanceName(oid) or "",
             )
 
@@ -215,26 +213,25 @@ def report_unmated_joints(verbose: bool = False) -> list:
     """
     registry = load_joint_registry()
 
-    # joint_id -> {"female": (oid, half), "male": (oid, half)}
+    # joint_id -> {"receiver": (oid, half), "male": (oid, half)}.  A receiver is
+    # Female OR MoCap -- both seat a male the same way.
     pairs: dict = {}
     for oid, layer, joint_id, block_name in _joint_block_instances():
-        if not joint_id or layer == config.LAYER_JOINT_GROUND_INSTANCES:
+        if not joint_id or layer not in jnc.PAIRED_LAYERS:
             continue
         half = registry.halves.get(block_name)
         if half is None:
             continue
-        role = (
-            "female" if layer == config.LAYER_JOINT_FEMALE_INSTANCES else "male"
-        )
-        pairs.setdefault(joint_id, {})[role] = (oid, half)
+        side = "receiver" if layer in jnc.RECEIVER_LAYERS else "male"
+        pairs.setdefault(joint_id, {})[side] = (oid, half)
 
     unmated = []
     for joint_id in sorted(pairs):
         sides = pairs[joint_id]
-        if "female" not in sides or "male" not in sides:
+        if "receiver" not in sides or "male" not in sides:
             continue  # half a pair -- find_broken_links reports the survivor
         try:
-            female = _screw_frame(*sides["female"])
+            female = _screw_frame(*sides["receiver"])
             male = _screw_frame(*sides["male"])
         except (ValueError, AttributeError) as exc:
             if verbose:
@@ -273,7 +270,8 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
     misses. This pass surfaces exactly that:
 
     - **name mismatch**: object name != ``<joint_id>_<role>`` (role from the
-      layer: female / male / ground) -- the decisive copied-user-text signal;
+      layer: female / male / ground / mocap) -- the decisive copied-user-text
+      signal;
     - **duplicate id**: two blocks on the same layer sharing a ``joint_id``;
     - **missing user text**: no ``joint_id`` or no ``parent_bar_id``.
 
@@ -287,16 +285,12 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
         list[tuple]: ``(oid, kind, message)`` per issue, ``kind`` in
         ``{"name_mismatch", "duplicate_id", "missing_usertext"}``.
     """
-    role_by_layer = {
-        config.LAYER_JOINT_FEMALE_INSTANCES: "female",
-        config.LAYER_JOINT_MALE_INSTANCES: "male",
-        config.LAYER_JOINT_GROUND_INSTANCES: "ground",
-    }
     issues = []
     # (layer, joint_id) -> [(oid, object_name), ...] for the duplicate check.
     seen: dict = {}
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        role = role_by_layer.get(layer, "joint")
+        subtype = jnc.subtype_of_layer(layer)
+        role = jnc.role(subtype)
         obj_name = rs.ObjectName(oid) or ""
         if not joint_id:
             issues.append((
@@ -305,16 +299,16 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
             ))
         else:
             seen.setdefault((layer, joint_id), []).append((oid, obj_name))
-            expected = f"{joint_id}_{role}"
+            expected = jnc.object_name(joint_id, subtype)
             if obj_name != expected:
                 issues.append((
                     oid, "name_mismatch",
                     f"'{obj_name or '<unnamed>'}' ({role}): joint_id user text says "
                     f"'{joint_id}' (expected object name '{expected}') -- likely "
                     f"COPIED user text; the collision scene calls this body "
-                    f"'joint_{joint_id}_{role}'.",
+                    f"'{jnc.joint_key(joint_id, subtype)}'.",
                 ))
-        if not rs.GetUserText(oid, "parent_bar_id"):
+        if not rs.GetUserText(oid, jnc.UT_PARENT_BAR):
             issues.append((
                 oid, "missing_usertext",
                 f"'{obj_name or oid}' ({role}): no parent_bar_id user text.",
@@ -323,7 +317,7 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
     for (layer, jid), entries in sorted(seen.items(), key=lambda kv: str(kv[0])):
         if len(entries) < 2:
             continue
-        role = role_by_layer.get(layer, "joint")
+        role = jnc.role(jnc.subtype_of_layer(layer))
         names = ", ".join(name or str(o) for o, name in entries)
         issues.append((
             entries[0][0], "duplicate_id",
@@ -374,30 +368,26 @@ def find_broken_links() -> dict:
     bars_with_joints: set = set()
     orphan_joint_ids: set = set()
 
-    # Pass 1: which joint_ids have which halves?  A female with no male (or the
-    # reverse) is as broken as one with no bar -- there is nothing for it to mate
-    # with.  Ground joints are single-sided by design and never counted here.
+    # Pass 1: which joint_ids have which halves?  A receiver with no male (or
+    # the reverse) is as broken as one with no bar -- there is nothing for it to
+    # mate with.  Ground joints are single-sided by design and never counted.
     halves_by_joint: dict = {}
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        if not joint_id or layer == config.LAYER_JOINT_GROUND_INSTANCES:
+        if not joint_id or layer not in jnc.PAIRED_LAYERS:
             continue
         halves_by_joint.setdefault(joint_id, set()).add(layer)
 
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        bar_id = rs.GetUserText(oid, "parent_bar_id") or ""
+        bar_id = rs.GetUserText(oid, jnc.UT_PARENT_BAR) or ""
         reason = ""
         if not bar_id or bar_id not in bar_map:
             reason = f"parent bar {bar_id or '<none>'} is gone"
         elif (
             joint_id
-            and layer != config.LAYER_JOINT_GROUND_INSTANCES
+            and layer in jnc.PAIRED_LAYERS
             and len(halves_by_joint.get(joint_id, ())) < 2
         ):
-            missing = (
-                "male"
-                if layer == config.LAYER_JOINT_FEMALE_INSTANCES
-                else "female"
-            )
+            missing = "male" if layer in jnc.RECEIVER_LAYERS else "receiving"
             reason = f"its {missing} half is missing"
 
         if not reason:
@@ -424,7 +414,7 @@ def find_broken_links() -> dict:
     for tool_oid in _layer_oids(config.LAYER_TOOL_INSTANCES):
         if tool_oid in reported_tools:
             continue
-        joint_id = rs.GetUserText(tool_oid, "joint_id") or ""
+        joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID) or ""
         if joint_id not in orphan_joint_ids:
             continue
         label = rs.ObjectName(tool_oid) or str(tool_oid)

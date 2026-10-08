@@ -36,21 +36,19 @@ import time
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 
 
-# env_* prefixes for the single-arm SUPPORT cell path (collect_built_geometry /
-# register_env_in_robot_cell / build_env_state). The dual-arm assembly cell uses
-# the canonical names below instead.
-ENV_RB_BAR_PREFIX = "env_bar_"
-ENV_RB_JOINT_PREFIX = "env_joint_"
-
-# State-independent ("canonical") names used by the static-cell pipeline.
-# `collect_assembly_geometry` emits these directly (no active_/env_ prefixes).
-CANONICAL_BAR_PREFIX = "bar_"
-CANONICAL_JOINT_PREFIX = "joint_"
-# Static environment obstacle meshes (LAYER_ENVIRONMENT). Distinct namespace
-# so it never collides with bar_/joint_ names.
-OBSTACLE_PREFIX = "obstacle_"
+# Body-key prefixes are defined in core.joint_name_conventions: ``env_bar_`` /
+# ``env_joint_`` for the single-arm SUPPORT cell (collect_built_geometry /
+# register_env_in_robot_cell / build_env_state), plain ``bar_`` / ``joint_`` for
+# the dual-arm assembly cell, ``obstacle_`` for LAYER_ENVIRONMENT meshes.
+# Re-exported under their historical names for robot_cell / robot_obstacles.
+ENV_RB_BAR_PREFIX = jnc.ENV_BAR_KEY_PREFIX
+ENV_RB_JOINT_PREFIX = jnc.ENV_JOINT_KEY_PREFIX
+CANONICAL_BAR_PREFIX = jnc.BAR_KEY_PREFIX
+CANONICAL_JOINT_PREFIX = jnc.JOINT_KEY_PREFIX
+OBSTACLE_PREFIX = jnc.OBSTACLE_KEY_PREFIX
 
 # Sticky cache keys for the lightweight RigidBody pipeline.
 _STICKY_JOINT_RB_CACHE = "bar_joint:env_joint_rb_cache"  # block_name -> RigidBody
@@ -119,6 +117,24 @@ def _joint_obj_path_map():
             out[ground.block_name] = ground.collision_path(DEFAULT_ASSET_DIR)
     sticky[_STICKY_JOINT_OBJ_PATH_MAP] = out
     return out
+
+
+def clear_joint_obj_path_cache() -> None:
+    """Forget the ``block_name -> OBJ`` map and every joint ``RigidBody`` built
+    from it, so the next collision build re-reads ``joint_pairs.json``.
+
+    Both live in ``sc.sticky`` for the whole Rhino session, and nothing else
+    ever drops them.  Call after anything that adds or changes a joint's
+    collision OBJ (RSDefineJointHalf) or swaps which block a joint uses.
+
+    Clearing the map alone is not enough: a block looked up BEFORE its OBJ was
+    registered is cached in the RigidBody cache as ``None`` ("missing -- skip
+    this joint"), and would keep being skipped from collision until Rhino
+    restarted.  Every joint OBJ reloads on the next build (a few ms each).
+    """
+    sticky = _sticky_dict()
+    sticky.pop(_STICKY_JOINT_OBJ_PATH_MAP, None)
+    sticky.pop(_STICKY_JOINT_RB_CACHE, None)
 
 
 def _build_bar_cylinder_mesh(length_m: float, radius_m: float, sides: int = BAR_CYLINDER_SIDES):
@@ -267,7 +283,7 @@ def _block_instance_xform_mm(oid):
 def _raise_on_duplicate_joint_key(out: dict, key: str, joint_oid, collector: str) -> None:
     """Refuse to build a collision scene when two joint blocks claim one name.
 
-    Canonical body names come from the ``joint_id`` + subtype USER TEXT. Two
+    Canonical body names come from the ``joint_id`` USER TEXT + the layer. Two
     blocks carrying the same id (the classic Rhino copy-paste, which clones
     user text) therefore compute the SAME key, and a plain dict assignment
     would silently drop one of them -- its geometry then exists in no collision
@@ -368,19 +384,16 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
         if rb is None:
             continue
         bar_hits += int(hit); bar_misses += int(not hit)
-        out[f"{ENV_RB_BAR_PREFIX}{bid}"] = {
+        out[jnc.bar_key(bid, env=True)] = {
             "rigid_body": rb,
             "frame_world_mm": frame_mm,
             "kind": "bar",
             "source_oid": oid,
         }
 
-    # Joints whose parent_bar_id is a built bar.
-    joint_layers = (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    )
+    # Joints whose parent_bar_id is a built bar.  Every joint role belongs in a
+    # collision scene, so this is the full set, not a subset.
+    joint_layers = jnc.JOINT_LAYERS
     j_hits = j_misses = 0
     # Joint blocks dropped because their parent bar is unreadable / not a live
     # bar (as opposed to simply not built yet) -- reported below, since such a
@@ -391,7 +404,7 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
         if not rs.IsLayer(layer):
             continue
         for joint_oid in rs.ObjectsByLayer(layer) or []:
-            parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
+            parent_bar = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
             if parent_bar not in built_bar_ids:
                 if parent_bar not in live_bar_ids:
                     orphan_parents.append(
@@ -399,14 +412,10 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
                         f"(parent={parent_bar or '<none>'})"
                     )
                 continue
-            joint_id = rs.GetUserText(joint_oid, "joint_id")
-            # Ground joints store joint_type="ground" but no joint_subtype;
-            # fall back so the env tag suffix is meaningful (`_ground` not `_joint`).
-            subtype = (
-                rs.GetUserText(joint_oid, "joint_subtype")
-                or rs.GetUserText(joint_oid, "joint_type")
-                or "Joint"
-            )
+            joint_id = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID)
+            # The layer is the authority for the role, so the key's suffix
+            # comes from it -- never from user text a copy may have cloned.
+            subtype = jnc.subtype_of_layer(layer)
             block_name = rs.BlockInstanceName(joint_oid)
             if not block_name:
                 continue
@@ -415,8 +424,7 @@ def collect_built_geometry(active_bar_id, bar_seq_map, include_active=False, exc
                 continue
             j_hits += int(hit); j_misses += int(not hit)
             xform_mm = _block_instance_xform_mm(joint_oid)
-            tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-            key = f"{ENV_RB_JOINT_PREFIX}{tag}"
+            key = jnc.joint_key(joint_id or str(joint_oid), subtype, env=True)
             _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_built_geometry")
             out[key] = {
                 "rigid_body": rb,
@@ -494,7 +502,7 @@ def collect_assembly_geometry(bar_seq_map):
         if rb is None:
             continue
         bar_hits += int(hit); bar_misses += int(not hit)
-        out[f"{CANONICAL_BAR_PREFIX}{bid}"] = {
+        out[jnc.bar_key(bid)] = {
             "rigid_body": rb,
             "frame_world_mm": frame_mm,
             "kind": "bar",
@@ -502,11 +510,8 @@ def collect_assembly_geometry(bar_seq_map):
             "parent_bar_id": bid,
         }
 
-    joint_layers = (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    )
+    # Every joint role belongs in a collision scene -- the full set, not a subset.
+    joint_layers = jnc.JOINT_LAYERS
     j_hits = j_misses = 0
     # Blocks whose parent bar is unreadable / not a live bar: invisible to every
     # collision scene, so report them rather than dropping them silently.
@@ -515,7 +520,7 @@ def collect_assembly_geometry(bar_seq_map):
         if not rs.IsLayer(layer):
             continue
         for joint_oid in rs.ObjectsByLayer(layer) or []:
-            parent_bar = rs.GetUserText(joint_oid, "parent_bar_id")
+            parent_bar = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
             # A half mounted on a fake bar (its female) goes out with the bar;
             # the real bar's male is parented to the REAL bar and stays.
             if parent_bar in fake_bar_ids:
@@ -526,12 +531,8 @@ def collect_assembly_geometry(bar_seq_map):
                     f"(parent={parent_bar or '<none>'})"
                 )
                 continue
-            joint_id = rs.GetUserText(joint_oid, "joint_id")
-            subtype = (
-                rs.GetUserText(joint_oid, "joint_subtype")
-                or rs.GetUserText(joint_oid, "joint_type")
-                or "Joint"
-            )
+            joint_id = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID)
+            subtype = jnc.subtype_of_layer(layer)  # the layer is the authority
             block_name = rs.BlockInstanceName(joint_oid)
             if not block_name:
                 continue
@@ -540,8 +541,7 @@ def collect_assembly_geometry(bar_seq_map):
                 continue
             j_hits += int(hit); j_misses += int(not hit)
             xform_mm = _block_instance_xform_mm(joint_oid)
-            tag = f"{joint_id or str(joint_oid)}_{subtype.lower()}"
-            key = f"{CANONICAL_JOINT_PREFIX}{tag}"
+            key = jnc.joint_key(joint_id or str(joint_oid), subtype)
             _raise_on_duplicate_joint_key(out, key, joint_oid, "collect_assembly_geometry")
             out[key] = {
                 "rigid_body": rb,
@@ -703,7 +703,7 @@ def collect_environment_geometry():
             name = f"{base}_{k}"
             k += 1
         used.add(name)
-        out[f"{OBSTACLE_PREFIX}{name}"] = {
+        out[jnc.obstacle_key(name)] = {
             "rigid_body": rb,
             "frame_world_mm": np.eye(4, dtype=float),
             "kind": "environment",

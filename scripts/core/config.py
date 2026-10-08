@@ -391,22 +391,23 @@ KEY_SUPPORT_GRASP_FRAME = "support_grasp_frame_world_mm"
 SUPPORT_PREVIEW_LAYER = "IKSupportPreview"
 
 
-LAYER_PATH_SEP = "::"  # Rhino's layer-path separator
-MANAGED_LAYER_ROOT = "MANAGED Scaffolding"
+# Layer-path spelling and the managed root live with the joint naming rules
+# (the joint layers are built from them); re-exported here for the non-joint
+# managed layers below.
+from core.joint_name_conventions import (  # noqa: E402
+    JOINT_LAYERS as _JOINT_LAYERS,
+    LAYER_PATH_SEP,
+    MANAGED_LAYER_ROOT,
+    managed_layer as _managed_layer,
+)
 
-LAYER_BAR_CENTERLINES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Bar Centerlines"
-LAYER_BAR_TUBE_PREVIEWS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Bar Tube Previews"
-LAYER_JOINT_FEMALE_INSTANCES = (
-    MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Female Instances"
-)
-LAYER_JOINT_MALE_INSTANCES = (
-    MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Male Instances"
-)
-LAYER_JOINT_GROUND_INSTANCES = (
-    MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Joint Ground Instances"
-)
-LAYER_TOOL_INSTANCES = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Robotic Tool Instances"
-LAYER_WALKABLE_GROUND = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Walkable Ground"
+LAYER_BAR_CENTERLINES = _managed_layer("Bar Centerlines")
+LAYER_BAR_TUBE_PREVIEWS = _managed_layer("Bar Tube Previews")
+LAYER_TOOL_INSTANCES = _managed_layer("Robotic Tool Instances")
+LAYER_WALKABLE_GROUND = _managed_layer("Walkable Ground")
+
+# Joint layers, roles and every other joint name: core.joint_name_conventions.
+
 # Static environment obstacle meshes (tables, walls, scaffolding, etc.). Any
 # mesh placed on this layer is registered as a static `obstacle_<name>` rigid
 # body by `core.env_collision.collect_environment_geometry` and checked for
@@ -495,9 +496,9 @@ LAYER_DIAGNOSTIC_MARKS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Diagnostic Marks
 MANAGED_LAYERS = (
     LAYER_BAR_CENTERLINES,
     LAYER_BAR_TUBE_PREVIEWS,
-    LAYER_JOINT_FEMALE_INSTANCES,
-    LAYER_JOINT_MALE_INSTANCES,
-    LAYER_JOINT_GROUND_INSTANCES,
+    # Every joint layer, from core.joint_name_conventions -- a new Subtype is
+    # managed the moment it is declared there, with no edit here.
+    *_JOINT_LAYERS,
     LAYER_TOOL_INSTANCES,
     LAYER_WALKABLE_GROUND,
     LAYER_ENVIRONMENT,

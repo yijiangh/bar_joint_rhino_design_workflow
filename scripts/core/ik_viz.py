@@ -45,6 +45,7 @@ import scriptcontext as sc
 import Rhino  # noqa: F401  (kept so other scripts can import Rhino through this file)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_helpers import ensure_layer
 from core.robot_cell import default_cell_state, get_or_load_robot_cell, import_compas_stack
 
@@ -629,9 +630,7 @@ def begin_session(
         # user can still pick them.
         hide_doc_layers = (
             config.LAYER_BAR_TUBE_PREVIEWS,
-            config.LAYER_JOINT_FEMALE_INSTANCES,
-            config.LAYER_JOINT_MALE_INSTANCES,
-            config.LAYER_JOINT_GROUND_INSTANCES,
+            *jnc.JOINT_LAYERS,
             config.LAYER_TOOL_INSTANCES,
         )
         if not hide_tool_instances:

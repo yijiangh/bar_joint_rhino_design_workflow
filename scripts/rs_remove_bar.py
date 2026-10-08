@@ -29,6 +29,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_bar_registry import (
     get_all_bars,
     repair_bar_sequences,
@@ -48,29 +49,25 @@ def _find_joint_ids_for_bar(bar_id):
     user text; ground blocks store only ``parent_bar_id``.
     """
     found = set()
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.JOINT_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            fb = rs.GetUserText(oid, "female_parent_bar")
-            mb = rs.GetUserText(oid, "male_parent_bar")
-            pb = rs.GetUserText(oid, "parent_bar_id")
+            fb = rs.GetUserText(oid, jnc.UT_RECEIVER_BAR)
+            mb = rs.GetUserText(oid, jnc.UT_MALE_BAR)
+            pb = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
             if fb == bar_id or mb == bar_id or pb == bar_id:
-                jid = rs.GetUserText(oid, "joint_id")
+                jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
                 if jid:
                     found.add(jid)
     return list(found)
 
 
 def _remove_joint_blocks(joint_id):
-    """Delete placed female, male, and ground block instances for *joint_id*."""
+    """Delete every placed joint block instance for *joint_id*, whatever its role."""
     to_delete = []
-    for suffix in ("_female", "_male", "_ground"):
-        ids = rs.ObjectsByName(f"{joint_id}{suffix}")
+    for subtype in jnc.SUBTYPES:
+        ids = rs.ObjectsByName(jnc.object_name(joint_id, subtype))
         if ids:
             to_delete.extend(ids)
     if to_delete:

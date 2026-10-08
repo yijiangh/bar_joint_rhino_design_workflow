@@ -36,11 +36,13 @@ Only bars carrying exactly two joints can be moved.  A bar with more would
 carry the extra joints away from their mates -- which is also why a vertical or
 horizontal bar full of joints is refused rather than dragged.
 
-Click any placed female or male joint block anywhere in the document.  The
-clicked block's side (female = le_rev, male = ln_rev) is toggled instantly
-and the joint pair is re-placed — no confirmation step required.
+Click any placed receiver (Female / MoCap) or Male joint block anywhere in the
+document.  The clicked block's side (receiver = le_rev, male = ln_rev) is
+toggled instantly and the joint pair is re-placed — no confirmation step
+required.  A MoCap receiver stays a MoCap receiver: the pair is rebuilt from
+its mate with the receiver read off the receiver block's layer.
 
-  - **Click the female block** to toggle female joint orientation (le_rev).
+  - **Click the receiver block** to toggle receiver orientation (le_rev).
   - **Click the male block** to toggle male joint orientation (ln_rev).
   - Click repeatedly to cycle back and forth.
   - Press **Escape** to exit the command.
@@ -69,6 +71,7 @@ if SCRIPT_DIR not in sys.path:
 import rs_joint_place as _rjp  # for _reload_runtime_modules() side-effects
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import dynamic_preview
 from core import geometry as _geometry_module
 
@@ -82,16 +85,13 @@ importlib.reload(dynamic_preview)
 
 from core.geometry import points_on_line_at_distance  # noqa: E402 -- after reload
 from core.ground_placement import (
-    GROUND_INSTANCES_LAYER,
     fk_ground_block_frame,
     place_ground_block,
     remove_placed_ground,
 )
-from core.joint_pair import get_joint_pair, load_joint_registry
+from core.joint_pair import get_joint_pair_variant, load_joint_registry
 from core.joint_pick_helpers import block_instance_frame
 from core.joint_placement import (
-    FEMALE_INSTANCES_LAYER,
-    MALE_INSTANCES_LAYER,
     _numpy_to_rhino_transform,
     compute_variant_with_recovery,
     place_joint_blocks,
@@ -124,15 +124,10 @@ from core.rhino_tool_place import (
 
 
 def _placed_joint_filter(rhino_object, geometry, component_index):
-    """Geometry filter -- accept any placed joint block (female/male/ground)
-    OR robotic tool instance."""
+    """Geometry filter -- accept any placed joint block, whatever its role,
+    OR a robotic tool instance."""
     layer = rs.ObjectLayer(rhino_object.Id)
-    return layer in (
-        FEMALE_INSTANCES_LAYER,
-        MALE_INSTANCES_LAYER,
-        GROUND_INSTANCES_LAYER,
-        config.LAYER_TOOL_INSTANCES,
-    )
+    return layer in (*jnc.JOINT_LAYERS, config.LAYER_TOOL_INSTANCES)
 
 
 def _find_bar_curve(bar_id):
@@ -143,8 +138,32 @@ def _find_bar_curve(bar_id):
     return None
 
 
+def _receiver_subtype(joint_id):
+    """Subtype of the receiver placed for *joint_id*, read off its LAYER.
+
+    Female when no receiver block is found (a broken pair being repaired).
+    """
+    for layer in jnc.RECEIVER_LAYERS:
+        if not rs.IsLayer(layer):
+            continue
+        for oid in rs.ObjectsByLayer(layer) or []:
+            if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
+                return jnc.subtype_of_layer(layer)
+    return jnc.FEMALE
+
+
+def _placed_pair(joint_id, pair_name):
+    """The mate a placed pair came from, holding the receiver it actually has.
+
+    ``joint_pair_name`` names the mate (``T20``); a MoCap receiver is that
+    mate's variant, so the receiver block's layer decides which half to use.
+    Raises ``KeyError`` when the mate or that receiver is no longer registered.
+    """
+    return get_joint_pair_variant(pair_name, _receiver_subtype(joint_id))
+
+
 def _remove_placed_joint(joint_id):
-    """Delete every placed female/male block instance for *joint_id*.
+    """Delete every placed receiver/male block instance for *joint_id*.
 
     Both callers here delete-then-re-place, so a miss does not fail loudly: the
     re-place simply inserts a SECOND pair and the old one stays behind.  That is
@@ -154,7 +173,7 @@ def _remove_placed_joint(joint_id):
 
     So this looks blocks up by their ``joint_id`` USER TEXT, which is written to
     every half at placement time and is what the rest of this command already
-    trusts.  The object name (``{joint_id}_female`` / ``_male``) is still
+    trusts.  The object name (``J40-53_female`` / ``_mocap`` / ``_male``) is still
     checked, but only as a second net: it is a convenience set at placement
     time, and anything that re-creates an object without carrying the name over
     silently breaks a name-only lookup.
@@ -162,14 +181,16 @@ def _remove_placed_joint(joint_id):
     Returns the number of blocks deleted, so a caller can notice a miss.
     """
     to_delete = set()
-    for suffix in ("_female", "_male"):
-        for oid in rs.ObjectsByName(f"{joint_id}{suffix}") or []:
+    # A receiver may be Female OR MoCap -- missing either here would leave the
+    # old receiver behind on a flip.
+    for subtype in jnc.PAIRED_SUBTYPES:
+        for oid in rs.ObjectsByName(jnc.object_name(joint_id, subtype)) or []:
             to_delete.add(oid)
-    for layer in (FEMALE_INSTANCES_LAYER, MALE_INSTANCES_LAYER):
+    for layer in jnc.PAIRED_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            if rs.GetUserText(oid, "joint_id") == joint_id:
+            if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
                 to_delete.add(oid)
     if to_delete:
         rs.DeleteObjects(list(to_delete))
@@ -188,12 +209,12 @@ def _joints_touching_bar(bar_id):
     -- which is the half whose world position moves when that bar moves.
     """
     found = {}
-    for layer in (FEMALE_INSTANCES_LAYER, MALE_INSTANCES_LAYER):
+    for layer in jnc.PAIRED_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            joint_id = rs.GetUserText(oid, "joint_id")
-            if joint_id and rs.GetUserText(oid, "parent_bar_id") == bar_id:
+            joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+            if joint_id and rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id:
                 found[joint_id] = oid
     return found
 
@@ -258,7 +279,7 @@ def _replace_joint_pair(joint_id, le_bar_id, ln_bar_id, pair, le_rev, ln_rev):
     ln_start, ln_end = curve_endpoints(ln_id)
     variant, _rec, le_rev, ln_rev = compute_variant_with_recovery(
         le_start, le_end, ln_start, ln_end, le_rev, ln_rev,
-        pair=pair, recover_side="female", log_prefix="RSJointEdit",
+        pair=pair, recover_side="receiver", log_prefix="RSJointEdit",
     )
     prev_tool_name = get_tool_name_for_joint(joint_id)
     n_removed = _remove_placed_joint(joint_id)
@@ -268,7 +289,7 @@ def _replace_joint_pair(joint_id, le_bar_id, ln_bar_id, pair, le_rev, ln_rev):
         # cleaned up.  Either way the user should hear about it.
         print(
             f"RSJointEdit: NOTE - removed {n_removed} block(s) for {joint_id}, "
-            "expected 2 (one female + one male)."
+            "expected 2 (one receiver + one male)."
         )
     _, male_id, new_joint_id = place_joint_blocks(
         variant, le_id, ln_id, le_bar_id, ln_bar_id, pair=pair
@@ -328,7 +349,7 @@ def _screw_centre(joint_id, pair):
 
     Same composition as ``rhino_joint_refresh._screw_frame``.
     """
-    ids = rs.ObjectsByName(f"{joint_id}_female")
+    ids = rs.ObjectsByName(jnc.object_name(joint_id, pair.receiver_subtype))
     if not ids:
         return None
     try:
@@ -336,7 +357,7 @@ def _screw_centre(joint_id, pair):
     except ValueError:
         return None
     frame = np.asarray(block_world, dtype=float) @ np.asarray(
-        pair.female.M_screw_from_block, dtype=float
+        pair.receiver.M_screw_from_block, dtype=float
     )
     return frame[:3, 3]
 
@@ -400,16 +421,16 @@ def _run_move_joint():
     if go.Get() != Rhino.Input.GetResult.Object:
         return
     clicked_id = go.Object(0).ObjectId
-    if rs.ObjectLayer(clicked_id) not in (FEMALE_INSTANCES_LAYER, MALE_INSTANCES_LAYER):
-        print("RSJointEdit: MoveJoint works on female/male joint blocks only.")
+    if rs.ObjectLayer(clicked_id) not in jnc.PAIRED_LAYERS:
+        print("RSJointEdit: MoveJoint works on paired (receiver/male) joint blocks only.")
         return
 
-    near_joint_id = rs.GetUserText(clicked_id, "joint_id")
-    pair_name = rs.GetUserText(clicked_id, "joint_pair_name")
-    le_bar_id = rs.GetUserText(clicked_id, "female_parent_bar")
-    ln_bar_id = rs.GetUserText(clicked_id, "male_parent_bar")
-    le_rev = rs.GetUserText(clicked_id, "le_rev") == "True"
-    ln_rev = rs.GetUserText(clicked_id, "ln_rev") == "True"
+    near_joint_id = rs.GetUserText(clicked_id, jnc.UT_JOINT_ID)
+    pair_name = rs.GetUserText(clicked_id, jnc.UT_PAIR_NAME)
+    le_bar_id = rs.GetUserText(clicked_id, jnc.UT_RECEIVER_BAR)
+    ln_bar_id = rs.GetUserText(clicked_id, jnc.UT_MALE_BAR)
+    le_rev = rs.GetUserText(clicked_id, jnc.UT_LE_REV) == "True"
+    ln_rev = rs.GetUserText(clicked_id, jnc.UT_LN_REV) == "True"
     if not (near_joint_id and pair_name and le_bar_id and ln_bar_id):
         print("RSJointEdit: joint metadata incomplete; re-place it with RSJointPlace.")
         return
@@ -442,11 +463,11 @@ def _run_move_joint():
     far_block = on_moving[far_joint_id]
 
     # The far joint's OTHER bar -- the line it has to stay on while it slides.
-    far_le = rs.GetUserText(far_block, "female_parent_bar")
-    far_ln = rs.GetUserText(far_block, "male_parent_bar")
-    far_pair_name = rs.GetUserText(far_block, "joint_pair_name")
-    far_le_rev = rs.GetUserText(far_block, "le_rev") == "True"
-    far_ln_rev = rs.GetUserText(far_block, "ln_rev") == "True"
+    far_le = rs.GetUserText(far_block, jnc.UT_RECEIVER_BAR)
+    far_ln = rs.GetUserText(far_block, jnc.UT_MALE_BAR)
+    far_pair_name = rs.GetUserText(far_block, jnc.UT_PAIR_NAME)
+    far_le_rev = rs.GetUserText(far_block, jnc.UT_LE_REV) == "True"
+    far_ln_rev = rs.GetUserText(far_block, jnc.UT_LN_REV) == "True"
     far_host_bar_id = far_ln if far_le == moving_bar_id else far_le
 
     moving_curve = _find_bar_curve(moving_bar_id)
@@ -457,8 +478,8 @@ def _run_move_joint():
         return
 
     try:
-        pair = get_joint_pair(pair_name)
-        far_pair = get_joint_pair(far_pair_name)
+        pair = _placed_pair(near_joint_id, pair_name)
+        far_pair = _placed_pair(far_joint_id, far_pair_name)
     except KeyError as exc:
         print(f"RSJointEdit: joint pair no longer registered: {exc}")
         return
@@ -727,7 +748,7 @@ def _run_move_joint():
 def _flip_ground_block(clicked_id):
     """Flip a placed ground-joint block's X axis along the bar.
 
-    Reads ``ground_joint_name`` / ``parent_bar_id`` / ``position_mm`` /
+    Reads the block name and ``parent_bar_id`` / ``position_mm`` /
     ``rotation_deg`` / ``flipped`` from the clicked instance, deletes it,
     and re-bakes via :func:`core.ground_placement.place_ground_block`
     with ``flipped`` toggled.  ``jr`` is preserved (the flip post-multi-
@@ -737,13 +758,13 @@ def _flip_ground_block(clicked_id):
     import math
     import numpy as np
 
-    joint_id = rs.GetUserText(clicked_id, "joint_id")
-    ground_name = rs.GetUserText(clicked_id, "ground_joint_name")
-    bar_id = rs.GetUserText(clicked_id, "parent_bar_id")
-    jp_text = rs.GetUserText(clicked_id, "position_mm")
-    jr_text = rs.GetUserText(clicked_id, "rotation_deg")
-    flipped_text = rs.GetUserText(clicked_id, "flipped")
-    if not joint_id or not ground_name or not bar_id or not jp_text or not jr_text:
+    joint_id = rs.GetUserText(clicked_id, jnc.UT_JOINT_ID)
+    block_name = rs.BlockInstanceName(clicked_id)
+    bar_id = rs.GetUserText(clicked_id, jnc.UT_PARENT_BAR)
+    jp_text = rs.GetUserText(clicked_id, jnc.UT_POSITION)
+    jr_text = rs.GetUserText(clicked_id, jnc.UT_ROTATION)
+    flipped_text = rs.GetUserText(clicked_id, jnc.UT_FLIPPED)
+    if not joint_id or not block_name or not bar_id or not jp_text or not jr_text:
         print(
             "RSJointEdit: Could not read ground-joint metadata from the selected block.\n"
             "  This block may have been placed by an older RSGroundPlace.\n"
@@ -751,13 +772,13 @@ def _flip_ground_block(clicked_id):
         )
         return
 
-    try:
-        registry = load_joint_registry()
-        ground = registry.ground_joints[ground_name]
-    except KeyError:
-        print(
-            f"RSJointEdit: Ground joint '{ground_name}' is no longer registered."
-        )
+    ground = next(
+        (g for g in load_joint_registry().ground_joints.values()
+         if g.block_name == block_name),
+        None,
+    )
+    if ground is None:
+        print(f"RSJointEdit: Ground joint '{block_name}' is no longer registered.")
         return
 
     bar_curve_id = _find_bar_curve(bar_id)
@@ -858,17 +879,17 @@ def main():
 
         # Ground-joint instance: flip jr by 180 deg and re-bake at the
         # same (jp) along the same bar.  No mate-side recovery needed.
-        if clicked_layer == GROUND_INSTANCES_LAYER:
+        if clicked_layer == jnc.LAYER_GROUND:
             _flip_ground_block(clicked_id)
             continue
 
         # Read stored metadata before the block is deleted.
-        joint_id = rs.GetUserText(clicked_id, "joint_id")
-        joint_pair_name = rs.GetUserText(clicked_id, "joint_pair_name")
-        le_bar_id = rs.GetUserText(clicked_id, "female_parent_bar")
-        ln_bar_id = rs.GetUserText(clicked_id, "male_parent_bar")
-        le_rev = rs.GetUserText(clicked_id, "le_rev") == "True"
-        ln_rev = rs.GetUserText(clicked_id, "ln_rev") == "True"
+        joint_id = rs.GetUserText(clicked_id, jnc.UT_JOINT_ID)
+        joint_pair_name = rs.GetUserText(clicked_id, jnc.UT_PAIR_NAME)
+        le_bar_id = rs.GetUserText(clicked_id, jnc.UT_RECEIVER_BAR)
+        ln_bar_id = rs.GetUserText(clicked_id, jnc.UT_MALE_BAR)
+        le_rev = rs.GetUserText(clicked_id, jnc.UT_LE_REV) == "True"
+        ln_rev = rs.GetUserText(clicked_id, jnc.UT_LN_REV) == "True"
 
         if not joint_id or not le_bar_id or not ln_bar_id or not joint_pair_name:
             print(
@@ -879,17 +900,15 @@ def main():
             continue
 
         try:
-            pair = get_joint_pair(joint_pair_name)
-        except KeyError:
-            print(
-                f"RSJointEdit: Joint pair '{joint_pair_name}' is no longer registered."
-            )
+            pair = _placed_pair(joint_id, joint_pair_name)
+        except KeyError as exc:
+            print(f"RSJointEdit: {exc}")
             continue
 
         # Validate block definitions for this pair.
         try:
             require_block_definition(
-                pair.female.block_name, asset_path=pair.female.asset_path()
+                pair.receiver.block_name, asset_path=pair.receiver.asset_path()
             )
             require_block_definition(
                 pair.male.block_name, asset_path=pair.male.asset_path()
@@ -902,10 +921,10 @@ def main():
         # so the auto-recovery (when the chosen orientation lands on a bad
         # local minimum) can flip the OTHER side.
         clicked_side = None
-        if clicked_layer == FEMALE_INSTANCES_LAYER:
+        if clicked_layer in jnc.RECEIVER_LAYERS:
             le_rev = not le_rev
-            clicked_side = "female"
-        elif clicked_layer == MALE_INSTANCES_LAYER:
+            clicked_side = "receiver"
+        elif clicked_layer == jnc.LAYER_MALE:
             ln_rev = not ln_rev
             clicked_side = "male"
 
@@ -922,7 +941,7 @@ def main():
         # Compute only the one variant we need, then swap the blocks.
         # If recovery is needed (bad local minimum on this orientation),
         # flip the OPPOSITE side from whichever the user just clicked.
-        recover_side = "male" if clicked_side == "female" else "female"
+        recover_side = "male" if clicked_side == "receiver" else "receiver"
         le_start, le_end = curve_endpoints(le_id)
         ln_start, ln_end = curve_endpoints(ln_id)
         new_variant, _recovered, le_rev, ln_rev = compute_variant_with_recovery(
@@ -934,7 +953,7 @@ def main():
         if n_removed != 2:
             print(
                 f"RSJointEdit: NOTE - removed {n_removed} block(s) for {joint_id}, "
-                "expected 2 (one female + one male)."
+                "expected 2 (one receiver + one male)."
             )
         # Preserve the previously-chosen tool for this joint, so flipping
         # the male/female block doesn't reset the tool back to the doc default.

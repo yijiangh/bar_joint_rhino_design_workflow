@@ -13,6 +13,7 @@ from __future__ import annotations
 import rhinoscriptsyntax as rs
 
 from core import config
+from core import joint_name_conventions as jnc
 from core.rhino_bar_registry import (
     _bar_curve_and_tube,
     get_bar_seq_map,
@@ -59,16 +60,11 @@ def highlight_env_for_ik(active_bar_id):
                 if _set_obj_color(obj, ENV_GREEN):
                     touched.append(obj)
 
-        joint_layers = (
-            config.LAYER_JOINT_FEMALE_INSTANCES,
-            config.LAYER_JOINT_MALE_INSTANCES,
-            config.LAYER_JOINT_GROUND_INSTANCES,
-        )
-        for layer in joint_layers:
+        for layer in jnc.JOINT_LAYERS:
             if not rs.IsLayer(layer):
                 continue
             for joint_oid in rs.ObjectsByLayer(layer) or []:
-                if rs.GetUserText(joint_oid, "parent_bar_id") in built_bar_ids:
+                if rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) in built_bar_ids:
                     if _set_obj_color(joint_oid, ENV_GREEN):
                         touched.append(joint_oid)
     finally:

@@ -108,6 +108,7 @@ from rs_data_structure.bar_action import (  # noqa: E402  (path-prepend gate abo
 from core.robotic_tool import arm_side_from_tool_name  # noqa: E402
 # Joint-half registry (Rhino-free): used to spot cradle-style mate females
 # (`bar_cradle` in joint_pairs.json) that the incoming bar rests inside.
+from core import joint_name_conventions as jnc  # noqa: E402
 from core.joint_pair import load_joint_registry  # noqa: E402
 
 
@@ -155,7 +156,7 @@ def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, retreat_distanc
     return out, axis_world
 
 
-# !! NAMING ODD ONE OUT -- see docs/Su_note.md, "LM distance naming".
+# !! NAMING ODD ONE OUT -- see docs/note.md, "LM distance naming".
 # The distance parameter below is still called `lm_distance_mm` (the pre-split
 # name, kept verbatim from origin/yh/support-ik-keyframe). EVERYWHERE ELSE the two
 # knobs are spelled out: `approach_distance_mm` in _build_m1/_build_m2 and
@@ -276,10 +277,21 @@ def _set_robot_base_frame(state, base_frame_world_mm) -> None:
 # Attachment helpers
 # ---------------------------------------------------------------------------
 
-# State-independent canonical rigid-body name prefixes (the only naming the
-# static-cell pipeline uses). Mirror of env_collision.CANONICAL_*.
-CANONICAL_BAR_PREFIX = "bar_"
-CANONICAL_JOINT_PREFIX = "joint_"
+# Rigid-body names (``bar_B40``, ``joint_J40-53_male``) are built and parsed
+# only through core.joint_name_conventions.
+
+
+def _receiver_key(jid: str, env_geom: dict) -> str:
+    """Key of the half the male of *jid* seats into -- Female or MoCap.
+
+    A MoCap half (a Female with a marker plate) receives exactly like a Female,
+    so every whitelist written for "the male's mate" has to accept both.
+    Returns the key present in ``env_geom``; falls back to the Female key when
+    neither is, so callers' ``in env_geom`` checks still read naturally.
+    """
+    candidates = jnc.receiver_keys(jid)
+    return next((key for key in candidates if key in env_geom), candidates[0])
+
 
 # Arm tool0 link names (mirror robot_cell._ARM_TOOL_LINKS).
 _ARM_TOOL_LINKS = {
@@ -339,22 +351,21 @@ def _classify_male_joints_per_arm(bar_id: str) -> dict:
     per-joint attachment without depending on Rhino oids surviving the export.
     """
     import rhinoscriptsyntax as rs
-    from core import config
     from core.rhino_tool_place import find_tool_for_joint
 
     out = {}
-    if not rs.IsLayer(config.LAYER_JOINT_MALE_INSTANCES):
+    if not rs.IsLayer(jnc.LAYER_MALE):
         return out
-    for moid in rs.ObjectsByLayer(config.LAYER_JOINT_MALE_INSTANCES) or []:
-        if rs.GetUserText(moid, "parent_bar_id") != bar_id:
+    for moid in rs.ObjectsByLayer(jnc.LAYER_MALE) or []:
+        if rs.GetUserText(moid, jnc.UT_PARENT_BAR) != bar_id:
             continue
-        jid = rs.GetUserText(moid, "joint_id")
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
         if not jid:
             continue
         toid = find_tool_for_joint(jid)
         if toid is None:
             continue
-        tname = rs.GetUserText(toid, "tool_name") or ""
+        tname = rs.GetUserText(toid, jnc.UT_TOOL_NAME) or ""
         side = arm_side_from_tool_name(tname)
         if side is not None:
             out[jid] = side
@@ -373,22 +384,21 @@ def _classify_ground_joints_per_arm(bar_id: str) -> dict:
     # carried-female behavior downstream (rides the bar's arm).
     """
     import rhinoscriptsyntax as rs
-    from core import config
     from core.rhino_tool_place import find_tool_for_joint
 
     out = {}
-    if not rs.IsLayer(config.LAYER_JOINT_GROUND_INSTANCES):
+    if not rs.IsLayer(jnc.LAYER_GROUND):
         return out
-    for goid in rs.ObjectsByLayer(config.LAYER_JOINT_GROUND_INSTANCES) or []:
-        if rs.GetUserText(goid, "parent_bar_id") != bar_id:
+    for goid in rs.ObjectsByLayer(jnc.LAYER_GROUND) or []:
+        if rs.GetUserText(goid, jnc.UT_PARENT_BAR) != bar_id:
             continue
-        jid = rs.GetUserText(goid, "joint_id")
+        jid = rs.GetUserText(goid, jnc.UT_JOINT_ID)
         if not jid:
             continue
         toid = find_tool_for_joint(jid)
         if toid is None:
             continue
-        tname = rs.GetUserText(toid, "tool_name") or ""
+        tname = rs.GetUserText(toid, jnc.UT_TOOL_NAME) or ""
         side = arm_side_from_tool_name(tname)
         if side is not None:
             out[jid] = side
@@ -627,30 +637,28 @@ def _set_active_attachments(
         if body_info is None:
             continue  # no cached geometry for this key -> nothing to attach
         # * The bar tube attaches to bar_arm_side's tool0.
-        if key.startswith(CANONICAL_BAR_PREFIX):
+        if key.startswith(jnc.BAR_KEY_PREFIX):
             _attach_body_to_arm_tool0(state, body_info["frame_world_mm"], bar_tool0, bar_arm_side, key)
             continue
         # * Only the bar + its joint halves are grasped; skip anything else.
-        if not key.startswith(CANONICAL_JOINT_PREFIX):
+        parts = jnc.split_joint_key(key)
+        if parts is None:
             continue
-        # Parse the canonical joint key "joint_<jid>_<sub>" (sub = male|female|ground);
-        # skip anything that doesn't split cleanly.
-        tag = key[len(CANONICAL_JOINT_PREFIX):]
-        if "_" not in tag:
-            continue
-        jid, sub = tag.rsplit("_", 1)
+        jid, sub = parts
         # A male half goes to the arm whose tool grips it (its classified arm,
         # falling back to bar_arm_side); a female half is rigidly bonded to the
         # bar, so it rides the bar's arm.
-        if sub == "male":
+        if sub == jnc.MALE:
             arm = arm_to_male.get(jid, bar_arm_side)
-        elif sub == "ground":
+        elif sub == jnc.GROUND:
             # * Ground bars: a tool-bearing ground joint is grasped directly, so
             # it rides ITS OWN arm's flange; a tool-less ground behaves like a
             # carried female (bonded to the bar -> the bar's arm).
             arm = arm_to_ground.get(jid, bar_arm_side)
         else:
-            arm = bar_arm_side  # females rigidly bonded to bar -> bar's gripper
+            # female / mocap: receivers are rigidly bonded to the bar -> the
+            # bar's gripper.
+            arm = bar_arm_side
         # Attach to that arm's assembled flange pose (stores tool0_from_body).
         tool0_arm = tool0_left_assembled_mm if arm == "left" else tool0_right_assembled_mm
         _attach_body_to_arm_tool0(state, body_info["frame_world_mm"], tool0_arm, arm, key)
@@ -754,7 +762,7 @@ def _apply_movement_touch_policy(
     # (1) Each grasped MALE joint half: allow the bodies it is meant to be in
     # contact with for this movement (empty list => no allowed contact).
     for jid, arm in arm_to_male.items():
-        male_rb = state.rigid_body_states.get(f"{CANONICAL_JOINT_PREFIX}{jid}_male")
+        male_rb = state.rigid_body_states.get(jnc.joint_key(jid, jnc.MALE))
         if male_rb is None:
             continue
         tool = tool_ids.get(arm)
@@ -769,13 +777,15 @@ def _apply_movement_touch_policy(
             # 15 mm approach pose, so allow male<->cradle female in M1 too
             # (clamp-style mates only get the mate whitelist in M2 below).
             if movement == "M1":
-                female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+                female_key = _receiver_key(jid, env_geom)
                 if female_key in cradle_female_keys:
                     partners.append(female_key)
             if movement == "M2":
                 # M2 is the mate: the male seats into the already-built female of
                 # the SAME joint_id, so allow that contact too (when it exists).
-                female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+                # The receiver may be a mocap half: its key ends in _mocap, and
+                # missing it here drops the whole M2 whitelist for that joint.
+                female_key = _receiver_key(jid, env_geom)
                 if female_key in env_geom:
                     partners.append(female_key)
                     # The male's screw tip ends up only ~2.5 mm away from the
@@ -789,7 +799,7 @@ def _apply_movement_touch_policy(
                     # female bar in any other movement).
                     female_bar_id = env_geom[female_key].get("parent_bar_id")
                     if female_bar_id:
-                        partners.append(f"{CANONICAL_BAR_PREFIX}{female_bar_id}")
+                        partners.append(jnc.bar_key(female_bar_id))
         elif movement == "M3":
             # Released, tool peeling off the male: only male<->tool can still
             # touch; the bar/female are now static, so compas_fab auto-skips them.
@@ -804,7 +814,7 @@ def _apply_movement_touch_policy(
     # the insert (M2) and still at the 15 mm retreat (M3). Written on the female
     # (a static, already-built body) because CC5 reads the rigid-body side.
     for jid, arm in arm_to_male.items():
-        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        female_key = _receiver_key(jid, env_geom)
         if female_key not in cradle_female_keys:
             continue
         cradle_rb = state.rigid_body_states.get(female_key)
@@ -824,7 +834,7 @@ def _apply_movement_touch_policy(
     #   M3 (peel-off): {its arm tool}
     #   M0/M4:         []  (always assigned, never left over)
     for jid, arm in arm_to_ground.items():
-        ground_rb = state.rigid_body_states.get(f"{CANONICAL_JOINT_PREFIX}{jid}_ground")
+        ground_rb = state.rigid_body_states.get(jnc.joint_key(jid, jnc.GROUND))
         if ground_rb is None:
             continue
         tool = tool_ids.get(arm)
@@ -838,10 +848,11 @@ def _apply_movement_touch_policy(
                 partners.append(tool)
         ground_rb.touch_bodies = sorted(set(partners))
 
-    # (2) Each carried FEMALE joint half is rigidly bonded to the bar while it is
-    # gripped, so allow female<->bar contact during M1/M2; clear once released.
+    # (2) Each carried RECEIVER half (female or mocap) is rigidly bonded to the
+    # bar while it is gripped, so allow receiver<->bar contact during M1/M2;
+    # clear once released.
     for key in active_keys:
-        if not (key.startswith(CANONICAL_JOINT_PREFIX) and key.endswith("_female")):
+        if not jnc.is_joint_key(key, jnc.RECEIVER_SUBTYPES):
             continue
         frb = state.rigid_body_states.get(key)
         if frb is not None:
@@ -851,9 +862,9 @@ def _apply_movement_touch_policy(
     # like a bonded female: allow ground<->bar while held, clear otherwise.
     # Grasped grounds were already set by (1b) -- skip them here.
     for key in active_keys:
-        if not (key.startswith(CANONICAL_JOINT_PREFIX) and key.endswith("_ground")):
+        if not jnc.is_joint_key(key, (jnc.GROUND,)):
             continue
-        jid = key[len(CANONICAL_JOINT_PREFIX):].rsplit("_", 1)[0]
+        jid = jnc.split_joint_key(key)[0]
         if jid in arm_to_ground:
             continue
         grb = state.rigid_body_states.get(key)
@@ -1094,11 +1105,11 @@ def _build_m3(
         # bar -- its grasped ground joint. Same retreat rule either way: the
         # assembled flange origin shifted along the joint block's world -Z.
         jid = next((j for j, a in arm_to_male.items() if a == arm), None)
-        joint_key = f"{CANONICAL_JOINT_PREFIX}{jid}_male" if jid is not None else None
+        joint_key = jnc.joint_key(jid, jnc.MALE) if jid is not None else None
         if joint_key is None:
             gjid = next((j for j, a in arm_to_ground.items() if a == arm), None)
             if gjid is not None:
-                joint_key = f"{CANONICAL_JOINT_PREFIX}{gjid}_ground"
+                joint_key = jnc.joint_key(gjid, jnc.GROUND)
         if joint_key is None:
             # ! This arm has no classified male OR ground joint, so its retreat
             # target stays at the assembled pose (zero retreat). Say so loudly
@@ -1404,7 +1415,7 @@ def build_split_assembly_movements(
         name for name, body_info in env_geom.items()
         if body_info.get("parent_bar_id") == bar_id
     }
-    bar_key = f"{CANONICAL_BAR_PREFIX}{bar_id}"
+    bar_key = jnc.bar_key(bar_id)
     tool_ids = robot_cell.arm_tool_ids()
 
     # * Ground bars insert perpendicular to their assigned walkable ground: the
@@ -1419,7 +1430,7 @@ def build_split_assembly_movements(
         ground_points_mm = [
             np.asarray(env_geom[k]["frame_world_mm"], dtype=float)[:3, 3]
             for k in sorted(active_keys)
-            if k.startswith(CANONICAL_JOINT_PREFIX) and k.endswith("_ground")
+            if jnc.is_joint_key(k, (jnc.GROUND,))
         ]
         approach_dir_mm = ground_insertion_normal_mm(bar_map[bar_id][0], ground_points_mm)
 
@@ -1432,7 +1443,7 @@ def build_split_assembly_movements(
     registry_halves = load_joint_registry().halves
     cradle_female_keys = set()
     for jid in arm_to_male:
-        female_key = f"{CANONICAL_JOINT_PREFIX}{jid}_female"
+        female_key = _receiver_key(jid, env_geom)
         female_info = env_geom.get(female_key)
         if female_info is None:
             continue

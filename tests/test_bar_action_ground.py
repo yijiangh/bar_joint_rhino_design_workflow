@@ -28,10 +28,10 @@ from core import bar_action
 # ---------------------------------------------------------------------------
 
 BAR_KEY = "bar_B20"
-GROUND_L = "joint_G20-T20Ground-0_ground"  # grasped by the left tool
-GROUND_R = "joint_G20-T20Ground-1_ground"  # grasped by the right tool
+GROUND_L = "joint_G20-T20-0_ground"  # grasped by the left tool
+GROUND_R = "joint_G20-T20-1_ground"  # grasped by the right tool
 TOOL_IDS = {"left": "AT3L", "right": "AT3R"}
-ARM_TO_GROUND = {"G20-T20Ground-0": "left", "G20-T20Ground-1": "right"}
+ARM_TO_GROUND = {"G20-T20-0": "left", "G20-T20-1": "right"}
 LM = 15.0  # retreat / approach offset distance in mm
 
 

@@ -1,20 +1,25 @@
 #! python 3
 # venv: scaffolding_env
 # r: numpy
-"""RSDefineJointHalf - Define ONE joint half (Male / Female / Ground).
+"""RSDefineJointHalf - Define ONE joint block (Female / Male / Ground / MoCap).
+
+The block's NAME says what it is: every joint block is named
+``<Type>_<Subtype>`` (``T20_Female``, ``T20_Male``, ``T20_Ground``,
+``T20_MoCap``), see ``core.joint_name_conventions``.  There is no kind prompt.
 
 Workflow:
 
-    Step 0  Choose kind: Male, Female, or Ground.
-    Step 1  Pick the block instance.
+    Step 1  Pick the block instance.  Its name gives the Subtype; confirm it.
     Step 2  Pick the bar axis line.  GROUND instead picks a +X point and a +Y
             point (see below), then shows a ghost preview of the tool and an
-            Accept / Repick prompt.
-    Step 3  (Male/Female only) Pick the screw axis line.
-    Step 4  (Male/Female only) Pick the screw center point.
-    Step 5  Enter the half name.  For Male/Female the name MUST equal the
-            block-definition name (so a mate can resolve the half by
-            block_name).  For Ground the name is the ground-joint key.
+            Accept / Repick prompt.  A MoCap block whose Type already has a
+            registered Female may copy that Female's two matrices instead.
+    Step 3  (Female / Male / MoCap) Pick the screw axis line.
+    Step 4  (Female / Male / MoCap) Pick the screw center point.
+    Step 5  Pick the collision mesh(es).
+
+The registry entry is keyed by the block name.  Re-defining an existing half
+keeps its ``bar_cradle``, preferred tool and marker points.
 
 The script:
   - Computes the constant transforms `M_block_from_bar` and (for non-ground
@@ -51,7 +56,7 @@ itself is NEVER moved by it.
 ! out with a ZERO translation, so RSGroundPlace lands the block origin
 ! exactly on the point clicked on the bar.  Ground joints defined with the
 ! older bar-axis-line pick carry whatever offset that line's start point had
-! (T20Ground: 25 mm), so re-defining one shifts where a given `jp` puts it.
+! (T20_Ground: 25 mm), so re-defining one shifts where a given `jp` puts it.
 ! Its DIRECTION also sets both the tool's +X and the sense of the bar axis,
 ! so re-defining can flip which way new placements face along the bar --
 ! RSGroundPlace's Flip covers that, and the old pick had the same
@@ -76,6 +81,7 @@ SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module
 from core import joint_pick_helpers as _picks_module
 from core.rhino_block_export import export_block_definition_to_3dm
@@ -101,20 +107,50 @@ _reload()
 _DIALOG = "RSDefineJointHalf"
 
 
-def _pick_kind() -> str | None:
+def _subtype_of_picked_block(block_name: str) -> str | None:
+    """The Subtype the picked block's name declares, after a confirm prompt.
+
+    ``None`` (with a message) when the name does not follow
+    ``<Type>_<Subtype>`` or the user cancels.
+    """
+    try:
+        type_, subtype = jnc.split_block_name(block_name)
+    except ValueError:
+        examples = ", ".join(jnc.block_name("T20", s) for s in jnc.SUBTYPES)
+        rs.MessageBox(
+            f"Block '{block_name}' is not named <Type>_<Subtype>.\n\n"
+            f"The part after the last '_' must be one of {', '.join(jnc.SUBTYPES)} "
+            f"-- e.g. {examples}.  Rename the block definition and run again.",
+            0,
+            _DIALOG,
+        )
+        return None
     answer = rs.GetString(
-        "Joint half kind", "Male", ["Male", "Female", "Ground"]
+        f"Define '{block_name}' as a {subtype} block (Type {type_})",
+        "Accept",
+        ["Accept", "Cancel"],
+    )
+    if answer is None or answer.strip().lower().startswith("c"):
+        return None
+    return subtype
+
+
+def _ask_copy_from_female(female_name: str) -> bool | None:
+    """Offer to reuse the Female's matrices for a MoCap block of the same Type.
+
+    Right only when the MoCap block was modelled on the Female's block origin
+    (same part, plate added), which is why picking stays the default.
+    ``None`` on cancel.
+    """
+    answer = rs.GetString(
+        f"Bar/screw frames: pick them, or copy {female_name}'s "
+        "(only if this block shares its origin)",
+        "Pick",
+        ["Pick", "CopyFromFemale"],
     )
     if answer is None:
         return None
-    a = answer.strip().lower()
-    if a.startswith("ma"):
-        return "male"
-    if a.startswith("fe"):
-        return "female"
-    if a.startswith("gr"):
-        return "ground"
-    return None
+    return answer.strip().lower().startswith("c")
 
 
 def _project_screw_origin(screw_point, screw_axis_start, screw_axis_end):
@@ -292,58 +328,121 @@ def main() -> None:
     scale_to_mm = picks.doc_unit_scale_to_mm()
     print(f"{_DIALOG}: scale_to_mm = {scale_to_mm:g}")
 
-    kind = _pick_kind()
-    if kind is None:
-        print(f"{_DIALOG}: cancelled at kind selection.")
-        return
-    print(f"{_DIALOG}: kind = {kind}")
-
     selected: list = []
 
-    block_id = picks.pick_block_instance(f"Pick {kind.upper()} block instance", _DIALOG)
+    block_id = picks.pick_block_instance(
+        "Pick the joint block instance (named <Type>_<Subtype>)", _DIALOG
+    )
     if block_id is None:
         print(f"{_DIALOG}: cancelled at block pick.")
         return
     selected.append(block_id)
 
-    # Ground halves pick TWO POINTS -- a +X direction and a +Y direction, both
+    block_xform_doc, block_def_name = picks.block_instance_frame(block_id)
+    if not block_def_name:
+        rs.MessageBox(
+            "Block instance must reference a named block definition.", 0, _DIALOG
+        )
+        return
+    subtype = _subtype_of_picked_block(block_def_name)
+    if subtype is None:
+        print(f"{_DIALOG}: cancelled at block name check.")
+        return
+    is_half = subtype in jnc.HALF_SUBTYPES  # has a screw bore
+    print(f"{_DIALOG}: block '{block_def_name}' -> {subtype}")
+
+    registry = jp_mod.load_joint_registry()
+    block_frame_mm = picks.frame_to_mm(block_xform_doc, scale_to_mm)
+
+    # A MoCap block is a Female with a marker plate: when it was modelled on the
+    # Female's origin, the Female's two matrices are already right for it.
+    copied_from = None
+    if subtype == jnc.MOCAP:
+        female_name = jnc.block_name(jnc.block_type(block_def_name), jnc.FEMALE)
+        if female_name in registry.halves:
+            copy = _ask_copy_from_female(female_name)
+            if copy is None:
+                print(f"{_DIALOG}: cancelled at frame source choice.")
+                return
+            if copy:
+                copied_from = registry.halves[female_name]
+
+    # Ground blocks pick TWO POINTS -- a +X direction and a +Y direction, both
     # measured from the block's own origin (RSDefineRoboticTool's TCP picks,
     # minus the origin pick) -- which fix the tool-attach frame AND the bar
-    # axis.  Male/female halves keep the single bar-axis line pick: their tool
-    # attaches on the block frame, so there is no second frame to choose.
+    # axis.  Halves keep the single bar-axis line pick: their tool attaches on
+    # the block frame, so there is no second frame to choose.
     M_tool_from_block = np.eye(4)
-    if kind == "ground":
-        picked = _pick_ground_tool_frame(block_id, selected, scale_to_mm)
-        if picked is None:
-            print(f"{_DIALOG}: cancelled at ground +X / +Y pick.")
-            return
-        x_point_id, y_point_id, bar_start_doc, bar_end_doc, M_tool_from_block = picked
-        selected.extend([x_point_id, y_point_id])
+    if copied_from is not None:
+        M_block_from_bar = np.array(copied_from.M_block_from_bar, dtype=float)
+        M_screw_from_block = np.array(copied_from.M_screw_from_block, dtype=float)
+        print(f"{_DIALOG}: frames copied from '{copied_from.block_name}'.")
     else:
-        with picks.temporarily_hidden(selected):
-            bar_id = picks.pick_line(f"Pick {kind.upper()} bar axis line", _DIALOG)
-        if bar_id is None:
-            print(f"{_DIALOG}: cancelled at bar axis pick.")
-            return
-        selected.append(bar_id)
-        bar_start_doc, bar_end_doc = picks.line_endpoints(bar_id)
+        if subtype == jnc.GROUND:
+            picked = _pick_ground_tool_frame(block_id, selected, scale_to_mm)
+            if picked is None:
+                print(f"{_DIALOG}: cancelled at ground +X / +Y pick.")
+                return
+            x_point_id, y_point_id, bar_start_doc, bar_end_doc, M_tool_from_block = picked
+            selected.extend([x_point_id, y_point_id])
+        else:
+            with picks.temporarily_hidden(selected):
+                bar_id = picks.pick_line(f"Pick {subtype.upper()} bar axis line", _DIALOG)
+            if bar_id is None:
+                print(f"{_DIALOG}: cancelled at bar axis pick.")
+                return
+            selected.append(bar_id)
+            bar_start_doc, bar_end_doc = picks.line_endpoints(bar_id)
 
-    screw_axis_id = None
-    screw_point_id = None
-    if kind in ("male", "female"):
-        with picks.temporarily_hidden(selected):
-            screw_axis_id = picks.pick_line("Pick SCREW axis line", _DIALOG)
-        if screw_axis_id is None:
-            print(f"{_DIALOG}: cancelled at screw axis pick.")
-            return
-        selected.append(screw_axis_id)
+        screw_axis_id = None
+        screw_point_id = None
+        if is_half:
+            with picks.temporarily_hidden(selected):
+                screw_axis_id = picks.pick_line("Pick SCREW axis line", _DIALOG)
+            if screw_axis_id is None:
+                print(f"{_DIALOG}: cancelled at screw axis pick.")
+                return
+            selected.append(screw_axis_id)
 
-        with picks.temporarily_hidden(selected):
-            screw_point_id = picks.pick_point("Pick SCREW center point")
-        if screw_point_id is None:
-            print(f"{_DIALOG}: cancelled at screw center pick.")
-            return
-        selected.append(screw_point_id)
+            with picks.temporarily_hidden(selected):
+                screw_point_id = picks.pick_point("Pick SCREW center point")
+            if screw_point_id is None:
+                print(f"{_DIALOG}: cancelled at screw center pick.")
+                return
+            selected.append(screw_point_id)
+
+        bar_start_mm = picks.vec_to_mm(bar_start_doc, scale_to_mm)
+        bar_end_mm = picks.vec_to_mm(bar_end_doc, scale_to_mm)
+        M_block_from_bar = picks.compute_M_block_from_bar(
+            block_frame_mm, bar_start_mm, bar_end_mm
+        )
+        if is_half:
+            screw_axis_start_doc, screw_axis_end_doc = picks.line_endpoints(screw_axis_id)
+            screw_point_doc = picks.point_xyz(screw_point_id)
+            screw_origin_doc, screw_dir_doc = _project_screw_origin(
+                screw_point_doc, screw_axis_start_doc, screw_axis_end_doc
+            )
+            screw_origin_mm = picks.vec_to_mm(screw_origin_doc, scale_to_mm)
+            # Direction is unitless w.r.t. doc-unit scale (only direction matters).
+            M_screw_from_block = picks.compute_M_screw_from_block(
+                block_frame_mm, screw_origin_mm, screw_dir_doc
+            )
+
+    print(
+        f"{_DIALOG}: M_block_from_bar translation (mm) = "
+        f"({M_block_from_bar[0,3]:.4f}, {M_block_from_bar[1,3]:.4f}, {M_block_from_bar[2,3]:.4f})"
+    )
+    if is_half:
+        screw_z = M_screw_from_block[:3, 2]
+        screw_origin_local = M_screw_from_block[:3, 3]
+        print(
+            f"{_DIALOG}: M_screw_from_block translation (mm in block frame) = "
+            f"({screw_origin_local[0]:.4f}, {screw_origin_local[1]:.4f}, {screw_origin_local[2]:.4f})"
+        )
+        print(
+            f"{_DIALOG}: screw Z axis (in block frame) = "
+            f"({screw_z[0]:.4f}, {screw_z[1]:.4f}, {screw_z[2]:.4f})"
+        )
 
     # Collision meshes -- pick AFTER bar/screw geometry so we can hide
     # everything else and pick stacked meshes cleanly. The user must
@@ -358,74 +457,6 @@ def main() -> None:
         return
     selected.extend(mesh_ids)
     print(f"{_DIALOG}: collision meshes picked = {len(mesh_ids)}")
-
-    # Resolve geometry / block name
-    block_xform_doc, block_def_name = picks.block_instance_frame(block_id)
-    if not block_def_name:
-        rs.MessageBox(
-            "Block instance must reference a named block definition.", 0, _DIALOG
-        )
-        return
-    print(f"{_DIALOG}: block definition name = '{block_def_name}'")
-
-    # Half name
-    if kind in ("male", "female"):
-        default_name = block_def_name
-        prompt = f"Half name (block_name; default '{default_name}')"
-    else:
-        default_name = ""
-        prompt = "Ground joint name (required)"
-    half_name = rs.GetString(prompt, default_name)
-    if half_name is None:
-        print(f"{_DIALOG}: cancelled at name input.")
-        return
-    half_name = half_name.strip()
-    if not half_name:
-        rs.MessageBox("Name is required.", 0, _DIALOG)
-        return
-
-    if kind in ("male", "female") and half_name != block_def_name:
-        rs.MessageBox(
-            f"For male/female halves, the half name MUST equal the block "
-            f"definition name. Got name='{half_name}', block='{block_def_name}'.",
-            0,
-            _DIALOG,
-        )
-        return
-
-    block_frame_mm = picks.frame_to_mm(block_xform_doc, scale_to_mm)
-    bar_start_mm = picks.vec_to_mm(bar_start_doc, scale_to_mm)
-    bar_end_mm = picks.vec_to_mm(bar_end_doc, scale_to_mm)
-
-    M_block_from_bar = picks.compute_M_block_from_bar(
-        block_frame_mm, bar_start_mm, bar_end_mm
-    )
-    print(
-        f"{_DIALOG}: M_block_from_bar translation (mm) = "
-        f"({M_block_from_bar[0,3]:.4f}, {M_block_from_bar[1,3]:.4f}, {M_block_from_bar[2,3]:.4f})"
-    )
-
-    if kind in ("male", "female"):
-        screw_axis_start_doc, screw_axis_end_doc = picks.line_endpoints(screw_axis_id)
-        screw_point_doc = picks.point_xyz(screw_point_id)
-        screw_origin_doc, screw_dir_doc = _project_screw_origin(
-            screw_point_doc, screw_axis_start_doc, screw_axis_end_doc
-        )
-        screw_origin_mm = picks.vec_to_mm(screw_origin_doc, scale_to_mm)
-        # Direction is unitless w.r.t. doc-unit scale (only direction matters).
-        M_screw_from_block = picks.compute_M_screw_from_block(
-            block_frame_mm, screw_origin_mm, screw_dir_doc
-        )
-        screw_z_world = M_screw_from_block[:3, 2]
-        screw_origin_local = M_screw_from_block[:3, 3]
-        print(
-            f"{_DIALOG}: M_screw_from_block translation (mm in block frame) = "
-            f"({screw_origin_local[0]:.4f}, {screw_origin_local[1]:.4f}, {screw_origin_local[2]:.4f})"
-        )
-        print(
-            f"{_DIALOG}: screw Z axis (in block frame) = "
-            f"({screw_z_world[0]:.4f}, {screw_z_world[1]:.4f}, {screw_z_world[2]:.4f})"
-        )
 
     # Asset filenames
     asset_filename = f"{block_def_name}.3dm"
@@ -452,20 +483,26 @@ def main() -> None:
         obj_filename = ""
 
     # Build dataclass and save
-    if kind in ("male", "female"):
+    if is_half:
+        # Re-defining must not silently drop what only the JSON holds.
+        previous = registry.halves.get(block_def_name)
         half = jp_mod.JointHalfDef(
             block_name=block_def_name,
             M_block_from_bar=M_block_from_bar,
             M_screw_from_block=M_screw_from_block,
-            kind=kind,
             asset_filename=asset_filename,
             collision_filename=obj_filename,
+            preferred_robotic_tool_name=(
+                previous.preferred_robotic_tool_name if previous else ""
+            ),
+            bar_cradle=previous.bar_cradle if previous else False,
+            marker_points_mm=previous.marker_points_mm if previous else {},
         )
         jp_mod.save_joint_half(half)
-        print(f"{_DIALOG}: saved half '{block_def_name}' (kind={kind}) to registry.")
+        print(f"{_DIALOG}: saved half '{block_def_name}' (kind={half.kind}) to registry.")
     else:
         ground = jp_mod.GroundJointDef(
-            name=half_name,
+            name=block_def_name,
             block_name=block_def_name,
             M_block_from_bar=M_block_from_bar,
             asset_filename=asset_filename,
@@ -479,8 +516,14 @@ def main() -> None:
         from core.rhino_tool_place import clear_tool_attach_cache  # noqa: PLC0415
 
         clear_tool_attach_cache()
-        print(f"{_DIALOG}: saved ground joint '{half_name}' (block={block_def_name}) to registry.")
+        print(f"{_DIALOG}: saved ground joint '{block_def_name}' to registry.")
 
+    # Either path just wrote a collision OBJ the session's collision cache has
+    # never seen -- without this the new block is skipped from collision until
+    # Rhino restarts.
+    from core.env_collision import clear_joint_obj_path_cache  # noqa: PLC0415
+
+    clear_joint_obj_path_cache()
     print(f"{_DIALOG}: done.")
 
 

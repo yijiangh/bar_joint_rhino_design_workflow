@@ -50,6 +50,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
+from core import joint_name_conventions as jnc
 from core import geometry
 from core import scaffold_json as sj
 from core.rhino_bar_registry import (
@@ -115,11 +116,8 @@ def _collect_bars():
         )
 
     def _bar_number(record):
-        digits = record["bar_id"].lstrip("B")
-        try:
-            return int(digits)
-        except ValueError:
-            return float("inf")
+        number = jnc.bar_number(record["bar_id"])
+        return float("inf") if number is None else number
 
     for record in records:
         record["imported"] = record["rod_id"] is not None
@@ -185,17 +183,19 @@ def _joint_couplers(bar_id_to_rod_id):
     Each placed pair writes ``parent_bar_id`` / ``connected_bar_id`` on both
     halves, which is exactly a rod-to-rod coupling.  Ground joints are
     skipped -- they anchor a bar to the ground, not to another rod.
+
+    Scanned as "every receiving half, plus the male": whichever half receives the
+    male, the pair is still one coupling.  A SINGLE-SIDED half on a receiver layer
+    writes no ``connected_bar_id``, so the ``connected is None`` guard below drops
+    it without needing to know the role.
     """
     pairs = set()
-    for layer in (
-        config.LAYER_JOINT_FEMALE_INSTANCES,
-        config.LAYER_JOINT_MALE_INSTANCES,
-    ):
+    for layer in jnc.PAIRED_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            parent = bar_id_to_rod_id.get(rs.GetUserText(oid, "parent_bar_id"))
-            connected = bar_id_to_rod_id.get(rs.GetUserText(oid, "connected_bar_id"))
+            parent = bar_id_to_rod_id.get(rs.GetUserText(oid, jnc.UT_PARENT_BAR))
+            connected = bar_id_to_rod_id.get(rs.GetUserText(oid, jnc.UT_CONNECTED_BAR))
             if parent is None or connected is None or parent == connected:
                 continue
             pairs.add((min(parent, connected), max(parent, connected)))

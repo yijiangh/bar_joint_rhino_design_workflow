@@ -114,6 +114,7 @@ from core.rhino_frame_io import doc_unit_scale_to_mm
 from core.rhino_helpers import suspend_redraw
 from core.rhino_tool_place import find_tool_for_joint
 from core.robotic_tool import arm_side_from_tool_name, get_robotic_tool
+from core import joint_name_conventions as jnc
 # Base-frame math shared with the headless sampler. These are pure numpy (no
 # Rhino), so they live in the tamp `keyframe.walkable_ground` module and are
 # imported under the private names this script already uses at its call sites.
@@ -298,16 +299,13 @@ def _males_on_bar(bar_id):
     with downstream code that just consumes opaque block-instance oids.
     """
     out = []
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         out.extend(
             oid
             for oid in rs.ObjectsByLayer(layer) or []
-            if rs.GetUserText(oid, "parent_bar_id") == bar_id
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out
 
@@ -327,7 +325,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
     if len(males) != 2:
         # Name them: the count says the bar is wrong, the ids say which joints
         # to go and look at.
-        found = [rs.GetUserText(oid, "joint_id") or "<no joint_id>" for oid in males]
+        found = [rs.GetUserText(oid, jnc.UT_JOINT_ID) or "<no joint_id>" for oid in males]
         listed = ", ".join(sorted(found)) if found else "none"
         message = (
             f"Bar '{bar_id}' has {len(males)} tool-bearing joint block(s) "
@@ -349,7 +347,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
 
     left = right = None
     for moid in males:
-        jid = rs.GetUserText(moid, "joint_id")
+        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
         if not jid:
             return None, f"Male block on bar '{bar_id}' is missing 'joint_id' user-text."
         toid = find_tool_for_joint(jid)
@@ -358,7 +356,7 @@ def _resolve_arm_tools_on_bar(bar_oid):
                 f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed. "
                 "Run RSJointEdit / tool-cycle first."
             )
-        tname = rs.GetUserText(toid, "tool_name") or ""
+        tname = rs.GetUserText(toid, jnc.UT_TOOL_NAME) or ""
         side = arm_side_from_tool_name(tname)
         if side is None:
             return None, (
@@ -1364,21 +1362,18 @@ def _hide_inactive_tool_blocks(active_bar_id):
     if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
         return []
     active_joint_ids = set()
-    for layer in (
-        config.LAYER_JOINT_MALE_INSTANCES,
-        config.LAYER_JOINT_GROUND_INSTANCES,
-    ):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
             if (
-                rs.GetUserText(oid, "parent_bar_id") == active_bar_id
-                and rs.GetUserText(oid, "joint_id")
+                rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
+                and rs.GetUserText(oid, jnc.UT_JOINT_ID)
             ):
-                active_joint_ids.add(rs.GetUserText(oid, "joint_id"))
+                active_joint_ids.add(rs.GetUserText(oid, jnc.UT_JOINT_ID))
     hidden = []
     for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
-        jid = rs.GetUserText(oid, "joint_id")
+        jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if jid in active_joint_ids:
             continue
         if rs.IsObjectHidden(oid):

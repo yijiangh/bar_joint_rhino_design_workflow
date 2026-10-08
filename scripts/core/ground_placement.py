@@ -15,13 +15,11 @@ Forward kinematics::
 
 There is NO mating partner and NO screw frame.
 
-Layer + UserText conventions:
+Names (all from :mod:`core.joint_name_conventions`):
 
-* All baked instances live on ``LAYER_JOINT_GROUND_INSTANCES``.
-* Object name pattern: ``{joint_id}_ground`` so :func:`_remove_placed_ground`
-  can find them later (mirrors the female/male naming in
-  :mod:`core.joint_placement`).
-* ``joint_id`` pattern: ``G{bar_num}-{ground_name}``.
+* layer ``Joint Ground Instances``;
+* joint id ``G<bar>-<Type>-<i>`` -- ``G4-T20-0`` for ``T20_Ground`` on ``B4``;
+* object name ``<joint id>_ground``, so :func:`remove_placed_ground` can find it.
 
 All Rhino-runtime imports are deferred so this module is safe to import
 from non-Rhino test contexts.
@@ -31,7 +29,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core import config
+from core import joint_name_conventions as jnc
 from core.joint_pair import (
     GroundJointDef,
     canonical_bar_frame_from_line,
@@ -70,15 +68,6 @@ def effective_M_block_from_bar(ground: GroundJointDef, *, flipped: bool) -> np.n
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-GROUND_INSTANCES_LAYER = config.LAYER_JOINT_GROUND_INSTANCES
-
-# UserText role tag set on interactive preview blocks (RSGroundPlace).
-JOINT_ROLE_GROUND = "ground"
-
-# UserText `joint_type` value for ground joints (parallels female/male types
-# written by `core.joint_placement.write_joint_user_text`).
-GROUND_JOINT_TYPE = "ground"
 
 # Single preview color (no variant cycling for ground joints).
 GROUND_PREVIEW_COLOR = (180, 120, 60)
@@ -163,41 +152,18 @@ def auto_jr_y_down(
 # ---------------------------------------------------------------------------
 
 
-def _bar_id_to_num(bar_id: str) -> str:
-    """``"B7"`` -> ``"7"``; safe on already-numeric or empty input."""
-    return str(bar_id).lstrip("B") if bar_id else "?"
-
-
-def _ground_id_base(bar_id: str, ground_name: str) -> str:
-    return f"G{_bar_id_to_num(bar_id)}-{ground_name}"
-
-
-def make_ground_joint_id(bar_id: str, ground_name: str, *, index: int = 0) -> str:
-    """Return ``G{bar_num}-{ground_name}-{index}``.
-
-    Multiple ground joints with the same (bar, ground_name) coexist via
-    distinct ``index`` values.  Use :func:`next_ground_joint_index` to
-    pick the next free one when baking a NEW placement.
-    """
-    return f"{_ground_id_base(bar_id, ground_name)}-{int(index)}"
-
-
-def next_ground_joint_index(bar_id: str, ground_name: str) -> int:
-    """Return the smallest non-negative integer ``i`` such that
-    ``G{bar_num}-{ground_name}-{i}`` is not already used by a baked ground
-    block on ``GROUND_INSTANCES_LAYER``.
-    """
+def next_ground_joint_index(bar_id: str, type_: str) -> int:
+    """Return the smallest ``i`` such that ``G<bar>-<Type>-<i>`` is not already
+    used by a baked ground block."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    base = _ground_id_base(bar_id, ground_name)
+    base = jnc.single_joint_id_base(jnc.GROUND, bar_id, type_)
     used = set()
-    if rs.IsLayer(GROUND_INSTANCES_LAYER):
-        for oid in rs.ObjectsByLayer(GROUND_INSTANCES_LAYER) or []:
-            jid = rs.GetUserText(oid, "joint_id") or ""
-            if jid.startswith(base + "-"):
-                tail = jid[len(base) + 1:]
-                if tail.isdigit():
-                    used.add(int(tail))
+    if rs.IsLayer(jnc.LAYER_GROUND):
+        for oid in rs.ObjectsByLayer(jnc.LAYER_GROUND) or []:
+            parts = jnc.split_single_joint_id(rs.GetUserText(oid, jnc.UT_JOINT_ID))
+            if parts and jnc.single_joint_id_base(*parts[:3]) == base:
+                used.add(parts[3])
     i = 0
     while i in used:
         i += 1
@@ -205,14 +171,14 @@ def next_ground_joint_index(bar_id: str, ground_name: str) -> int:
 
 
 def insert_ground_block_preview(block_name: str, frame: np.ndarray):
-    """Insert a colored preview block instance, tagged with role=ground."""
+    """Insert a colored preview block instance, tagged as a Ground preview."""
     from core.joint_placement import insert_block_instance  # noqa: PLC0415
 
     return insert_block_instance(
         block_name,
         frame,
         color=GROUND_PREVIEW_COLOR,
-        role=JOINT_ROLE_GROUND,
+        subtype=jnc.GROUND,
     )
 
 
@@ -230,8 +196,8 @@ def place_ground_block(
     """Bake the final ground block instance with persistent UserText.
 
     When ``joint_id`` is None, a fresh id is allocated via
-    :func:`next_ground_joint_index` so multiple ground placements on the
-    same bar+ground_def coexist.  Pass an explicit ``joint_id`` from
+    :func:`next_ground_joint_index` so several ground placements of one Type
+    on the same bar coexist.  Pass an explicit ``joint_id`` from
     re-edit code paths so the existing id is preserved across a flip.
 
     Returns ``(object_id, joint_id)``.
@@ -249,22 +215,21 @@ def place_ground_block(
         bar_start, bar_end, jp, jr, ground, flipped=flipped
     )
     if joint_id is None:
-        idx = next_ground_joint_index(bar_id, ground.name)
-        joint_id = make_ground_joint_id(bar_id, ground.name, index=idx)
+        idx = next_ground_joint_index(bar_id, ground.type)
+        joint_id = jnc.single_joint_id(jnc.GROUND, bar_id, ground.type, idx)
 
+    type_, subtype = jnc.split_block_name(block_name)
     with suspend_redraw():
-        oid = insert_block_instance(
-            block_name, frame, layer_name=GROUND_INSTANCES_LAYER
-        )
-        rs.ObjectName(oid, f"{joint_id}_ground")
-        rs.SetUserText(oid, "joint_id", joint_id)
-        rs.SetUserText(oid, "joint_type", GROUND_JOINT_TYPE)
-        rs.SetUserText(oid, "ground_joint_name", ground.name)
-        rs.SetUserText(oid, "block_name", block_name)
-        rs.SetUserText(oid, "parent_bar_id", str(bar_id))
-        rs.SetUserText(oid, "position_mm", f"{float(jp):.4f}")
-        rs.SetUserText(oid, "rotation_deg", f"{float(np.degrees(jr)):.4f}")
-        rs.SetUserText(oid, "flipped", "True" if flipped else "False")
+        oid = insert_block_instance(block_name, frame, layer_name=jnc.LAYER_GROUND)
+        rs.ObjectName(oid, jnc.object_name(joint_id, jnc.GROUND))
+        rs.SetUserText(oid, jnc.UT_JOINT_ID, joint_id)
+        rs.SetUserText(oid, jnc.UT_JOINT_TYPE, type_)
+        rs.SetUserText(oid, jnc.UT_JOINT_SUBTYPE, subtype)
+        rs.SetUserText(oid, jnc.UT_BLOCK_NAME, block_name)
+        rs.SetUserText(oid, jnc.UT_PARENT_BAR, str(bar_id))
+        rs.SetUserText(oid, jnc.UT_POSITION, f"{float(jp):.4f}")
+        rs.SetUserText(oid, jnc.UT_ROTATION, f"{float(np.degrees(jr)):.4f}")
+        rs.SetUserText(oid, jnc.UT_FLIPPED, "True" if flipped else "False")
 
     print(
         f"RSGroundPlace: placed {joint_id} on {bar_id} "
@@ -277,20 +242,16 @@ def remove_placed_ground(joint_id: str) -> None:
     """Delete the baked ground block instance for ``joint_id`` (if any)."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    ids = rs.ObjectsByName(f"{joint_id}_ground")
+    ids = rs.ObjectsByName(jnc.object_name(joint_id, jnc.GROUND))
     if ids:
         rs.DeleteObjects(ids)
 
 
 __all__ = [
-    "GROUND_INSTANCES_LAYER",
-    "JOINT_ROLE_GROUND",
-    "GROUND_JOINT_TYPE",
     "GROUND_PREVIEW_COLOR",
     "effective_M_block_from_bar",
     "fk_ground_block_frame",
     "auto_jr_y_down",
-    "make_ground_joint_id",
     "next_ground_joint_index",
     "insert_ground_block_preview",
     "place_ground_block",

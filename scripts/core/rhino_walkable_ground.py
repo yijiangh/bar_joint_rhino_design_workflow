@@ -28,6 +28,7 @@ import rhinoscriptsyntax as rs
 from compas.datastructures import Mesh
 
 from core import config
+from core import joint_name_conventions as jnc
 # The numpy half moved into the tamp submodule with the solvers (core.config
 # put it on sys.path); imported under the same private name as before.
 from husky_assembly_tamp.keyframe import walkable_ground as _walkable_np
@@ -398,10 +399,11 @@ _OFF_GROUND_TOL_MM = 50.0
 def anchor_insertion_axes_mm(bar_id):
     """Return ``[(joint_oid, unit_axis)]`` for every anchor joint on the bar.
 
-    Scans BOTH ``LAYER_JOINT_MALE_INSTANCES`` and ``LAYER_JOINT_GROUND_INSTANCES``,
-    mirroring ``rs_ik_keyframe._males_on_bar``: assembly IK treats any tool-bearing
-    joint instance on the bar as an arm anchor, so a bar held by one male + one
-    ground (or two grounds) must contribute both axes to the heading.
+    Scans ``jnc.TOOL_BEARING_LAYERS`` (male + ground), mirroring
+    ``rs_ik_keyframe._males_on_bar``: assembly IK treats any tool-bearing joint
+    instance on the bar as an arm anchor, so a bar held by one male + one ground
+    (or two grounds) must contribute both axes to the heading.  Roles that are not
+    tool-bearing -- a mocap half, say -- contribute no axis by design.
 
     Args:
         bar_id (str): the bar whose anchor joints to read.
@@ -413,12 +415,11 @@ def anchor_insertion_axes_mm(bar_id):
     from core import env_collision
 
     axes = []
-    for layer in (config.LAYER_JOINT_MALE_INSTANCES,
-                  config.LAYER_JOINT_GROUND_INSTANCES):
+    for layer in jnc.TOOL_BEARING_LAYERS:
         if not rs.IsLayer(layer):
             continue
         for oid in rs.ObjectsByLayer(layer) or []:
-            if rs.GetUserText(oid, "parent_bar_id") != bar_id:
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) != bar_id:
                 continue
             try:
                 frame_mm = np.asarray(env_collision._block_instance_xform_mm(oid), dtype=float)
@@ -740,7 +741,7 @@ def _bar_ground_soups(bar_oid, grounds_map, soup_cache: dict = None):
     The chain is ``Rhino Brep -> Rhino Mesh -> COMPAS Mesh -> soup``, and it
     exists so the base-placement math stays Rhino-free (headless + pytest); its
     only consumer, ``closest_point_on_meshes``, loops over every triangle and so
-    needs no connectivity. ``docs/Su_note.md`` section 14 has the long form.
+    needs no connectivity. ``docs/note.md`` section 14 has the long form.
 
     One soup per ground, because a bar may be assigned up to
     ``config.WALKABLE_ASSOC_MAX_COUNT`` (2) of them.

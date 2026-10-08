@@ -37,6 +37,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config as _config_module
+from core import joint_name_conventions as jnc
 from core import env_collision as _env_collision_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core.rhino_bar_pick import pick_bar
@@ -110,8 +111,8 @@ def main() -> None:
     bar_to_tool0_left_mm = inv_bar @ tool0_left_world_mm
     bar_to_tool0_right_mm = inv_bar @ tool0_right_world_mm
 
-    left_tool_name = rs.GetUserText(arm_tools["left"], "tool_name") or ""
-    right_tool_name = rs.GetUserText(arm_tools["right"], "tool_name") or ""
+    left_tool_name = rs.GetUserText(arm_tools["left"], jnc.UT_TOOL_NAME) or ""
+    right_tool_name = rs.GetUserText(arm_tools["right"], jnc.UT_TOOL_NAME) or ""
 
     payload = {
         "bar_id": bar_id,

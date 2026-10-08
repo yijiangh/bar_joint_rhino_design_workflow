@@ -125,10 +125,8 @@ def test_only_ground_and_mocap_are_single_sided(registry, ground, mocap):
         ssp.subtype_of(registry.halves["T20_Female"])
 
 
-def test_definitions_are_found_by_block_name(registry, ground):
-    assert ssp.find_definition(ground.block_name, registry) is ground
-    assert ssp.find_definition("T20_Female", registry) is None
-    assert ssp.find_definition("not a block", registry) is None
+def test_single_sided_definitions_list_ground_then_mocap(registry, ground):
+    assert registry.definition(ground.block_name) is ground
     names = [d.block_name for d in ssp.single_sided_definitions(registry)]
     assert names[0] == "T20_Ground"
     assert all(jnc.block_subtype(n) in jnc.SINGLE_SIDED_SUBTYPES for n in names)

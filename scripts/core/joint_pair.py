@@ -1,6 +1,7 @@
 """Joint pair data model, registry, and forward kinematics.
 
-A joint pair is described by two halves (female and male).  Each half maps
+A joint pair (a mate) is described by two halves: a receiver (Female, or the
+MoCap half of the same Type) and a male.  Each half maps
 a bar line and two scalar DOFs (`jp`, `jr`) to a block pose and a screw
 frame via two constant 4x4 transforms:
 
@@ -8,7 +9,7 @@ frame via two constant 4x4 transforms:
     block_frame = bar_frame @ T_z(jp) @ R_z(jr) @ half.M_block_from_bar
     screw_frame = block_frame @ half.M_screw_from_block
 
-The optimizer aligns the female and male `screw_frame` origins and local
+The optimizer aligns the receiver's and male's `screw_frame` origins and local
 Z axes; roll about Z is unobservable and arbitrary.
 """
 
@@ -74,9 +75,6 @@ def _as_4x4(value: Iterable[Iterable[float]]) -> np.ndarray:
 # ``marker_points_mm`` matters in BOTH cases, so the MoCap LAYER is exactly the
 # set of marker-bearing joints, while ``male_parent_bar`` says whether one is
 # also structural.
-
-#: What ``JointHalfDef.kind`` may be: every role except ground.
-VALID_HALF_KINDS = tuple(jnc.role(s) for s in jnc.HALF_SUBTYPES)
 
 
 @dataclass(frozen=True)
@@ -233,7 +231,7 @@ class GroundJointDef:
     constraints: `core.single_sided_placement.auto_jr_y_down` requires the block's
     local +Y to point at the ground (the foot must sit down), while the arm
     may have to approach with its TCP rolled relative to that.  Identity --
-    the default, and what every male/female half does implicitly -- means the
+    the default, and what every male half does implicitly -- means the
     tool attaches on the block frame itself.
     """
 
@@ -449,6 +447,19 @@ class JointRegistry:
     mates: dict[str, JointPairDef] = field(default_factory=dict)
     ground_joints: dict[str, GroundJointDef] = field(default_factory=dict)
 
+    def definitions(self) -> list:
+        """Every block definition: the halves, then the ground joints."""
+        return [*self.halves.values(), *self.ground_joints.values()]
+
+    def definition(self, block_name: str):
+        """The half or ground definition for *block_name*, or ``None``."""
+        if block_name in self.halves:
+            return self.halves[block_name]
+        return next(
+            (g for g in self.ground_joints.values() if g.block_name == block_name),
+            None,
+        )
+
 
 def _mate_to_dict(pair: JointPairDef) -> dict:
     return {
@@ -479,7 +490,7 @@ def load_joint_registry(path: str = DEFAULT_REGISTRY_PATH) -> JointRegistry:
         mname = str(entry["male_block_name"])
         if fname not in halves:
             raise KeyError(
-                f"Mate {name!r} references unknown female half block_name={fname!r}"
+                f"Mate {name!r} references unknown receiver half block_name={fname!r}"
             )
         if mname not in halves:
             raise KeyError(
@@ -550,7 +561,7 @@ def save_joint_pair(
 ) -> None:
     """Insert/overwrite a mate entry; also upsert its two halves.
 
-    When `overwrite_halves` is True (default), the female/male halves carried
+    When `overwrite_halves` is True (default), the receiver/male halves carried
     by `pair` overwrite any existing halves with the same `block_name`.  Set
     to False to preserve the existing half geometry (useful when the caller
     only wants to update mate-level fields like `contact_distance_mm`).
@@ -564,12 +575,22 @@ def save_joint_pair(
 
 
 def get_joint_pair(
-    name: str, *, path: str = DEFAULT_REGISTRY_PATH
+    name: str, receiver_subtype: str | None = None, *, path: str = DEFAULT_REGISTRY_PATH
 ) -> JointPairDef:
-    pairs = load_joint_pairs(path)
-    if name not in pairs:
+    """Mate *name*; with *receiver_subtype*, that Type's receiver swapped in.
+
+    ``get_joint_pair("T20")`` holds ``T20_Female``;
+    ``get_joint_pair("T20", "MoCap")`` holds ``T20_MoCap``.  RSJointEdit rebuilds
+    a placed pair this way: the mate name from the block's ``joint_pair_name``
+    user text, the receiver Subtype from the layer its receiver block sits on.
+    """
+    registry = load_joint_registry(path)
+    if name not in registry.mates:
         raise KeyError(f"Joint pair {name!r} not found in {path}.")
-    return pairs[name]
+    pair = registry.mates[name]
+    if receiver_subtype is None:
+        return pair
+    return with_receiver(pair, receiver_subtype, registry.halves)
 
 
 def list_joint_pair_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
@@ -628,29 +649,3 @@ def swapped_receiver(pair: JointPairDef, halves: dict) -> JointPairDef:
     """
     other = jnc.MOCAP if pair.receiver_subtype == jnc.FEMALE else jnc.FEMALE
     return with_receiver(pair, other, halves)
-
-
-def get_joint_pair_variant(
-    name: str, receiver_subtype: str | None = None, *, path: str = DEFAULT_REGISTRY_PATH
-) -> JointPairDef:
-    """Mate *name*, with its *receiver_subtype* half swapped in when given.
-
-    What RSJointEdit uses to rebuild a placed pair: the mate name comes from
-    the block's ``joint_pair_name`` user text, the receiver Subtype from the
-    layer its receiver block sits on.
-    """
-    registry = load_joint_registry(path)
-    if name not in registry.mates:
-        raise KeyError(f"Joint pair {name!r} not found in {path}.")
-    pair = registry.mates[name]
-    if receiver_subtype is None:
-        return pair
-    return with_receiver(pair, receiver_subtype, registry.halves)
-
-
-def list_joint_half_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
-    return sorted(load_joint_registry(path).halves.keys())
-
-
-def list_ground_joint_names(path: str = DEFAULT_REGISTRY_PATH) -> list[str]:
-    return sorted(load_joint_registry(path).ground_joints.keys())

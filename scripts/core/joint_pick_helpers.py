@@ -113,6 +113,17 @@ def block_instance_frame(block_instance_id) -> tuple[np.ndarray, str]:
     return matrix, block_name
 
 
+def screw_frame_world(block_instance_id, half) -> np.ndarray:
+    """World screw frame of a placed half: ``block_world @ M_screw_from_block``.
+
+    The same composition ``core.joint_pair.fk_half_from_bar_frame`` uses, but
+    driven by the block's ACTUAL transform in the document rather than a
+    recomputed one -- so it reports where the joint really is.
+    """
+    block_world, _name = block_instance_frame(block_instance_id)
+    return block_world @ np.asarray(half.M_screw_from_block, dtype=float)
+
+
 def line_endpoints(line_id) -> tuple[np.ndarray, np.ndarray]:
     curve = rs.coercecurve(line_id)
     return point_to_array(curve.PointAtStart), point_to_array(curve.PointAtEnd)

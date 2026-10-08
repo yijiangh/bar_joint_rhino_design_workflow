@@ -7,7 +7,8 @@
 Select one or more bar tube previews (the visible cylinders).  For each
 selected bar the following objects are deleted:
 
-* All joint block instances (female + male) where the bar is a participant.
+* All joint block instances (receiver + male, Ground, standalone MoCap) where
+  the bar is a participant.
 * All tool instances attached to those joints.
 * The tube preview cylinder.
 * The bar centerline curve.
@@ -35,6 +36,7 @@ from core.rhino_bar_registry import (
     repair_bar_sequences,
     repair_on_entry,
 )
+from core.joint_placement import remove_joint_blocks
 from core.rhino_tool_place import remove_tool_for_joint
 
 # ---------------------------------------------------------------------------
@@ -43,10 +45,10 @@ from core.rhino_tool_place import remove_tool_for_joint
 
 
 def _find_joint_ids_for_bar(bar_id):
-    """Return a list of joint_ids that involve *bar_id* as female, male, or ground.
+    """Return a list of joint_ids that involve *bar_id* as receiver, male, or single-sided.
 
-    Female / male blocks store ``female_parent_bar`` and ``male_parent_bar``
-    user text; ground blocks store only ``parent_bar_id``.
+    Receiver / male blocks store ``female_parent_bar`` and ``male_parent_bar``
+    user text; single-sided blocks store only ``parent_bar_id``.
     """
     found = set()
     for layer in jnc.JOINT_LAYERS:
@@ -61,17 +63,6 @@ def _find_joint_ids_for_bar(bar_id):
                 if jid:
                     found.add(jid)
     return list(found)
-
-
-def _remove_joint_blocks(joint_id):
-    """Delete every placed joint block instance for *joint_id*, whatever its role."""
-    to_delete = []
-    for subtype in jnc.SUBTYPES:
-        ids = rs.ObjectsByName(jnc.object_name(joint_id, subtype))
-        if ids:
-            to_delete.extend(ids)
-    if to_delete:
-        rs.DeleteObjects(to_delete)
 
 
 def _remove_tube_preview(bar_id):
@@ -107,7 +98,7 @@ def _remove_bar(bar_id, all_bars):
     joint_ids = _find_joint_ids_for_bar(bar_id)
     for jid in joint_ids:
         remove_tool_for_joint(jid)
-        _remove_joint_blocks(jid)
+        remove_joint_blocks(jid)
 
     # 2. Tube preview
     _remove_tube_preview(bar_id)

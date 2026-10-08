@@ -2,8 +2,8 @@
 
 ``rs_bar_snap``, ``rs_bar_brace``, and ``rs_bar_subfloor`` all need the
 same default-orientation joint placement after they've finalized a new
-bar's geometry: the existing bar acts as the female (Le), the new bar
-as the male (Ln), and we always pick the canonical variant
+bar's geometry: the existing bar takes the receiver (Le), the new bar
+the male (Ln), and we always pick the canonical variant
 ``(le_rev=False, ln_rev=False)``.  The user can refine each joint later
 with ``RSJointEdit``.
 """
@@ -13,7 +13,6 @@ from core.joint_placement import (
     place_joint_blocks,
 )
 from core.rhino_bar_registry import ensure_bar_id
-from core.rhino_block_import import require_block_definition
 from core.rhino_helpers import curve_endpoints
 
 
@@ -23,7 +22,7 @@ def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
     Parameters
     ----------
     le_curve_id, ln_curve_id : Rhino object ids
-        Centerline curves of the existing (female) and new (male) bars.
+        Centerline curves of the existing (receiver) and new (male) bars.
     pair : core.joint_pair.JointPairDef
         The active joint-pair definition.
     """
@@ -32,16 +31,10 @@ def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
     le_start, le_end = curve_endpoints(le_curve_id)
     ln_start, ln_end = curve_endpoints(ln_curve_id)
 
-    require_block_definition(
-        pair.female.block_name, asset_path=pair.female.asset_path()
-    )
-    require_block_definition(
-        pair.male.block_name, asset_path=pair.male.asset_path()
-    )
-
     # Auto-place: start at the canonical (le_rev=False, ln_rev=False)
     # variant.  If its interface error is too large (special joints with
-    # only two valid variants), automatically flip the female side once.
+    # only two valid variants), automatically flip the receiver side once.
+    # place_joint_blocks imports both block definitions if they are missing.
     result, _recovered, _le_rev, _ln_rev = compute_variant_with_recovery(
         le_start, le_end, ln_start, ln_end, False, False,
         pair=pair, recover_side="receiver",

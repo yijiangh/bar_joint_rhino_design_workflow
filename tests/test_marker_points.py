@@ -1,8 +1,8 @@
 """``core.marker_points`` -- marker spheres between block, world and bar frames.
 
 The round trip that matters: a sphere picked in the document is stored in the
-block's own frame, a placed instance predicts it back in the world, and the
-prefab export re-expresses it in the bar frame.  Pure numpy -- no Rhino.
+block's own frame, and the prefab export re-expresses it in the bar frame of
+wherever the block is placed.  Pure numpy -- no Rhino.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from core import marker_points as mp
+from core.joint_pair import canonical_bar_frame_from_line
 
 
 def _rot_z(deg):
@@ -31,35 +32,33 @@ def test_bounding_box_centre_of_a_sphere():
     assert np.allclose(mp.bounding_box_centre(corners), (3, 4, 5))
 
 
-def test_block_local_round_trip():
+def test_block_local_is_a_plain_float_tuple():
+    local = mp.to_block_local_mm(_block_frame(), (130.0, -10.0, 45.0))
+    assert isinstance(local, tuple) and all(type(c) is float for c in local)
+
+
+def test_picked_point_comes_back_in_the_world_frame():
+    """Stored block-local, reported in the world frame (identity) = the pick."""
     block = _block_frame()
     picked = (130.0, -10.0, 45.0)
     local = mp.to_block_local_mm(block, picked)
-    assert all(type(c) is float for c in local)
-    assert np.allclose(mp.to_world_mm(block, {"M1": local})["M1"], picked)
+    out = mp.markers_in_frame_mm(block, {"M1": local}, np.eye(4))
+    assert np.allclose(out["M1"], picked, atol=0.01)
 
 
-def test_a_moved_instance_carries_its_markers():
-    """Defined at one pose, predicted at another: the offset from the block is kept."""
+def test_markers_in_the_bar_frame():
+    """Bar along world +X from x=10: 100 mm along the bar is bar-frame z = 100."""
+    bar = canonical_bar_frame_from_line((10.0, 0.0, 0.0), (1010.0, 0.0, 0.0))
+    out = mp.markers_in_frame_mm(np.eye(4), {"M1": (110.0, 0.0, 0.0)}, bar)
+    assert out["M1"] == pytest.approx([0.0, 0.0, 100.0], abs=0.01)
+
+
+def test_marker_distance_from_the_bar_axis_is_kept():
+    """Moving the block moves its markers rigidly."""
     local = mp.to_block_local_mm(_block_frame(), (130.0, -10.0, 45.0))
-    moved = _rot_z(-90.0)
-    moved[:3, 3] = (0.0, 0.0, 0.0)
-    world = np.asarray(mp.to_world_mm(moved, {"M1": local})["M1"])
-    assert np.linalg.norm(world) == pytest.approx(np.linalg.norm(local))
-
-
-def test_bar_frame_coordinates():
-    """Origin at the bar start, z along the bar, x as given."""
-    frame = mp.frame_from_axes((10.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
-    out = mp.in_frame_mm({"M1": (110.0, 5.0, 2.0)}, frame)
-    # bar z = world +X: 100 mm along the bar; bar x = world +Y: 5; bar y = z x x = world +Z: 2
-    assert out == {"M1": [5.0, 2.0, 100.0]}
-
-
-def test_frame_from_axes_is_orthonormal_even_from_a_loose_x():
-    frame = mp.frame_from_axes((0, 0, 0), (1.0, 0.2, 0.3), (0.0, 0.0, 2.0))
-    assert np.allclose(frame[:3, :3].T @ frame[:3, :3], np.eye(3))
-    assert np.allclose(frame[:3, 2], (0, 0, 1))
+    placed = _rot_z(-90.0)
+    out = mp.markers_in_frame_mm(placed, {"M1": local}, np.eye(4))
+    assert np.linalg.norm(out["M1"]) == pytest.approx(np.linalg.norm(local), abs=0.01)
 
 
 def test_default_labels_skip_used_ones():

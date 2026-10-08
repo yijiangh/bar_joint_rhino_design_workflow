@@ -39,6 +39,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import joint_name_conventions as jnc
 from core import rhino_bar_pick as bar_pick
 from core import rhino_bar_registry as registry
 from core import scaffold_json as sj
@@ -86,7 +87,7 @@ def main():
     if not targets:
         print(f"{CMD}: nothing to do -- no registered bar in the selection.")
         return
-    bar_ids = sorted(targets, key=lambda b: registry._parse_bar_number(b) or 0)
+    bar_ids = sorted(targets, key=jnc.bar_sort_key)
 
     # Pre-fill the prompt with the picked bars' layer when they all agree on one.
     layers_now = {_current_layer_id(targets[bar_id]) for bar_id in bar_ids}

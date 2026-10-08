@@ -30,7 +30,7 @@ from core import config
 # The two bar-body naming schemes a frozen robot's held bar may live under:
 # canonical `bar_<id>` in the dual-arm assembly cell, `env_bar_<id>` in the
 # single-arm support cells.
-from core.env_collision import CANONICAL_BAR_PREFIX, ENV_RB_BAR_PREFIX
+from core import joint_name_conventions as jnc
 # Session/sticky plumbing + unit converters come from robot_cell. That module
 # lazily imports THIS one inside two functions (base state + cell rebuild), so
 # importing robot_cell at our top level is safe (no import cycle at load time).
@@ -367,8 +367,8 @@ def whitelist_frozen_contact(state, robot_name: str, bar_ids) -> list:
         # in a support cell; probe both.
         key = None
         for candidate in (
-            f"{CANONICAL_BAR_PREFIX}{bar_id}",
-            f"{ENV_RB_BAR_PREFIX}{bar_id}",
+            f"{jnc.BAR_KEY_PREFIX}{bar_id}",
+            f"{jnc.ENV_BAR_KEY_PREFIX}{bar_id}",
         ):
             if candidate in state.rigid_body_states:
                 key = candidate
@@ -381,7 +381,7 @@ def whitelist_frozen_contact(state, robot_name: str, bar_ids) -> list:
             print(
                 f"core.robot_obstacles: NOTE - frozen {robot_name} is clamped "
                 f"onto bar {bar_id}, but this scene has no rigid body "
-                f"'{CANONICAL_BAR_PREFIX}{bar_id}' or '{ENV_RB_BAR_PREFIX}{bar_id}' "
+                f"'{jnc.BAR_KEY_PREFIX}{bar_id}' or '{jnc.ENV_BAR_KEY_PREFIX}{bar_id}' "
                 "to whitelist (bar excluded from the scene?)."
             )
             continue

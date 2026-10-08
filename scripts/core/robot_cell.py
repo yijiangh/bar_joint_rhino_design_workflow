@@ -37,6 +37,7 @@ import time
 import numpy as np
 
 from core import config
+from core import joint_name_conventions as jnc
 # Tool registry: the L/R naming rule + the active candidate pair. Rhino-free,
 # so importing at the top keeps this module headless-importable.
 from core.robotic_tool import (
@@ -713,8 +714,6 @@ def _live_assembly_fingerprint():
     name_parts = sorted(
         f"{bid}{':fake' if bid in fake_bar_ids else ''}" for bid in seq_map
     )
-    from core import joint_name_conventions as jnc
-
     for layer in jnc.JOINT_LAYERS:
         if rs.IsLayer(layer):
             joint_oids = rs.ObjectsByLayer(layer) or []
@@ -819,9 +818,9 @@ def rebuild_assembly_cell(robot_cell, planner):
 
     # Canonical bar/joint/obstacle rigid-body registry: replace the managed set.
     managed_prefixes = (
-        env_collision.CANONICAL_BAR_PREFIX,
-        env_collision.CANONICAL_JOINT_PREFIX,
-        env_collision.OBSTACLE_PREFIX,
+        jnc.BAR_KEY_PREFIX,
+        jnc.JOINT_KEY_PREFIX,
+        jnc.OBSTACLE_KEY_PREFIX,
     )
     desired = {name: bi["rigid_body"] for name, bi in collision_bodies.items()}
     existing_managed = {

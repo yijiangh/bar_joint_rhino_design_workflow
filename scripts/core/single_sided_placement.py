@@ -56,7 +56,6 @@ PREVIEW_COLORS = {
     jnc.GROUND: (180, 120, 60),
     jnc.MOCAP: (60, 150, 200),
 }
-GROUND_PREVIEW_COLOR = PREVIEW_COLORS[jnc.GROUND]
 
 #: A MoCap joint's plate faces along its block-local +Z (the back of the
 #: Female it is built from -- measured: a placed Female's +Z points away from
@@ -204,10 +203,7 @@ def next_single_joint_index(subtype: str, bar_id: str, type_: str) -> int:
             parts = jnc.split_single_joint_id(rs.GetUserText(oid, jnc.UT_JOINT_ID))
             if parts and jnc.single_joint_id_base(*parts[:3]) == base:
                 used.add(parts[3])
-    i = 0
-    while i in used:
-        i += 1
-    return i
+    return jnc.next_free_index(used)
 
 
 def insert_single_sided_preview(definition, frame: np.ndarray):
@@ -280,32 +276,13 @@ def place_single_sided_block(
     return oid, joint_id
 
 
-def remove_placed_single(joint_id: str, subtype: str) -> None:
-    """Delete the baked single-sided block for ``joint_id`` (if any)."""
+def is_single_sided_block(oid) -> bool:
+    """True for a placed Ground block or standalone MoCap block (by layer + id)."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
 
-    ids = rs.ObjectsByName(jnc.object_name(joint_id, subtype))
-    if ids:
-        rs.DeleteObjects(ids)
-
-
-def find_definition(block_name: str, registry):
-    """The registered single-sided definition for *block_name*, or ``None``.
-
-    Ground blocks live in ``registry.ground_joints``, MoCap blocks in
-    ``registry.halves``.
-    """
-    if not jnc.is_block_name(block_name):
-        return None
-    subtype = jnc.block_subtype(block_name)
-    if subtype == jnc.GROUND:
-        return next(
-            (g for g in registry.ground_joints.values() if g.block_name == block_name),
-            None,
-        )
-    if subtype == jnc.MOCAP:
-        return registry.halves.get(block_name)
-    return None
+    return jnc.is_single_sided(
+        jnc.subtype_of_layer(rs.ObjectLayer(oid)), rs.GetUserText(oid, jnc.UT_JOINT_ID)
+    )
 
 
 def single_sided_definitions(registry) -> list:
@@ -320,7 +297,6 @@ def single_sided_definitions(registry) -> list:
 
 __all__ = [
     "PREVIEW_COLORS",
-    "GROUND_PREVIEW_COLOR",
     "MOCAP_PLATE_AXIS",
     "subtype_of",
     "effective_M_block_from_bar",
@@ -333,7 +309,6 @@ __all__ = [
     "next_single_joint_index",
     "insert_single_sided_preview",
     "place_single_sided_block",
-    "remove_placed_single",
-    "find_definition",
+    "is_single_sided_block",
     "single_sided_definitions",
 ]

@@ -19,12 +19,11 @@ import numpy as np
 import pytest
 
 from core.joint_pair import (
-    VALID_HALF_KINDS,
     GroundJointDef,
     JointHalfDef,
     JointPairDef,
     JointRegistry,
-    get_joint_pair_variant,
+    get_joint_pair,
     load_joint_registry,
     receiver_subtypes,
     save_joint_registry,
@@ -77,7 +76,9 @@ def registry():
 
 
 def test_half_kinds_are_every_role_but_ground():
-    assert VALID_HALF_KINDS == ("female", "male", "mocap")
+    from core import joint_name_conventions as jnc
+
+    assert [jnc.role(s) for s in jnc.HALF_SUBTYPES] == ["female", "male", "mocap"]
 
 
 @pytest.mark.parametrize(
@@ -207,8 +208,8 @@ def test_mocap_needs_no_mate_row(tmp_path, registry):
     save_joint_registry(registry, path)
     data = json.load(open(path, encoding="utf-8"))
     assert sorted(m["name"] for m in data["mates"]) == ["T20", "T20Deck12", "T20SubLeft"]
-    assert get_joint_pair_variant("T20", "MoCap", path=path).receiver.block_name == "T20_MoCap"
-    assert get_joint_pair_variant("T20", path=path).receiver.block_name == "T20_Female"
+    assert get_joint_pair("T20", "MoCap", path=path).receiver.block_name == "T20_MoCap"
+    assert get_joint_pair("T20", path=path).receiver.block_name == "T20_Female"
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +229,14 @@ def test_swapped_receiver_goes_female_to_mocap_and_back(registry):
 def test_swapped_receiver_needs_the_other_block(registry):
     with pytest.raises(KeyError, match="T20SubLeft_MoCap"):
         swapped_receiver(registry.mates["T20SubLeft"], registry.halves)
+
+
+def test_registry_definition_finds_halves_and_grounds(registry):
+    from core.joint_pair import GroundJointDef
+
+    ground = GroundJointDef(name="T20_Ground", block_name="T20_Ground", M_block_from_bar=np.eye(4))
+    registry.ground_joints[ground.name] = ground
+    assert registry.definition("T20_MoCap") is registry.halves["T20_MoCap"]
+    assert registry.definition("T20_Ground") is ground
+    assert registry.definition("T20_Nothing") is None
+    assert ground in registry.definitions()

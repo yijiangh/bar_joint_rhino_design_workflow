@@ -8,7 +8,7 @@ robotic-tool block so that the tool's TCP coincides with it.
 the write side (:func:`place_tool_at_block_instance`) and the read side
 (:func:`is_tool_on_joint`) go through, so the two can never disagree:
 
-* male / female joint blocks -> the block instance's own world frame (the
+* male joint blocks -> the block instance's own world frame (the
   historical convention: the block origin IS the TCP).
 * ground joint blocks -> that frame post-multiplied by the definition's
   constant block-local ``M_tool_from_block``, so a ground joint's tool can
@@ -122,10 +122,6 @@ def _block_instance_world_xform(block_id) -> np.ndarray:
     return np.array(
         [[xform[r, c] for c in range(4)] for r in range(4)], dtype=float
     )
-
-
-# Back-compat alias.
-_male_world_frame_from_object = _block_instance_world_xform
 
 
 # ---------------------------------------------------------------------------
@@ -566,53 +562,17 @@ def place_tool_by_name_at_male_joint(
     return auto_place_tool_at_male_joint(male_id, joint_id, pair)
 
 
-def find_male_block_for_joint(joint_id: str):
-    """Return the Rhino object id of the male joint block tagged with
-    *joint_id*, or ``None``.  Looks by the conventional object name
-    ``{joint_id}_male`` first, then by user-text scan as a fallback."""
-    import rhinoscriptsyntax as rs  # noqa: PLC0415
-
-    ids = rs.ObjectsByName(jnc.object_name(joint_id, jnc.MALE)) or []
-    if ids:
-        return ids[0]
-    if not rs.IsLayer(jnc.LAYER_MALE):
-        return None
-    for oid in rs.ObjectsByLayer(jnc.LAYER_MALE) or []:
-        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
-            return oid
-    return None
-
-
-def find_ground_block_for_joint(joint_id: str):
-    """Return the Rhino object id of the ground joint block tagged with
-    *joint_id*, or ``None``."""
-    import rhinoscriptsyntax as rs  # noqa: PLC0415
-
-    ids = rs.ObjectsByName(jnc.object_name(joint_id, jnc.GROUND)) or []
-    if ids:
-        return ids[0]
-    if not rs.IsLayer(jnc.LAYER_GROUND):
-        return None
-    for oid in rs.ObjectsByLayer(jnc.LAYER_GROUND) or []:
-        if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
-            return oid
-    return None
-
-
 def find_attached_block_for_joint(joint_id: str):
-    """Return the Rhino object id of the joint block (male OR ground) the
-    tool is attached to.  Dispatches by the ``joint_id`` (``J40-53`` = male
-    pair, ``G4-T20-0`` = ground), with a search of the other layer as
-    fallback so renamed ids still resolve."""
-    if jnc.single_sided_subtype_of_id(joint_id) == jnc.GROUND:
-        oid = find_ground_block_for_joint(joint_id)
-        if oid is not None:
-            return oid
-        return find_male_block_for_joint(joint_id)
-    oid = find_male_block_for_joint(joint_id)
-    if oid is not None:
-        return oid
-    return find_ground_block_for_joint(joint_id)
+    """The block *joint_id*'s tool sits on -- its Male or Ground block -- or None.
+
+    Both tool-bearing layers are searched (by object name and by ``joint_id``
+    user text, :func:`core.joint_placement.find_joint_blocks`), so an id that
+    was renamed between a pair and a ground joint still resolves.
+    """
+    from core.joint_placement import find_joint_blocks  # noqa: PLC0415
+
+    found = find_joint_blocks(joint_id, jnc.TOOL_BEARING_SUBTYPES)
+    return found[0] if found else None
 
 
 # ---------------------------------------------------------------------------

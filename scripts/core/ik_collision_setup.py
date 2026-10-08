@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from core import config
 from core import joint_name_conventions as jnc
 from core import robot_cell
 # Single home of the L/R tool-name suffix rule.

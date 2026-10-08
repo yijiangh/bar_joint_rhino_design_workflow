@@ -25,18 +25,13 @@ def test_the_four_subtypes():
     assert jnc.SUBTYPES == ("Female", "Male", "Ground", "MoCap")
 
 
-def test_role_is_the_lowercase_subtype_and_round_trips():
-    for subtype in jnc.SUBTYPES:
-        assert jnc.role(subtype) == subtype.lower()
-        assert jnc.subtype_of_role(jnc.role(subtype)) == subtype
-    assert jnc.ROLES == ("female", "male", "ground", "mocap")
+def test_role_is_the_lowercase_subtype():
+    assert [jnc.role(s) for s in jnc.SUBTYPES] == ["female", "male", "ground", "mocap"]
 
 
-def test_unknown_subtype_and_role_raise():
+def test_unknown_subtype_raises():
     with pytest.raises(ValueError):
         jnc.role("female")  # a role, not a Subtype
-    with pytest.raises(ValueError):
-        jnc.subtype_of_role("marker")
 
 
 def test_tool_bearing_is_exactly_male_and_ground():
@@ -130,6 +125,11 @@ def test_malformed_block_names_are_rejected(name):
 # ---------------------------------------------------------------------------
 
 
+def test_bar_sort_key_orders_numerically_and_puts_junk_last():
+    ids = ["B10", "x", "B2", "B1"]
+    assert sorted(ids, key=jnc.bar_sort_key) == ["B1", "B2", "B10", "x"]
+
+
 def test_bar_ids():
     assert jnc.bar_id(7) == "B7"
     assert jnc.bar_num("B7") == "7"
@@ -146,10 +146,30 @@ def test_bar_ids():
 # ---------------------------------------------------------------------------
 
 
-def test_pair_joint_id_round_trip():
+def test_pair_joint_id():
     assert jnc.pair_joint_id("B40", "B53") == "J40-53"
-    assert jnc.split_pair_joint_id("J40-53") == ("B40", "B53")
-    assert jnc.split_pair_joint_id("G4-T20-0") is None
+
+
+@pytest.mark.parametrize(
+    "subtype, jid, single, paired",
+    [
+        ("Ground", "G4-T20-0", True, False),
+        ("MoCap", "M7-T20-0", True, False),
+        ("MoCap", "J40-53", False, True),    # a MoCap receiver of a pair
+        ("Female", "J40-53", False, True),
+        ("Male", "J40-53", False, True),
+        ("Female", "G4-T20-0", False, True),  # the layer decides, not a stray id
+        ("Ground", "", True, False),
+    ],
+)
+def test_single_sided_and_paired_follow_the_layer(subtype, jid, single, paired):
+    assert jnc.is_single_sided(subtype, jid) is single
+    assert jnc.is_paired_half(subtype, jid) is paired
+
+
+def test_next_free_index():
+    assert jnc.next_free_index(set()) == 0
+    assert jnc.next_free_index({0, 1, 3}) == 2
 
 
 @pytest.mark.parametrize(
@@ -257,13 +277,11 @@ def test_default_mate_name(receiver, male, expected):
 
 def test_legacy_ground_id_migrates_to_the_type():
     assert jnc.migrate_joint_id("G4-T20Ground-0") == "G4-T20-0"
-    assert jnc.migrate_tool_id("TG4-T20Ground-0") == "TG4-T20-0"
 
 
 def test_migration_leaves_current_ids_alone():
     for jid in ("G4-T20-0", "J40-53", "M7-T20-1", ""):
         assert jnc.migrate_joint_id(jid) == jid
-    assert jnc.migrate_tool_id("TJ40-53") == "TJ40-53"
 
 
 def test_legacy_renames_land_on_valid_names():

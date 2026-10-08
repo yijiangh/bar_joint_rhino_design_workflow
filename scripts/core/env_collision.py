@@ -43,12 +43,6 @@ from core import joint_name_conventions as jnc
 # ``env_joint_`` for the single-arm SUPPORT cell (collect_built_geometry /
 # register_env_in_robot_cell / build_env_state), plain ``bar_`` / ``joint_`` for
 # the dual-arm assembly cell, ``obstacle_`` for LAYER_ENVIRONMENT meshes.
-# Re-exported under their historical names for robot_cell / robot_obstacles.
-ENV_RB_BAR_PREFIX = jnc.ENV_BAR_KEY_PREFIX
-ENV_RB_JOINT_PREFIX = jnc.ENV_JOINT_KEY_PREFIX
-CANONICAL_BAR_PREFIX = jnc.BAR_KEY_PREFIX
-CANONICAL_JOINT_PREFIX = jnc.JOINT_KEY_PREFIX
-OBSTACLE_PREFIX = jnc.OBSTACLE_KEY_PREFIX
 
 # Sticky cache keys for the lightweight RigidBody pipeline.
 _STICKY_JOINT_RB_CACHE = "bar_joint:env_joint_rb_cache"  # block_name -> RigidBody
@@ -753,7 +747,7 @@ def register_env_in_robot_cell(robot_cell, env_geom, *, deps):
     desired_names = set(env_geom.keys())
     existing_env_names = {
         name for name in robot_cell.rigid_body_models.keys()
-        if name.startswith(ENV_RB_BAR_PREFIX) or name.startswith(ENV_RB_JOINT_PREFIX)
+        if name.startswith(jnc.ENV_BAR_KEY_PREFIX) or name.startswith(jnc.ENV_JOINT_KEY_PREFIX)
     }
     n_removed = n_added = n_kept = 0
     for stale in existing_env_names - desired_names:
@@ -802,7 +796,7 @@ def build_env_state(template_state, env_geom):
     # all prior env_* entries before writing the current env payload.
     stale_env_names = [
         name for name in state.rigid_body_states
-        if name.startswith(ENV_RB_BAR_PREFIX) or name.startswith(ENV_RB_JOINT_PREFIX)
+        if name.startswith(jnc.ENV_BAR_KEY_PREFIX) or name.startswith(jnc.ENV_JOINT_KEY_PREFIX)
     ]
     for name in stale_env_names:
         state.rigid_body_states.pop(name, None)

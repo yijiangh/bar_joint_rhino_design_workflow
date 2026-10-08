@@ -52,7 +52,7 @@ PREVIEW_COLORS = [
     (200, 160, 50),
 ]
 
-# A solved variant is "acceptable" when the female/male screw frames
+# A solved variant is "acceptable" when the receiver/male screw frames
 # coincide within these tolerances.  Special joint geometries sometimes
 # have only two valid variants (out of the nominal four); the other two
 # land on local minima with large interface errors.  The auto-recovery
@@ -131,7 +131,7 @@ def insert_block_instance(
 def compute_variant(le_start, le_end, ln_start, ln_end, le_rev, ln_rev, *, pair):
     """Run the full pair-placement optimization for one orientation choice.
 
-    ``le_rev`` reverses the female-bar endpoint order; ``ln_rev`` reverses
+    ``le_rev`` reverses the receiver-bar endpoint order; ``ln_rev`` reverses
     the male-bar endpoint order.  Returns the solver's result dict
     augmented with ``variant_index``, ``variant_label``,
     ``female_flip_rad`` / ``male_flip_rad`` (for diagnostics), and the
@@ -168,7 +168,7 @@ def interface_metrics(result) -> tuple[float, float]:
     """Return ``(origin_error_mm, z_axis_error_rad)`` for a variant dict.
 
     Uses cached values when present; otherwise recomputes from the
-    female/male screw frames.
+    receiver/male screw frames.
     """
     if "origin_error_mm" in result and "z_axis_error_rad" in result:
         return float(result["origin_error_mm"]), float(result["z_axis_error_rad"])
@@ -179,13 +179,21 @@ def interface_metrics(result) -> tuple[float, float]:
     return float(diag["origin_error_mm"]), float(diag["z_axis_error_rad"])
 
 
-def is_variant_acceptable(variant) -> bool:
-    """True iff the variant's interface error is within tolerance."""
-    origin_err, z_err = interface_metrics(variant)
+def interface_ok(origin_err, z_err) -> bool:
+    """True when a receiver/male screw interface is within tolerance.
+
+    The one definition of "these two halves mate": the solver accepts a variant
+    with it, and RSUpdatePreview reports placed pairs that fail it.
+    """
     return (
         origin_err <= VARIANT_OK_ORIGIN_TOL_MM
         and abs(z_err) <= VARIANT_OK_Z_AXIS_TOL_RAD
     )
+
+
+def is_variant_acceptable(variant) -> bool:
+    """True iff the variant's interface error is within tolerance."""
+    return interface_ok(*interface_metrics(variant))
 
 
 #: The two sides ``compute_variant_with_recovery`` can flip.
@@ -416,6 +424,44 @@ def place_joint_blocks(result, le_id, ln_id, le_bar_id, ln_bar_id, *, pair):
     return receiver_id, male_id, joint_id
 
 
+# ---------------------------------------------------------------------------
+# Find / delete the placed blocks of one joint (Rhino-runtime)
+# ---------------------------------------------------------------------------
+
+
+def find_joint_blocks(joint_id, subtypes=jnc.SUBTYPES) -> list:
+    """Every placed block of *joint_id* whose Subtype is in *subtypes*.
+
+    Matched by object name (``J40-53_female``) AND by ``joint_id`` user text on
+    those Subtypes' layers: the name is a convenience that a re-created object
+    can lose, and missing a block here leaves a duplicate behind on re-place.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    found = []
+    for subtype in subtypes:
+        for oid in rs.ObjectsByName(jnc.object_name(joint_id, subtype)) or []:
+            if oid not in found:
+                found.append(oid)
+        layer = jnc.joint_layer(subtype)
+        if not rs.IsLayer(layer):
+            continue
+        for oid in rs.ObjectsByLayer(layer) or []:
+            if oid not in found and rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
+                found.append(oid)
+    return found
+
+
+def remove_joint_blocks(joint_id, subtypes=jnc.SUBTYPES) -> int:
+    """Delete every block :func:`find_joint_blocks` finds; returns how many."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    found = find_joint_blocks(joint_id, subtypes)
+    if found:
+        rs.DeleteObjects(found)
+    return len(found)
+
+
 # Re-export what callers most commonly need.
 __all__ = [
     "PREVIEW_COLORS",
@@ -429,7 +475,10 @@ __all__ = [
     "write_joint_user_text",
     "compute_variant",
     "interface_metrics",
+    "interface_ok",
     "is_variant_acceptable",
+    "find_joint_blocks",
+    "remove_joint_blocks",
     "compute_variant_with_recovery",
     "place_joint_blocks",
 ]

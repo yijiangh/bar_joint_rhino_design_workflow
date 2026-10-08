@@ -2,7 +2,7 @@
 
 Motivation
 ----------
-Bars (curves), joint blocks (female/male/ground) and robotic-tool blocks are
+Bars (curves), joint blocks (receiver/male/ground) and robotic-tool blocks are
 tied together purely by *string* ids -- a joint stores ``parent_bar_id`` /
 ``female_parent_bar`` / ``male_parent_bar`` (a bar's ``bar_id``), and a tool
 stores the ``joint_id`` string of the joint it holds. None of them carry a
@@ -39,7 +39,7 @@ so ``tool_frame @ M_tcp_from_block`` reproduces the male/ground block origin --
 we match a tool to the joint block whose origin coincides with that TCP point.
 
 ``tool_attach_frame`` is the block's own world frame post-multiplied by the
-ground definition's ``M_tool_from_block`` (identity for male/female halves).
+ground definition's ``M_tool_from_block`` (identity for male/receiver halves).
 That offset is a PURE ROTATION about the block origin -- ``GroundJointDef``
 zeroes its translation -- so the TCP probe point below is bit-identical either
 way and the ``_TOOL_TCP_TOL_MM`` match is unaffected.  An offset carrying a
@@ -157,12 +157,12 @@ def _mark_changed(edit):
 
 
 # ---------------------------------------------------------------------------
-# Female / male joint matching
+# Receiver / male joint matching
 # ---------------------------------------------------------------------------
 
 
 def _pair_confidence(own_dist, conn_dist):
-    """Uncertainty verdict for a two-bar (female/male) match."""
+    """Uncertainty verdict for a two-bar (receiver/male) match."""
     if own_dist > _UNCERTAIN_ABS_MM:
         return True, f"nearest bar {own_dist:.0f}mm away (block not on a bar?)"
     if conn_dist <= 1e-9:
@@ -325,9 +325,7 @@ def _assign_single_indices(single_edits):
         for edit in sorted(
             pending, key=lambda e: (e.get("position_mm") or 0.0, str(e["oid"]))
         ):
-            idx = 0
-            while idx in used:
-                idx += 1
+            idx = jnc.next_free_index(used)
             edit["_idx"] = idx
             used.add(idx)
         for edit in members:
@@ -411,7 +409,7 @@ def _tool_edit(oid, targets, tools_reg):
 def _consistency_warnings(joint_edits):
     """Flag joints whose receiver + male halves disagree on the bar pair.
 
-    Female and male blocks are matched independently; if they resolve to the
+    Receiver and male blocks are matched independently; if they resolve to the
     same joint they must produce the SAME ``joint_id``. A ``new_jid`` that is
     not backed by exactly one receiver + one male signals a bad/ambiguous match.
     A Female and a MoCap half count into the SAME receiver bucket, or every
@@ -448,7 +446,7 @@ def build_plan():
     Plan dict::
 
         {
-          "edits": [edit, ...],   # one per female/male/ground/tool block
+          "edits": [edit, ...],   # one per receiver/male/ground/tool block
           "n_changed": int,
           "n_uncertain": int,
           "warnings": [str, ...],
@@ -466,11 +464,7 @@ def build_plan():
         for oid in _layer_oids(layer):
             # Single-sided: every Ground block, and a MoCap block whose id says
             # it is standalone (M…) rather than the receiver of a pair (J…).
-            standalone = subtype == jnc.GROUND or (
-                subtype in jnc.SINGLE_SIDED_SUBTYPES
-                and jnc.single_sided_subtype_of_id(rs.GetUserText(oid, jnc.UT_JOINT_ID))
-            )
-            if standalone:
+            if jnc.is_single_sided(subtype, rs.GetUserText(oid, jnc.UT_JOINT_ID)):
                 single_edits.append(_single_edit_raw(oid, segs, subtype))
             else:
                 joint_edits.append(_female_male_edit(oid, subtype, segs))

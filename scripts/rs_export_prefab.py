@@ -11,9 +11,9 @@ A MoCap joint's entry additionally carries::
     "mocap": {"paired": true,                       # J... id; false for a standalone M...
               "markers_mm": {"M1": [x, y, z], ...}}  # sphere centres in the bar frame
 
-The bar frame is the one ``position_mm`` / ``rotation_deg`` are measured in:
-origin at the bar start, z along the bar, x = world Z x bar (world X x bar for a
-near-vertical bar).  Coordinates are document units, taken as mm like the rest
+The bar frame is the one ``position_mm`` / ``rotation_deg`` are measured in,
+``joint_pair.canonical_bar_frame_from_line``: origin at the bar start, z along
+the bar, x = world Z x bar (world X x bar for a near-vertical bar).  Coordinates are document units, taken as mm like the rest
 of this export.  ``markers_mm`` is empty until the markers are recorded on the
 block with RSDefineJointHalf.
 """
@@ -24,7 +24,7 @@ import math
 import os
 import sys
 
-import Rhino
+import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -35,20 +35,14 @@ if SCRIPT_DIR not in sys.path:
 from core import config
 from core import joint_name_conventions as jnc
 from core import marker_points
-from core.joint_pair import load_joint_registry
+from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
+from core.joint_placement import block_orientation_tag
 from core.rhino_helpers import curve_endpoints
 from core.rhino_bar_registry import (
     get_all_bars,
     is_fake_bar,
-    BAR_ID_KEY,
     repair_on_entry,
 )
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-_JOINT_INSTANCE_LAYERS = jnc.JOINT_LAYERS
 
 
 # ---------------------------------------------------------------------------
@@ -56,87 +50,44 @@ _JOINT_INSTANCE_LAYERS = jnc.JOINT_LAYERS
 # ---------------------------------------------------------------------------
 
 
+def _bar_endpoints(curve_id):
+    start, end = curve_endpoints(curve_id)
+    return np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+
+
 def _bar_length(curve_id):
-    start, end = curve_endpoints(curve_id)
-    vec = [e - s for e, s in zip(end, start)]
-    return round((sum(v * v for v in vec) ** 0.5), 2)
+    start, end = _bar_endpoints(curve_id)
+    return round(float(np.linalg.norm(end - start)), 2)
 
 
-def _bar_start_and_dir(curve_id):
-    """Return (start_list, unit_dir_list) for a bar curve."""
-    start, end = curve_endpoints(curve_id)
-    vec = [e - s for e, s in zip(end, start)]
-    length = sum(v * v for v in vec) ** 0.5
-    direction = [v / length for v in vec]
-    return list(start), direction
-
-
-def _block_origin_and_x(obj_id):
-    """Return (origin_list, x_axis_list) from a block instance transform."""
+def _block_world(obj_id) -> np.ndarray:
+    """A block instance's world transform (document units, taken as mm)."""
     xf = rs.BlockInstanceXform(obj_id)
-    origin = [xf[0, 3], xf[1, 3], xf[2, 3]]
-    x_axis = [xf[0, 0], xf[1, 0], xf[2, 0]]
-    return origin, x_axis
+    return np.array([[xf[r, c] for c in range(4)] for r in range(4)], dtype=float)
 
 
-def _block_z_axis(obj_id):
-    """Return joint Z-axis (assembly direction) from a block instance transform."""
-    xf = rs.BlockInstanceXform(obj_id)
-    z = [xf[0, 2], xf[1, 2], xf[2, 2]]
-    n = (z[0] ** 2 + z[1] ** 2 + z[2] ** 2) ** 0.5
-    return [v / n for v in z]
-
-
-def _cross3(a, b):
-    return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-
-
-def _dot3(a, b):
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _bar_x_axis(bar_dir):
-    """Stable X-axis of the bar frame, perpendicular to bar_dir.
-
-    Uses world_Z x bar_dir, falling back to world_X x bar_dir when the bar
-    is nearly vertical (|dot(bar_dir, world_Z)| >= 0.95).
-    """
-    world_z = [0.0, 0.0, 1.0]
-    world_x = [1.0, 0.0, 0.0]
-    if abs(_dot3(world_z, bar_dir)) < 0.95:
-        candidate = _cross3(world_z, bar_dir)
-    else:
-        candidate = _cross3(world_x, bar_dir)
-    n = (candidate[0] ** 2 + candidate[1] ** 2 + candidate[2] ** 2) ** 0.5
-    return [v / n for v in candidate]
-
-
-def _compute_rotation_deg(joint_z, bar_x, bar_z):
-    """Angle from bar_x to joint_z projected onto the bar XY plane, about bar_z.
+def _rotation_deg(joint_z, bar_frame) -> float:
+    """Angle from bar X to joint Z projected onto the bar XY plane, about bar Z.
 
     At rotation_deg=0 the joint assembly axis (Z) aligns with the bar X-axis.
     Positive rotation is CCW about bar Z (right-hand rule).
     """
-    # Project joint_z onto bar XY plane
-    d = _dot3(joint_z, bar_z)
-    proj = [joint_z[i] - d * bar_z[i] for i in range(3)]
-    proj_len = (proj[0] ** 2 + proj[1] ** 2 + proj[2] ** 2) ** 0.5
+    bar_x, bar_z = bar_frame[:3, 0], bar_frame[:3, 2]
+    joint_z = joint_z / np.linalg.norm(joint_z)
+    proj = joint_z - float(joint_z @ bar_z) * bar_z
+    proj_len = float(np.linalg.norm(proj))
     if proj_len < 1e-9:
         return 0.0  # joint Z is parallel to bar Z; rotation is undefined
-    proj = [v / proj_len for v in proj]
-    cos_a = max(-1.0, min(1.0, _dot3(bar_x, proj)))
-    sin_a = _dot3(_cross3(bar_x, proj), bar_z)
+    proj = proj / proj_len
+    cos_a = max(-1.0, min(1.0, float(bar_x @ proj)))
+    sin_a = float(np.cross(bar_x, proj) @ bar_z)
     return math.degrees(math.atan2(sin_a, cos_a))
 
 
 def _collect_joint_blocks():
     """Return list of (obj_id, flat_data_dict) for all placed joint blocks."""
     results = []
-    for layer in _JOINT_INSTANCE_LAYERS:
+    for layer in jnc.JOINT_LAYERS:
         objs = rs.ObjectsByLayer(layer) if rs.IsLayer(layer) else []
         if not objs:
             continue
@@ -153,32 +104,23 @@ def _collect_joint_blocks():
                 "type": rs.GetUserText(obj_id, jnc.UT_JOINT_TYPE) or "",
                 "subtype": rs.GetUserText(obj_id, jnc.UT_JOINT_SUBTYPE) or "",
                 "bar_id": rs.GetUserText(obj_id, jnc.UT_PARENT_BAR) or "",
-                "connected_bar_id": rs.GetUserText(obj_id, jnc.UT_CONNECTED_BAR) or "",
             }
             results.append(data)
     return results
 
 
-def _mocap_entry(obj_id, joint_id, halves, bar_start, bar_x, bar_dir):
+def _mocap_entry(obj_id, joint_id, halves, block_world, bar_frame):
     """``{"paired": ..., "markers_mm": {...}}`` for one placed MoCap block."""
     half = halves.get(rs.BlockInstanceName(obj_id) or "")
     markers = {}
     if half is not None and half.marker_points_mm:
-        xf = rs.BlockInstanceXform(obj_id)
-        block_world = [[xf[r, c] for c in range(4)] for r in range(4)]
-        bar_frame = marker_points.frame_from_axes(bar_start, bar_x, bar_dir)
-        markers = marker_points.in_frame_mm(
-            marker_points.to_world_mm(block_world, half.marker_points_mm), bar_frame
+        markers = marker_points.markers_in_frame_mm(
+            block_world, half.marker_points_mm, bar_frame
         )
     return {
-        "paired": jnc.single_sided_subtype_of_id(joint_id) is None,
+        "paired": jnc.is_paired_half(jnc.MOCAP, joint_id),
         "markers_mm": markers,
     }
-
-
-def _bar_sort_key(bar_id):
-    number = jnc.bar_number(bar_id)
-    return float("inf") if number is None else number
 
 
 # ---------------------------------------------------------------------------
@@ -234,17 +176,17 @@ def main():
     bar_entries = []
     halves = load_joint_registry().halves  # for MoCap marker points
 
-    for bid in sorted(joints_per_bar.keys(), key=_bar_sort_key):
+    for bid in sorted(joints_per_bar.keys(), key=jnc.bar_sort_key):
         if bid not in bars_by_id:
             errors.append(f"Bar {bid} referenced by joints but not found in document")
             continue
 
         bar_curve_id = bars_by_id[bid]
-        bar_start, bar_dir = _bar_start_and_dir(bar_curve_id)
-        bar_length = _bar_length(bar_curve_id)
+        bar_start, bar_end = _bar_endpoints(bar_curve_id)
+        bar_frame = canonical_bar_frame_from_line(bar_start, bar_end)
+        bar_dir = bar_frame[:3, 2]
+        bar_length = round(float(np.linalg.norm(bar_end - bar_start)), 2)
         joint_entries = []
-
-        bar_x = _bar_x_axis(bar_dir)
 
         for data in joints_per_bar[bid]:
             obj_id = data["obj_id"]
@@ -252,8 +194,7 @@ def main():
 
             # All three exported quantities derived from world geometry
             try:
-                origin, x_axis = _block_origin_and_x(obj_id)
-                joint_z = _block_z_axis(obj_id)
+                block_world = _block_world(obj_id)
             except Exception as exc:
                 errors.append(
                     f"Joint {joint_id} on {bid}: could not read transform ({exc})"
@@ -261,14 +202,11 @@ def main():
                 continue
 
             # position_mm: signed projection of (origin - bar_start) onto bar_dir
-            v = [origin[i] - bar_start[i] for i in range(3)]
-            pos = round(sum(v[i] * bar_dir[i] for i in range(3)), 2)
-
+            pos = round(float((block_world[:3, 3] - bar_start) @ bar_dir), 2)
             # ori: P if block x-axis points toward bar end, N toward start
-            ori = "P" if _dot3(x_axis, bar_dir) > 0 else "N"
-
+            ori = block_orientation_tag(block_world[:3, 0], bar_dir)
             # rotation_deg: angle from bar X-axis to joint Z-axis about bar Z
-            rot = round(_compute_rotation_deg(joint_z, bar_x, bar_dir), 2)
+            rot = round(_rotation_deg(block_world[:3, 2], bar_frame), 2)
 
             entry = {
                 "joint_id": joint_id,
@@ -280,7 +218,7 @@ def main():
             }
             if jnc.subtype_of_layer(data["layer"]) == jnc.MOCAP:
                 entry["mocap"] = _mocap_entry(
-                    obj_id, joint_id, halves, bar_start, bar_x, bar_dir
+                    obj_id, joint_id, halves, block_world, bar_frame
                 )
             joint_entries.append(entry)
 
@@ -294,7 +232,7 @@ def main():
         )
 
     # Also include bars with no joints
-    for bid in sorted(bars_by_id.keys(), key=_bar_sort_key):
+    for bid in sorted(bars_by_id.keys(), key=jnc.bar_sort_key):
         if bid not in joints_per_bar:
             bar_entries.append(
                 {
@@ -303,7 +241,7 @@ def main():
                     "joints": [],
                 }
             )
-    bar_entries.sort(key=lambda b: _bar_sort_key(b["bar_id"]))
+    bar_entries.sort(key=lambda b: jnc.bar_sort_key(b["bar_id"]))
 
     # Project ID from document name
     doc_path = sc.doc.Path or ""
@@ -354,7 +292,6 @@ def main():
 
     # 6. Save file
     doc_dir = os.path.dirname(doc_path) if doc_path else os.getcwd()
-    default_path = os.path.join(doc_dir, f"{doc_name}_prefab.json")
     save_path = rs.SaveFileName(
         "Save prefab JSON",
         "JSON files (*.json)|*.json||",

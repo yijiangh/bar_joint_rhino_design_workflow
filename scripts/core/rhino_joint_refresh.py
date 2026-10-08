@@ -39,11 +39,8 @@ from core import config
 from core import joint_name_conventions as jnc
 from core.joint_pair import load_joint_registry
 from core.joint_pair_solver import screw_alignment_diagnostics
-from core.joint_pick_helpers import block_instance_frame
-from core.joint_placement import (
-    VARIANT_OK_ORIGIN_TOL_MM,
-    VARIANT_OK_Z_AXIS_TOL_RAD,
-)
+from core.joint_pick_helpers import screw_frame_world
+from core.joint_placement import interface_ok
 from core.rhino_bar_registry import (
     _bar_curve_and_tube,
     get_bar_seq_map,
@@ -56,15 +53,6 @@ from core.rhino_block_import import (
     update_block_definition_geometry,
 )
 from core.rhino_helpers import ensure_layer, set_object_color, suspend_redraw
-
-
-# ---------------------------------------------------------------------------
-# Layers
-# ---------------------------------------------------------------------------
-
-#: Layers holding baked joint block instances, in the order they are scanned.
-#: Kept as a module-level name because it is exported and reused below.
-JOINT_LAYERS = jnc.JOINT_LAYERS
 
 
 # ---------------------------------------------------------------------------
@@ -85,18 +73,9 @@ def _reset_color(oid) -> None:
         rs.ObjectColorSource(oid, 0)  # 0 == by layer
 
 
-def _is_paired_half(layer, joint_id):
-    """True for a half placed by a mate (``J…`` id on a receiver / male layer).
-
-    A standalone MoCap shares the MoCap layer but has an ``M…`` id and no male
-    by design, so it is not half of a pair.
-    """
-    return layer in jnc.PAIRED_LAYERS and jnc.single_sided_subtype_of_id(joint_id) is None
-
-
 def _joint_block_instances():
     """Yield ``(oid, layer, joint_id, block_name)`` per baked joint block."""
-    for layer in JOINT_LAYERS:
+    for layer in jnc.JOINT_LAYERS:
         for oid in _layer_oids(layer):
             # Stray non-block objects on a managed layer are not our business
             # (repair_on_entry evicts them).
@@ -142,12 +121,7 @@ def refresh_stale_joint_blocks(verbose: bool = False) -> int:
     for _oid, layer, _joint_id, block_name in _joint_block_instances():
         if not block_name or block_name in candidates:
             continue
-        half = registry.halves.get(block_name)
-        ground = next(
-            (g for g in registry.ground_joints.values() if g.block_name == block_name),
-            None,
-        )
-        definition = half or ground
+        definition = registry.definition(block_name)
         if definition is None:
             if verbose:
                 print(
@@ -187,28 +161,14 @@ def refresh_stale_joint_blocks(verbose: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _screw_frame(oid, half) -> np.ndarray:
-    """World screw frame of a placed half: ``block_world @ M_screw_from_block``.
-
-    The same composition ``core.joint_pair.fk_half_from_bar_frame`` uses, but
-    driven by the block's ACTUAL transform in the document rather than a
-    recomputed one -- so this reports where the joint really is.
-    """
-    block_world, _name = block_instance_frame(oid)
-    return np.asarray(block_world, dtype=float) @ np.asarray(
-        half.M_screw_from_block, dtype=float
-    )
-
-
 def report_unmated_joints(verbose: bool = False) -> list:
-    """List placed female/male pairs whose halves no longer mate.  Read-only.
+    """List placed receiver/male pairs whose halves no longer mate.  Read-only.
 
-    Reuses the creation-side definition of a good interface: the female and male
-    screw frames must coincide within ``VARIANT_OK_ORIGIN_TOL_MM`` /
-    ``VARIANT_OK_Z_AXIS_TOL_RAD``, measured by
-    ``core.joint_pair_solver.screw_alignment_diagnostics`` -- exactly the check
-    ``core.joint_placement.is_variant_acceptable`` applies when the solver picks
-    a variant.  So "mated" means the same thing here as it did at placement time.
+    Reuses the creation-side definition of a good interface,
+    ``core.joint_placement.interface_ok``, on the errors
+    ``core.joint_pair_solver.screw_alignment_diagnostics`` measures -- the check
+    the solver accepts a variant with.  So "mated" means the same thing here as
+    it did at placement time.
 
     Single-sided joints (Ground, standalone MoCap) have no partner and are not
     checked (one can only be broken by losing its bar, which
@@ -227,7 +187,7 @@ def report_unmated_joints(verbose: bool = False) -> list:
     # Female OR MoCap -- both seat a male the same way.
     pairs: dict = {}
     for oid, layer, joint_id, block_name in _joint_block_instances():
-        if not joint_id or not _is_paired_half(layer, joint_id):
+        if not joint_id or not jnc.is_paired_half(jnc.subtype_of_layer(layer), joint_id):
             continue
         half = registry.halves.get(block_name)
         if half is None:
@@ -241,19 +201,16 @@ def report_unmated_joints(verbose: bool = False) -> list:
         if "receiver" not in sides or "male" not in sides:
             continue  # half a pair -- find_broken_links reports the survivor
         try:
-            female = _screw_frame(*sides["receiver"])
-            male = _screw_frame(*sides["male"])
+            receiver = screw_frame_world(*sides["receiver"])
+            male = screw_frame_world(*sides["male"])
         except (ValueError, AttributeError) as exc:
             if verbose:
                 print(f"  [joint] {joint_id}: cannot read block frame ({exc}).")
             continue
-        diag = screw_alignment_diagnostics(female, male)
+        diag = screw_alignment_diagnostics(receiver, male)
         origin_err = diag["origin_error_mm"]
         z_err = diag["z_axis_error_rad"]
-        if (
-            origin_err <= VARIANT_OK_ORIGIN_TOL_MM
-            and abs(z_err) <= VARIANT_OK_Z_AXIS_TOL_RAD
-        ):
+        if interface_ok(origin_err, z_err):
             continue
         unmated.append((joint_id, origin_err, z_err))
         if verbose:
@@ -360,7 +317,7 @@ def find_broken_links() -> dict:
         ``"tool"``.
 
         * *orphans* -- joint instances whose ``parent_bar_id`` is empty or names a
-          bar that is not in the document; female/male halves whose partner half
+          bar that is not in the document; receiver/male halves whose partner half
           is missing (a joint is only a joint with both sides); plus every tool
           ``core.rhino_tool_place.find_detached_tools`` reports (no joint, joint
           gone, or geometrically off its joint).  A tool whose joint survives but
@@ -384,7 +341,7 @@ def find_broken_links() -> dict:
     # by design and are never counted.
     halves_by_joint: dict = {}
     for oid, layer, joint_id, _block_name in _joint_block_instances():
-        if not joint_id or not _is_paired_half(layer, joint_id):
+        if not joint_id or not jnc.is_paired_half(jnc.subtype_of_layer(layer), joint_id):
             continue
         halves_by_joint.setdefault(joint_id, set()).add(layer)
 
@@ -395,7 +352,7 @@ def find_broken_links() -> dict:
             reason = f"parent bar {bar_id or '<none>'} is gone"
         elif (
             joint_id
-            and _is_paired_half(layer, joint_id)
+            and jnc.is_paired_half(jnc.subtype_of_layer(layer), joint_id)
             and len(halves_by_joint.get(joint_id, ())) < 2
         ):
             missing = "male" if layer in jnc.RECEIVER_LAYERS else "receiving"
@@ -529,7 +486,7 @@ def clear_broken_link_marks() -> int:
         # `ensure_bar_preview` REUSES a geometrically-current tube without
         # repainting it, which is why clearing here is the only thing that can
         # remove a preview color.
-        for layer in JOINT_LAYERS + (
+        for layer in jnc.JOINT_LAYERS + (
             config.LAYER_TOOL_INSTANCES,
             config.LAYER_BAR_CENTERLINES,
             config.LAYER_BAR_TUBE_PREVIEWS,
@@ -616,7 +573,6 @@ def show_colors_preview() -> dict:
 
 
 __all__ = [
-    "JOINT_LAYERS",
     "broken_link_legend_lines",
     "clear_broken_link_marks",
     "find_broken_links",

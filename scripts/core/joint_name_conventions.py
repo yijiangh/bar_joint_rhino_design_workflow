@@ -84,20 +84,6 @@ def role(subtype: str) -> str:
     return _check(subtype).lower()
 
 
-def subtype_of_role(role_name: str) -> str:
-    """``"mocap"`` -> ``"MoCap"``.  Raises ``ValueError`` on an unknown role."""
-    try:
-        return _SUBTYPE_BY_ROLE[str(role_name).lower()]
-    except KeyError:
-        raise ValueError(
-            f"unknown joint role {role_name!r}; expected one of {tuple(_SUBTYPE_BY_ROLE)}"
-        ) from None
-
-
-#: Every role, e.g. for prompts that accept ``J40-53_female``.
-ROLES = tuple(role(s) for s in SUBTYPES)
-
-
 # ---------------------------------------------------------------------------
 # Rhino layers
 # ---------------------------------------------------------------------------
@@ -114,8 +100,8 @@ def managed_layer(name: str) -> str:
 def joint_layer(subtype: str) -> str:
     """The layer every placed block of *subtype* sits on.
 
-    The Female / Male / Ground strings are recorded inside every saved .3dm, so
-    this rule can never change; the tests pin them.
+    These strings are recorded inside every saved .3dm, so this rule can never
+    change; the tests pin them.
     """
     return managed_layer(f"Joint {_check(subtype)} Instances")
 
@@ -219,6 +205,12 @@ def bar_number(bar_id_: str) -> int | None:
         return None
 
 
+def bar_sort_key(bar_id_: str) -> float:
+    """Sort key for bar ids: ``B2`` before ``B10``; anything else last."""
+    number = bar_number(bar_id_)
+    return float("inf") if number is None else number
+
+
 def parse_bar_id(token: str) -> str | None:
     """User input ``"b12"`` / ``"12"`` / ``" B012 "`` -> ``"B12"``; else ``None``."""
     text = str(token or "").strip().upper()
@@ -238,21 +230,12 @@ PAIR_ID_PREFIX = "J"
 SINGLE_ID_PREFIX = {GROUND: "G", MOCAP: "M"}
 _SUBTYPE_BY_SINGLE_PREFIX = {v: k for k, v in SINGLE_ID_PREFIX.items()}
 
-_PAIR_ID_RE = re.compile(r"^J([^-]+)-([^-]+)$")
 _SINGLE_ID_RE = re.compile(r"^([A-Z])([^-]+)-(.+)-(\d+)$")
 
 
 def pair_joint_id(receiver_bar_id: str, male_bar_id: str) -> str:
     """``("B40", "B53")`` -> ``"J40-53"``.  Receiver bar first."""
     return f"{PAIR_ID_PREFIX}{bar_num(receiver_bar_id)}-{bar_num(male_bar_id)}"
-
-
-def split_pair_joint_id(jid: str) -> tuple[str, str] | None:
-    """``"J40-53"`` -> ``("B40", "B53")``; ``None`` when not a pair id."""
-    match = _PAIR_ID_RE.match(str(jid or ""))
-    if not match:
-        return None
-    return f"{BAR_PREFIX}{match.group(1)}", f"{BAR_PREFIX}{match.group(2)}"
 
 
 def single_joint_id_base(subtype: str, bar_id_: str, type_: str) -> str:
@@ -288,6 +271,31 @@ def single_sided_subtype_of_id(jid: str) -> str | None:
     """``GROUND`` for ``"G..."``, ``MOCAP`` for ``"M..."``, ``None`` for a pair id."""
     parts = split_single_joint_id(jid)
     return parts[0] if parts else None
+
+
+def next_free_index(used) -> int:
+    """The smallest index >= 0 not in *used* -- the ``i`` of a new ``G4-T20-<i>``."""
+    i = 0
+    while i in used:
+        i += 1
+    return i
+
+
+def is_single_sided(subtype: str, jid: str) -> bool:
+    """True for a joint on ONE bar: every Ground block, and a MoCap block whose
+    id is a standalone ``M…`` id.
+
+    *subtype* comes from the block's LAYER (the authority); a MoCap block with a
+    ``J…`` id is the receiver of a pair, not single-sided.
+    """
+    if subtype == GROUND:
+        return True
+    return subtype == MOCAP and single_sided_subtype_of_id(jid) == MOCAP
+
+
+def is_paired_half(subtype: str, jid: str) -> bool:
+    """True for a half placed by a mate: Female / Male, or a MoCap receiver."""
+    return subtype in PAIRED_SUBTYPES and not is_single_sided(subtype, jid)
 
 
 def rebar_single_joint_id(jid: str, new_bar_id: str) -> str:
@@ -462,11 +470,3 @@ def migrate_joint_id(jid: str) -> str:
     if new_block is None:
         return jid
     return single_joint_id(subtype, bar, block_type(new_block), index)
-
-
-def migrate_tool_id(tid: str) -> str:
-    """``TG4-T20Ground-0`` -> ``TG4-T20-0``; any other id unchanged."""
-    text = str(tid or "")
-    if not text.startswith(TOOL_ID_PREFIX):
-        return text
-    return tool_id(migrate_joint_id(text[len(TOOL_ID_PREFIX):]))

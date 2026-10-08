@@ -36,7 +36,7 @@ Storage locations rewritten (all inside the Rhino doc):
 - Bar centerline curve: ``bar_id`` user-text, ObjectName, ``bar_seq``
 - Tube preview Brep: ``tube_bar_id`` user-text
 - Bar centerline curve: ``supported_until`` comma-list (per-token remap)
-- Joint female/male block instance: ``parent_bar_id``, ``connected_bar_id``,
+- Joint receiver/male block instance: ``parent_bar_id``, ``connected_bar_id``,
   ``female_parent_bar``, ``male_parent_bar``, ``joint_id``, ObjectName
 - Ground block instance: ``parent_bar_id``, ``joint_id``, ObjectName
 - Robotic tool block instance: ``joint_id``, ``tool_id``, ObjectName
@@ -68,6 +68,7 @@ from core.rhino_bar_registry import (
     repair_on_entry,
 )
 from core.rhino_helpers import suspend_redraw
+from core.single_sided_placement import is_single_sided_block
 
 
 _PRINT_CAP = 30
@@ -103,18 +104,12 @@ def _layers_for(*names):
     return [n for n in names if rs.IsLayer(n)]
 
 
-def _is_single_sided(oid):
-    """Ground, or a standalone MoCap: its id is ``G…`` / ``M…``, not ``J…``."""
-    jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
-    return jnc.single_sided_subtype_of_id(jid) is not None
-
-
 def _iter_joint_block_oids():
     """Halves placed by a mate: receiver (Female / MoCap) + Male, ``J…`` ids."""
     out = []
     for layer in _layers_for(*jnc.PAIRED_LAYERS):
         out.extend(
-            oid for oid in rs.ObjectsByLayer(layer) or [] if not _is_single_sided(oid)
+            oid for oid in rs.ObjectsByLayer(layer) or [] if not is_single_sided_block(oid)
         )
     return out
 
@@ -124,8 +119,7 @@ def _iter_single_sided_block_oids():
     out = []
     for layer in _layers_for(*jnc.SINGLE_SIDED_LAYERS):
         out.extend(
-            oid for oid in rs.ObjectsByLayer(layer) or []
-            if layer == jnc.LAYER_GROUND or _is_single_sided(oid)
+            oid for oid in rs.ObjectsByLayer(layer) or [] if is_single_sided_block(oid)
         )
     return out
 

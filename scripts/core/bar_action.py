@@ -342,57 +342,30 @@ def _detach_to_world(state, world_mm, rb_key: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _classify_male_joints_per_arm(bar_id: str) -> dict:
-    """Return ``{joint_id: 'left' | 'right'}`` for every male joint on `bar_id`.
+def _classify_joints_per_arm(bar_id: str, subtype: str) -> dict:
+    """Return ``{joint_id: 'left' | 'right'}`` for every *subtype* block on `bar_id`
+    whose tool names an arm.
 
-    Mirrors the arm-classification done by `rs_ik_keyframe._resolve_arm_tools_on_bar`
-    (lines 185-234) and `ik_collision_setup.resolve_arm_tools_on_bar` -- keyed
-    on joint_id (rather than oid) so the BarAction builder can drive
+    *subtype* is a tool-bearing one: Male, or Ground.  A ground bar has no male
+    halves, so its arm tools grasp the GROUND joints directly; a tool-less ground
+    joint is simply absent from the result and keeps the carried-receiver
+    behaviour downstream (rides the bar's arm).
+
+    Mirrors the arm-classification in `ik_collision_setup.resolve_arm_tools_on_bar`
+    -- keyed on joint_id (rather than oid) so the BarAction builder can drive
     per-joint attachment without depending on Rhino oids surviving the export.
     """
     import rhinoscriptsyntax as rs
     from core.rhino_tool_place import find_tool_for_joint
 
     out = {}
-    if not rs.IsLayer(jnc.LAYER_MALE):
+    layer = jnc.joint_layer(subtype)
+    if not rs.IsLayer(layer):
         return out
-    for moid in rs.ObjectsByLayer(jnc.LAYER_MALE) or []:
-        if rs.GetUserText(moid, jnc.UT_PARENT_BAR) != bar_id:
+    for oid in rs.ObjectsByLayer(layer) or []:
+        if rs.GetUserText(oid, jnc.UT_PARENT_BAR) != bar_id:
             continue
-        jid = rs.GetUserText(moid, jnc.UT_JOINT_ID)
-        if not jid:
-            continue
-        toid = find_tool_for_joint(jid)
-        if toid is None:
-            continue
-        tname = rs.GetUserText(toid, jnc.UT_TOOL_NAME) or ""
-        side = arm_side_from_tool_name(tname)
-        if side is not None:
-            out[jid] = side
-    return out
-
-
-def _classify_ground_joints_per_arm(bar_id: str) -> dict:
-    """Return ``{joint_id: 'left' | 'right'}`` for every TOOL-BEARING ground joint on `bar_id`.
-
-    # * Ground-bar semantics: a ground joint is a female-like half permanently
-    # bonded to the bar, EXCEPT the arm tools grasp the ground joints directly
-    # (a ground bar has no male halves). This is the mirror of
-    # `_classify_male_joints_per_arm` over the ground-instance layer, matching
-    # the anchor resolution in `ik_collision_setup.resolve_arm_tools_on_bar`.
-    # A tool-less ground joint is simply absent from the result and keeps the
-    # carried-female behavior downstream (rides the bar's arm).
-    """
-    import rhinoscriptsyntax as rs
-    from core.rhino_tool_place import find_tool_for_joint
-
-    out = {}
-    if not rs.IsLayer(jnc.LAYER_GROUND):
-        return out
-    for goid in rs.ObjectsByLayer(jnc.LAYER_GROUND) or []:
-        if rs.GetUserText(goid, jnc.UT_PARENT_BAR) != bar_id:
-            continue
-        jid = rs.GetUserText(goid, jnc.UT_JOINT_ID)
+        jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if not jid:
             continue
         toid = find_tool_for_joint(jid)
@@ -605,8 +578,8 @@ def _set_active_attachments(
 
     - Canonical bar (``bar_<bid>``) attaches to ``bar_arm_side``'s tool0.
     - Canonical male joint (``joint_<jid>_male``) attaches to its classified arm.
-    - Canonical female joint (``joint_<jid>_female``) attaches to ``bar_arm_side``
-      (rigidly bonded to the bar).
+    - Canonical receiver joint (``joint_<jid>_female`` or ``_mocap``) attaches to
+      ``bar_arm_side`` (rigidly bonded to the bar).
     - Canonical ground joint (``joint_<jid>_ground``) attaches to its classified
       arm when a tool grasps it (ground bars: the tools grasp the ground joints
       directly); a tool-less ground rides ``bar_arm_side`` like a carried female.
@@ -1402,11 +1375,11 @@ def build_split_assembly_movements(
             f"Solve {held_bar}'s support keyframe, then re-solve {bar_id}."
         )
 
-    arm_to_male = _classify_male_joints_per_arm(bar_id)
+    arm_to_male = _classify_joints_per_arm(bar_id, jnc.MALE)
 
     # * Ground bars: the arm tools grasp the GROUND joints directly (no male
     # halves on the bar). Classified additively so the male path stays untouched.
-    arm_to_ground = _classify_ground_joints_per_arm(bar_id)
+    arm_to_ground = _classify_joints_per_arm(bar_id, jnc.GROUND)
     if arm_to_ground:
         print(f"core.bar_action: ground-grasp classification for '{bar_id}': {arm_to_ground}")
 

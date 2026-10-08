@@ -87,11 +87,6 @@ _POINT_TOL = 1e-3  # mm tolerance for endpoint cache comparison
 # ---------------------------------------------------------------------------
 
 
-def _parse_bar_number(bar_id):
-    """Extract integer from a bar_id like 'B7' → 7.  Return None on failure."""
-    return jnc.bar_number(bar_id)
-
-
 def _parse_bar_seq(s):
     """Parse a stored sequence string to int, or None on failure."""
     if not s:
@@ -107,7 +102,7 @@ def next_bar_id():
     max_num = 0
     for oid in rs.AllObjects():
         if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-            num = _parse_bar_number(rs.GetUserText(oid, BAR_ID_KEY))
+            num = jnc.bar_number(rs.GetUserText(oid, BAR_ID_KEY))
             if num is not None and num > max_num:
                 max_num = num
     return jnc.bar_id(max_num + 1)
@@ -343,7 +338,7 @@ def repair_bar_sequences():
         if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
             continue
         bar_id = rs.GetUserText(oid, BAR_ID_KEY)
-        bar_id_num = _parse_bar_number(bar_id) or 0
+        bar_id_num = jnc.bar_number(bar_id) or 0
         old_seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
         bar_data.append((oid, bar_id, bar_id_num, old_seq))
 

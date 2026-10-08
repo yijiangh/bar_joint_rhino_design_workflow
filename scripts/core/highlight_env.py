@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import rhinoscriptsyntax as rs
 
-from core import config
 from core import joint_name_conventions as jnc
 from core.rhino_bar_registry import (
     _bar_curve_and_tube,

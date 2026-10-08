@@ -189,10 +189,6 @@ class _JointSession:
         return self._cache[key]
 
     @property
-    def current_idx(self):
-        return (2 if self.ln_rev else 0) + (1 if self.le_rev else 0)
-
-    @property
     def current_variant(self):
         return self._get_variant(self.le_rev, self.ln_rev)
 
@@ -208,7 +204,8 @@ class _JointSession:
         with suspend_redraw():
             delete_objects(existing)
             var = self.current_variant
-            color = PREVIEW_COLORS[self.current_idx % len(PREVIEW_COLORS)]
+            index = joint_placement.variant_index(self.le_rev, self.ln_rev)
+            color = PREVIEW_COLORS[index % len(PREVIEW_COLORS)]
             self.receiver_id = insert_block_instance(
                 self.receiver_block_name,
                 var["female_frame"],
@@ -422,10 +419,9 @@ class _SingleSidedSession:
     be rotated about the bar (it has no floor to face).
     """
 
-    def __init__(self, *, definition, bar_id, bar_start, bar_end, jp, jr, flipped=False):
+    def __init__(self, *, definition, bar_start, bar_end, jp, jr, flipped=False):
         self.definition = definition
         self.subtype = single_sided.subtype_of(definition)
-        self.bar_id = bar_id
         self.bar_start = bar_start
         self.bar_end = bar_end
         self.jp = float(jp)
@@ -582,7 +578,6 @@ def _run_joint_only():
 
     session = _SingleSidedSession(
         definition=definition,
-        bar_id=bar_id,
         bar_start=bar_start,
         bar_end=bar_end,
         jp=jp,

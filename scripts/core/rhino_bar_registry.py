@@ -59,11 +59,9 @@ BAR_TYPE_VALUE = "scaffolding_bar"
 # joint halves) so the joint math and the sequence display keep working.
 #
 # ! It is NOT collision geometry: the fake bar and every joint half mounted on
-# it (its females) are excluded from every collision scene -- assembly and
-# support alike -- by `core.env_collision`.  Only the real bar's male half,
-# which is parented to the real bar, survives.  Toggling this mark therefore
-# changes the collision scene, so it is part of the cell staleness fingerprint
-# (`core.robot_cell._live_assembly_fingerprint`).
+# it (its females) are left out of the design (`core.design_source`), so of
+# every collision scene -- assembly and support alike.  Only the real bar's
+# male half, which is parented to the real bar, survives.
 #
 # Value is "1" when set; the key is removed otherwise, so the common case (a
 # real bar) costs one absent-key read.
@@ -1805,7 +1803,7 @@ def restore_object_colors(token):
 #
 # These are `paint_bar` overrides (by-object color on the centerline + tube),
 # reverted with `reset_bar_color`. COLOR_HAS_IK is PERSISTED state (readable back
-# via `core.bar_action.has_ik_keyframe`); COLOR_FAILED is TRANSIENT -- only shown
+# via `core.keyframe_store.has_ik_keyframe`); COLOR_FAILED is TRANSIENT -- only shown
 # live during an rs_ik_keyframe_all solve run, never stored on the bar, so
 # `show_all_ik_preview` cannot reconstruct it.
 COLOR_HAS_IK = (75, 120, 150)    # bar has a solved IK keyframe
@@ -1872,9 +1870,8 @@ def show_all_ik_preview():
     Returns:
         tuple[int, int]: ``(n_has_ik, n_total)`` over the fabricated bars only.
     """
-    # Lazy import: bar_action is heavy and does its own lazy imports; keep this
-    # module import-light and avoid an import cycle (bar_action imports us).
-    from core.bar_action import has_ik_keyframe
+    # Lazy import: keep this module import-light.
+    from core.keyframe_store import has_ik_keyframe
 
     bar_map = get_bar_seq_map()
     fake_ids = get_fake_bar_ids(bar_map)

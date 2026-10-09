@@ -4,11 +4,10 @@
 # r: scipy==1.13.1
 # r: compas==2.13.0
 # compas_fab is loaded from the in-repo submodule `external/compas_fab` via the
-# sys.path injection in `core.robot_cell`. Do NOT list it under `# r:` (the pip
+# sys.path injection in `core.core_lib`. Do NOT list it under `# r:` (the pip
 # cache would ignore submodule SHA changes).
 # r: compas_robots==0.6.0
-# r: pybullet==3.2.7
-# r: pybullet_planning==0.6.1
+# r: trimesh==4.12.2
 """RSGHSequencePreview -- scrub the WHOLE assembly plan from a Grasshopper slider.
 
 One slider frame = one step of the global assembly timeline -- the same list

@@ -1,9 +1,10 @@
 """
 Plan on the shared core: design -> `scene_at` -> `CompasFabMirror` -> the existing solvers (tamp, compas_fab).
 
-The Rhino commands (RSIKKeyframe, RSIKKeyframeAll, engine Core) get their movements, planner and cell from here
-instead of the legacy cell: `keyframe_movements` for Cindy's chain, `hold_solve_state` for a support robot's hold,
-`release_check` for a hold's release. Rhino-free; needs the core's `[mirrors]` stack (compas_fab, PyBullet).
+The Rhino commands get their movements, planner and cell from here: `keyframe_movements` for Cindy's chain
+(RSIKKeyframe, RSIKKeyframeAll), `hold_solve_state` for a support robot's hold, `release_check` for a hold's
+release, `scene_collisions` for the viewers' collision check. Rhino-free; needs the core's `[mirrors]` stack
+(compas_fab, PyBullet).
 
 - ! Keep the mirrors in `store` (Rhino's `sc.sticky`) and build the design with the same geometry cache every time:
   a mirror rebuilds its cell (seconds) only when a geometry or robot object changes.
@@ -24,6 +25,7 @@ from bar_assembly_core.design.relations import ENGAGED, PENDING, bar_of, mate_st
 from bar_assembly_core.mirrors.compas import frame_from_pose
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
 from bar_assembly_core.scene import Scene
+from core.plan_steps import releases_after  # noqa: F401  (the release check's callers ask here)
 
 #: `sc.sticky` key of the mirrors, robot id -> CompasFabMirror.
 MIRRORS_KEY = "bar_joint:core_mirrors"
@@ -73,18 +75,40 @@ def _touch(scene: Scene, a: str, b: str) -> None:
             scene.bodies[body].touches = tuple(sorted(scene.bodies[body].touches + (other,)))
 
 
-def allow_part_contacts(design: Design, scene: Scene, state: State) -> None:
+def cradle_parts() -> frozenset:
+    """The parts ("T20SubLeft/Female") the joint registry flags `bar_cradle`: receivers the incoming bar rests in."""
+    from core import joint_name_conventions as jnc
+    from core.joint_pair import load_joint_registry
+
+    parts = set()
+    for name, half in load_joint_registry().halves.items():
+        if getattr(half, "bar_cradle", False):
+            try:
+                parts.add("/".join(jnc.split_block_name(name)))
+            except ValueError:
+                continue  # not a <Type>_<Subtype> block: never a design part
+    return frozenset(parts)
+
+
+def allow_part_contacts(design: Design, scene: Scene, state: State, cradles: Optional[frozenset] = None) -> None:
     """Allow the contacts Rhino allows today; the core derives fewer. ? Open decision #1, change request 1.
 
     - A tool may touch the whole part it is on: the bar and its halves.
     - The halves of a pending or engaged mate may touch each other's bar.
+    - A tool on a male may touch the cradle receiver it mates (pending or engaged): the cradle wraps the male
+      and its tool (the subfloor `T20Sub*` females; `bar_cradle` in joint_pairs.json).
     - A half of a `*/Ground` part may touch every ground body.
+
+    Args:
+        cradles: The cradle parts; None reads them from the joint registry (`cradle_parts`).
     """
     for tool, tool_state in state.tools.items():
         bar = bar_of(design, tool_state.on) if tool_state is not None and tool_state.on else None
         if bar is not None:
             for body in (bar, *design.halves_of(bar)):
                 _touch(scene, tool, body)
+    if cradles is None:
+        cradles = cradle_parts()
     for mate in design.mates:
         if mate_status(design, state, mate) in (PENDING, ENGAGED):
             a, b = mate
@@ -92,6 +116,11 @@ def allow_part_contacts(design: Design, scene: Scene, state: State) -> None:
                 other_bar = bar_of(design, other)
                 if half.startswith("joints/") and other_bar is not None:
                     _touch(scene, half, other_bar)
+                spec = design.bodies.get(half)
+                if spec is not None and spec.part in cradles:
+                    for tool, tool_state in state.tools.items():
+                        if tool_state is not None and tool_state.on == other:
+                            _touch(scene, tool, half)
     grounds = [body for body in design.bodies if body.startswith("ground/")]
     for body_id, body in design.bodies.items():
         if body.part.endswith("/Ground"):
@@ -221,14 +250,26 @@ def release_check(design: Design, store: dict, bar: str, log=print) -> str:
     return ("OK" if not found else "collides: " + "; ".join(found)) + note
 
 
-def releases_after(design: Design, bar: str) -> List[str]:
-    """The held bars whose release follows this bar's actions in the schedule (Rhino's checkpoint 2)."""
-    order = list(design.schedule)
-    after = [i for i, a in enumerate(order) if design.actions[a].bar == bar and design.actions[a].type == "bar_release"]
-    out = []
-    for action_id in order[after[0] + 1:] if after else []:
-        action = design.actions[action_id]
-        if action.type != "bar_holding_release":
-            break
-        out.append(action.bar)
-    return out
+def scene_collisions(design: Design, store: dict, scene: Scene, state: State, log=print) -> List[Tuple[str, str]]:
+    """What collides in a scene, checked on the mirror of every robot placed in it (present, base and joints known).
+
+    Args:
+        design: The design the scene comes from.
+        store: Where the mirrors are kept (Rhino's `sc.sticky`).
+        scene: The world to check; not changed.
+        state: The design state the scene was made from (for the allowed part contacts, `allow_part_contacts`).
+
+    Returns:
+        list: Colliding pairs as our ids, each sorted, without repeats; robot links as "robots/<name>/<link>".
+    """
+    pairs = set()
+    for robot_id, robot in scene.robots.items():
+        if not robot.enabled or not robot.base_tracked or robot.unmeasured:
+            continue
+        mine = scene.copy()
+        allow_part_contacts(design, mine, state)
+        plannable(mine, robot_id)
+        mirror = mirror_for(store, robot_id, log)
+        mirror.sync(mine)
+        pairs |= {tuple(sorted(pair)) for pair in mirror.collisions(full_report=True)}
+    return sorted(pairs)

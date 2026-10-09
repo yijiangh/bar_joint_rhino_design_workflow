@@ -579,12 +579,8 @@ def main() -> None:
         clear_tool_attach_cache()
         print(f"{_DIALOG}: saved ground joint '{block_def_name}' to registry.")
 
-    # Either path just wrote a collision OBJ the session's collision cache has
-    # never seen -- without this the new block is skipped from collision until
-    # Rhino restarts.
-    from core.env_collision import clear_joint_obj_path_cache  # noqa: PLC0415
-
-    clear_joint_obj_path_cache()
+    # The planning cells pick the new collision OBJ up by itself: the design
+    # reads the registry fresh and caches meshes by file content.
     print(f"{_DIALOG}: done.")
 
 

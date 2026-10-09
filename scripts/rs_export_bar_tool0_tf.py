@@ -11,13 +11,13 @@ each arm's ``tool0``:
     T_bar_to_tool0_<side>_mm = inv(bar_world_mm) @ tool0_<side>_world_mm
 
 Bar OCF: origin at bar start, Z along bar axis (see
-``core.env_collision._bar_world_frame_mm``). Tool0 world: block instance
+``core.rhino_helpers.bar_world_frame_mm``). Tool0 world: block instance
 world xform of the placed arm tool (see
 ``core.rhino_helpers.block_instance_xform_mm``). All translations are
 in millimeters.
 
 Output: ``<root>/BarTool0TF/<bar_id>.json``. Root is the same sticky
-folder used by ``RSExportBarAction``.
+folder this command used last.
 """
 
 from __future__ import annotations
@@ -38,11 +38,10 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config as _config_module
 from core import joint_name_conventions as jnc
-from core import env_collision as _env_collision_module
-from core import ik_collision_setup as _ik_collision_setup_module
+from core import rhino_tool_place as _rhino_tool_place_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
-from core.rhino_helpers import block_instance_xform_mm
+from core.rhino_helpers import bar_world_frame_mm, block_instance_xform_mm
 from core.transforms import invert_transform
 
 
@@ -69,8 +68,7 @@ def _mat_to_list(m) -> list:
 
 def main() -> None:
     config = importlib.reload(_config_module)
-    env_collision = importlib.reload(_env_collision_module)
-    ik_collision_setup = importlib.reload(_ik_collision_setup_module)
+    rhino_tool_place = importlib.reload(_rhino_tool_place_module)
 
     repair_on_entry(float(config.BAR_RADIUS), TITLE)
 
@@ -89,7 +87,7 @@ def main() -> None:
         )
         return
 
-    arm_tools, err = ik_collision_setup.resolve_arm_tools_on_bar(bar_id)
+    arm_tools, err = rhino_tool_place.resolve_arm_tools_on_bar(bar_id)
     if err is not None:
         rs.MessageBox(
             f"Bar '{bar_id}' is not fully placed: {err}",
@@ -98,7 +96,7 @@ def main() -> None:
         )
         return
 
-    length_mm, bar_world_mm = env_collision._bar_world_frame_mm(bar_oid)
+    length_mm, bar_world_mm = bar_world_frame_mm(bar_oid)
     if length_mm <= 0.0:
         rs.MessageBox(
             f"Bar '{bar_id}' has zero length; cannot build OCF.", 0, TITLE,

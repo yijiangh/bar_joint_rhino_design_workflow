@@ -274,3 +274,39 @@ def test_ground_joint_def_forces_the_tool_attach_translation_to_zero():
     ground = _ground_def(M_tool_from_block=with_translation)
 
     np.testing.assert_allclose(ground.M_tool_from_block[:3, 3], 0.0, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# bar_cradle: subfloor receivers the incoming bar rests in (design_planning.cradle_parts)
+# ---------------------------------------------------------------------------
+
+
+def _half(**overrides):
+    kwargs = dict(
+        block_name="X_Female",
+        M_block_from_bar=np.eye(4),
+        M_screw_from_block=np.eye(4),
+        kind="female",
+    )
+    kwargs.update(overrides)
+    return JointHalfDef(**kwargs)
+
+
+def test_bar_cradle_defaults_false_and_roundtrips():
+    """`bar_cradle` defaults False, survives to_dict/from_dict, old JSON loads."""
+    assert _half().bar_cradle is False
+    cradle = _half(bar_cradle=True)
+    assert JointHalfDef.from_dict(cradle.to_dict()).bar_cradle is True
+    # A registry entry written before the flag existed simply omits the key.
+    legacy = cradle.to_dict()
+    legacy.pop("bar_cradle")
+    assert JointHalfDef.from_dict(legacy).bar_cradle is False
+
+
+def test_shipped_registry_flags_subfloor_females():
+    """The checked-in joint_pairs.json marks exactly the T20Sub* females as cradles."""
+    from core.joint_pair import load_joint_registry
+
+    halves = load_joint_registry().halves
+    cradles = sorted(name for name, h in halves.items() if h.bar_cradle)
+    assert cradles == ["T20SubLeft_Female", "T20SubRight_Female"]

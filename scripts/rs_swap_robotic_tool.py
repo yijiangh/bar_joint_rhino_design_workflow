@@ -3,10 +3,11 @@
 # r: numpy==1.24.4
 # r: scipy==1.13.1
 # r: compas==2.13.0
-# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.robot_cell`. Do not list it under `# r:` (pip cache would ignore SHA changes).
+# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.core_lib`. Do not list it under `# r:` (pip cache would ignore SHA changes).
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
+# r: trimesh==4.12.2
 """RSSwapRoboticTool - make a tool candidate's L/R pair the ACTIVE pair.
 
 The command lists every tool registered in ``robotic_tools.json`` in a pop-up
@@ -24,8 +25,10 @@ that pair:
        solved against the OLD tools; re-run RSIKKeyframe per bar)
     5. the IK preview mesh cache is dropped so the next RSIKKeyframe redraws
        the new tool (its baked tool meshes are not auto-refreshed on a swap)
-    6. if PyBullet is running you are offered an immediate collision-cell
-       rebuild; otherwise run RSPBStart + RSRebuildRobotCell before any IK
+
+The planning and drawing cells need no rebuild: the next IK command or viewer
+reads the document into a design with the new tools, and the core rebuilds
+each cell whose tools changed.
 
 Nothing is changed until the pre-flight checks pass: both sides of the pair
 must be registered, and each side needs its .3dm asset AND collision OBJ
@@ -47,7 +50,6 @@ if SCRIPT_DIR not in sys.path:
 
 from core import config as _config_module
 from core import ik_viz as _ik_viz_module
-from core import robot_cell as _robot_cell_module
 from core import robotic_tool as _robotic_tool_module
 from core import rhino_tool_place as _tool_place_module
 from core.rhino_bar_registry import apply_build_stage_visibility, get_bar_seq_map
@@ -106,35 +108,7 @@ def _warn_stale_keyframes(config) -> None:
     )
 
 
-def _offer_cell_rebuild(robot_cell) -> None:
-    """Rebuild the collision cell now (if PyBullet runs) or print instructions."""
-    if not robot_cell.is_pb_running():
-        print(
-            "  PyBullet not running -- click RSPBStart, then RSRebuildRobotCell, "
-            "before any IK command (the staleness prompt will remind you)."
-        )
-        return
-    answer = rs.GetString(
-        "Rebuild the collision cell with the new tools now?",
-        "Rebuild",
-        ["Rebuild", "Later"],
-    )
-    if answer is None or answer.strip().lower().startswith("l"):
-        print(
-            "  cell NOT rebuilt -- click RSRebuildRobotCell before any IK "
-            "command (the staleness prompt will remind you)."
-        )
-        return
-    _client, planner = robot_cell.get_planner()
-    rcell = robot_cell.get_or_load_robot_cell()
-    robot_cell.rebuild_assembly_cell(rcell, planner)
-    print(
-        f"  collision cell rebuilt with tools: {sorted(rcell.tool_models.keys())}"
-    )
-
-
 def main() -> None:
-    robot_cell = importlib.reload(_robot_cell_module)
     robotic_tool = importlib.reload(_robotic_tool_module)
     tool_place = importlib.reload(_tool_place_module)
     config = importlib.reload(_config_module)
@@ -229,10 +203,7 @@ def main() -> None:
     ik_viz.discard_cache()
     print("  IK preview cache dropped (next RSIKKeyframe re-bakes the new tool).")
 
-    # 6. Collision cell: rebuild now or tell the user exactly what to click.
-    _offer_cell_rebuild(robot_cell)
-
-    # 7. Re-assert the build-stage filter -- MANDATORY here, and the last
+    # 6. Re-assert the build-stage filter -- MANDATORY here, and the last
     #    visibility-touching step on purpose.  Step 2 above deleted and
     #    re-inserted every tool block, and a new Rhino object is always born
     #    visible, so without this every tool on every unbuilt bar reappears.

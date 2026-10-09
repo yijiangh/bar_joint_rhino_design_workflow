@@ -697,6 +697,7 @@ def update_state(
     mesh_mode: Optional[str] = None,
     layer_key: Optional[str] = None,
     mesh_modes: Optional[Iterable[str]] = None,
+    hide_bodies: bool = False,
 ) -> None:
     """Pose the cached preview to match ``state``.
 
@@ -715,12 +716,14 @@ def update_state(
         mesh_mode (str | None): which mesh mode to leave visible.
         layer_key (str | None): which sub-layer bundle to use.
         mesh_modes (Iterable[str] | None): older argument; accepted but unused.
+        hide_bodies (bool): draw the robots and tools only (the document's own
+            geometry shows the bars, e.g. in the Grasshopper preview).
     """
     robot_cell = _require_cell(robot_cell, "update_state")
     bundle = _get_or_create_bundle(robot_cell, layer_key)
     _sync_rb_keyset(bundle, robot_cell)
 
-    # get_robot_link_meshes_at_zero() hides LAYER_IK_CACHE on the way out so that
+    # get_robot_link_meshes_at_state() hides LAYER_IK_CACHE on the way out so that
     # only the ghost preview shows while the user picks a base. After IK solves,
     # update_state has to force the root layer visible again -- otherwise the
     # sub-layer toggle below turns geometry on, but the hidden parent layer keeps
@@ -751,6 +754,8 @@ def update_state(
         # What a parked robot holds is parked with it, far away: hide that too.
         bundle["hidden_rb_ids"] |= {rb_id for rb_id, rbs in state.rigid_body_states.items()
                                     if getattr(rbs, "attached_to_link", None)}
+    if hide_bodies:
+        bundle["hidden_rb_ids"] |= set(state.rigid_body_states)
 
     was = sc.doc.Views.RedrawEnabled
     try:

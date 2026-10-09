@@ -1065,7 +1065,7 @@ def _ask_collision_options(env_count: int = 0):
 
     Returns ``(include_self, include_env, mesh_mode)`` or ``None`` on cancel.
     The `mesh_mode` toggle picks between ``ik_viz.MESH_MODE_VISUAL`` and
-    ``MESH_MODE_COLLISION`` for `ik_viz.show_state`. The previous choice is
+    ``MESH_MODE_COLLISION`` for the previews. The previous choice is
     cached in `sc.sticky` (via ik_viz.set_mesh_mode) so subsequent runs in
     the same session start with the user's last selection pre-toggled.
     """

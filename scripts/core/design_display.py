@@ -84,6 +84,31 @@ def cell_and_state(store: dict, scene: Scene, robot_id: str, log=print) -> Tuple
     return cells.cell, cells.state(scene, strict=False)
 
 
+def robot_scene(design, robot_id: str, joints: Optional[Mapping[str, float]] = None) -> Scene:
+    """A scene of one design robot alone at the world origin (every body hidden), even before any action exists.
+
+    It holds the same bodies and robot models as the design's own scenes, so a drawing cell built from either is
+    the same cell.
+
+    Args:
+        design: The design.
+        robot_id: The robot shown; the others are absent.
+        joints: Its joint values (default 0).
+    """
+    from bar_assembly_core.design.scenes import design_model
+    from bar_assembly_core.robot import RobotObject
+    from bar_assembly_core.scene import Body
+
+    robots = {rid: RobotObject(rid, design_model(design, rid), Pose(), {}, enabled=rid == robot_id,
+                               label=spec.name)
+              for rid, spec in design.robots.items()}
+    bodies = {bid: Body(bid, spec.geometry, spec.pose, label=spec.label, enabled=False)
+              for bid, spec in design.bodies.items()}
+    scene = Scene(bodies=bodies, robots=robots)
+    place(scene, robot_id, Pose(), joints or {})
+    return scene
+
+
 def ghost_scene(scene: Scene, robot_id: str, joints: Optional[Mapping[str, float]] = None) -> Scene:
     """A copy of a scene with only `robot_id` present, at the world origin, at `joints` (default 0).
 

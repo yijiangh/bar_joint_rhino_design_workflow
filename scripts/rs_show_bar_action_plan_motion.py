@@ -3,14 +3,16 @@
 # r: numpy==1.24.4
 # r: scipy==1.13.1
 # r: compas==2.13.0
-# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.robot_cell`. Do not list it under `# r:` (pip cache would ignore SHA changes).
+# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.core_lib`. Do not list it under `# r:` (pip cache would ignore SHA changes).
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
+# r: trimesh==4.12.2
 """RSShowBarActionPlanMotion - Right-click companion of RSShowBarActionPlan.
 
-Pick a bar, load its planned motion (`<bar>.solved_motion.json`) if it isn't
-cached yet, and open a slider pop-up to scrub the M1..M4 trajectory. Delegates to
+Pick a design folder (written by RSExportDesign, planned by
+``scripts/plan_design.py``) and a bar, then step through the bar's planned
+trajectories from the command line. Delegates to
 ``rs_show_bar_action_plan.main_motion`` (the left-click script owns the viewer).
 """
 

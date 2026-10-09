@@ -12,6 +12,7 @@ curve. `core.design_source` reads them into the design on every command; the IK 
 from __future__ import annotations
 
 import json
+from typing import Optional
 
 import numpy as np
 
@@ -91,12 +92,14 @@ def write_assembly_base_frame(bar_oid, base_frame_world_mm) -> None:
                       json.dumps(np.asarray(base_frame_world_mm, dtype=float).tolist()))
 
 
-def write_assembly_keyframes(bar_oid, approach: dict, assembled: dict, retreat: dict) -> None:
-    """Save the approach, assembled and retreat joints, each `{"left": {...}, "right": {...}}`."""
+def write_assembly_keyframes(bar_oid, approach: dict, assembled: dict, retreat: Optional[dict]) -> None:
+    """Save the approach, assembled and retreat joints, each `{"left": {...}, "right": {...}}`; retreat None keeps
+    the stored one."""
     rs = _rs()
     rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_APPROACH, json.dumps(approach))
     rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_ASSEMBLED, json.dumps(assembled))
-    rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_RETREAT, json.dumps(retreat))
+    if retreat is not None:
+        rs.SetUserText(bar_oid, config.KEY_ASSEMBLY_IK_RETREAT, json.dumps(retreat))
 
 
 def read_assembly_base_frame(bar_oid):

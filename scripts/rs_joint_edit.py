@@ -827,8 +827,6 @@ def _paired_joint_filter(rhino_object, geometry, component_index):
 
 def _run_replace_joint():
     """Swap placed pairs' receivers Female <-> MoCap, one click each, until Esc."""
-    from core.env_collision import clear_joint_obj_path_cache  # noqa: PLC0415
-
     while True:
         go = Rhino.Input.Custom.GetObject()
         go.SetCommandPrompt(
@@ -875,10 +873,6 @@ def _run_replace_joint():
         ok, _le, _ln = _replace_joint_pair(
             joint_id, le_bar_id, ln_bar_id, new_pair, le_rev, ln_rev
         )
-        # The collision scene finds a block's OBJ by its block name, cached for
-        # the session; drop the cache so the swapped joint is not checked with
-        # the old block's mesh until Rhino restarts.
-        clear_joint_obj_path_cache()
         if ok:
             print(
                 f"RSJointEdit: {joint_id}: {pair.receiver.block_name} -> "

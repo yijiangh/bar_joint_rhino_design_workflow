@@ -7,12 +7,13 @@ frame index, so the Rhino viewport can be driven from a Grasshopper slider
 (and therefore animated with the slider's built-in right-click ``Animate``).
 
 One frame = one step of the global assembly timeline -- the SAME step list
-the ``RSShowAssemblyPlan`` command walks (``viewer.build_global_timeline``):
-every bar contributes approach / assembled / (hold) / retreat / home, and
-support-robot releases appear as their own steps.  In the current study file
-that is 88 steps: 20 bars x 4 poses + 4 hold + 4 release.  The caption output
-(``step 75/88 | bar B37 | release B21``) matches the command's captions
-one-for-one, so the two viewers can be compared step by step.
+the ``RSShowAssemblyPlan`` command walks (``core.plan_steps.timeline`` of the
+document read as a schema 2 design): every bar contributes approach / assembled
+/ (hold) / retreat / home, and support-robot releases appear as their own
+steps.  In the current study file that is 88 steps: 20 bars x 4 poses + 4 hold
++ 4 release.  The caption output (``step 75/88 | bar B37 | release B21``)
+matches the command's captions one-for-one, so the two viewers can be compared
+step by step.
 
 What is drawn per frame
 -----------------------
@@ -23,11 +24,11 @@ What is drawn per frame
   (``show_support``) -- drawn ON TOP of the geometry with user-set pixel
   width and dash pattern.  The document's centerline curves are hidden while
   the preview runs: the overlay replaces them;
-* the dual-arm assembly robot WITH its assembly tools
-  (``robot_cell.ensure_arm_tool_models`` registers them, PyBullet-free);
-* every support robot present at this step (frozen holders, the bar's own
-  holder from the hold pose onward, release retreats), each on its own
-  ``Support <name>`` layer;
+* every robot where the design has it at this step -- the dual-arm assembly
+  robot WITH its assembly tools, the support robots holding bars (frozen
+  holders, the bar's own holder from the hold pose onward, release retreats)
+  -- all from the core's drawing cell of the step's scene
+  (``core.design_display``), on the ``Assembly`` preview layer;
 * fake (staging) bars and robotic tool instances are NEVER shown.
 
 Why a conduit and not object attributes
@@ -44,9 +45,8 @@ even where a centerline runs INSIDE its bar's tube.
 
 What it deliberately does NOT do
 --------------------------------
-* **Never starts PyBullet.**  All robots are drawn by forward kinematics only
-  (``ik_viz.update_state`` with no ``set_cell_state``).  ``RSPBStart`` is not
-  required.
+* **Never starts PyBullet.**  All robots are drawn by forward kinematics only,
+  from the core's drawing cell (compas_fab without PyBullet).
 * **Never renumbers a sequence** (``repair_on_entry`` is never called) and
   **never writes the build-stage latch**.
 * **Never touches the display mode.**  No PrintDisplay, no display-mode
@@ -63,26 +63,29 @@ layers.
 
 Speed notes
 -----------
-The step list is computed on the ``reload`` button and cached; a slider move
-does a dictionary lookup, repaints the sequence visibility and re-poses the
-robots -- no PyBullet, no document scans beyond the bar registry.  The robot
-models themselves are loaded once per Rhino session (run ``RSGHPreviewWarmup``
-once to pay that cost up front); after that, scrubbing is mesh-transform only.
+The design and its step list are computed on the ``reload`` button and cached;
+a slider move builds that step's scene, repaints the sequence visibility and
+re-poses the robots -- no PyBullet, no document scans beyond the bar registry.
+The robot models themselves are loaded once per Rhino session (run
+``RSGHPreviewWarmup`` once to pay that cost up front); after that, scrubbing is
+mesh-transform only.
 """
 
 from __future__ import annotations
 
 import re
 
-import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 from core import config
+from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import design_display
+from core import design_source
 from core import gh_bridge
 from core import ik_viz
-from core import robot_cell
+from core import plan_steps
 from core.rhino_bar_registry import (
     SEQ_COLOR_ACTIVE,
     SEQ_COLOR_SUPPORT_PICK,
@@ -93,15 +96,6 @@ from core.rhino_bar_registry import (
     reset_sequence_colors,
     show_sequence_colors,
 )
-
-# The command viewer owns the timeline (build_global_timeline), the pose
-# taxonomy and the payload readers; this component only renders.  Imported
-# ONCE per Rhino session -- the GH shim reloads THIS module every solve, but a
-# plain `import` of an already-loaded module is just a name lookup, so the
-# heavy viewer never re-imports per solve.  Nothing in its import chain
-# touches PyBullet at import time.
-import rs_show_bar_action_plan as viewer
-
 
 # ---------------------------------------------------------------------------
 # Input coercion
@@ -298,177 +292,54 @@ def _update_guide_lines(store, bar_map, active_bar_id, active_seq,
 
 
 # ---------------------------------------------------------------------------
-# Robot rendering (FK only -- no PyBullet anywhere below)
+# Robot rendering (the core's drawing cell -- no PyBullet anywhere below)
 # ---------------------------------------------------------------------------
 
 
-def _apply_groups(state, groups):
-    """Merge ``{left,right}`` group configs into ``state.robot_configuration``."""
-    for _side, cfg in groups.items():
-        for name, value in zip(cfg["joint_names"], cfg["joint_values"]):
-            state.robot_configuration[name] = float(value)
+def _build_timeline(bar_map):
+    """The document as a design, and its global step list (``core.plan_steps.timeline``)."""
+    result = design_source.RhinoDesignSource(
+        "RSGHSequencePreview", design_source.geometry_cache(sc.sticky)
+    ).build()
+    steps, skipped = plan_steps.timeline(result.design)
+    return {"design": result.design, "steps": steps, "skipped": skipped, "n_bars": len(bar_map)}
 
 
-def _home_groups(rcell):
-    """Synthesise the home configuration groups from ``config.HOME_CONF_*_6``."""
-    return {
-        "left": {
-            "joint_names": list(rcell.get_configurable_joint_names(config.LEFT_GROUP)),
-            "joint_values": list(config.HOME_CONF_LEFT_6),
-        },
-        "right": {
-            "joint_names": list(rcell.get_configurable_joint_names(config.RIGHT_GROUP)),
-            "joint_values": list(config.HOME_CONF_RIGHT_6),
-        },
-    }
+def _render_robots(store, design, step, notes):
+    """Draw every robot of this step: the assembly robot with its tools, and every support robot present.
 
-
-def _base_cell_state(store, rcell, notes):
-    """Return the tool-bearing base state, registering the arm tools if needed.
-
-    ``robot_cell.ensure_arm_tool_models`` builds the active pair's ToolModels
-    from ``robotic_tools.json`` + their exported OBJs (PyBullet-free), so the
-    arms render WITH their assembly tools even when no planning command has
-    run this session.  Falls back to flange-only with a note when the tool
-    registry cannot deliver (e.g. a missing OBJ export).
+    The step's scene (``plan_steps.step_scene``) puts each robot where the
+    design has it at that moment; the assembly robot's drawing cell holds the
+    support robots as tools, so one ``update_state`` draws them all. Robots
+    absent from the moment (or whose base is not solved yet) are parked and
+    hidden. Bodies are hidden: the document's own geometry shows the bars.
     """
+    robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
     try:
-        if robot_cell.ensure_arm_tool_models(rcell):
-            notes.append("assembly tools registered from robotic_tools.json")
-    except RuntimeError as exc:
-        if store.get("tool_note") != "failed":
-            store["tool_note"] = "failed"
-            notes.append(f"arms render flange-only ({exc})")
-    if getattr(rcell, "tool_models", None):
-        return robot_cell.base_assembly_cell_state()
-    return robot_cell.default_cell_state()
-
-
-def _render_assemble_robot(store, bar_oid, bar_id, pose, notes):
-    """Draw the dual-arm robot for this step, or hide it on a release step.
-
-    Pose -> saved arm angles: approach reads the approach keyframe;
-    assembled AND hold read the assembled keyframe (the hold step differs only
-    by the support robot joining); retreat reads the retreat keyframe; home is
-    the fixed config.HOME_CONF pose.  On a ``("release", bar)`` step the
-    assembly robot has finished and driven away -- its layer is hidden (the
-    structure stays: it is the document's real geometry, not this layer).
-    """
-    if isinstance(pose, tuple):
+        cell, state = design_display.cell_and_state(sc.sticky, plan_steps.step_scene(design, step), robot_id)
+    except Exception as exc:  # noqa: BLE001 -- a bad step must not kill the solve
+        notes.append(f"robots not drawn: {exc}")
         ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
         return False
-
-    payload = viewer._load_assembly_payload(bar_oid)
-    if payload is None:
-        notes.append(f"bar {bar_id}: no assembly keyframe; assembly robot hidden")
-        ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
-        return False
-
-    rcell = robot_cell.get_or_load_robot_cell()
-    deps = robot_cell.import_compas_stack()
-
-    if pose == "home":
-        groups = _home_groups(rcell)
-    elif pose == "approach":
-        groups = payload.get("approach")
-    elif pose in ("assembled", viewer.HOLD_POSE):
-        groups = payload.get("assembled")
-    elif pose == "retreat":
-        groups = payload.get("retreat")
-    else:
-        groups = None
-    if groups is None:
-        notes.append(f"bar {bar_id}: no saved {viewer._pose_label(pose)} keyframe; assembly robot hidden")
-        ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
-        return False
-
-    # ! Tools must be registered BEFORE the first bake: the ik_viz bundle
-    # caches its mesh set on creation, so a flange-only first bake would
-    # never grow tools later.
-    state = _base_cell_state(store, rcell, notes)
-
-    base_mm = np.asarray(payload["base_frame_world_mm"], dtype=float)
-    state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(deps["Frame"], base_mm)
-    _apply_groups(state, groups)
-
     rs.EnableRedraw(False)
     try:
-        if not store.get("session"):
+        if store.get("session") is not cell:
             # hide_doc_layers=() is essential: the default hides tubes / joints
             # for the session, which would override the per-object visibility
             # this component drives through show_sequence_colors.
             ik_viz.begin_session(
-                robot_cell=rcell,
-                mesh_modes=(ik_viz.MESH_MODE_VISUAL,),
+                robot_cell=cell,
                 active_mesh_mode=ik_viz.MESH_MODE_VISUAL,
                 layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
                 hide_doc_layers=(),
             )
-            store["session"] = True
-        ik_viz.update_state(state, robot_cell=rcell, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
+            store["session"] = cell
+        ik_viz.update_state(state, robot_cell=cell, layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
+                            mesh_mode=ik_viz.MESH_MODE_VISUAL, hide_bodies=True)
         ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, True)
     finally:
         rs.EnableRedraw(True)
     return True
-
-
-def _support_layer_key(robot_name):
-    """One preview layer per support robot -- same keys as the command viewer."""
-    return f"Support {robot_name}"
-
-
-def _render_support_robots(store, bar_id, pose, hold_plan, bar_map, notes):
-    """Draw every support robot present at this frame; hide the ones that left.
-
-    Who stands where comes from ``viewer.support_presence_for_step`` (frozen
-    holders at held, the bar's own holder from the hold pose onward, release
-    retreats in firing order).  Each robot renders on its own
-    ``Support <name>`` layer via the same FK path the command viewer uses.
-    The first frame that needs a robot pays its one-time model load (run
-    RSGHPreviewWarmup once per session to pay it up front).
-    """
-    entries = {}
-    if hold_plan and bar_id in bar_map:
-        pose_cycle = viewer.poses_for_bar(bar_id, bar_map[bar_id][0], hold_plan, quiet=True)
-        entries = viewer.support_presence_for_step(
-            bar_map, bar_id, pose, pose_cycle, hold_plan, label="RSGHSequencePreview",
-        )
-
-    shown = set()
-    if entries:
-        from core import robot_cell_support  # lazy: pulls the support URDF stack
-        deps = robot_cell.import_compas_stack()
-        rs.EnableRedraw(False)
-        try:
-            for robot_name in sorted(entries):
-                base_mm, cfg = entries[robot_name]
-                try:
-                    cell = robot_cell_support.get_or_load_support_cell(robot_name)
-                    state = robot_cell_support.default_support_cell_state(robot_name)
-                except Exception as exc:  # a missing URDF must not kill the solve
-                    notes.append(f"support {robot_name} not drawn: {exc}")
-                    continue
-                state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(
-                    deps["Frame"], np.asarray(base_mm, dtype=float),
-                )
-                for name, value in zip(cfg["joint_names"], cfg["joint_values"]):
-                    state.robot_configuration[name] = float(value)
-                key = _support_layer_key(robot_name)
-                ik_viz.update_state(
-                    state, robot_cell=cell,
-                    mesh_modes=(ik_viz.MESH_MODE_VISUAL,), layer_key=key,
-                )
-                ik_viz.set_active_mesh_mode(key, ik_viz.MESH_MODE_VISUAL)
-                ik_viz.set_layer_visible(key, True)
-                shown.add(key)
-        finally:
-            rs.EnableRedraw(True)
-
-    # Robots that stood in the PREVIOUS frame but not in this one have left
-    # the scene -- hide their layers (diffed, so nothing is re-asserted).
-    for key in store.get("support_keys", set()) - shown:
-        ik_viz.set_layer_visible(key, False)
-    store["support_keys"] = shown
 
 
 # ---------------------------------------------------------------------------
@@ -503,22 +374,16 @@ def _teardown(store):
     """Put the document back exactly as the component found it."""
     _drop_conduit(store)
     reset_sequence_colors()  # colours + visibility (and legacy width/dash resets)
-    if store.get("session"):
+    if store.get("session") is not None:
         ik_viz.end_session()
     ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
-    for key in store.get("support_keys", set()):
-        ik_viz.set_layer_visible(key, False)
-    # Defensive: hide both support layers even if the diff record was lost.
-    for name in getattr(config, "SUPPORT_ROBOT_NAMES", ()):
-        ik_viz.set_layer_visible(_support_layer_key(name), False)
     _restore_layer(store, "tool_layer_prev", config.LAYER_TOOL_INSTANCES)
     _restore_layer(store, "centerline_layer_prev", config.LAYER_BAR_CENTERLINES)
     # Migration: an older build of this component switched PrintDisplay on to
     # show print widths; make sure no session leaves it stuck on.
     if store.pop("print_display_on", None):
         rs.Command("_-PrintDisplay _State=_Off _Enter", False)
-    for key in ("session", "fingerprint", "tool_note", "timeline",
-                "n_frames", "support_keys"):
+    for key in ("session", "fingerprint", "timeline", "n_frames"):
         store.pop(key, None)
     sc.doc.Views.Redraw()
 
@@ -593,26 +458,18 @@ def run(
                 "info": "no registered bars in this document",
             }
 
-        # The timeline is cached in sticky and rebuilt only on the reload
-        # button or when the bar count changes underneath it -- a slider move
-        # must not re-derive the hold plan and re-walk every bar.
+        # The design and its timeline are cached in sticky and rebuilt only on the
+        # reload button or when the bar count changes underneath it -- a slider
+        # move must not re-read the document.
         reload_edge = gh_bridge.rising_edge(store, "reload", reload)
         timeline = store.get("timeline")
         if reload_edge or timeline is None or timeline.get("n_bars") != len(bar_map):
-            hold_plan = viewer.derive_hold_plan_safe("RSGHSequencePreview")
-            steps, skipped = viewer.build_global_timeline(
-                hold_plan=hold_plan, bar_map=bar_map,
-            )
-            timeline = {
-                "steps": steps, "skipped": skipped,
-                "hold_plan": hold_plan, "n_bars": len(bar_map),
-            }
+            timeline = _build_timeline(bar_map)
             store["timeline"] = timeline
             store.pop("fingerprint", None)  # force a redraw after a rebuild
-            if skipped:
-                notes.append(f"{len(skipped)} bar(s) contribute no steps")
+            if timeline["skipped"]:
+                notes.append(f"{len(timeline['skipped'])} bar(s) contribute no assembly steps")
         steps = timeline["steps"]
-        hold_plan = timeline["hold_plan"]
         n_frames = len(steps)
 
         if not n_frames:
@@ -630,9 +487,16 @@ def run(
         store["n_frames"] = n_frames
 
         idx = max(0, min(step, n_frames - 1))
-        bar_id, bar_oid, pose = steps[idx]
+        current = steps[idx]
+        bar_id = plan_steps.short(current.bar)
+        label = current.label.split(" ", 1)[1]
+        if bar_id not in bar_map:
+            return {
+                "bar_id": bar_id, "seq": None, "pose": label,
+                "frame_count": n_frames, "step_label": None,
+                "info": f"bar {bar_id} is no longer in the document -- press reload",
+            }
         seq = bar_map[bar_id][1]
-        label = viewer._pose_label(pose)
         step_label = f"step {idx + 1}/{n_frames} | bar {bar_id} | {label}"
 
         # GH re-solves aggressively (any upstream tick, a canvas move).  Skip
@@ -679,8 +543,7 @@ def run(
             thickness, dashed, pattern,
         )
 
-        _render_assemble_robot(store, bar_oid, bar_id, pose, notes)
-        _render_support_robots(store, bar_id, pose, hold_plan, bar_map, notes)
+        _render_robots(store, timeline["design"], current, notes)
 
         store["fingerprint"] = fingerprint
         sc.doc.Views.Redraw()

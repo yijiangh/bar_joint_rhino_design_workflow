@@ -3,10 +3,11 @@
 # r: numpy==1.24.4
 # r: scipy==1.13.1
 # r: compas==2.13.0
-# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.robot_cell`. Do not list it under `# r:` (pip cache would ignore SHA changes).
+# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.core_lib`. Do not list it under `# r:` (pip cache would ignore SHA changes).
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
+# r: trimesh==4.12.2
 """RSAssignAndShowWalkableGround - View + edit which WalkableGround(s) a bar's
 mobile base stands on, with a ghost-robot preview.
 
@@ -36,10 +37,11 @@ centerline midpoint (its ground projection is where the base stands behind of) a
 the average of the bar's male-joint blocks' +Z (their insertion axis).
 
 The ghost robot is FK-only (no PyBullet): its link meshes are harvested once at
-the home pose via ``core.ik_viz.get_robot_link_meshes_at_state`` (from a BARE
-robot cell so only the robot is drawn, not the assembly bodies) and drawn
-translucent through ``core.dynamic_preview.mesh_preview`` -- the same style as the
-IK base-sampling ghost -- rigidly transformed onto the computed base frame.
+the home pose via ``core.ik_viz.get_robot_link_meshes_at_state`` from the core's
+drawing cell, with only the robot shown (``core.design_display.robot_scene``),
+and drawn translucent through ``core.dynamic_preview.mesh_preview`` -- the same
+style as the IK base-sampling ghost -- rigidly transformed onto the computed base
+frame.
 """
 
 from __future__ import annotations
@@ -60,7 +62,10 @@ from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import ik_viz as _ik_viz_module
 from core import rhino_walkable_ground as _walkable_rhino_module
-from core import robot_cell as _robot_cell_module
+from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import design_builder as _design_builder_module
+from core import design_display as _design_display_module
+from core import design_source as _design_source_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 from core.rhino_helpers import np_mm_to_xform
@@ -92,10 +97,12 @@ def _reload():
     file. Mirrors the reload pattern in the other RS* commands.
     """
     global base_frame_viz, config, dynamic_preview, ik_viz
-    global walkable_rhino, robot_cell
+    global walkable_rhino, design_display, design_source
     config = importlib.reload(_config_module)
     walkable_rhino = importlib.reload(_walkable_rhino_module)
-    robot_cell = importlib.reload(_robot_cell_module)
+    importlib.reload(_design_builder_module)
+    design_source = importlib.reload(_design_source_module)
+    design_display = importlib.reload(_design_display_module)
     ik_viz = importlib.reload(_ik_viz_module)
     base_frame_viz = importlib.reload(_base_frame_viz_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
@@ -135,11 +142,12 @@ def _compute_default_base_frame_mm(bar_id, bar_oid, grounds_map):
 
 
 def _prepare_ghost_meshes():
-    """Harvest the robot's visual link meshes at the home pose (for the conduit).
+    """Harvest the assembly robot's visual link meshes at the home pose (for the conduit).
 
-    Builds a BARE robot cell (robot model + semantics only, no tools / rigid
-    bodies) so only the robot is drawn, poses it at the home arm configuration
-    with a worldXY base, and returns duplicated link meshes. The conduit later
+    The document is read into a design (``core.design_source``) and the robot is
+    drawn alone at the world origin from the core's drawing cell
+    (``core.design_display.robot_scene``: every body hidden), posed at the home
+    arm configuration; its duplicated link meshes are returned. The conduit later
     rigidly transforms this whole mesh set onto each computed base frame.
 
     Returns:
@@ -147,32 +155,20 @@ def _prepare_ghost_meshes():
         loaded (the command then shows the base-frame marker without a ghost).
     """
     try:
-        deps = robot_cell.import_compas_stack()
-        Frame = deps["Frame"]
-        RobotCell = deps["RobotCell"]
+        import scriptcontext as sc
+        from bar_assembly_core.urdf import UR_JOINT_NAMES
 
-        full_cell = robot_cell.get_or_load_robot_cell()
-        ghost_cell = RobotCell(full_cell.robot_model, full_cell.robot_semantics)
-        state = ghost_cell.default_cell_state()
-        state.robot_base_frame = Frame.worldXY()
-
+        result = design_source.RhinoDesignSource(CMD, design_source.geometry_cache(sc.sticky)).build()
+        robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
         # Home arm pose (left 6 then right 6) so the ghost looks folded, not a
         # scarecrow at the zero configuration.
-        arm_joint_names = (
-            list(ghost_cell.get_configurable_joint_names(config.LEFT_GROUP))
-            + list(ghost_cell.get_configurable_joint_names(config.RIGHT_GROUP))
-        )
-        for name, value in zip(arm_joint_names, config.HUSKY_DUAL_ARM_HOME_CONF_12):
-            try:
-                state.robot_configuration[name] = float(value)
-            except Exception:
-                pass  # a name mismatch on one joint shouldn't kill the whole ghost
-
-        meshes = ik_viz.get_robot_link_meshes_at_state(
-            state, robot_cell=ghost_cell, layer_key=GHOST_LAYER_KEY
-        )
+        home = dict(zip([f"{side}_ur_arm_{j}" for side in ("left", "right") for j in UR_JOINT_NAMES],
+                        (float(v) for v in config.HUSKY_DUAL_ARM_HOME_CONF_12)))
+        scene = design_display.robot_scene(result.design, robot_id, home)
+        cell, state = design_display.cell_and_state(sc.sticky, scene, robot_id)
+        meshes = ik_viz.get_robot_link_meshes_at_state(state, robot_cell=cell, layer_key=GHOST_LAYER_KEY)
         return meshes or None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- the ghost is an aid, never a blocker
         print(f"{CMD}: ghost robot unavailable ({type(exc).__name__}: {exc}); showing base frame only.")
         return None
 

@@ -4,14 +4,14 @@
 # r: scipy==1.13.1
 # r: compas==2.13.0
 # compas_fab is loaded from the in-repo submodule `external/compas_fab` via the
-# sys.path injection in `core.robot_cell`. Do NOT list it under `# r:` (the pip
+# sys.path injection in `core.core_lib`. Do NOT list it under `# r:` (the pip
 # cache would ignore submodule SHA changes).
 # r: compas_robots==0.6.0
-# r: pybullet==3.2.7
-# r: pybullet_planning==0.6.1
+# r: trimesh==4.12.2
 """RSGHPreviewWarmup -- one-shot robot pre-loader for RSGHSequencePreview.
 
-Click the button ONCE per Rhino session: it loads the three robot models
+Click the button ONCE per Rhino session: it reads the document into a design,
+loads the three robot models
 (Cindy, Alice, Belle) and bakes their display meshes into the session cache --
 the only heavy work in the preview pipeline.  Clicking again is harmless;
 skipping it just means the preview pays each load on first need.  No PyBullet.

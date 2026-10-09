@@ -90,6 +90,34 @@ def setup():
     tamp_config.IK_BACKEND = backend
 
 
+def test_part_contacts_carry_the_legacy_touch_rules():
+    """The contacts the legacy touch policy allowed: tool on its part, mate halves on the partner's bar, ground
+    halves on the ground, and a cradle receiver around the mating male's tool."""
+    from dataclasses import replace
+    from core.design_builder import build_actions
+    from core.design_planning import allow_part_contacts, cradle_parts
+    from test_design_builder import SCHEDULE, _records
+
+    design = _design()
+    bars, holds = _records(design)
+    design = build_actions(design, SCHEDULE, bars, holds).design
+    insert = next(m for m in design.actions["B2_J"].movements if m.id == "B2_J_insert")
+
+    def touches(design, body):
+        scene = design.scene_at(insert)
+        allow_part_contacts(design, scene, insert.start, cradles=frozenset({"T20/Female"}))
+        return set(scene.bodies[body].touches)
+
+    female, male = "joints/J1-2_female", "joints/J1-2_male"
+    assert "bars/B2" in touches(design, female)                   # the incoming bar seats into it
+    assert "tools/AT3L" in touches(design, "bars/B2")             # the tool may touch its whole part
+    assert "ground/WG0" in touches(design, "joints/G2-T20-0_ground")
+    assert "tools/AT3L" in touches(design, female)                # a cradle wraps the male's tool
+    plain = replace(design, bodies={**design.bodies, female: replace(design.bodies[female], part="T20/MoCap")})
+    assert "tools/AT3L" not in touches(plain, female)             # an ordinary receiver never gets the tool
+    assert "T20SubLeft/Female" in cradle_parts() and "T20/Female" not in cradle_parts()
+
+
 def test_keyframe_chain_solves_on_the_mirror(setup):
     """tamp's solve_keyframe_chain, given the mirror's planner and the design's scenes, reaches all three keyframes."""
     from husky_assembly_tamp.keyframe.ik_keyframe import solve_keyframe_chain

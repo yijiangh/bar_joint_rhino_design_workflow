@@ -3,39 +3,32 @@
 # r: numpy==1.24.4
 # r: scipy==1.13.1
 # r: compas==2.13.0
-# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.robot_cell`. Do not list it under `# r:` (pip cache would ignore SHA changes).
+# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.core_lib`. Do not list it under `# r:` (pip cache would ignore SHA changes).
 # r: compas_robots==0.6.0
 # r: pybullet==3.2.7
 # r: pybullet_planning==0.6.1
-"""RSRebuildRobotCell - (Re)build the static assembly collision cell.
+# r: trimesh==4.12.2
+"""RSRebuildRobotCell - Refresh the planning cells: re-read the document and rebuild them through the core.
 
-Scans the document and registers the FULL canonical assembly into the cached
-``RobotCell``: every bar (``bar_<bid>``), every joint half
-(``joint_<jid>_<sub>``), every environment obstacle mesh on
-``LAYER_ENVIRONMENT`` (``obstacle_<name>``), and the two arm tools as
-``ToolModel``s (``AT3L`` / ``AT3R``). Pushes the cell to the planner once and
-caches a snapshot (+ a cheap fingerprint) so every later IK / ShowIK / export
-command reuses it without re-scanning.
+The planning and drawing cells are built by the shared core from the document
+read as a schema 2 design (``core.design_source``): every bar, joint half,
+walkable ground and environment obstacle, the robots and their tools. The IK
+commands and viewers keep them in the session (``sc.sticky``) and rebuild one
+only when its geometry changed, so no manual rebuild is needed after an edit.
+This button forces a clean start and pays the load up front:
 
-It also AUTO-ASSIGNS WalkableGround surfaces to bars: every WalkableGround brep
-gets a stable id (``WG0``, ``WG1``, ...) and every bar that has no association
-yet is linked to its nearest ground(s) by distance. Bars you already edited with
-RSAssignAndShowWalkableGround are left untouched, so manual picks survive a rebuild;
-run RSAssignAndShowWalkableGround to override an auto-assignment.
+1. AUTO-ASSIGNS WalkableGround surfaces to bars: every WalkableGround brep gets a
+   stable id (``WG0``, ``WG1``, ...) and every bar with no association yet is
+   linked to its nearest ground(s). Bars edited with
+   RSAssignAndShowWalkableGround are left untouched.
+2. AUTO-POPULATES a heuristic seed base pose on every bar that has none yet
+   (non-destructive: hand-picked and IK-solved bases are kept).
+3. Drops every cached cell, mirror and preview mesh, re-reads the document, and
+   builds each robot's planning mirror (its own PyBullet world) and the
+   assembly robot's drawing cell, so the next IK command or viewer starts warm.
 
-Finally it AUTO-POPULATES a heuristic seed base pose on every bar that has no base
-yet (stand a standoff behind the bar, face the average male-joint insertion
-direction, on the bar's assigned ground -- the same heuristic as
-RSAssignAndShowWalkableGround). So the exported BarAction + every movement therein
-already start from a real base instead of a placeholder. Non-destructive: bars
-that already carry a base (e.g. an IK-solved one) are kept.
-
-Run this after you ADD / DELETE / MOVE / RESIZE bars, joints, or environment
-meshes. The collision cell is a manual snapshot -- edits made after the last
-rebuild are NOT reflected until you click this again (IK / ShowIK warn when
-they detect the document changed).
-
-Requires PyBullet (RSPBStart).
+RSPBStart (left-click) runs the same; its right-click, RSPBStartGUI, also opens
+the assembly robot's planning world in PyBullet's window. RSPBStop closes them.
 """
 
 from __future__ import annotations
@@ -43,8 +36,10 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+import time
 
 import rhinoscriptsyntax as rs
+import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,49 +47,91 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config as _config_module
-from core import env_collision as _env_collision_module
-from core import robot_cell as _robot_cell_module
+from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import design_builder as _design_builder_module
+from core import design_display as _design_display_module
+from core import design_planning as _design_planning_module
+from core import design_source as _design_source_module
+from core import ik_viz as _ik_viz_module
 from core import rhino_walkable_ground as _walkable_module
 from core.rhino_bar_registry import repair_on_entry
 
 
-def main() -> None:
-    robot_cell = importlib.reload(_robot_cell_module)
+def close_all(store) -> None:
+    """Close every planning mirror, forget the drawing cells, the geometry cache and the preview meshes."""
+    design_planning = importlib.reload(_design_planning_module)
+    design_display = importlib.reload(_design_display_module)
+    design_source = importlib.reload(_design_source_module)
+    ik_viz = importlib.reload(_ik_viz_module)
+    design_planning.close_mirrors(store)
+    design_display.forget_cells(store)
+    store.pop(design_source.GEOMETRY_CACHE_KEY, None)
+    ik_viz.discard_cache()
+
+
+def refresh(command: str = "RSRebuildRobotCell", gui: bool = False) -> None:
+    """Run the ground and base passes, rebuild every cell from the document, and report.
+
+    Args:
+        command: The command name for messages.
+        gui: Also open the assembly robot's planning world in PyBullet's window.
+    """
     config = importlib.reload(_config_module)
-    importlib.reload(_env_collision_module)
     walkable = importlib.reload(_walkable_module)
+    importlib.reload(_design_builder_module)
+    design_source = importlib.reload(_design_source_module)
+    design_display = importlib.reload(_design_display_module)
+    design_planning = importlib.reload(_design_planning_module)
 
-    if not robot_cell.is_pb_running():
-        rs.MessageBox(
-            "PyBullet is not running. Click RSPBStart first.",
-            0,
-            "RSRebuildRobotCell",
-        )
-        return
-    _client, planner = robot_cell.get_planner()
-    rcell = robot_cell.get_or_load_robot_cell()
+    repair_on_entry(float(config.BAR_RADIUS), command)
+    ground_lines, ground_console = walkable.assign_and_seed_summary()
+    close_all(sc.sticky)
 
-    repair_on_entry(float(config.BAR_RADIUS), "RSRebuildRobotCell")
-
+    started = time.monotonic()
     try:
-        collision_bodies = robot_cell.rebuild_assembly_cell(rcell, planner)
+        result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
     except Exception as exc:  # noqa: BLE001 -- surface any build error to the user
-        rs.MessageBox(
-            f"RSRebuildRobotCell failed:\n{type(exc).__name__}: {exc}",
-            0,
-            "RSRebuildRobotCell",
-        )
+        rs.MessageBox(f"{command}: the document cannot become a design:\n{type(exc).__name__}: {exc}", 0, command)
         return
+    design = result.design
+    for problem in result.problems:
+        print(f"{command}: {problem}")
 
-    # Auto-assign WalkableGround surfaces to bars + seed a base pose on every bar
-    # that lacks one (both NON-DESTRUCTIVE, so manual picks and IK-solved bases
-    # survive), then format the summary. The helper is shared with RSPBStart so its
-    # auto-build pop-up reads exactly the same as this one.
-    msg, console_line = walkable.rebuild_summary_after_assign(
-        collision_bodies, sorted(rcell.tool_models.keys())
-    )
-    print(f"RSRebuildRobotCell: {console_line}")
-    rs.MessageBox(msg, 0, "RSRebuildRobotCell")
+    built, failed = [], []
+    movement = next((m for _action, m in design.movements()), None)
+    if movement is not None:
+        for robot_id in sorted(design.robots):
+            try:
+                scene = design.scene_at(movement)
+                design_display.place(scene, robot_id, scene.robots[robot_id].base)
+                design_planning.plannable(scene, robot_id)
+                mirror = design_planning.mirror_for(sc.sticky, robot_id)
+                if gui and robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
+                    mirror.set_gui(True)
+                mirror.sync(scene)
+                if robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
+                    design_display.cell_and_state(sc.sticky, scene, robot_id)
+                built.append(robot_id)
+            except Exception as exc:  # noqa: BLE001 -- one robot must not stop the others
+                failed.append(f"{robot_id}: {type(exc).__name__}: {exc}")
+
+    count = {prefix: sum(1 for b in design.bodies if b.startswith(prefix + "/"))
+             for prefix in ("bars", "joints", "ground", "obstacles")}
+    lines = [f"{count['bars']} bar(s), {count['joints']} joint half/halves, {count['ground']} walkable ground(s), "
+             f"{count['obstacles']} environment obstacle(s)",
+             f"Tools: {', '.join(sorted(design.tools)) or '-'}",
+             f"Planning cells: {', '.join(built) or 'none'} ({time.monotonic() - started:.1f} s)"]
+    if movement is None:
+        lines.append("No bar has a left and a right tool yet: the cells are built by the first IK command.")
+    lines += [f"FAILED {line}" for line in failed] + ground_lines
+    if result.problems:
+        lines.append(f"{len(result.problems)} note(s) on what the design leaves out: see the command history.")
+    print(f"{command}: {'; '.join(lines[:3])}; {ground_console}.")
+    rs.MessageBox("Refreshed the planning cells:\n  " + "\n  ".join(lines), 0, command)
+
+
+def main() -> None:
+    refresh("RSRebuildRobotCell")
 
 
 if __name__ == "__main__":

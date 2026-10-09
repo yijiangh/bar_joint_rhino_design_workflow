@@ -84,7 +84,7 @@ def export(command: str = "RSExportDesign") -> None:
         return
     started = time.perf_counter()
     try:
-        result = design_source.RhinoDesignSource(command).build()
+        result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
     except DesignError as exc:
         print(f"{command}: the document cannot be exported:\n  " + "\n  ".join(exc.problems))
         rs.MessageBox(f"Not exported: {len(exc.problems)} problem(s) in the document.\n\nDetails in the command "

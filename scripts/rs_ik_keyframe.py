@@ -49,6 +49,7 @@ continues the in-Rhino solve, so the default flow is unchanged.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -81,6 +82,9 @@ from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
 from core import robot_obstacles as _robot_obstacles_module
 from core import support_grasp_pick as _support_grasp_pick_module
+from core import design_builder as _design_builder_module
+from core import design_planning as _design_planning_module
+from core import design_source as _design_source_module
 # The shared solvers live in the husky_assembly_tamp submodule (importing
 # core.config above put it on sys.path) -- ONE implementation used by both this
 # command and the headless planner.
@@ -149,6 +153,7 @@ def _reload_runtime_modules():
     global hold_schedule, ik_keyframe, ik_viz, reach_viz
     global rhino_tool_place, rhino_walkable_ground, robot_cell
     global robot_cell_support, robot_obstacles, support_grasp_pick
+    global design_planning, design_source
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
     env_collision = importlib.reload(_env_collision_module)
@@ -176,6 +181,10 @@ def _reload_runtime_modules():
     bar_action = importlib.reload(_bar_action_module)
     dual_arm_ik = importlib.reload(_dual_arm_ik_module)
     ik_keyframe = importlib.reload(_ik_keyframe_module)
+    # * Engine Core: document -> design -> scene -> mirror. The core itself is never reloaded (core.core_lib).
+    importlib.reload(_design_builder_module)
+    design_source = importlib.reload(_design_source_module)
+    design_planning = importlib.reload(_design_planning_module)
 
 
 _reload_runtime_modules()
@@ -1119,6 +1128,61 @@ def _ask_accept(prompt="Accept this IK keyframe and save it on the bar", allow_a
         return "give_up"
 
 
+# ---------------------------------------------------------------------------
+# * Planning engine: Core (design -> scene -> CompasFabMirror) or Legacy (the old cell)
+# ---------------------------------------------------------------------------
+
+#: Last engine picked, remembered for the session.
+ENGINE_STICKY_KEY = "bar_joint:planning_engine"
+#: ik_viz sub-layer of the Core engine's previews (its cell's bodies are named by design id).
+LAYER_KEY_CORE = "Core"
+#: The cell and ik_viz layer the previews draw: None = the legacy cell. Set per run by `_use_engine_preview`.
+_PREVIEW = {"cell": None, "layer": ik_viz.LAYER_KEY_ASSEMBLY}
+
+
+def _ask_engine(command="RSIKKeyframe"):
+    """Ask which engine plans: "core" (design -> scene -> mirror, the default) or "legacy"; None if cancelled."""
+    last = sc.sticky.get(ENGINE_STICKY_KEY, "Core")
+    choice = rs.GetString("Planning engine", last, ["Core", "Legacy"])
+    if choice is None:
+        return None
+    choice = "Legacy" if choice.lower().startswith("l") else "Core"
+    sc.sticky[ENGINE_STICKY_KEY] = choice
+    print(f"{command}: planning engine {choice}.")
+    return choice.lower()
+
+
+def _use_engine_preview(cell=None):
+    """Draw previews with `cell` on the Core layer, or with the legacy cell when None."""
+    _PREVIEW["cell"] = cell
+    _PREVIEW["layer"] = LAYER_KEY_CORE if cell is not None else ik_viz.LAYER_KEY_ASSEMBLY
+
+
+def _core_design(command):
+    """The document as a schema 2 design, with the session's geometry cache; prints what was left out."""
+    result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
+    for problem in result.problems:
+        print(f"{command} (core): {problem}")
+    return result.design
+
+
+def _core_release_report(command, bar_id, held_bars=None):
+    """Run the core release check for the holds released after `bar_id` (or `held_bars`); report-only."""
+    try:
+        design = _core_design(command)
+        held = held_bars if held_bars is not None else design_planning.releases_after(design, f"bars/{bar_id}")
+        failures = []
+        for held_bar in held:
+            verdict = design_planning.release_check(design, sc.sticky, held_bar)
+            print(f"{command}: release check for held bar {held_bar}: {verdict}")
+            if not verdict.startswith("OK"):
+                failures.append(f"{held_bar}: {verdict}")
+        if failures:
+            rs.MessageBox("Release-time check flagged problems:\n\n" + "\n".join(failures), 0, command)
+    except Exception as exc:  # noqa: BLE001 -- report-only: never lose an accepted keyframe to this
+        print(f"{command}: release check skipped ({exc}).")
+
+
 def _render_preview_pose(planner, state, mesh_mode):
     """Render one solved keyframe pose on the cached assembly-layer meshes.
 
@@ -1138,8 +1202,8 @@ def _render_preview_pose(planner, state, mesh_mode):
     robot_cell.set_cell_state(planner, state)
     rs.EnableRedraw(False)
     try:
-        ik_viz.update_state(state, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
-        ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
+        ik_viz.update_state(state, robot_cell=_PREVIEW["cell"], layer_key=_PREVIEW["layer"])
+        ik_viz.set_active_mesh_mode(_PREVIEW["layer"], mesh_mode)
     finally:
         rs.EnableRedraw(True)
         sc.doc.Views.Redraw()
@@ -1307,10 +1371,10 @@ def _preview_robot_at_base(planner, template_state, base_frame_mm, mesh_mode):
     state = template_state.copy()
     robot_cell._apply_base_frame_mm(state, base_frame_mm)
     robot_cell.set_cell_state(planner, state)
-    rcell = robot_cell.get_or_load_robot_cell()
-    # Same layer_key as ShowIK so the cache is shared across commands.
-    ik_viz.update_state(state, robot_cell=rcell, layer_key=ik_viz.LAYER_KEY_ASSEMBLY)
-    ik_viz.set_active_mesh_mode(ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode)
+    rcell = _PREVIEW["cell"] or robot_cell.get_or_load_robot_cell()
+    # Same layer_key as ShowIK so the cache is shared across commands (Core: its own layer).
+    ik_viz.update_state(state, robot_cell=rcell, layer_key=_PREVIEW["layer"])
+    ik_viz.set_active_mesh_mode(_PREVIEW["layer"], mesh_mode)
 
 
 def _hide_inactive_tool_blocks(active_bar_id):
@@ -2396,7 +2460,11 @@ def _solve_support_pair_with_sampling(
     return None, None, None
 
 
-def _run_support_flow(bar_id: str, bar_oid):
+class _SkipCheckpoint(Exception):
+    """The Core engine checks the release after the accept, not here."""
+
+
+def _run_support_flow(bar_id: str, bar_oid, engine="legacy", stack=None, after=None):
     """The support-robot half of the button: hold keyframe for one held bar.
 
     Steps: derive the hold plan (which robot, until when) -> freeze the scene
@@ -2409,6 +2477,10 @@ def _run_support_flow(bar_id: str, bar_oid):
     Args:
         bar_id (str): the held bar's id.
         bar_oid: the held bar's Rhino object id.
+        engine (str): "core": the scene comes from the design (built after the grasp pick) and the support
+            robot's mirror plans; "legacy": its own PyBullet session and cell.
+        stack (contextlib.ExitStack): holds the Core engine's lent planner until the command ends.
+        after (list): callables run once the command's planners are returned (Core release check).
     """
     # * ---- 1. Hold plan: which robot takes this bar, and until when.
     bar_seq, supported = collect_hold_inputs()
@@ -2433,12 +2505,14 @@ def _run_support_flow(bar_id: str, bar_oid):
         f"(step {entry['release_after_seq']})."
     )
 
-    # * ---- 2. That robot's own PyBullet session (cell pushed on first use).
-    try:
-        _sr_client, sr_planner, sr_cell = robot_cell_support.ensure_support_cell_pushed(robot_name)
-    except RuntimeError as exc:
-        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
-        return
+    # * ---- 2. That robot's own PyBullet session (cell pushed on first use). Core: its mirror, after the pick.
+    sr_planner = sr_cell = None
+    if engine == "legacy":
+        try:
+            _sr_client, sr_planner, sr_cell = robot_cell_support.ensure_support_cell_pushed(robot_name)
+        except RuntimeError as exc:
+            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+            return
 
     # * ---- 3. Scene at the held bar's own step.
     bar_map = get_bar_seq_map()
@@ -2467,40 +2541,45 @@ def _run_support_flow(bar_id: str, bar_oid):
         # Register the FULL env once (all bars/joints); each scene state then only
         # flips per-body visibility — no cell re-uploads when the release check
         # later needs a different moment's scene.
-        env_union = hold_action_builder.get_env_union(bar_map)
-        hold_action_builder.ensure_support_env_registered(sr_cell, sr_planner, env_union)
-        # Visible: the RELEASE-time built set -- every stabilizing bar that will
-        # exist before this hold ends (the held bar itself is excluded, since the
-        # gripper wraps around it). The hold pose has to clear the whole window,
-        # not just grasp time: a pose that only fits the grasp-time world can sit
-        # exactly where a later stabilizing bar must go, and then block the very
-        # bars the hold exists to enable.
-        env_scene = hold_action_builder.collect_hold_window_geometry(
-            bar_id, hold_plan, bar_map=bar_map
-        )
-        template_state = hold_action_builder.build_support_scene_state(
-            robot_name, env_union, env_scene
-        )
-        # Cindy frozen at her assembled pose (she still grips the bar while the
-        # support robot approaches).
-        robot_obstacles.configure_robot_obstacle(
-            template_state,
-            config.ASSEMBLY_ROBOT_NAME,
-            assembled["base_frame_world_mm"],
-            list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
-            list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
-        )
-        # The other support robot frozen at its held pose if it is deployed now
-        # (raises if its hold is unsolved); parked otherwise.
-        try:
-            hold_action_builder.freeze_holding_robots(
-                template_state, hold_plan, entry["hold_start_seq"],
-                exclude_robot=robot_name, bar_map=bar_map,
+        env_union = env_scene = template_state = None
+        if engine == "core":
+            env_union = env_scene = {}
+        else:
+            env_union = hold_action_builder.get_env_union(bar_map)
+            hold_action_builder.ensure_support_env_registered(sr_cell, sr_planner, env_union)
+        if engine == "legacy":
+            # Visible: the RELEASE-time built set -- every stabilizing bar that will
+            # exist before this hold ends (the held bar itself is excluded, since the
+            # gripper wraps around it). The hold pose has to clear the whole window,
+            # not just grasp time: a pose that only fits the grasp-time world can sit
+            # exactly where a later stabilizing bar must go, and then block the very
+            # bars the hold exists to enable.
+            env_scene = hold_action_builder.collect_hold_window_geometry(
+                bar_id, hold_plan, bar_map=bar_map
             )
-        except RuntimeError as exc:
-            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
-            return
-        print(f"RSIKKeyframe(support): env collision -- {env_collision.list_env_summary(env_scene)}")
+            template_state = hold_action_builder.build_support_scene_state(
+                robot_name, env_union, env_scene
+            )
+            # Cindy frozen at her assembled pose (she still grips the bar while the
+            # support robot approaches).
+            robot_obstacles.configure_robot_obstacle(
+                template_state,
+                config.ASSEMBLY_ROBOT_NAME,
+                assembled["base_frame_world_mm"],
+                list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
+                list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
+            )
+            # The other support robot frozen at its held pose if it is deployed now
+            # (raises if its hold is unsolved); parked otherwise.
+            try:
+                hold_action_builder.freeze_holding_robots(
+                    template_state, hold_plan, entry["hold_start_seq"],
+                    exclude_robot=robot_name, bar_map=bar_map,
+                )
+            except RuntimeError as exc:
+                rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+                return
+            print(f"RSIKKeyframe(support): env collision -- {env_collision.list_env_summary(env_scene)}")
 
         bar_curve = rs.coercecurve(bar_oid)
         if bar_curve is None:
@@ -2533,6 +2612,17 @@ def _run_support_flow(bar_id: str, bar_oid):
             return
         hold_action_builder.write_support_grasp_frame(bar_oid, grasp_mm)
 
+        if engine == "core":
+            # * The hold exists in the design once its grasp is picked: solve in its scene, on its robot's mirror.
+            try:
+                design = _core_design("RSIKKeyframe")
+                sr_mirror, template_state = design_planning.hold_solve_state(design, sc.sticky, f"bars/{bar_id}")
+            except (KeyError, ValueError, RuntimeError) as exc:
+                rs.MessageBox(f"Core engine: cannot build the hold scene of {bar_id}: {exc}", 0, "RSIKKeyframe")
+                return
+            sr_planner = stack.enter_context(sr_mirror.lend())
+            sr_cell = sr_mirror.cell
+            env_scene = dict(design.bodies)
         # Keep a see-through gripper at the picked pose on screen from here
         # through the base pick and the solve preview (a display conduit, not
         # a baked object — no layers involved, always visible).
@@ -2635,8 +2725,10 @@ def _run_support_flow(bar_id: str, bar_oid):
             approach_state, config.SUPPORT_GROUP, sr_cell
         )
 
-        # * ---- 7. Checkpoint 1: partial release check (what is knowable now).
+        # * ---- 7. Checkpoint 1: partial release check (what is knowable now). Core: after the accept.
         try:
+            if engine == "core":
+                raise _SkipCheckpoint()
             skipped = hold_action_builder.validate_release_confs(
                 sr_planner, sr_cell, robot_name, bar_id, hold_plan,
                 used_base, approach_cfg, held_cfg,
@@ -2649,6 +2741,8 @@ def _run_support_flow(bar_id: str, bar_oid):
                     f"when {entry['release_after_bar_id']} is keyframed."
                 )
             print("RSIKKeyframe(support): checkpoint-1 release check passed.")
+        except _SkipCheckpoint:
+            print("RSIKKeyframe(support): core engine -- the release is checked once the keyframe is saved.")
         except RuntimeError as exc:
             rs.MessageBox(str(exc), 0, "RSIKKeyframe")
             return
@@ -2669,6 +2763,8 @@ def _run_support_flow(bar_id: str, bar_oid):
                 f"(split keys) on bar {bar_id}."
             )
             keep_highlight = True
+            if engine == "core" and after is not None:
+                after.append(lambda: _core_release_report("RSIKKeyframe", bar_id, [f"bars/{bar_id}"]))
         else:
             print("RSIKKeyframe(support): rejected; bar user-text keeps only the grasp/base picks.")
 
@@ -2695,6 +2791,15 @@ def _run_support_flow(bar_id: str, bar_oid):
 
 
 def main():
+    """Run the command; planners lent by the Core engine are returned before the follow-up checks run."""
+    after = []
+    with contextlib.ExitStack() as stack:
+        _main(stack, after)
+    for task in after:
+        task()
+
+
+def _main(stack, after):
     """Run the dual-arm IK keyframe command end to end.
 
     Reloads the runtime modules, verifies PyBullet is up, and picks a bar that
@@ -2709,24 +2814,30 @@ def main():
     """
     _reload_runtime_modules()
     repair_on_entry(float(config.BAR_RADIUS), "RSIKKeyframe")
-
-    if not robot_cell.is_pb_running():
-        rs.MessageBox(
-            "PyBullet is not running. Click RSPBStart first.", 0, "RSIKKeyframe"
-        )
+    engine = _ask_engine("RSIKKeyframe")
+    if engine is None:
         return
-    _client, planner = robot_cell.get_planner()
-    rcell = robot_cell.get_or_load_robot_cell()
-    # No cell swapping anymore: Cindy's planner permanently owns the dual-arm
-    # cell (support robots run in their own PyBullet sessions).
+    _use_engine_preview(None)
 
-    if not robot_cell.prompt_if_cell_stale(rcell, planner):
-        print("RSIKKeyframe: aborted (stale collision cell).")
-        return
+    planner = rcell = neutral_seed_state = None
+    if engine == "legacy":
+        if not robot_cell.is_pb_running():
+            rs.MessageBox(
+                "PyBullet is not running. Click RSPBStart first.", 0, "RSIKKeyframe"
+            )
+            return
+        _client, planner = robot_cell.get_planner()
+        rcell = robot_cell.get_or_load_robot_cell()
+        # No cell swapping anymore: Cindy's planner permanently owns the dual-arm
+        # cell (support robots run in their own PyBullet sessions).
 
-    # Neutral state, used only to pose the robot for the reuse-saved-base preview
-    # (that preview needs no IK and no per-movement collision context).
-    neutral_seed_state = robot_cell.default_cell_state()
+        if not robot_cell.prompt_if_cell_stale(rcell, planner):
+            print("RSIKKeyframe: aborted (stale collision cell).")
+            return
+
+        # Neutral state, used only to pose the robot for the reuse-saved-base preview
+        # (that preview needs no IK and no per-movement collision context).
+        neutral_seed_state = robot_cell.default_cell_state()
 
     rs.UnselectAllObjects()
     picked = _pick_bar_and_detect_flow()
@@ -2734,7 +2845,7 @@ def main():
         return
     flow, target_bar_id, target_bar_oid, left_tuple, right_tuple = picked
     if flow == "support":
-        _run_support_flow(target_bar_id, target_bar_oid)
+        _run_support_flow(target_bar_id, target_bar_oid, engine, stack, after)
         return
     # The male/ground joint oids ARE needed past the pick now: their block origins
     # are the two grab points the base guide lines are built from.
@@ -2785,21 +2896,36 @@ def main():
     # unsolved -- the IK chain fills them in. The movement EE targets (approach
     # / assembled / retreat) are world-fixed, so the identity base frame here
     # does not matter: every solve overrides the base with the sampled frame.
-    try:
-        jointing_mvts, release_mvts, env_geom = bar_action.build_split_assembly_movements(
-            rcell, planner, target_bar_id,
-            np.eye(4, dtype=float),
-            tool0_left_final, tool0_right_final,
-        )
-    except (RuntimeError, ValueError) as exc:
-        rs.MessageBox(str(exc), 0, "RSIKKeyframe")
-        return
+    if engine == "core":
+        # * Core: the movements are the design's transfer / insert / retreat, synced into Cindy's mirror.
+        try:
+            design = _core_design("RSIKKeyframe")
+            mirror, core_movements = design_planning.keyframe_movements(design, sc.sticky, f"bars/{target_bar_id}")
+        except (KeyError, ValueError, RuntimeError) as exc:
+            rs.MessageBox(f"Core engine: cannot build the movements of {target_bar_id}: {exc}", 0, "RSIKKeyframe")
+            return
+        planner = stack.enter_context(mirror.lend())
+        rcell = mirror.cell
+        _use_engine_preview(rcell)
+        neutral_seed_state = core_movements["M3"].start_state.copy()
+        # ? Offender highlighting maps legacy body names; with the Core engine it finds none.
+        env_geom = dict(design.bodies)
+    else:
+        try:
+            jointing_mvts, release_mvts, env_geom = bar_action.build_split_assembly_movements(
+                rcell, planner, target_bar_id,
+                np.eye(4, dtype=float),
+                tool0_left_final, tool0_right_final,
+            )
+        except (RuntimeError, ValueError) as exc:
+            rs.MessageBox(str(exc), 0, "RSIKKeyframe")
+            return
     # The IK chain's solver-facing roles map onto the split movements:
     # approach = the bar-held transfer's goal (J_M3), assembled = the linear
     # insert's goal (J_M5), retreat = the per-arm retreat's goal (R_M2), and
     # home comes from the free-home movement (R_M3). Keeping the old M1..M4
     # labels here means the solve/preview code below stays unchanged.
-    movements = {
+    movements = core_movements if engine == "core" else {
         "M1": jointing_mvts["M3"],
         "M2": jointing_mvts["M5"],
         "M3": release_mvts["M2"],
@@ -3060,6 +3186,10 @@ def main():
                 # ! is now fully determined — re-check every such hold's
                 # ! held/retreat configs against it. Report-only: the accepted
                 # ! assembly keyframe is never lost to a support-side problem.
+                if engine == "core":
+                    after.append(lambda: _core_release_report("RSIKKeyframe", target_bar_id))
+                    keep_highlight = True
+                    break
                 try:
                     release_report = hold_action_builder.validate_releases_after_bar(target_bar_id)
                     failures = []

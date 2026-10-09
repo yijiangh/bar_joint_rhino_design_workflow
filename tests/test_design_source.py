@@ -128,6 +128,7 @@ def test_geometry_cache_keeps_objects(source):
     first = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
     second = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
     assert all(second.bodies[b].geometry is first.bodies[b].geometry for b in first.bodies)
+    assert len({id(body.geometry) for body in first.bodies.values()}) == len(first.bodies)  # never shared
     assert all(second.tools[t] is first.tools[t] for t in first.tools)
     assert design_model(second, "robots/cindy") is design_model(first, "robots/cindy")
     rs = __import__("rhinoscriptsyntax")

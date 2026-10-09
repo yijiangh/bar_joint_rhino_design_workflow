@@ -331,7 +331,8 @@ class PlanSession:
             for a, b in pairs:
                 print(f"{self.command}: COLLISION -- {a} x {b}")
         ids = {i for pair in pairs for i in pair}
-        self._apply_highlight(_guids_for_ids(self.cell, self.robot_id, ids, self.mesh_mode))
+        owners = {tool: robot for robot, spec in self.design.robots.items() for tool in spec.tools.values()}
+        self._apply_highlight(_guids_for_ids(self.cell, self.robot_id, ids, self.mesh_mode, owners))
         if verbose and pairs:
             print(f"{self.command}: {len(pairs)} colliding pair(s); highlighted "
                   f"{len(self._highlight_oids)} object(s).")
@@ -451,8 +452,12 @@ class PlanSession:
             print(f"{self.command}: failed to restore sequence colors ({exc}); continuing.")
 
 
-def _guids_for_ids(cell, robot_id, ids, mesh_mode):
-    """The drawn meshes of design ids: bodies, tools, the drawing robot's links, other robots (as tools)."""
+def _guids_for_ids(cell, robot_id, ids, mesh_mode, owners=None):
+    """The drawn meshes of design ids: bodies, tools, the drawing robot's links, other robots (as tools).
+
+    Args:
+        owners: Tool id -> the robot it is mounted on; a tool of another robot is drawn as part of that robot.
+    """
     links = ik_viz.get_link_native_geometry(cell, IK_LAYER_KEY_ASSEMBLY, mesh_mode)
     tools = ik_viz.get_tool_native_geometry(cell, IK_LAYER_KEY_ASSEMBLY, mesh_mode)
     bodies = ik_viz.get_rb_native_geometry(cell, IK_LAYER_KEY_ASSEMBLY, mesh_mode)
@@ -463,6 +468,8 @@ def _guids_for_ids(cell, robot_id, ids, mesh_mode):
             out += bodies[object_id]
         elif object_id in tools:
             out += tools[object_id]
+        elif (owners or {}).get(object_id) in tools:
+            out += tools[owners[object_id]]
         elif parts[0] == "robots" and "/".join(parts[:2]) == robot_id:
             out += links.get(parts[2], []) if len(parts) > 2 else [g for gs in links.values() for g in gs]
         elif parts[0] == "robots":

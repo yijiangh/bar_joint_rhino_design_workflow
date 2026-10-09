@@ -449,7 +449,8 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
     cache = _bundle_cache()
     key = _bundle_key(robot_cell, layer_key)
     bundle = cache.get(key)
-    if bundle is not None:
+    # ? Keyed by id(cell): a freed cell's address can be reused, so check the cell itself too.
+    if bundle is not None and bundle.get("cell") is robot_cell:
         return bundle
 
     layer_name = _resolve_layer(layer_key)
@@ -489,6 +490,8 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
         "hidden_tool_ids": set(),
         "layer": layer_name,
         "layer_key": layer_key or "",
+        # The cell drawn (kept alive, so its id cannot be reused while cached).
+        "cell": robot_cell,
     }
     cache[key] = bundle
     return bundle
@@ -733,6 +736,10 @@ def update_state(
     parent = _resolve_layer(layer_key)
     if parent != config.LAYER_IK_CACHE and rs.IsLayer(parent) and not rs.LayerVisible(parent):
         rs.LayerVisible(parent, True)
+    # * One preview at a time: the other sub-layers' bundles (another command's last pose) are hidden.
+    for other in {b["layer"] for b in _bundle_cache().values()} - {parent}:
+        if other != config.LAYER_IK_CACHE and rs.IsLayer(other) and rs.LayerVisible(other):
+            rs.LayerVisible(other, False)
 
     # Work out where each attached rigid body sits (same as the base cell does).
     state = robot_cell.compute_attach_objects_frames(state)
@@ -751,6 +758,9 @@ def update_state(
     bundle["hidden_tool_ids"] = {tool_id for tool_id, ts in state.tool_states.items()
                                  if ts.attached_to_group is None and _is_parked(ts.frame)}
     if bundle["robot_hidden"]:
+        # The parked robot's mounted tools ride with it, far away.
+        bundle["hidden_tool_ids"] |= {tool_id for tool_id, ts in state.tool_states.items()
+                                      if ts.attached_to_group is not None}
         # What a parked robot holds is parked with it, far away: hide that too.
         bundle["hidden_rb_ids"] |= {rb_id for rb_id, rbs in state.rigid_body_states.items()
                                     if getattr(rbs, "attached_to_link", None)}

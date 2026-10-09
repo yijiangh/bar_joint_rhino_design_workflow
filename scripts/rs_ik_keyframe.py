@@ -2733,15 +2733,16 @@ def _main(stack, after):
         scene = design.scene_at(design_planning.movement(design, bar, "J", "J_transfer"))
         robot_id = design.actions[f"{target_bar_id}_J"].robot
         _use_preview(scene, robot_id)
-    except (KeyError, ValueError, RuntimeError) as exc:
-        rs.MessageBox(f"Cannot build the movements of {target_bar_id}: {exc}", 0, "RSIKKeyframe")
+        planner = stack.enter_context(mirror.lend())
+        rcell = mirror.cell
+        neutral_seed_state = movements["M3"].start_state.copy()
+    except Exception as exc:  # noqa: BLE001 -- also pybullet / compas_fab / file errors: restore the canvas
+        rs.MessageBox(f"Cannot build the movements of {target_bar_id}: {type(exc).__name__}: {exc}", 0,
+                      "RSIKKeyframe")
         _show_objects(extra_hidden_tools)
         reset_sequence_colors()
         base_guide_viz.clear_base_guides()
         return
-    planner = stack.enter_context(mirror.lend())
-    rcell = mirror.cell
-    neutral_seed_state = movements["M3"].start_state.copy()
 
     env_token = None
     keep_highlight = False

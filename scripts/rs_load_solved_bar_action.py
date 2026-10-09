@@ -120,6 +120,8 @@ def load_and_view(batch: bool) -> None:
         store.write_assembly_base_frame(oid, viewer.base_frame_mm(keyframes["base"]))
         store.write_assembly_keyframes(oid, groups(keyframes["approach"]), groups(keyframes["assembled"]),
                                        groups(keyframes["retreat"]) if keyframes["retreat"] else None)
+        if not keyframes["retreat"]:
+            print(f"  [note] {bar_id}: no solved retreat; its stored retreat keyframe (if any) is kept as it was.")
         loaded.append(bar_id)
     if not loaded:
         rs.MessageBox("Nothing loaded: no picked bar has a solved insert in this design folder.",

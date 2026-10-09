@@ -219,17 +219,17 @@ def _solve_one(design, ctx, include_self, include_env):
     bar_id, curve, base_frame = ctx[0], ctx[1], ctx[2]
     try:
         mirror, movements = ikf.design_planning.keyframe_movements(design, sc.sticky, f"bars/{bar_id}")
-    except (KeyError, ValueError, RuntimeError) as exc:
-        print(f"RSIKKeyframeAll: {bar_id}: could not build movements ({exc}).")
+        # brep_id=None => sampling disabled: exactly one attempt at the placed base.
+        with mirror.lend() as planner:
+            solved, used_base = ikf._solve_chain_with_sampling(
+                planner, movements, base_frame,
+                brep_id=None, heading_mm=None,
+                include_self=include_self, include_env=include_env,
+                viz=None,
+            )
+    except Exception as exc:  # noqa: BLE001 -- one bar must not stop the batch
+        print(f"RSIKKeyframeAll: {bar_id}: could not solve ({type(exc).__name__}: {exc}).")
         return False
-    # brep_id=None => sampling disabled: exactly one attempt at the placed base.
-    with mirror.lend() as planner:
-        solved, used_base = ikf._solve_chain_with_sampling(
-            planner, movements, base_frame,
-            brep_id=None, heading_mm=None,
-            include_self=include_self, include_env=include_env,
-            viz=None,
-        )
     if solved is None:
         return False
     ikf._write_assembly_base_frame(curve, used_base)
@@ -293,8 +293,8 @@ def _support_resolve_pass(include_self, include_env):
                 support_ik.extract_group_config(approach, config.SUPPORT_GROUP, mirror.cell),
                 support_ik.extract_group_config(held, config.SUPPORT_GROUP, mirror.cell))
             resolved.append(bar_id)
-        except (KeyError, ValueError, RuntimeError) as exc:
-            failed.append((bar_id, str(exc)))
+        except Exception as exc:  # noqa: BLE001 -- one hold must not stop the pass
+            failed.append((bar_id, f"{type(exc).__name__}: {exc}"))
             print(f"RSIKKeyframeAll: {bar_id}: support re-solve FAILED ({exc}).")
     # * Every release in its own moment, now that the holds are solved.
     ikf._core_release_report("RSIKKeyframeAll", None, [f"bars/{b}" for b in resolved])

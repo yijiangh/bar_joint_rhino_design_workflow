@@ -99,12 +99,9 @@ def refresh(command: str = "RSRebuildRobotCell", gui: bool = False) -> None:
         for robot_id in sorted(design.robots):
             try:
                 scene = design.scene_at(movement)
-                design_display.place(scene, robot_id, scene.robots[robot_id].base)
-                design_planning.plannable(scene, robot_id)
-                mirror = design_planning.mirror_for(sc.sticky, robot_id)
                 if gui and robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
-                    mirror.set_gui(True)
-                mirror.sync(scene)
+                    design_planning.mirror_for(sc.sticky, robot_id).set_gui(True)
+                design_planning.sync_seeded(sc.sticky, scene, robot_id, report_parked=False)
                 if robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
                     design_display.cell_and_state(sc.sticky, scene, robot_id)
                 built.append(robot_id)

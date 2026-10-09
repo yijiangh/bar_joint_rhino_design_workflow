@@ -164,7 +164,7 @@ class View:
         bar_id (str): The host bar ("B3").
         label (str): What the prompt says.
         make_scene (callable): `make_scene()` -> the scene to draw (a new one each call).
-        state: The design state the scene comes from (for the allowed part contacts in collision checks).
+        state: The design state the scene comes from.
     """
 
     def __init__(self, bar_id, label, make_scene, state):
@@ -312,7 +312,7 @@ class PlanSession:
             return 0
         self._revert_highlight()
         try:
-            pairs = design_planning.scene_collisions(self.design, sc.sticky, self.scene, self.view.state)
+            pairs = design_planning.scene_collisions(self.design, sc.sticky, self.scene)
         except Exception as exc:  # noqa: BLE001 -- a diagnostic must never end the viewer
             print(f"{self.command}: collision check failed ({type(exc).__name__}: {exc}).")
             return 0
@@ -366,11 +366,7 @@ class PlanSession:
             return
         mirror = None
         try:
-            checked = self.scene.copy()
-            design_planning.allow_part_contacts(self.design, checked, self.view.state)
-            design_planning.plannable(checked, self.robot_id)
-            mirror = design_planning.mirror_for(sc.sticky, self.robot_id)
-            mirror.sync(checked)
+            mirror = design_planning.sync_seeded(sc.sticky, self.scene.copy(), self.robot_id)
         except Exception as exc:  # noqa: BLE001 -- jog still draws without the check
             print(f"{self.command}: collision checks unavailable while jogging ({exc}).")
             mirror = None

@@ -29,7 +29,7 @@ import numpy as np
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
 from core import joint_name_conventions as jnc
-from core.design_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of
+from core.design_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, parts_catalogue
 from bar_assembly_core.design import BodySpec, Design, DesignError, Producer, RobotSpec
 from bar_assembly_core.design.version import writer_info
 from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
@@ -257,8 +257,10 @@ class RhinoDesignSource:
         schedule = [(kinds[e["kind"]], f"bars/{e['bar_id']}")
                     for e in build_action_schedule(order, hold_plan, config.ASSEMBLY_ROBOT_NAME)]
 
+        from core.joint_pair import load_joint_registry
         design = Design(folder=None, writer=writer_info(), robots=robots, tools=tools, bodies=dict(self.bodies),
-                        schedule=(), actions={}, mates=frozenset(mates), producer=producer(self.command))
+                        schedule=(), actions={}, mates=frozenset(mates), producer=producer(self.command),
+                        parts=parts_catalogue(load_joint_registry()))
         result: BuildResult = build_actions(
             design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
             retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,

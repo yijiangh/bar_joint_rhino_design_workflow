@@ -2302,6 +2302,7 @@ def _solve_support_pair_with_sampling(
     include_self,
     include_env,
     viz=None,
+    check=None,
 ):
     """Solve the HELD then the APPROACH keyframe, sampling bases on failure.
 
@@ -2380,6 +2381,14 @@ def _solve_support_pair_with_sampling(
                     check_collision=check_collision,
                 )
             solved = held_state is not None and approach_state is not None
+            found = []
+            if solved and check is not None:
+                # The candidate must also clear its release scene (what was built while it held).
+                try:
+                    found = check(base_frame, held_state, approach_state)
+                except Exception as exc:  # noqa: BLE001 -- a failed check must not stop the sampling
+                    found = [f"release check failed ({type(exc).__name__}: {exc})"]
+                solved = not found
             # Marker for every sampled base (idx 0 is the seed, already marked
             # by the seed arrow), so the tried/failed history stays on screen.
             if viz is not None and idx > 0:
@@ -2390,6 +2399,10 @@ def _solve_support_pair_with_sampling(
                 continue
             if approach_state is None:
                 print(f"RSIKKeyframe(support): [x] held OK but approach failed ({label}).")
+                continue
+            if found:
+                print(f"RSIKKeyframe(support): [x] held + approach solved but collide in the release scene "
+                      f"({label}): {'; '.join(found)}")
                 continue
             print(
                 f"RSIKKeyframe(support): [OK] held + approach solved on attempt "
@@ -2493,7 +2506,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
         try:
             design = _core_design("RSIKKeyframe")
             sr_mirror, template_state = design_planning.hold_solve_state(design, sc.sticky, f"bars/{bar_id}")
-            hold_scene = design_planning.hold_solve_scene(design, f"bars/{bar_id}")
+            hold_scene = design_planning.hold_scene(design, f"bars/{bar_id}", 0)
             sr_view, _state = design_display.cell_and_state(sc.sticky, hold_scene, robot_id)
         except (KeyError, ValueError, RuntimeError) as exc:
             rs.MessageBox(f"Cannot build the hold scene of {bar_id}: {exc}", 0, "RSIKKeyframe")
@@ -2533,6 +2546,14 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
         # retry the same or a new base (mirrors the assembly flow).
         seed_base_frame = None
         heading_mm = None
+        def release_check(base_mm, held_st, approach_st):
+            """A candidate must clear the hold's release scene (the second of `hold.hold_scenes`)."""
+            joints = lambda st: support_ik.extract_group_config(st, config.SUPPORT_GROUP, sr_cell)  # noqa: E731
+            held_j, approach_j = (dict(zip(j["joint_names"], j["joint_values"]))
+                                  for j in (joints(held_st), joints(approach_st)))
+            return design_planning.hold_release_collisions(
+                design, sc.sticky, f"bars/{bar_id}", design_source.pose_from_mm(base_mm), held_j, approach_j)
+
         # The support robot's own ghost meshes drive the base pick and the sampling viz.
         sampling_ghost_meshes = _ghost_meshes(hold_scene, robot_id, SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
         held_state = approach_state = used_base = None
@@ -2561,7 +2582,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
                 held_state, approach_state, used_base = _solve_support_pair_with_sampling(
                     sr_planner, template_state, seed_base_frame,
                     tool0_mm, brep_id, heading_mm, include_self, include_env,
-                    viz=viz,
+                    viz=viz, check=release_check if (include_self or include_env) else None,
                 )
                 # Drop the moving ghost but keep the circle + markers on screen.
                 viz.set_ghost_xform(None)

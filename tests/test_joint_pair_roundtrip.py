@@ -277,7 +277,7 @@ def test_ground_joint_def_forces_the_tool_attach_translation_to_zero():
 
 
 # ---------------------------------------------------------------------------
-# bar_cradle: subfloor receivers the incoming bar rests in (design_planning.cradle_parts)
+# bar_cradle: subfloor receivers the incoming bar rests in
 # ---------------------------------------------------------------------------
 
 

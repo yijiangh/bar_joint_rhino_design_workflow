@@ -7,7 +7,10 @@ Headless (not a Rhino command): design -> `scene_at` -> `CompasFabMirror` -> tam
 
 - transfer: `plan_constrained_dual_arm` (its start is left open by the design, tamp derives it);
 - insert: `plan_constrained_dual_arm_linear`; retreat: `plan_dual_arm_linear_independent`; home: `plan_free_dual_arm`;
-- the load (target null), manual and tool movements, and every support-robot movement stay `not_planned`.
+- the design wins: each trajectory's last waypoint is snapped to the design's target joints;
+- movements no arm moves in (grips, drives, the operator's mount) are `solved` and still
+  (`MovementResult.still`), at the joints the robot has there;
+- the load (target null) and every support-robot movement stay `not_planned`.
 
 Needs the core's `[mirrors]` stack and husky_assembly_tamp (`external/husky_assembly_tamp`, or `--tamp`).
 `HUSKY_IK_BACKEND=gradient` runs without the ssik sidecar.
@@ -26,9 +29,10 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path)
-from core.design_planning import allow_part_contacts, close_mirrors, mirror_for, plannable  # noqa: E402
+from core.design_planning import close_mirrors, mirror_for  # noqa: E402
 from bar_assembly_core.design import read  # noqa: E402
 from bar_assembly_core.design.carry import assumed_start_all  # noqa: E402
+from bar_assembly_core.design.scenes import seeded  # noqa: E402
 from bar_assembly_core.design.solutions import (MovementResult, Planner, Solution, Trajectory,  # noqa: E402
                                                 solved_against, write_solution)
 
@@ -41,13 +45,23 @@ def _rows(points) -> tuple:
     return tuple(tuple(float(v) for v in q) for q in points)
 
 
-def plan_movement(api, mirror, design, action, m, names, seeds, args):
-    """Plan one movement on the mirror. Returns a MovementResult."""
+def plan_movement(api, mirror, design, action, m, names, seeds, args, joints_now=None):
+    """Plan one movement on the mirror. Returns a MovementResult.
+
+    Args:
+        joints_now: The robot's joints when the movement starts, if known (the previous result's end): a movement no
+            arm moves in is still there.
+    """
     robot = action.robot
     kind = m.id[len(action.bar.split("/")[1]) + 1:]
+    if not m.arms:
+        # * The design wins: its start joints; else where the previous movement's solution ended.
+        here = (m.start.robots[robot].joints if m.start.robots.get(robot) else None) or joints_now
+        if not here:
+            return MovementResult("not_planned", reason="no arm motion, and the robot's joints are unknown here")
+        return MovementResult.still({robot: dict(here)})
     if kind not in PLANNED:
-        why = "no arm motion" if not m.arms else "target null: planned live"
-        return MovementResult("not_planned", reason=why)
+        return MovementResult("not_planned", reason="target null: planned live")
     goal = (m.target.joints or {}).get(robot) if m.target else None
     if not goal:
         return MovementResult("failed", reason="the design gives no target joints (keyframes not solved)")
@@ -58,9 +72,10 @@ def plan_movement(api, mirror, design, action, m, names, seeds, args):
         if kind != "J_transfer" or seed is None:
             return MovementResult("failed", reason="the design gives no start joints")
     scene = design.scene_at(m)
-    allow_part_contacts(design, scene, m.start)
-    plannable(scene, robot, seed)
+    seeded(scene, robot, seed)
     mirror.sync(scene)
+    if mirror.parked:
+        print(f"{m.id}: {', '.join(mirror.parked)} parked (base or joints not solved yet)")
     conf = [float(goal[n]) for n in names]
     with mirror.lend() as planner:
         state = mirror.state
@@ -81,6 +96,8 @@ def plan_movement(api, mirror, design, action, m, names, seeds, args):
             reason = None if path is not None else str(info.get("failure_reason"))
     if not rows:
         return MovementResult("failed", reason=reason or "no path")
+    # * The design wins: the last waypoint is the design's target (the planner reached it within its tolerance).
+    rows = rows[:-1] + (tuple(conf),)
     return MovementResult("solved", start={robot: dict(zip(names, rows[0]))}, end={robot: dict(zip(names, rows[-1]))},
                           trajectory=Trajectory(robot, tuple(names), rows))
 
@@ -120,18 +137,20 @@ def main(argv=None) -> int:
             mirror = mirror_for(store, action.robot)
             names = None
             results = {}
+            joints_now = None
             for m in action.movements:
                 started = time.monotonic()
                 try:
                     if names is None:
                         mirror.sync(_any_plannable(design, m, action.robot))
                         names = list(api._arm_joint_names(mirror.cell)[0]) + list(api._arm_joint_names(mirror.cell)[1])
-                    result = plan_movement(api, mirror, design, action, m, names, seeds, args)
+                    result = plan_movement(api, mirror, design, action, m, names, seeds, args, joints_now)
                 except Exception as exc:  # noqa: BLE001 -- one movement must not stop the run
                     traceback.print_exc()
                     result = MovementResult("failed", reason=f"{type(exc).__name__}: {exc}")
                 failed += result.status == "failed"
                 results[m.id] = result
+                joints_now = result.end.get(action.robot) if result.status == "solved" else None
                 print(f"{m.id}: {result.status} in {time.monotonic() - started:.1f} s"
                       + (f" ({result.reason})" if result.reason else ""))
             path = write_solution(design, Solution(action_id, solved_against(design, action_id), planner_block,
@@ -145,7 +164,7 @@ def main(argv=None) -> int:
 def _any_plannable(design, m, robot):
     """A plannable scene of one movement, only to build the cell and read the arm joint names."""
     scene = design.scene_at(m)
-    plannable(scene, robot)
+    seeded(scene, robot)
     return scene
 
 

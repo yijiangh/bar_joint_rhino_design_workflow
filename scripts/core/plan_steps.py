@@ -274,3 +274,20 @@ def arm_groups(joints: Dict[str, float]) -> Dict[str, dict]:
         names = ordered + sorted(set(mine) - set(ordered))
         out[side] = {"joint_names": names, "joint_values": [float(joints[n]) for n in names]}
     return out
+
+
+def changed_since_planning(design_now: Design, solutions: dict, package_dirs=()) -> List[str]:
+    """The solved actions that differ in a design held in memory (e.g. the Rhino document now) from what was planned.
+
+    Compares each action's hash in `design_now` (`design.design_hashes`, nothing written) with the one its solution
+    recorded (`solved_against.action`). ? Only action hashes: `design.json` records the producer (commit, command), so
+    its hash differs between any two exports.
+
+    Returns:
+        list[str]: Action ids, sorted: changed since planning, or no longer in the design.
+    """
+    from bar_assembly_core.design import design_hashes
+
+    _design_hash, actions = design_hashes(design_now, package_dirs)
+    return sorted(action_id for action_id, solution in solutions.items()
+                  if actions.get(action_id) != solution.solved_against.action)

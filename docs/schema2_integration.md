@@ -21,18 +21,18 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 
 | Piece | Where | State |
 | --- | --- | --- |
-| Core as a pinned submodule | `external/bar_assembly_core` (jeliag/bar_assembly_core `de396c5`); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
+| Core as a pinned submodule | `external/bar_assembly_core` (jeliag/bar_assembly_core `d57fffe`: origin/main `7efffa4` with the decisions of 2026-10-09, plus the drawing cell, parked robots and the display fix, not pushed yet); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
 | Document → `Design` | `core/design_source.py`, `RhinoDesignSource(command, cache).build()`; also records each body's Rhino object (`SourceResult.objects`) | tested on a fake document and on `YH_ik_test.3dm` and `examples/Example4_two_box.3dm` (rhino3dm) |
-| Keyframe records → actions | `core/design_builder.py` (Rhino-free) | pytest: an unsolved three-bar design with a hold passes A and B |
+| Keyframe records → actions | `core/design_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, the `parts` catalogue | pytest: an unsolved three-bar design with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the design on every command | |
 | `RSExportDesign`, `RSCheckDesign` | `rs_export_design.py`, `rs_check_design.py` | builds, writes, copies `source/`, prints A and B |
 | `RSExportAllBarActions`, `RSExportBarAction`, `RSExportRobotCell` | run `RSExportDesign` (the old single-bar and cell exports have no schema 2 counterpart) | |
 | `RSIKKeyframe`, `RSIKKeyframeAll` | `core/design_planning.py` (`keyframe_movements`, `hold_solve_state`, `release_check`), `core/support_ik.py`; previews on `core/design_display.py` | headless: tamp's `solve_keyframe_chain` and compas_fab support IK solve through the mirrors; **not run in Rhino** |
 | `RSShowBarActionPlan`, `RSShowAssemblyPlan` | `core/plan_steps.py` (poses → design moments), drawing cell; CheckCollision and the jog dialog on the mirrors (`design_planning.scene_collisions`) | steps tested headless; **not run in Rhino** |
-| Motion viewer (`RSShowBarActionPlan` right-click), `RSLoadSolvedBarAction(All)` | read `<design>/solutions/` (`plan_steps.trajectory_frames`, `solved_keyframes`) | tested headless; **not run in Rhino** |
+| Motion viewer (`RSShowBarActionPlan` right-click), `RSLoadSolvedBarAction(All)` | read `<design>/solutions/` (`plan_steps.trajectory_frames`, `solved_keyframes`); RSLoadSolvedBarAction also says `SOLUTION STALE` for actions the open document changed since planning (`design_hashes` of the document's design vs `solved_against`) | tested headless; **not run in Rhino** |
 | Grasshopper preview + warm-up | `core/gh_seq_preview.py`, `core/gh_warmup.py`: the timeline of the document's design on the drawing cell, no PyBullet | **not run in Grasshopper** |
 | `RSRebuildRobotCell`, `RSPBStart(GUI)`, `RSPBStop` | walkable-ground auto-assign + seed bases, then rebuild / close the core's mirrors and drawing cells; GUI opens Cindy's mirror in PyBullet's window | **not run in Rhino** |
-| Motion planning | `scripts/plan_design.py` (headless CLI) | constructed design: insert, retreat, home solved and written to `solutions/`; transfer fails (`rrt_failed`) |
+| Motion planning | `scripts/plan_design.py` (headless CLI): the last waypoint snapped to the design's target joints; movements no arm moves in written `still` | constructed design: insert, retreat, home solved, the ungrasp still, written to `solutions/`; transfer fails (`rrt_failed`) |
 
 The export needs numpy, scipy and trimesh only; planning adds compas, compas_robots, compas_fab (submodule), PyBullet,
 pybullet_planning and the tamp submodule; drawing adds compas, compas_robots and compas_fab but no PyBullet.
@@ -55,10 +55,15 @@ pybullet_planning and the tamp submodule; drawing adds compas, compas_robots and
 
 | Action | Movements |
 | --- | --- |
-| `B10_J` | `load` (free, target null), `mount` (operator; bar attached to both flanges), `grasp` (grip closed), `transfer` (free, coupled), `insert` (linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; bar built) |
-| `B10_R` | `ungrasp` (form B: grips open, bar released), `retreat` (per-arm linear along each half's −z), `home` |
-| `B3_H` | `approach` (free), `open`, `to_grasp` (linear along the flange z), `close` (Alice holds the built bar too) |
-| `B3_HR` | `open` (Alice lets go), `retreat` (linear); then Alice drives away (`null`) |
+| `B10_J` | `load` (free, target null), `mount` (operator; bar attached to both flanges; target puts the tools `on` their halves), `grasp` (grip closed), `transfer` (free, coupled), `insert` (linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; bar built) |
+| `B10_R` | `ungrasp` (form B: grips open, `drives: loosen`, bar released, stays built), `retreat` (per-arm linear along each half's −z; target clears `on`), `home` |
+| `B3_H` | `approach` (free), `open`, `to_grasp` (linear along the flange z; target puts the gripper `on` the bar), `close` (Alice holds the built bar too) |
+| `B3_HR` | `open` (Alice lets go), `retreat` (linear; target clears `on`), `leave` (free, target null: planned live); then Alice drives away (`null`) |
+
+`on` lives in targets only, never changes between movements (B11). The design's `parts` catalogue
+(`design_builder.parts_catalogue`, from `joint_pairs.json`): every male part with its TCP at the block
+(`T20/Male`, `T20Deck12/Male`, identity seat), every ground joint with its seat = `M_tool_from_block`⁻¹ (`T20/Ground`:
+180° about z); receivers get no tool in Rhino's flow, so no seat.
 
 ## Dataflow
 
@@ -67,16 +72,19 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
    │
    ├─ RSIKKeyframe / RSIKKeyframeAll
    │     design_planning.keyframe_movements(design, sc.sticky, bar)
-   │        scene_at(transfer | insert | retreat) + part contacts + robots with unknown state parked
-   │        → mirror_for("robots/cindy").sync(scene) → {M1, M2, M3: start_state, target_ee_frames; M4: home}
+   │        scene_at(transfer | insert | retreat) (contacts derived by the core) → scenes.seeded(scene, cindy)
+   │        → mirror_for("robots/cindy").sync(scene) (others with unknown state: mirror.parked, logged)
+   │        → {M1, M2, M3: start_state, target_ee_frames; M4: home}
    │     with mirror.lend() as planner: tamp solve_keyframe_chain(planner, ...)   (base sampling as before)
    │     previews: design_display.cell_and_state(scene_at(transfer), cindy) → ik_viz, drawn with the mirror's states
    │     → keyframes written to user text (keyframe_store) → the next design reads them
    │
    ├─ support flow (after the grasp pick, which puts the hold into the design)
-   │     design_planning.hold_solve_state → mirror_for("robots/alice"|"robots/belle"), lent
-   │     support_ik.solve_support_ik(planner, state, base, flange)  → user text
-   │     release_check: scene_at(HR_open), collisions at held and approach joints (after the accept)
+   │     hold.hold_scenes(design, "<bar>_H") → (start of the closing movement, start of the hold release)
+   │     solve in the first: design_planning.hold_solve_state → mirror_for("robots/alice"|"robots/belle"), lent
+   │     support_ik.solve_support_ik(planner, state, base, flange); each base that solves held + approach is
+   │     checked in the second (hold_release_collisions) before it is accepted  → user text
+   │     release_check: the second scene again, report-only, after the accept
    │
    ├─ viewers / Grasshopper: plan_steps.bar_steps | timeline → step_scene → drawing cell (Cindy's; the support
    │     robots are tools in it) → ik_viz; CheckCollision: design_planning.scene_collisions (every placed robot's mirror)
@@ -93,14 +101,14 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
   in ~3 s the first time per session.
 - `ik_viz` holds one cell per layer key (a rebuilt cell replaces its meshes), hides robots the core parks (absent, or
   base unknown) and what they hold. Offenders are highlighted by design id on the drawn meshes.
-- Workarounds for open decisions, in `design_planning.py`, not in the core:
-  - **#1 contacts** (`allow_part_contacts`): a tool may touch its whole part; mated halves may touch the partner's
-    bar; a tool on a male may touch the cradle receiver it mates (`bar_cradle` in `joint_pairs.json`, the subfloor
-    `T20Sub*` females); ground halves any ground. These carry the legacy touch policy's rules.
-  - **#3 unknown robots** (`plannable`): another robot with an unknown base or joints is parked, not placed at the
-    origin.
-  - **#4 hold scene** (`hold_solve_scene`): a hold is solved with the bars it supports until at their design pose and
-    the held bar hidden; the release is checked in the release's own moment (`scene_at(HR_open)`).
+- No workarounds left in `design_planning.py`: the decisions of 2026-10-09 are in the core.
+  - **#1 contacts**: `scene_at` derives them (`relations.allowed_contacts`): a tool on its whole part, mated halves on
+    each other and each other's bar, a ground-mated half on every ground body.
+  - **#3 unknown robots**: `scenes.seeded` fills in the robot being planned for; the mirror parks the others whose
+    base or joints are unknown (`mirror.parked`, logged as `core planning: … parked`).
+  - **#4 hold scenes**: `hold.hold_scenes`: solved at the start of the closing movement (Cindy still holds the bar
+    at its assembled pose), checked at the start of the hold release. The old "bars until supported at their design
+    pose, held bar hidden" rule is gone.
 - Robot files are resolved once per session (`package://` → relative copies in the temp folder): compas_fab cannot
   load the source URDFs from an in-memory design.
 
@@ -122,7 +130,11 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 | Home joints from `HUSKY_DUAL_ARM_HOME_CONF_12` | As before |
 | Bars without a left and a right tool are left out (J and R) and listed | They cannot be jointed |
 | Duplicate ids and scaled or mirrored joint blocks refuse the export | A dict would silently drop one body |
-| The untighten before the ungrasp is dropped | **Open decision** (README #5, review C1) |
+| The ungrasp drives `loosen` on Cindy's tools; the bar stays built | Decision #5: the untighten is folded into the ungrasp |
+| `on` in targets: the mount, the support's linear approach, the retreats | Decision #2; B11 refuses `on` changing between movements |
+| Hold releases get a `leave` movement (free, target null) before the robot drives away | The role table of the format (§3.1) |
+| A hold candidate must clear its release scene, during the solve (RSIKKeyframe) and the support pass (RSIKKeyframeAll) | Decision #4: the second hold scene; replaces the legacy partial release check |
+| Stale against the document: action hashes only | `design.json` records the producer (commit, dirty, command), so its hash differs between any two exports |
 
 ## Known gaps
 
@@ -134,20 +146,19 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 - **No headless keyframe solving.** `plan_design.py` plans motions between solved keyframes; base sampling and the
   keyframe chain run only in Rhino (RSIKKeyframe / RSIKKeyframeAll). tamp's legacy `--solve-keyframes` and
   `replay_bar_action_plan.py` read the old export and are not ported.
-- Support-robot movements are not planned (decision #11); movements without arm motion are `not_planned`
-  (decision #7); the bar transfer failed on the constructed design (`rrt_failed`).
-- **Open decisions, not solved** (`husky-assembly-teleop` `tasks/2026-10-09_core_integration/README.md`): allowed
-  contacts (#1), `on` in targets (#2), `null` meanings and unknown robots at the origin (#3), two hold scenes (#4),
-  untighten (#5), hashes and `adopt` (#6), chaining tolerance (#7), part seats catalogue (#9), who plans support moves
-  (#11).
-- Part seats are hard-coded in the core (`T20/Male`, `T20/Ground`): tools on `T20Deck12/Male` give B14 warnings.
+- Support-robot movements are not planned (decision #11); movements without arm motion are `still` only where the
+  robot's joints are known (the design's start, else the previous result's end): Cindy's `mount` and `grasp` follow
+  the unplanned `load` (target null) and stay `not_planned`; the bar transfer failed on the constructed design
+  (`rrt_failed`).
+- **The cradle contact is gone.** The legacy touch policy (and the removed `allow_part_contacts`) let a tool on a male
+  touch the cradle receiver it seats into (`bar_cradle`: the subfloor `T20Sub*` females). The core's part rules do not
+  (a tool touches only its own part), so subfloor bars may now fail IK on a tool/cradle collision. Fix in the core
+  (a contact rule) or in the cradle meshes.
+- Hold releases have a `leave` movement with no target: nothing plans it yet.
 - A ground half mates only the nearest walkable ground (review P4).
 - Cindy stays in the scene after her last release (review C2): the release poses show her at home (the legacy viewer
   parked her).
-- `writer.library` is still `design_io`; mesh file names follow dict order (review P8).
 - The design folder holds copies of the robot files (~40 MB) on every export.
-- The partial release check before a hold is accepted (legacy checkpoint 1) is gone: the release is checked after the
-  accept, report-only.
 - The core mirror names collision pairs by geometry object: two bodies sharing one `Geometry` are reported under one
   name. The geometry cache never shares; other callers of the core must not either.
 - The toolbar still lists RSPBStart / RSPBStop / RSRebuildRobotCell / RSExportBarAction / RSExportRobotCell; they
@@ -160,8 +171,8 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 **Setup** (once):
 
 1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/bar_assembly_core
-   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core commits `962e371` and `de396c5` are
-   local until pushed to jeliag/bar_assembly_core.
+   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core commits on top of origin/main
+   (`2ec4d5c`, `f3cb104`, `d57fffe`) are local until pushed to jeliag/bar_assembly_core.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportDesign` and `RSCheckDesign` can be typed
    (both are also on the RSDesign toolbar: left- and right-click of one button).
@@ -170,14 +181,18 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 
 **Test 1: export** (`YH_ik_test.3dm`, in the repo; 4 bars, only B3 has a solved keyframe, and it is stale):
 `RSExportDesign` → `Wrote …: 13 bodies, 4 mates, 2 actions, 8 movements; 1/1 bars with IK`, `A (file checks): passed`,
-B2 / B14 / B5 findings as before (B1, B2, B4 left out: no tool pair). `RSCheckDesign` on the folder: the same.
+B2 / B14 / B5 findings as before (B1, B2, B4 left out: no tool pair), and **no B11 `on` errors**. The folder: role-named
+ids (`actions/B3_J.json` with `B3_J_load` … `B3_J_insert`, `actions/B3_R.json` with `B3_R_ungrasp`, `B3_R_retreat`,
+`B3_R_home`), meshes named by content, `parts` in `design.json`, `writer.library` `bar_assembly_core`. `RSCheckDesign`
+on the folder: the same.
 
 **Test 2: IK** (the study document): `RSIKKeyframe` on a bar whose tools are placed. Expected: `rebuilt the planning
 cell for robots/cindy … first build`, `rebuilt the drawing cell for robots/cindy`, the built bars and holding robots
 drawn while picking the base, the ghost and reach spheres, then the chain solve and the pose preview (visual meshes;
 MeshMode flips to collision). Run it again on another bar: no rebuild lines unless the geometry changed. Re-click a
 held bar for the support flow: Cindy holding the bar drawn before the grasp pick, `rebuilt … robots/alice`, the support
-solve, then `release check for held bar …`. `RSIKKeyframeAll` on two or three bars: solved/failed colors as before.
+solve (a base whose poses collide in the release scene is reported `collide in the release scene` and sampling goes
+on), then `release check for held bar …`. Expect `core planning: robots/… parked` lines for robots not solved yet. `RSIKKeyframeAll` on two or three bars: solved/failed colors as before.
 With the ssik backend, fail a solve on purpose and `InspectCandidates`: offenders turn red.
 
 **Test 3: viewers**: `RSShowBarActionPlan` on a solved bar: Enter cycles approach → assembled → (hold) → retreat →
@@ -187,7 +202,10 @@ home → release …; CheckCollision prints pairs and paints them red; Interacti
 
 **Test 4: planning round trip** (outside Rhino, Python with the core's `[mirrors]` extra and tamp):
 `HUSKY_IK_BACKEND=gradient python scripts/plan_design.py <design folder> --bars B10`; then in Rhino
-`RSLoadSolvedBarAction` → pick B10 → `motion`: the trajectory scrubs; `keyframes`: the viewer opens on B10.
+`RSLoadSolvedBarAction` → pick B10 → `motion`: the trajectory scrubs; `keyframes`: the viewer opens on B10. The
+solutions list `B10_R_ungrasp` as `solved` with no trajectory (still); each planned movement ends exactly on the design's
+target joints. Move a tool block of B10 in Rhino and load again: `SOLUTION STALE: B10_J …` (the document changed since
+planning).
 
 **Test 5: session commands**: `RSRebuildRobotCell` (walkable-ground and base summary, planning cells built),
 `RSPBStartGUI` (Cindy's planning world in PyBullet's window), `RSPBStop`.

@@ -84,6 +84,13 @@ def load_and_view(batch: bool) -> None:
         return
 
     seq_map = get_bar_seq_map()  # {bar_id: (oid, seq)}
+    # * Stale against the document as it is now (not only the folder): the actions the model changed since planning.
+    try:
+        changed = set(viewer.plan_steps.changed_since_planning(
+            viewer.design_from_document("RSLoadSolvedBarAction"), solutions, [config.HUSKY_PKG_PATH]))
+    except Exception as exc:  # noqa: BLE001 -- a note, never a blocker
+        print(f"RSLoadSolvedBarAction: could not compare with the document ({type(exc).__name__}: {exc}).")
+        changed = set()
     if batch:
         bar_ids = sorted({viewer.plan_steps.short(design.actions[a].bar) for a in solutions},
                          key=lambda b: seq_map.get(b, (None, 1e9))[1])
@@ -103,7 +110,11 @@ def load_and_view(batch: bool) -> None:
         bar = f"bars/{bar_id}"
         stale = [a for a in (f"{bar_id}_J", f"{bar_id}_R") if a in solutions and is_stale(design, solutions[a])]
         if stale:
-            print(f"  [note] {bar_id}: stale solution(s) {', '.join(stale)} (the design changed since planning).")
+            print(f"  [note] {bar_id}: stale solution(s) {', '.join(stale)} (the design folder changed since planning).")
+        moved = sorted(a for a in (f"{bar_id}_J", f"{bar_id}_R") if a in changed)
+        if moved:
+            print(f"  [note] {bar_id}: SOLUTION STALE: {', '.join(moved)} changed in the document since planning "
+                  "(re-export and re-plan before running it).")
         keyframes = viewer.plan_steps.solved_keyframes(design, solutions, bar)
         if keyframes is None:
             print(f"  [x] {bar_id}: no solved insert in the solutions; nothing written.")

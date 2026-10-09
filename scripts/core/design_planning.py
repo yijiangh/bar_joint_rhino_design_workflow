@@ -2,26 +2,29 @@
 Plan on the shared core: design -> `scene_at` -> `CompasFabMirror` -> the existing solvers (tamp, compas_fab).
 
 The Rhino commands get their movements, planner and cell from here: `keyframe_movements` for Cindy's chain
-(RSIKKeyframe, RSIKKeyframeAll), `hold_solve_state` for a support robot's hold, `release_check` for a hold's
-release, `scene_collisions` for the viewers' collision check. Rhino-free; needs the core's `[mirrors]` stack
-(compas_fab, PyBullet).
+(RSIKKeyframe, RSIKKeyframeAll), `hold_solve_state` and `hold_release_collisions` for a support robot's hold,
+`release_check` for a hold's release, `scene_collisions` for the viewers' collision check. Rhino-free; needs the core's
+`[mirrors]` stack (compas_fab, PyBullet).
+
+Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_at` derives the allowed part contacts,
+`scenes.seeded` fills in the robot being planned for, the mirror parks other robots whose base or joints are unknown
+(`mirror.parked`), and `hold.hold_scenes` gives a hold's two scenes.
 
 - ! Keep the mirrors in `store` (Rhino's `sc.sticky`) and build the design with the same geometry cache every time:
   a mirror rebuilds its cell (seconds) only when a geometry or robot object changes.
 - ! A mirror belongs to one thread, and only one may be lent at a time (`mirror.lend()`).
-- ? Three workarounds for open decisions (core integration README) live here, not in the core: part contacts
-  (#1, `allow_part_contacts`), unknown robots parked (#3, `plannable`), the hold solved against its release-time
-  bodies (#4, `hold_solve_scene`).
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.design import Design, State
-from bar_assembly_core.design.relations import ENGAGED, PENDING, bar_of, mate_status
+from bar_assembly_core.design import Design
+from bar_assembly_core.design.hold import hold_scenes
+from bar_assembly_core.design.scenes import seeded
+from bar_assembly_core.geometry import Pose
 from bar_assembly_core.mirrors.compas import frame_from_pose
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
 from bar_assembly_core.scene import Scene
@@ -66,86 +69,22 @@ def movement(design: Design, bar: str, action: str, name: str):
     return found[0]
 
 
-# --- --- --- --- --- WORKAROUNDS FOR OPEN DECISIONS --- --- --- --- ---
-
-def _touch(scene: Scene, a: str, b: str) -> None:
-    """Allow a contact both ways, on the bodies that take part (a tool or robot id is only an entry)."""
-    for body, other in ((a, b), (b, a)):
-        if body in scene.bodies and other not in scene.bodies[body].touches:
-            scene.bodies[body].touches = tuple(sorted(scene.bodies[body].touches + (other,)))
-
-
-def cradle_parts() -> frozenset:
-    """The parts ("T20SubLeft/Female") the joint registry flags `bar_cradle`: receivers the incoming bar rests in."""
-    from core import joint_name_conventions as jnc
-    from core.joint_pair import load_joint_registry
-
-    parts = set()
-    for name, half in load_joint_registry().halves.items():
-        if getattr(half, "bar_cradle", False):
-            try:
-                parts.add("/".join(jnc.split_block_name(name)))
-            except ValueError:
-                continue  # not a <Type>_<Subtype> block: never a design part
-    return frozenset(parts)
-
-
-def allow_part_contacts(design: Design, scene: Scene, state: State, cradles: Optional[frozenset] = None) -> None:
-    """Allow the contacts Rhino allows today; the core derives fewer. ? Open decision #1, change request 1.
-
-    - A tool may touch the whole part it is on: the bar and its halves.
-    - The halves of a pending or engaged mate may touch each other's bar.
-    - A tool on a male may touch the cradle receiver it mates (pending or engaged): the cradle wraps the male
-      and its tool (the subfloor `T20Sub*` females; `bar_cradle` in joint_pairs.json).
-    - A half of a `*/Ground` part may touch every ground body.
+def sync_seeded(store: dict, scene: Scene, robot_id: str, joints: Optional[Mapping[str, float]] = None,
+                base: Optional[Pose] = None, log=print, why: str = "", report_parked: bool = True) -> CompasFabMirror:
+    """Seed `robot_id` in the scene (`scenes.seeded`, in place), sync it into its mirror, and log the parked robots.
 
     Args:
-        cradles: The cradle parts; None reads them from the joint registry (`cradle_parts`).
+        joints, base: Seeds for what the design leaves open (else 0 and the origin: the solvers set the base they try).
+        why: What the scene is for, in the parked-robots log line.
+        report_parked: Log the parked robots (once per chain is enough).
     """
-    for tool, tool_state in state.tools.items():
-        bar = bar_of(design, tool_state.on) if tool_state is not None and tool_state.on else None
-        if bar is not None:
-            for body in (bar, *design.halves_of(bar)):
-                _touch(scene, tool, body)
-    if cradles is None:
-        cradles = cradle_parts()
-    for mate in design.mates:
-        if mate_status(design, state, mate) in (PENDING, ENGAGED):
-            a, b = mate
-            for half, other in ((a, b), (b, a)):
-                other_bar = bar_of(design, other)
-                if half.startswith("joints/") and other_bar is not None:
-                    _touch(scene, half, other_bar)
-                spec = design.bodies.get(half)
-                if spec is not None and spec.part in cradles:
-                    for tool, tool_state in state.tools.items():
-                        if tool_state is not None and tool_state.on == other:
-                            _touch(scene, tool, half)
-    grounds = [body for body in design.bodies if body.startswith("ground/")]
-    for body_id, body in design.bodies.items():
-        if body.part.endswith("/Ground"):
-            for ground in grounds:
-                _touch(scene, body_id, ground)
-
-
-def plannable(scene: Scene, robot_id: str, joints: Optional[Dict[str, float]] = None) -> List[str]:
-    """Make a scene plannable for `robot_id`, in place; returns the other robots parked.
-
-    - The acting robot's unknown joints get `joints` or 0 (a seed: the solver replaces them), an open base the origin
-      (the solvers set the base they try).
-    - ? Open decision #3: another robot with an unknown base or joints is parked, not left at the origin.
-    """
-    robot = scene.robots[robot_id]
-    robot.enabled = True
-    if robot.unmeasured or not robot.base_tracked:
-        robot.joints = {**{j: 0.0 for j in robot.model.movable_joints}, **robot.joints, **(joints or {})}
-        robot.unmeasured, robot.base_tracked = frozenset(), True
-    parked = []
-    for other_id, other in scene.robots.items():
-        if other_id != robot_id and other.enabled and (other.unmeasured or not other.base_tracked):
-            other.enabled = False
-            parked.append(other_id)
-    return parked
+    seeded(scene, robot_id, joints, base)
+    mirror = mirror_for(store, robot_id, log)
+    mirror.sync(scene)
+    if mirror.parked and report_parked:
+        log(f"core planning: {', '.join(mirror.parked)} parked{' for ' + why if why else ''} "
+            "(base or joints not solved yet)")
+    return mirror
 
 
 # --- --- --- --- --- CINDY: KEYFRAME CHAIN --- --- --- --- ---
@@ -161,19 +100,13 @@ def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tupl
     Raises:
         KeyError: If the bar has no J or R action in the design.
     """
-    first = movement(design, bar, "J", "J_transfer")
     robot_id = design.actions[f"{short(bar)}_J"].robot
     flanges = {side: f"{robot_id}/{side}_ur_arm_tool0" for side in ("left", "right")}
-    mirror = mirror_for(store, robot_id, log)
-    out = {}
+    out, mirror = {}, None
     for role, (action, name) in KEYFRAME_MOVEMENTS.items():
-        m = movement(design, bar, action, name) if role != "M1" else first
-        scene = design.scene_at(m)
-        allow_part_contacts(design, scene, m.start)
-        parked = plannable(scene, robot_id)
-        if parked and role == "M1":
-            log(f"core planning: {', '.join(parked)} parked for {short(bar)} (base or joints not solved yet)")
-        mirror.sync(scene)
+        m = movement(design, bar, action, name)
+        mirror = sync_seeded(store, design.scene_at(m), robot_id, log=log, why=short(bar),
+                             report_parked=role == "M1")
         out[role] = SimpleNamespace(start_state=mirror.state.copy(), target_configuration=None,
                                     target_ee_frames={side: frame_from_pose(m.target.links[link])
                                                       for side, link in flanges.items()})
@@ -185,79 +118,90 @@ def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tupl
 
 # --- --- --- --- --- SUPPORT ROBOTS: HOLD AND RELEASE --- --- --- --- ---
 
-def hold_solve_scene(design: Design, bar: str) -> Scene:
-    """The scene a hold is solved in: its linear approach's start, plus the bars it supports until.
-
-    ? Open decision #4: as Rhino's legacy solve, the bars the hold waits for stand at their design pose (the hold
-    must not block them), and the held bar is left out (the gripper wraps around it).
-    """
-    action = design.actions[f"{short(bar)}_H"]
-    m = movement(design, bar, "H", "H_to_grasp")
-    scene = design.scene_at(m)
-    allow_part_contacts(design, scene, m.start)
-    for other in action.supports_until:
-        for body in (other, *design.halves_of(other)):
-            if body in scene.bodies:
-                scene.bodies[body].enabled = True
-    for body in (bar, *design.halves_of(bar)):
-        scene.bodies[body].enabled = False
-    return scene
-
-
 def hold_solve_state(design: Design, store: dict, bar: str, log=print):
     """A support robot's mirror and template state for solving one hold (`support_ik.solve_support_ik`).
+
+    The hold is solved in the first of its scenes (`hold.hold_scenes`): the start of the movement that closes the
+    gripper, where Cindy still holds the bar at its assembled pose.
 
     Returns:
         tuple: (the support robot's mirror, a compas_fab `RobotCellState` to fork per base).
 
     Raises:
         KeyError: If the bar has no hold in the design (no grasp frame picked yet).
+        ValueError: If the hold has no closing movement or no release (`hold.hold_scenes`).
     """
-    robot_id = design.actions[f"{short(bar)}_H"].robot
-    scene = hold_solve_scene(design, bar)
-    parked = plannable(scene, robot_id)
-    if parked:
-        log(f"core planning: {', '.join(parked)} parked for the hold of {short(bar)} (not solved yet)")
-    mirror = mirror_for(store, robot_id, log)
-    mirror.sync(scene)
+    action_id = f"{short(bar)}_H"
+    robot_id = design.actions[action_id].robot
+    solve, _check = hold_scenes(design, action_id)
+    mirror = sync_seeded(store, solve, robot_id, log=log, why=f"the hold of {short(bar)}")
     return mirror, mirror.state.copy()
 
 
+def hold_scene(design: Design, bar: str, which: int = 0) -> Scene:
+    """One of a hold's two scenes (`hold.hold_scenes`): 0 to solve it in, 1 to check it in (the release)."""
+    return hold_scenes(design, f"{short(bar)}_H")[which]
+
+
+def hold_release_collisions(design: Design, store: dict, bar: str, base: Pose, held: Mapping[str, float],
+                            approach: Optional[Mapping[str, float]] = None, log=print) -> List[str]:
+    """Check a hold candidate in the second of its scenes (the start of its release): at its held and approach joints.
+
+    The release is where the hold must not be in the way of what was built while it held.
+
+    Args:
+        base: The candidate base; held, approach: its joints at the grasp and at the approach.
+
+    Returns:
+        list[str]: "held: <a> x <b>" / "approach: <a> x <b>" per colliding pair; empty if clear.
+
+    Raises:
+        KeyError, ValueError: As `hold_solve_state`.
+    """
+    action_id = f"{short(bar)}_H"
+    robot_id = design.actions[action_id].robot
+    check = hold_scenes(design, action_id)[1]
+    robot = check.robots[robot_id]
+    robot.base, robot.base_tracked = base, True
+    robot.joints, robot.unmeasured = {**robot.joints, **{n: float(v) for n, v in held.items()}}, frozenset()
+    mirror = sync_seeded(store, check, robot_id, log=log, why=f"the release of {short(bar)}")
+    found = [f"held: {a} x {b}" for a, b in mirror.collisions()]
+    if approach:
+        found += [f"approach: {a} x {b}" for a, b in mirror.collisions(dict(approach))]
+    return found
+
+
 def release_check(design: Design, store: dict, bar: str, log=print) -> str:
-    """Check a hold's release in its own moment: the support robot at its held and approach joints.
+    """Check a hold's release in its own scene: the support robot at its held and approach joints.
 
     Returns:
         str: "OK", "not solved" (no base or joints yet), or the colliding pairs.
     """
     p = short(bar)
-    if f"{p}_HR" not in design.actions:
+    if f"{p}_HR" not in design.actions or f"{p}_H" not in design.actions:
         return "no release in the design"
     action = design.actions[f"{p}_HR"]
     opening, retreat = action.movements[0], action.movements[1]
     robot = opening.start.robots.get(action.robot)
     if robot is None or robot.base is None or robot.joints is None:
         return "not solved"
-    scene = design.scene_at(opening)
-    allow_part_contacts(design, scene, opening.start)
-    parked = plannable(scene, action.robot)
-    mirror = mirror_for(store, action.robot, log)
-    mirror.sync(scene)
+    check = hold_scene(design, f"bars/{p}", 1)
+    mirror = sync_seeded(store, check, action.robot, log=log)
     found = [f"held: {a} x {b}" for a, b in mirror.collisions()]
     approach = (retreat.target.joints or {}).get(action.robot) if retreat.target else None
     if approach:
         found += [f"approach: {a} x {b}" for a, b in mirror.collisions(approach)]
-    note = f" ({', '.join(parked)} parked: not solved)" if parked else ""
+    note = f" ({', '.join(mirror.parked)} parked: not solved)" if mirror.parked else ""
     return ("OK" if not found else "collides: " + "; ".join(found)) + note
 
 
-def scene_collisions(design: Design, store: dict, scene: Scene, state: State, log=print) -> List[Tuple[str, str]]:
+def scene_collisions(design: Design, store: dict, scene: Scene, log=print) -> List[Tuple[str, str]]:
     """What collides in a scene, checked on the mirror of every robot placed in it (present, base and joints known).
 
     Args:
-        design: The design the scene comes from.
+        design: The design the scene comes from (its contacts are already in the scene, from `scene_at`).
         store: Where the mirrors are kept (Rhino's `sc.sticky`).
         scene: The world to check; not changed.
-        state: The design state the scene was made from (for the allowed part contacts, `allow_part_contacts`).
 
     Returns:
         list: Colliding pairs as our ids, each sorted, without repeats; robot links as "robots/<name>/<link>".
@@ -266,10 +210,6 @@ def scene_collisions(design: Design, store: dict, scene: Scene, state: State, lo
     for robot_id, robot in scene.robots.items():
         if not robot.enabled or not robot.base_tracked or robot.unmeasured:
             continue
-        mine = scene.copy()
-        allow_part_contacts(design, mine, state)
-        plannable(mine, robot_id)
-        mirror = mirror_for(store, robot_id, log)
-        mirror.sync(mine)
+        mirror = sync_seeded(store, scene.copy(), robot_id, log=log)
         pairs |= {tuple(sorted(pair)) for pair in mirror.collisions(full_report=True)}
     return sorted(pairs)

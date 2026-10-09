@@ -284,10 +284,17 @@ def _support_resolve_pass(include_self, include_env):
                     check_collision=check_collision)
             if held is None or approach is None:
                 raise RuntimeError("support IK failed at the stored base")
-            store.write_bar_support_keyframe(
-                oid, robot_name, base_mm, grasp_mm,
-                support_ik.extract_group_config(approach, config.SUPPORT_GROUP, mirror.cell),
-                support_ik.extract_group_config(held, config.SUPPORT_GROUP, mirror.cell))
+            approach_cfg = support_ik.extract_group_config(approach, config.SUPPORT_GROUP, mirror.cell)
+            held_cfg = support_ik.extract_group_config(held, config.SUPPORT_GROUP, mirror.cell)
+            if check_collision:
+                # * The hold must also clear its release scene (what was built while it held).
+                found = ikf.design_planning.hold_release_collisions(
+                    design, sc.sticky, f"bars/{bar_id}", ikf.design_source.pose_from_mm(base_mm),
+                    dict(zip(held_cfg["joint_names"], held_cfg["joint_values"])),
+                    dict(zip(approach_cfg["joint_names"], approach_cfg["joint_values"])))
+                if found:
+                    raise RuntimeError(f"collides in its release scene: {'; '.join(found)}")
+            store.write_bar_support_keyframe(oid, robot_name, base_mm, grasp_mm, approach_cfg, held_cfg)
             resolved.append(bar_id)
         except Exception as exc:  # noqa: BLE001 -- one hold must not stop the pass
             failed.append((bar_id, f"{type(exc).__name__}: {exc}"))

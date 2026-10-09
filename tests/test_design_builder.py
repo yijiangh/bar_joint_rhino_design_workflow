@@ -160,3 +160,32 @@ def test_missing_records_are_reported():
     result = build_actions(design, SCHEDULE, bars, holds)
     assert result.design.schedule == ("B1_J", "B1_R", "B2_J", "B2_R", "B3_J", "B3_R")
     assert len(result.problems) == 2 and all("bars/B2" in p for p in result.problems)
+
+
+def test_on_lives_in_targets_and_parts_are_catalogued():
+    """Decisions of 2026-10-09: `on` is set and cleared by targets only (B11), the ungrasp loosens, a hold release
+    leaves, and the parts catalogue gives the seats the tools act on."""
+    from bar_assembly_core.design.types import PartSpec
+    from core.design_builder import parts_catalogue
+    from core.joint_pair import load_joint_registry
+
+    design = _design()
+    bars, holds = _records(design)
+    design = build_actions(design, SCHEDULE, bars, holds).design
+    by_id = {m.id: m for _a, m in design.movements()}
+    tools = {L: "tools/AT3L", R: "tools/AT3R"}
+    assert by_id["B2_J_mount"].target.on == {tools[L]: "joints/J1-2_male", tools[R]: "joints/G2-T20-0_ground"}
+    assert by_id["B2_R_ungrasp"].drives == {"tools/AT3L": "loosen", "tools/AT3R": "loosen"}
+    assert by_id["B2_R_retreat"].target.on == {"tools/AT3L": None, "tools/AT3R": None}
+    assert by_id["B2_H_to_grasp"].target.on == {"tools/alice/SupportGripper": "bars/B2"}
+    assert by_id["B2_HR_retreat"].target.on == {"tools/alice/SupportGripper": None}
+    assert [m.id for m in design.actions["B2_HR"].movements] == ["B2_HR_open", "B2_HR_retreat", "B2_HR_leave"]
+    report = check_plan(design, geometry=False)
+    assert not [e for e in report.errors if e.startswith("B11")], report.errors
+
+    parts = parts_catalogue(load_joint_registry())
+    assert parts["T20/Male"] == PartSpec(Pose()) and "T20Deck12/Male" in parts
+    assert "T20/Female" not in parts and "T20/MoCap" not in parts
+    turned = parts["T20/Ground"].seat
+    expected = PART_SEATS["T20/Ground"]
+    assert np.allclose(turned.matrix(), expected.matrix(), atol=1e-9)

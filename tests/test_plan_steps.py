@@ -112,3 +112,18 @@ def test_solutions_become_frames_and_keyframes():
     assert groups["left"]["joint_names"] == ["left_ur_arm_shoulder_pan_joint", "left_ur_arm_wrist_3_joint"]
     assert groups["right"]["joint_values"] == [2.0]
     assert np.isclose(sum(groups["left"]["joint_values"]), 4.0)
+
+
+def test_changed_since_planning(tmp_path):
+    """Solutions planned on a written design are current for the same design in memory; a re-solved bar is not."""
+    from bar_assembly_core.design import read, write
+    from bar_assembly_core.design.solutions import Planner, Solution, solved_against
+    from core.plan_steps import changed_since_planning
+    from test_design_builder import PKG
+
+    design = _solved()
+    written = write(design, tmp_path / "design", package_dirs=[PKG])
+    solutions = {a: Solution(a, solved_against(written, a), Planner("test"), {}) for a in ("B1_J", "B2_J")}
+    assert changed_since_planning(read(tmp_path / "design"), solutions, [PKG]) == []
+    assert changed_since_planning(design, solutions, [PKG]) == []          # the same design, still in memory
+    assert changed_since_planning(_solved(unsolved=("bars/B2",)), solutions, [PKG]) == ["B2_J"]

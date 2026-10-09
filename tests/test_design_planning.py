@@ -90,32 +90,26 @@ def setup():
     tamp_config.IK_BACKEND = backend
 
 
-def test_part_contacts_carry_the_legacy_touch_rules():
-    """The contacts the legacy touch policy allowed: tool on its part, mate halves on the partner's bar, ground
-    halves on the ground, and a cradle receiver around the mating male's tool."""
-    from dataclasses import replace
+def test_scenes_carry_the_part_contacts():
+    """The core's scenes derive the contacts Rhino's planning needs: a tool on its whole part, mate halves on each
+    other's bar, ground halves on the ground (decision #1). ? A cradle receiver around the mating male's tool (the
+    legacy `bar_cradle` rule) is not among them."""
     from core.design_builder import build_actions
-    from core.design_planning import allow_part_contacts, cradle_parts
     from test_design_builder import SCHEDULE, _records
 
     design = _design()
     bars, holds = _records(design)
     design = build_actions(design, SCHEDULE, bars, holds).design
     insert = next(m for m in design.actions["B2_J"].movements if m.id == "B2_J_insert")
+    scene = design.scene_at(insert)
 
-    def touches(design, body):
-        scene = design.scene_at(insert)
-        allow_part_contacts(design, scene, insert.start, cradles=frozenset({"T20/Female"}))
+    def touches(body):
         return set(scene.bodies[body].touches)
 
-    female, male = "joints/J1-2_female", "joints/J1-2_male"
-    assert "bars/B2" in touches(design, female)                   # the incoming bar seats into it
-    assert "tools/AT3L" in touches(design, "bars/B2")             # the tool may touch its whole part
-    assert "ground/WG0" in touches(design, "joints/G2-T20-0_ground")
-    assert "tools/AT3L" in touches(design, female)                # a cradle wraps the male's tool
-    plain = replace(design, bodies={**design.bodies, female: replace(design.bodies[female], part="T20/MoCap")})
-    assert "tools/AT3L" not in touches(plain, female)             # an ordinary receiver never gets the tool
-    assert "T20SubLeft/Female" in cradle_parts() and "T20/Female" not in cradle_parts()
+    assert "bars/B2" in touches("joints/J1-2_female")             # the incoming bar seats into it
+    assert "tools/AT3L" in touches("bars/B2")                      # the tool may touch its whole part
+    assert "ground/WG0" in touches("joints/G2-T20-0_ground")
+    assert "tools/AT3L" not in touches("joints/J1-2_female")       # a receiver never gets the tool
 
 
 def test_keyframe_chain_solves_on_the_mirror(setup):
@@ -160,7 +154,8 @@ def test_support_ik_and_release_check(setup):
 
     design, store, _, alice_tool0, _ = setup
     mirror, state = hold_solve_state(design, store, "bars/B1")
-    assert state.rigid_body_states["bars/B1"].is_hidden  # the gripper wraps the held bar
+    # * Solved where the gripper closes: Cindy still holds the built bar at its assembled pose.
+    assert not state.rigid_body_states["bars/B1"].is_hidden
     target = FrameTarget(frame_from_pose(alice_tool0), TargetMode.ROBOT, tolerance_position=1e-4,
                          tolerance_orientation=1e-3)
     with mirror.lend() as planner:
@@ -169,6 +164,12 @@ def test_support_ik_and_release_check(setup):
     assert cfg is not None
     verdict = release_check(design, store, "bars/B1")
     assert verdict.startswith(("OK", "collides")), verdict
+    from bar_assembly_core.kinematics import link_pose  # noqa: F401
+    from core.design_planning import hold_release_collisions
+    joints = dict(zip(cfg.joint_names, cfg.joint_values))
+    found = hold_release_collisions(design, store, "bars/B1", design.actions["B1_H"].movements[0].start
+                                    .robots["robots/alice"].base, joints, joints)
+    assert isinstance(found, list) and mirror.parked == ()
 
 
 def test_plan_design_writes_solutions(setup, tmp_path):
@@ -193,4 +194,11 @@ def test_plan_design_writes_solutions(setup, tmp_path):
     statuses = {m: r.status for s in solutions.values() for m, r in s.movements.items()}
     assert statuses["B1_J_insert"] == "solved" and statuses["B1_R_retreat"] == "solved", statuses
     assert statuses["B1_J_load"] == "not_planned"
+    # * No arm motion: solved and still, where the robot is (decision #7).
+    ungrasp = solutions["B1_R"].movements["B1_R_ungrasp"]
+    assert ungrasp.status == "solved" and ungrasp.trajectory is None and ungrasp.start == ungrasp.end
+    # * The design wins: the last waypoint is the design's target.
+    insert = solutions["B1_J"].movements["B1_J_insert"]
+    target = read(folder).actions["B1_J"].movements[-1].target.joints["robots/cindy"]
+    assert all(abs(insert.end["robots/cindy"][n] - v) < 1e-9 for n, v in target.items() if n in insert.end["robots/cindy"])
     print(statuses)

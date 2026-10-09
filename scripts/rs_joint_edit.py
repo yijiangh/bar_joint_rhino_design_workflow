@@ -787,6 +787,7 @@ def _edit_single_sided(clicked_id):
         session = _rjp._SingleSidedSession(
             definition=definition, bar_start=bar_start,
             bar_end=bar_end, jp=jp, jr=jr, flipped=flipped,
+            log_prefix="RSJointEdit",
         )
         rs.HideObject(clicked_id)  # the preview takes its place while aiming
         accepted = False

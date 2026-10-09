@@ -25,8 +25,9 @@ This is the repair path for a joint pair that survived but lost its tool -- the
 normal flow would build a whole new pair, which is not what is wanted.
 
 **JointOnly**: place ONE single-sided joint -- a Ground joint or a standalone
-MoCap joint -- on one bar.  Pick the bar, pick a point on it, pick the joint
-(``T20_Ground`` / ``T20_MoCap``; skipped when only one is registered), then:
+MoCap joint -- on one bar.  Choose ``Ground | MoCap`` on the command line
+(a second prompt picks the Type only when that kind has several blocks), pick
+the bar, pick a point on it, then:
 
   - Ground: ``Accept | Flip``.  Its angle about the bar is automatic -- the
     foot faces the floor.  Clicking the preview flips it end-for-end.
@@ -420,8 +421,12 @@ class _SingleSidedSession:
     be rotated about the bar (it has no floor to face).
     """
 
-    def __init__(self, *, definition, bar_start, bar_end, jp, jr, flipped=False):
+    def __init__(
+        self, *, definition, bar_start, bar_end, jp, jr, flipped=False,
+        log_prefix="RSJointPlace",
+    ):
         self.definition = definition
+        self.log_prefix = log_prefix
         self.subtype = single_sided.subtype_of(definition)
         self.bar_start = bar_start
         self.bar_end = bar_end
@@ -445,7 +450,7 @@ class _SingleSidedSession:
                 self.definition, self._frame()
             )
         print(
-            f"RSJointPlace: {self.definition.block_name} jp={self.jp:.2f} mm, "
+            f"{self.log_prefix}: {self.definition.block_name} jp={self.jp:.2f} mm, "
             f"jr={np.degrees(self.jr):.1f} deg"
             + (f", flipped={self.flipped}" if self.subtype == jnc.GROUND else "")
         )
@@ -525,7 +530,12 @@ def _single_sided_preview_loop(session):
 
 
 def _pick_single_sided_definition():
-    """The Ground / MoCap definition to place, or ``None``."""
+    """Ask ``Ground | MoCap`` on the command line, then the Type if that kind
+    has several registered blocks.  Returns the definition, or ``None`` on Esc.
+
+    Only kinds with a registered block are offered; a single kind is chosen
+    without asking.
+    """
     registry = joint_pair_module.load_joint_registry()
     definitions = single_sided.single_sided_definitions(registry)
     if not definitions:
@@ -537,18 +547,41 @@ def _pick_single_sided_definition():
             "RSJointPlace",
         )
         return None
-    if len(definitions) == 1:
-        return definitions[0]
-    names = [d.block_name for d in definitions]
-    chosen = rs.ListBox(names, "Joint to place on the bar", "RSJointPlace")
-    if not chosen:
+    by_subtype = {}
+    for definition in definitions:
+        by_subtype.setdefault(single_sided.subtype_of(definition), []).append(definition)
+    kinds = [s for s in jnc.SINGLE_SIDED_SUBTYPES if s in by_subtype]
+    kind = kinds[0] if len(kinds) == 1 else ask_option(
+        "Joint to place on one bar", kinds, default=kinds[0]
+    )
+    if kind is None:
         return None
-    return definitions[names.index(chosen)]
+    choices = by_subtype[kind]
+    if len(choices) == 1:
+        return choices[0]
+    by_type = {jnc.block_type(d.block_name): d for d in choices}
+    type_ = ask_option(f"{kind} joint Type", list(by_type), default=next(iter(by_type)))
+    return by_type.get(type_)
 
 
 def _run_joint_only():
-    """Place one Ground or standalone MoCap joint on one bar.  No tool."""
-    bar_curve = pick_bar("Select the bar for the Ground / MoCap joint")
+    """Place one Ground or standalone MoCap joint on one bar.  No tool.
+
+    Order: which joint (Ground / MoCap), the bar, the point on it, then the
+    preview (Ground: Accept / Flip; MoCap: Accept / Rotate).
+    """
+    definition = _pick_single_sided_definition()
+    if definition is None:
+        return
+    try:
+        require_block_definition(
+            definition.block_name, asset_path=definition.asset_path()
+        )
+    except RuntimeError as exc:
+        rs.MessageBox(str(exc), 0, "RSJointPlace")
+        return
+
+    bar_curve = pick_bar(f"Select the bar for the {definition.block_name} joint")
     if bar_curve is None:
         return
     bar_id = ensure_bar_id(bar_curve)
@@ -565,17 +598,6 @@ def _run_joint_only():
     if point is None:
         return
     jp = float(np.dot(point - bar_start, bar_vec / bar_len))
-
-    definition = _pick_single_sided_definition()
-    if definition is None:
-        return
-    try:
-        require_block_definition(
-            definition.block_name, asset_path=definition.asset_path()
-        )
-    except RuntimeError as exc:
-        rs.MessageBox(str(exc), 0, "RSJointPlace")
-        return
 
     session = _SingleSidedSession(
         definition=definition,

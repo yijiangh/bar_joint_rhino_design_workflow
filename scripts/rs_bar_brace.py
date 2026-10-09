@@ -49,6 +49,7 @@ from core.rhino_helpers import (
     delete_objects,
     ensure_layer,
     point_to_array,
+    set_object_color,
     suspend_redraw,
 )
 from core.rhino_bar_registry import (
@@ -88,9 +89,7 @@ def _place_axis_line(curve_id, *, color=None, label=None):
     ensure_layer(_BAR_CENTERLINE_LAYER)
     rs.ObjectLayer(curve_id, _BAR_CENTERLINE_LAYER)
     if color is not None:
-        if hasattr(rs, "ObjectColorSource"):
-            rs.ObjectColorSource(curve_id, 1)
-        rs.ObjectColor(curve_id, color)
+        set_object_color(curve_id, color)
     if label:
         rs.SetUserText(curve_id, "axis_label", label)
     return curve_id

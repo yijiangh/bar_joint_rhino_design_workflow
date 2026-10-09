@@ -63,7 +63,7 @@ from core import rhino_walkable_ground as _walkable_rhino_module
 from core import robot_cell as _robot_cell_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
-from core.rhino_helpers import np_mm_to_xform
+from core.rhino_helpers import np_mm_to_xform, reset_object_color
 
 
 # Command name used in every command-line message + dialog title.
@@ -196,11 +196,7 @@ def _highlight_grounds(ground_oids) -> list:
 
 def _revert_grounds(ground_oids) -> None:
     """Restore the highlighted WalkableGround brep(s) to their ByLayer color."""
-    for oid in ground_oids:
-        try:
-            rs.ObjectColorSource(oid, 0)  # 0 = ByLayer
-        except Exception:
-            continue
+    reset_object_color(ground_oids)
 
 
 # ---------------------------------------------------------------------------

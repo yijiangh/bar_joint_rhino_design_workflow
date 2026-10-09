@@ -114,6 +114,9 @@ from core.rhino_helpers import doc_unit_scale_to_mm
 from core.rhino_helpers import (
     block_instance_xform_mm,
     np_mm_to_xform,
+    objects_on_layers,
+    reset_object_color,
+    set_object_color,
     suspend_redraw,
 )
 from core.rhino_tool_place import find_tool_for_joint
@@ -258,11 +261,9 @@ def _males_on_bar(bar_id):
     """
     out = []
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
         out.extend(
             oid
-            for oid in rs.ObjectsByLayer(layer) or []
+            for oid in objects_on_layers(layer)
             if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out
@@ -413,9 +414,7 @@ def _pick_bar_and_detect_flow():
         if not targets:
             targets = [bar_oid]
         flag_token = snapshot_object_colors(targets)
-        for oid in targets:
-            rs.ObjectColorSource(oid, 1)  # by object, so the flag beats the layer
-            rs.ObjectColor(oid, COLOR_FAILED)
+        set_object_color(targets, COLOR_FAILED)  # by object, so the flag beats the layer
         rs.Redraw()
         print(f"RSIKKeyframe: {message} Pick another bar or press Esc to cancel.")
 
@@ -920,16 +919,15 @@ def _gather_reach_clip_curves(plane, walkable_brep=None):
         return {"plane": None, "boundary": None, "obstacles": []}
     tol = sc.doc.ModelAbsoluteTolerance
     obstacles = []
-    if rs.IsLayer(config.LAYER_ENVIRONMENT):
-        for oid in rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or []:
-            try:
-                footprints = _obstacle_footprints_in_plane(oid, plane, tol)
-            except Exception:
-                footprints = []
-            for footprint in footprints:
-                poly = _curve_to_plane_polygon(footprint, plane)
-                if len(poly) >= 2:
-                    obstacles.append(poly)
+    for oid in objects_on_layers(config.LAYER_ENVIRONMENT):
+        try:
+            footprints = _obstacle_footprints_in_plane(oid, plane, tol)
+        except Exception:
+            footprints = []
+        for footprint in footprints:
+            poly = _curve_to_plane_polygon(footprint, plane)
+            if len(poly) >= 2:
+                obstacles.append(poly)
     boundary = None
     if walkable_brep is not None:
         loop = _walkable_boundary_loop(walkable_brep, tol)
@@ -1317,20 +1315,16 @@ def _hide_inactive_tool_blocks(active_bar_id):
     """Hide every tool-instance whose joint isn't on `active_bar_id`. Returns
     a list of oids that were actually hidden (so caller can restore).
     """
-    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        return []
     active_joint_ids = set()
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             if (
                 rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
                 and rs.GetUserText(oid, jnc.UT_JOINT_ID)
             ):
                 active_joint_ids.add(rs.GetUserText(oid, jnc.UT_JOINT_ID))
     hidden = []
-    for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
+    for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if jid in active_joint_ids:
             continue
@@ -1947,11 +1941,7 @@ def _apply_red_highlight(oids):
 def _revert_red_highlight(oids):
     """Restore each oid's color source to ByLayer (undo `_apply_red_highlight`)."""
     with suspend_redraw():
-        for oid in oids or []:
-            try:
-                rs.ObjectColorSource(oid, 0)  # 0 = ByLayer
-            except Exception:
-                continue
+        reset_object_color(oids)
 
 
 def _cycle_ssik_candidates(planner, role, candidates, env_geom):

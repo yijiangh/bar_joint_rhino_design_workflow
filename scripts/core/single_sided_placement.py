@@ -194,15 +194,15 @@ def next_single_joint_index(subtype: str, bar_id: str, type_: str) -> int:
     """Smallest ``i`` such that ``G<bar>-<Type>-<i>`` (or ``M…``) is not
     already used by a baked block of *subtype*."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
     base = jnc.single_joint_id_base(subtype, bar_id, type_)
     layer = jnc.joint_layer(subtype)
     used = set()
-    if rs.IsLayer(layer):
-        for oid in rs.ObjectsByLayer(layer) or []:
-            parts = jnc.split_single_joint_id(rs.GetUserText(oid, jnc.UT_JOINT_ID))
-            if parts and jnc.single_joint_id_base(*parts[:3]) == base:
-                used.add(parts[3])
+    for oid in objects_on_layers(layer):
+        parts = jnc.split_single_joint_id(rs.GetUserText(oid, jnc.UT_JOINT_ID))
+        if parts and jnc.single_joint_id_base(*parts[:3]) == base:
+            used.add(parts[3])
     return jnc.next_free_index(used)
 
 

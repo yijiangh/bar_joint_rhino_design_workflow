@@ -29,6 +29,7 @@ def jp(monkeypatch):
     fake_helpers = SimpleNamespace(
         curve_endpoints=lambda _cid: ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
         numpy_to_xform=lambda matrix, *_a: matrix,
+        objects_on_layers=lambda *_layers: [],
         set_object_color=lambda *_a, **_k: None,
         set_objects_layer=lambda *_a, **_k: None,
         suspend_redraw=contextlib.nullcontext,

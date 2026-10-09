@@ -52,7 +52,12 @@ from core.rhino_bar_registry import (
     ensure_bar_preview,
     repair_on_entry,
 )
-from core.rhino_helpers import delete_objects, ensure_layer, suspend_redraw
+from core.rhino_helpers import (
+    delete_objects,
+    ensure_layer,
+    objects_on_layers,
+    suspend_redraw,
+)
 
 
 #: Rhino unit-system code for millimetres.  The whole toolchain (bar radius,
@@ -102,30 +107,23 @@ def _purge_previous_import(bar_oids):
     joint_oids = []
     joint_ids = set()
     for layer in jnc.JOINT_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in bar_ids:
                 joint_oids.append(oid)
                 joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
                 if joint_id:
                     joint_ids.add(joint_id)
 
-    tool_oids = []
-    if rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        tool_oids = [
-            oid
-            for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []
-            if rs.GetUserText(oid, jnc.UT_JOINT_ID) in joint_ids
-        ]
-
-    tube_oids = []
-    if rs.IsLayer(config.LAYER_BAR_TUBE_PREVIEWS):
-        tube_oids = [
-            oid
-            for oid in rs.ObjectsByLayer(config.LAYER_BAR_TUBE_PREVIEWS) or []
-            if rs.GetUserText(oid, TUBE_AXIS_GUID_KEY) in bar_guids
-        ]
+    tool_oids = [
+        oid
+        for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES)
+        if rs.GetUserText(oid, jnc.UT_JOINT_ID) in joint_ids
+    ]
+    tube_oids = [
+        oid
+        for oid in objects_on_layers(config.LAYER_BAR_TUBE_PREVIEWS)
+        if rs.GetUserText(oid, TUBE_AXIS_GUID_KEY) in bar_guids
+    ]
 
     with suspend_redraw():
         delete_objects(tool_oids)

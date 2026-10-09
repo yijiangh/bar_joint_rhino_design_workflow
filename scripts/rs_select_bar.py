@@ -30,7 +30,6 @@ import importlib
 import os
 import sys
 
-import Rhino
 import rhinoscriptsyntax as rs
 
 
@@ -42,6 +41,7 @@ import rs_bar_edit as _bar_edit_module
 from core import joint_name_conventions as jnc
 from core import rhino_bar_registry as _registry_module
 from core.rhino_bar_registry import BAR_ID_KEY, BAR_TYPE_KEY, BAR_TYPE_VALUE
+from core.rhino_helpers import ask_option, objects_on_layers
 
 
 # Command name used in every command-line message + dialog title.
@@ -121,11 +121,9 @@ def _bar_joint_oids(bar_ids) -> list:
     wanted = set(bar_ids)
     out = []
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
         out.extend(
             oid
-            for oid in rs.ObjectsByLayer(layer) or []
+            for oid in objects_on_layers(layer)
             if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in wanted
         )
     return out
@@ -189,24 +187,12 @@ def _ask_mode():
     Returns:
         str | None: ``"name"`` / ``"length"``, or ``None`` if the user cancelled.
     """
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Select bars by typed id, or by length group")
-    name_idx = go.AddOption("SelectByName")
-    length_idx = go.AddOption("SelectByLength")
-    go.SetCommandPromptDefault("SelectByName")
-    go.AcceptNothing(True)
-    while True:
-        res = go.Get()
-        if res == Rhino.Input.GetResult.Nothing:
-            return "name"
-        if res == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == name_idx:
-                return "name"
-            if chosen == length_idx:
-                return "length"
-            continue
-        return None
+    choice = ask_option(
+        "Select bars by typed id, or by length group",
+        ("SelectByName", "SelectByLength"),
+        default="SelectByName",
+    )
+    return {"SelectByName": "name", "SelectByLength": "length"}.get(choice)
 
 
 def _run_select_by_name(bars) -> None:

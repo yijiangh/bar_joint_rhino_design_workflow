@@ -356,13 +356,11 @@ def _classify_joints_per_arm(bar_id: str, subtype: str) -> dict:
     per-joint attachment without depending on Rhino oids surviving the export.
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
     from core.rhino_tool_place import find_tool_for_joint
 
     out = {}
-    layer = jnc.joint_layer(subtype)
-    if not rs.IsLayer(layer):
-        return out
-    for oid in rs.ObjectsByLayer(layer) or []:
+    for oid in objects_on_layers(jnc.joint_layer(subtype)):
         if rs.GetUserText(oid, jnc.UT_PARENT_BAR) != bar_id:
             continue
         jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)

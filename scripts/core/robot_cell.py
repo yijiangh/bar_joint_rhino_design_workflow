@@ -690,6 +690,7 @@ def _live_assembly_fingerprint():
         rounded_endpoint_sum, (left_tool, right_tool), names_md5)``.
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
     from core.rhino_bar_registry import get_bar_seq_map
 
     seq_map = get_bar_seq_map()
@@ -715,21 +716,16 @@ def _live_assembly_fingerprint():
         f"{bid}{':fake' if bid in fake_bar_ids else ''}" for bid in seq_map
     )
     for layer in jnc.JOINT_LAYERS:
-        if rs.IsLayer(layer):
-            joint_oids = rs.ObjectsByLayer(layer) or []
-            n_joints += len(joint_oids)
-            # The collision key's suffix comes from the layer, so the layer's
-            # Subtype is what the fingerprint must track.
-            subtype = jnc.subtype_of_layer(layer)
-            for joint_oid in joint_oids:
-                jid = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID) or ""
-                parent = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) or ""
-                name_parts.append(f"{jid}:{subtype}:{parent}")
-    n_env = (
-        len(rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or [])
-        if rs.IsLayer(config.LAYER_ENVIRONMENT)
-        else 0
-    )
+        joint_oids = objects_on_layers(layer)
+        n_joints += len(joint_oids)
+        # The collision key's suffix comes from the layer, so the layer's
+        # Subtype is what the fingerprint must track.
+        subtype = jnc.subtype_of_layer(layer)
+        for joint_oid in joint_oids:
+            jid = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID) or ""
+            parent = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) or ""
+            name_parts.append(f"{jid}:{subtype}:{parent}")
+    n_env = len(objects_on_layers(config.LAYER_ENVIRONMENT))
     # Active tool identity: a tool swap changes the cell geometry just like a
     # bar edit does, so it must change the fingerprint too. The staleness probe
     # runs at every command entry, so an unresolvable pair only gets a

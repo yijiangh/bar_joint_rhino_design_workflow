@@ -44,14 +44,13 @@ def _males_on_bar(bar_id: str) -> list:
         ``parent_bar_id == bar_id``.
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
     out = []
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
         out.extend(
             oid
-            for oid in rs.ObjectsByLayer(layer) or []
+            for oid in objects_on_layers(layer)
             if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id
         )
     return out

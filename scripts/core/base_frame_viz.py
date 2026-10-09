@@ -20,7 +20,7 @@ import numpy as np
 import rhinoscriptsyntax as rs
 
 from core import config
-from core.rhino_helpers import doc_unit_scale_to_mm
+from core.rhino_helpers import doc_unit_scale_to_mm, objects_on_layers
 
 
 # User-text key stamped on every marker object so a pick resolves to its bar.
@@ -45,10 +45,7 @@ def _ensure_preview_layer() -> str:
 
 def clear_base_frames() -> None:
     """Delete every baked base-frame marker (all objects on the preview layer)."""
-    layer = config.LAYER_BASE_FRAME_PREVIEW
-    if not rs.IsLayer(layer):
-        return
-    oids = rs.ObjectsByLayer(layer) or []
+    oids = objects_on_layers(config.LAYER_BASE_FRAME_PREVIEW)
     if oids:
         rs.DeleteObjects(oids)
 

@@ -74,6 +74,7 @@ from core import joint_pair_solver as _joint_pair_solver_module
 from core import joint_placement as _joint_placement_module
 from core import single_sided_placement as _single_sided_module
 from core.rhino_helpers import (
+    ask_option,
     curve_endpoints,
     delete_objects,
     suspend_redraw,
@@ -655,30 +656,13 @@ def _ask_place_mode():
     Returns ``"pair"`` / ``"tool"`` / ``"single"``, or ``None`` on Esc.  Enter
     keeps the historical behaviour (a joint pair with its tool).
     """
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt(
+    choice = ask_option(
         "Place a joint pair with its tool, put a tool on an existing joint, or "
-        "place one Ground / MoCap joint on a bar"
+        "place one Ground / MoCap joint on a bar",
+        ("JointPairAndTool", "ToolOnly", "JointOnly"),
+        default="JointPairAndTool",
     )
-    pair_idx = go.AddOption("JointPairAndTool")
-    tool_idx = go.AddOption("ToolOnly")
-    single_idx = go.AddOption("JointOnly")
-    go.SetCommandPromptDefault("JointPairAndTool")
-    go.AcceptNothing(True)
-    while True:
-        result = go.Get()
-        if result == Rhino.Input.GetResult.Nothing:
-            return "pair"
-        if result == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == pair_idx:
-                return "pair"
-            if chosen == tool_idx:
-                return "tool"
-            if chosen == single_idx:
-                return "single"
-            continue
-        return None
+    return {"JointPairAndTool": "pair", "ToolOnly": "tool", "JointOnly": "single"}.get(choice)
 
 
 def _ask_receiver(pair):
@@ -693,20 +677,10 @@ def _ask_receiver(pair):
     choices = joint_pair_module.receiver_subtypes(pair, registry.halves)
     if len(choices) < 2:
         return pair
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt(f"Receiving joint for '{pair.name}'")
-    indices = {go.AddOption(subtype): subtype for subtype in choices}
-    go.SetCommandPromptDefault(choices[0])
-    go.AcceptNothing(True)
-    while True:
-        result = go.Get()
-        if result == Rhino.Input.GetResult.Nothing:
-            return pair
-        if result == Rhino.Input.GetResult.Option and go.OptionIndex() in indices:
-            subtype = indices[go.OptionIndex()]
-            return joint_pair_module.with_receiver(pair, subtype, registry.halves)
-        if result != Rhino.Input.GetResult.Option:
-            return None
+    subtype = ask_option(f"Receiving joint for '{pair.name}'", choices, default=choices[0])
+    if subtype is None:
+        return None
+    return joint_pair_module.with_receiver(pair, subtype, registry.halves)
 
 
 # Both bar prompts say the whole rule, because which bar becomes the receiver is

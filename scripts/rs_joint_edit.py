@@ -119,7 +119,12 @@ from core.rhino_bar_registry import (
     reset_bar_color,
 )
 from core.rhino_block_import import require_block_definition
-from core.rhino_helpers import curve_endpoints, numpy_to_xform
+from core.rhino_helpers import (
+    ask_option,
+    curve_endpoints,
+    numpy_to_xform,
+    objects_on_layers,
+)
 from core.transforms import align_vectors
 from core.rhino_tool_place import (
     cycle_tool_at_tool_instance,
@@ -200,10 +205,8 @@ def _joints_touching_bar(bar_id):
     """
     found = {}
     for layer in jnc.PAIRED_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
         subtype = jnc.subtype_of_layer(layer)
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             # A standalone MoCap shares the MoCap layer but has no mate to keep
             # consistent, so it is not one of the bar's joints here.
@@ -889,30 +892,13 @@ def _run_replace_joint():
 def _ask_mode():
     """FlipJoint (the historical behaviour, and the Enter default), MoveJoint
     or ReplaceJoint."""
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt(
+    choice = ask_option(
         "Flip joint orientations, move a joint along its bar, or swap a "
-        "receiver Female <-> MoCap"
+        "receiver Female <-> MoCap",
+        ("FlipJoint", "MoveJoint", "ReplaceJoint"),
+        default="FlipJoint",
     )
-    flip_idx = go.AddOption("FlipJoint")
-    move_idx = go.AddOption("MoveJoint")
-    replace_idx = go.AddOption("ReplaceJoint")
-    go.SetCommandPromptDefault("FlipJoint")
-    go.AcceptNothing(True)
-    while True:
-        result = go.Get()
-        if result == Rhino.Input.GetResult.Nothing:
-            return "flip"
-        if result == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == flip_idx:
-                return "flip"
-            if chosen == move_idx:
-                return "move"
-            if chosen == replace_idx:
-                return "replace"
-            continue
-        return None
+    return {"FlipJoint": "flip", "MoveJoint": "move", "ReplaceJoint": "replace"}.get(choice)
 
 
 def main():

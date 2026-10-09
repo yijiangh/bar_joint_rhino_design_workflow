@@ -30,14 +30,17 @@ from core.build_stage import (
     stage_filter_note,
 )
 from core.rhino_helpers import (
-    as_object_id_list,
     apply_object_display,
+    as_object_id_list,
     curve_endpoints,
     delete_objects,
     ensure_layer,
     get_doc_string,
+    objects_on_layers,
     point_to_array,
+    reset_object_color,
     set_doc_string,
+    set_object_color,
     suspend_redraw,
 )
 
@@ -713,17 +716,6 @@ SEQ_COLOR_SUPPORT_PICK = (110, 40, 160)
 SEQ_COLOR_FAKE = (230, 115, 150)
 
 
-def _set_obj_color(oid, color):
-    """Set by-object colour on *oid*."""
-    rs.ObjectColorSource(oid, 1)  # 1 = by object
-    rs.ObjectColor(oid, color)
-
-
-def _reset_obj_color(oid):
-    """Restore by-layer colour on *oid*."""
-    rs.ObjectColorSource(oid, 0)  # 0 = by layer
-
-
 def _bar_curve_and_tube(curve_id, tube_index=None):
     """Return ``[curve_id]`` plus the tube GUID if one exists.
 
@@ -747,23 +739,6 @@ def _bar_curve_and_tube(curve_id, tube_index=None):
 # ---------------------------------------------------------------------------
 
 
-def _joint_layer_objects():
-    """All joint block instance ids, every joint role."""
-    out = []
-    for layer in jnc.JOINT_LAYERS:
-        if rs.IsLayer(layer):
-            out.extend(rs.ObjectsByLayer(layer) or [])
-    return out
-
-
-def _tool_layer_objects():
-    """All robotic-tool block instance ids on the tool-instances layer."""
-    layer = config.LAYER_TOOL_INSTANCES
-    if not rs.IsLayer(layer):
-        return []
-    return list(rs.ObjectsByLayer(layer) or [])
-
-
 def get_active_tool_oids(active_bar_id):
     """Return tool block instance ids whose male joint is parented to *active_bar_id*.
 
@@ -775,9 +750,7 @@ def get_active_tool_oids(active_bar_id):
         return []
     active_joint_ids = set()
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             if (
                 rs.GetUserText(oid, jnc.UT_PARENT_BAR) == active_bar_id
                 and rs.GetUserText(oid, jnc.UT_JOINT_ID)
@@ -787,7 +760,7 @@ def get_active_tool_oids(active_bar_id):
         return []
     return [
         oid
-        for oid in _tool_layer_objects()
+        for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES)
         if rs.GetUserText(oid, jnc.UT_JOINT_ID) in active_joint_ids
     ]
 
@@ -1034,23 +1007,23 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
         objs = _bar_curve_and_tube(oid, tube_index)
         curve_obj = objs[0]
         if paint:
-            _set_obj_color(curve_obj, color)
+            set_object_color(curve_obj, color)
         else:
-            _reset_obj_color(curve_obj)
+            reset_object_color(curve_obj)
         _set_visible(curve_obj, visible)
         if line_style is not None:
             _apply_line_style(curve_obj, line_style)
         for obj in objs[1:]:
             if geom_paint:
-                _set_obj_color(obj, color)
+                set_object_color(obj, color)
             else:
-                _reset_obj_color(obj)
+                reset_object_color(obj)
             _set_visible(obj, geom_visible)
 
     # Joints follow their parent bar's visibility AND color.  Setting
     # by-object color on the block instance lets nested sub-objects that
     # are set to "by parent" inherit it automatically.
-    for joint_oid in _joint_layer_objects():
+    for joint_oid in objects_on_layers(*jnc.JOINT_LAYERS):
         parent_bar_id = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
         visible = bar_visible_by_id.get(parent_bar_id, True)
         color = bar_color_by_id.get(parent_bar_id)
@@ -1058,22 +1031,22 @@ def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
             # Follow the parent bar's paint decision, not just its colour, so a
             # switched-off class does not leave its joints tinted.
             if bar_paint_by_id.get(parent_bar_id, True):
-                _set_obj_color(joint_oid, color)
+                set_object_color(joint_oid, color)
             else:
-                _reset_obj_color(joint_oid)
+                reset_object_color(joint_oid)
         _set_visible(joint_oid, visible)
 
     # Tools: hide all, then show + color the active step's tool(s).  The tint is
     # the ACTIVE blue, so it is gated on the same switch as the active bar --
     # visibility is not, the active step's tool is shown either way.
     active_tool_oids = set(get_active_tool_oids(active_bar_id))
-    for tool_oid in _tool_layer_objects():
+    for tool_oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         is_active = tool_oid in active_tool_oids
         if is_active:
             if flags["active"] and not tint_curves_only:
-                _set_obj_color(tool_oid, SEQ_COLOR_ACTIVE)
+                set_object_color(tool_oid, SEQ_COLOR_ACTIVE)
             else:
-                _reset_obj_color(tool_oid)
+                reset_object_color(tool_oid)
         _set_visible(tool_oid, is_active)
 
     rs.EnableRedraw(True)
@@ -1100,17 +1073,17 @@ def reset_sequence_colors():
     with suspend_redraw():
         for bar_id, (oid, _) in bar_map.items():
             for obj in _bar_curve_and_tube(oid, tube_index):
-                _reset_obj_color(obj)
+                reset_object_color(obj)
                 # Undo any filming line style (width / dash back to by-layer);
                 # harmless on objects that never carried one.
                 rs.ObjectLinetypeSource(obj, 0)
                 rs.ObjectPrintWidthSource(obj, 0)
                 rs.ShowObject(obj)
-        for joint_oid in _joint_layer_objects():
-            _reset_obj_color(joint_oid)
+        for joint_oid in objects_on_layers(*jnc.JOINT_LAYERS):
+            reset_object_color(joint_oid)
             rs.ShowObject(joint_oid)
-        for tool_oid in _tool_layer_objects():
-            _reset_obj_color(tool_oid)
+        for tool_oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
+            reset_object_color(tool_oid)
             rs.ShowObject(tool_oid)
         # LAST, inside the same batch: the show pass above just made everything
         # visible, so the filter has to get the final word or the latch leaks.
@@ -1203,7 +1176,7 @@ def apply_build_stage_visibility(caller=None, verbose=True):
             for _bar_id, (oid, _seq) in bar_map.items():
                 for obj in _bar_curve_and_tube(oid, tube_index):
                     rs.ShowObject(obj)
-            for oid in _joint_layer_objects() + _tool_layer_objects():
+            for oid in objects_on_layers(*jnc.JOINT_LAYERS, config.LAYER_TOOL_INSTANCES):
                 rs.ShowObject(oid)
         return None
     if status == STATUS_FALLBACK:
@@ -1231,20 +1204,18 @@ def apply_build_stage_visibility(caller=None, verbose=True):
                 n_hidden += 1
 
         # Joints, one pass over every joint layer.  Iterated per layer rather than
-        # through _joint_layer_objects() because we need to know WHICH layer each
+        # over all joint layers at once because we need to know WHICH layer each
         # instance came from: only the tool-bearing halves answer "whose tool is
         # this?" (see get_active_tool_oids), and a receiving half would give the
         # opposite answer for the same joint_id.
         tool_owner_bar_by_joint_id = {}
         for layer in jnc.JOINT_LAYERS:
-            if not rs.IsLayer(layer):
-                continue
             # Asked positively, against the tool-bearing set.  Phrased as
             # "anything but the female layer" this silently made every NEW role
             # a tool owner -- a mocap half would have claimed its joint's tool
             # and dragged tool visibility onto the wrong bar.
             is_tool_side = layer in jnc.TOOL_BEARING_LAYERS
-            for joint_oid in rs.ObjectsByLayer(layer) or []:
+            for joint_oid in objects_on_layers(layer):
                 parent_bar_id = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
                 # Unknown parent -> leave visible.  An orphaned joint that is also
                 # invisible is one the user can never find and fix.
@@ -1258,7 +1229,7 @@ def apply_build_stage_visibility(caller=None, verbose=True):
                         tool_owner_bar_by_joint_id[joint_id] = parent_bar_id
 
         # Tools follow the bar owning their male/ground half.
-        for tool_oid in _tool_layer_objects():
+        for tool_oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
             owner_bar_id = tool_owner_bar_by_joint_id.get(
                 rs.GetUserText(tool_oid, jnc.UT_JOINT_ID)
             )
@@ -1348,9 +1319,7 @@ def _tube_index():
     the duplicates that copy/paste leaves behind).
     """
     index = {}
-    if not rs.IsLayer(TUBE_LAYER):
-        return index
-    for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
+    for oid in objects_on_layers(TUBE_LAYER):
         axis_guid = rs.GetUserText(oid, TUBE_AXIS_GUID_KEY)
         if axis_guid:
             index.setdefault(axis_guid, oid)
@@ -1362,10 +1331,8 @@ def _find_existing_tube(curve_id):
 
     Returns the tube object GUID or None.
     """
-    if not rs.IsLayer(TUBE_LAYER):
-        return None
     curve_guid_str = str(rs.coerceguid(curve_id))
-    for oid in rs.ObjectsByLayer(TUBE_LAYER):
+    for oid in objects_on_layers(TUBE_LAYER):
         if rs.GetUserText(oid, TUBE_AXIS_GUID_KEY) == curve_guid_str:
             return oid
     return None
@@ -1597,11 +1564,9 @@ def _enforce_tube_layer(caller):
 def _enforce_centerline_layer(caller):
     """Evict objects on the centerline layer that are not registered bars."""
     layer = BAR_CENTERLINE_LAYER
-    if not rs.IsLayer(layer):
-        return
     strays = [
         oid
-        for oid in (rs.ObjectsByLayer(layer) or [])
+        for oid in objects_on_layers(layer)
         if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
@@ -1609,11 +1574,9 @@ def _enforce_centerline_layer(caller):
 
 def _enforce_joint_layer(caller, layer):
     """Evict objects on a joint-instances layer that lack a ``joint_id``."""
-    if not rs.IsLayer(layer):
-        return
     strays = [
         oid
-        for oid in (rs.ObjectsByLayer(layer) or [])
+        for oid in objects_on_layers(layer)
         if not rs.GetUserText(oid, jnc.UT_JOINT_ID)
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
@@ -1621,11 +1584,9 @@ def _enforce_joint_layer(caller, layer):
 
 def _enforce_tool_layer(caller, layer):
     """Evict objects on the tool-instances layer that lack a ``tool_id``."""
-    if not rs.IsLayer(layer):
-        return
     strays = [
         oid
-        for oid in (rs.ObjectsByLayer(layer) or [])
+        for oid in objects_on_layers(layer)
         if not rs.GetUserText(oid, jnc.UT_TOOL_ID)
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
@@ -1695,19 +1656,12 @@ def repair_on_entry(bar_radius, caller="RSScaffolding"):
     # Sanity check: every registered bar centerline should have exactly
     # one corresponding tube preview.
     # ------------------------------------------------------------------
-    if rs.IsLayer(BAR_CENTERLINE_LAYER):
-        n_centerlines = sum(
-            1
-            for oid in (rs.ObjectsByLayer(BAR_CENTERLINE_LAYER) or [])
-            if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE
-        )
-    else:
-        n_centerlines = 0
-    n_tubes = (
-        len(rs.ObjectsByLayer(TUBE_LAYER) or [])
-        if rs.IsLayer(TUBE_LAYER)
-        else 0
+    n_centerlines = sum(
+        1
+        for oid in objects_on_layers(BAR_CENTERLINE_LAYER)
+        if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE
     )
+    n_tubes = len(objects_on_layers(TUBE_LAYER))
     print(
         f"{caller} (sanity): {n_centerlines} bar centerline(s), "
         f"{n_tubes} tube preview(s)."
@@ -1737,32 +1691,20 @@ def paint_bar(curve_id, color):
     """
     if curve_id is None or not rs.IsObject(curve_id):
         return
-    if hasattr(rs, "ObjectColorSource"):
-        rs.ObjectColorSource(curve_id, 1)
-    rs.ObjectColor(curve_id, color)
-    tube = _find_existing_tube(curve_id)
-    if tube is not None and rs.IsObject(tube):
-        if hasattr(rs, "ObjectColorSource"):
-            rs.ObjectColorSource(tube, 1)
-        rs.ObjectColor(tube, color)
+    set_object_color([curve_id, _find_existing_tube(curve_id)], color)
 
 
 def reset_bar_color(curve_id):
     """Restore layer-default color on a bar centre-line curve and its tube."""
     if curve_id is None or not rs.IsObject(curve_id):
         return
-    if hasattr(rs, "ObjectColorSource"):
-        rs.ObjectColorSource(curve_id, 0)  # by layer
-    tube = _find_existing_tube(curve_id)
-    if tube is not None and rs.IsObject(tube):
-        if hasattr(rs, "ObjectColorSource"):
-            rs.ObjectColorSource(tube, 0)
+    reset_object_color([curve_id, _find_existing_tube(curve_id)])
 
 
 def snapshot_object_colors(object_ids):
     """Capture the color state of any objects so it can be put back exactly.
 
-    :func:`reset_bar_color` (and ``highlight_env._reset_obj_color``) always
+    :func:`reset_bar_color` (and ``core.rhino_helpers.reset_object_color``) always
     revert to by-layer, which is the wrong "undo" for something that was
     ALREADY carrying a meaning: ``COLOR_HAS_IK`` on a solved bar,
     :data:`SEQ_COLOR_FAKE` on a staging bar, a sequence color on a joint block.

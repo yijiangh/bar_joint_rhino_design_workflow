@@ -77,7 +77,7 @@ from core.rhino_bar_registry import (
     set_build_stage,
     show_sequence_colors,
 )
-from core.rhino_helpers import block_instance_xform_mm, suspend_redraw
+from core.rhino_helpers import block_instance_xform_mm, reset_object_color, suspend_redraw
 
 
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
@@ -1220,12 +1220,7 @@ class _PreviewSession:
         if not self._highlight_oids:
             return
         with suspend_redraw():
-            for oid in self._highlight_oids:
-                try:
-                    # ColorSource 0 = ByLayer (restore default)
-                    rs.ObjectColorSource(oid, 0)
-                except Exception:
-                    continue
+            reset_object_color(self._highlight_oids)
         self._highlight_oids = []
 
     # ---- walkable-ground highlight -------------------------------------
@@ -1281,12 +1276,7 @@ class _PreviewSession:
         if not self._wg_highlight_oids:
             return
         with suspend_redraw():
-            for oid in self._wg_highlight_oids:
-                try:
-                    # ColorSource 0 = ByLayer (restore default)
-                    rs.ObjectColorSource(oid, 0)
-                except Exception:
-                    continue
+            reset_object_color(self._wg_highlight_oids)
         self._wg_highlight_oids = []
 
     def cleanup(self):

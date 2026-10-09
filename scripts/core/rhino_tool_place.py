@@ -215,11 +215,10 @@ def remove_tool_for_joint(joint_id: str) -> int:
     Returns the number of objects removed.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
-    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        return 0
     removed = 0
-    for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
+    for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             rs.DeleteObject(oid)
             removed += 1
@@ -308,6 +307,7 @@ def replace_all_tool_instances(pair: dict) -> dict:
             failure, or per-joint placement failure.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
     # Rhino-runtime import: rhino_helpers pulls in rhinoscriptsyntax at its
     # top, so importing it lazily keeps this module importable outside Rhino.
     from core.rhino_helpers import suspend_redraw  # noqa: PLC0415
@@ -316,11 +316,7 @@ def replace_all_tool_instances(pair: dict) -> dict:
     jobs: dict = {}       # joint_id -> (side, joint_block_id)
     tool_oids: list = []  # everything on the tool layer (deleted in pass 2)
     problems: list = []
-    if rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        existing_tool_oids = rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []
-    else:
-        existing_tool_oids = []
-    for oid in existing_tool_oids:
+    for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         tool_oids.append(oid)
         joint_id = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         tool_name = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""
@@ -511,10 +507,9 @@ def find_tool_for_joint(joint_id: str):
     """Return the Rhino object id of the tool instance tagged with *joint_id*,
     or ``None`` if no such tool is currently placed."""
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
-    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        return None
-    for oid in rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or []:
+    for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         if rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
             return oid
     return None
@@ -733,6 +728,7 @@ def _restore_side_tool(block_id, joint_id, active, default_tool):
     fall back to *default_tool* (the doc default active tool).
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
     bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
     if not bar_id:
@@ -740,9 +736,7 @@ def _restore_side_tool(block_id, joint_id, active, default_tool):
 
     sibling_sides: set = set()
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for other_id in rs.ObjectsByLayer(layer) or []:
+        for other_id in objects_on_layers(layer):
             other_jid = rs.GetUserText(other_id, jnc.UT_JOINT_ID)
             if not other_jid or other_jid == joint_id:
                 continue
@@ -805,6 +799,7 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
     ``checked: 9`` means one block is not on the layer it should be on.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
     n = {
         "checked": 0,
@@ -824,9 +819,7 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
 
     seen_joint_ids: set = set()
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for block_id in list(rs.ObjectsByLayer(layer) or []):
+        for block_id in objects_on_layers(layer):
             n["checked"] += 1
             joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
             if not joint_id:
@@ -890,15 +883,14 @@ def _bar_anchor_joints(bar_id):
     instance's world origin in mm -- where the robot actually grabs.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
     from core.rhino_helpers import block_instance_xform_mm  # noqa: PLC0415
 
     anchors = []
     seen: set = set()
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for block_id in list(rs.ObjectsByLayer(layer) or []):
+        for block_id in objects_on_layers(layer):
             if rs.GetUserText(block_id, jnc.UT_PARENT_BAR) != bar_id:
                 continue
             joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
@@ -1022,6 +1014,7 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
         int: the number of tools re-placed onto the correct side.
     """
     import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
 
     active = _get_active_pair_or_none()
     if active is None:
@@ -1069,9 +1062,7 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
     by_bar: dict = {}
     seen_joint_ids: set = set()
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for block_id in list(rs.ObjectsByLayer(layer) or []):
+        for block_id in objects_on_layers(layer):
             joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
             bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
             if not joint_id or not bar_id or joint_id in seen_joint_ids:

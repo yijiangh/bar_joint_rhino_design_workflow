@@ -59,7 +59,7 @@ from core.rhino_bar_registry import (
     BAR_TYPE_VALUE,
     repair_on_entry,
 )
-from core.rhino_helpers import curve_endpoints
+from core.rhino_helpers import curve_endpoints, objects_on_layers
 
 #: Endpoints closer than this (mm, per axis) are the same node.  Bars that
 #: have not been moved keep bit-identical endpoints, and RSBarSnap offsets
@@ -191,9 +191,7 @@ def _joint_couplers(bar_id_to_rod_id):
     """
     pairs = set()
     for layer in jnc.PAIRED_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             parent = bar_id_to_rod_id.get(rs.GetUserText(oid, jnc.UT_PARENT_BAR))
             connected = bar_id_to_rod_id.get(rs.GetUserText(oid, jnc.UT_CONNECTED_BAR))
             if parent is None or connected is None or parent == connected:

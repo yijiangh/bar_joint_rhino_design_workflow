@@ -32,7 +32,11 @@ from core import joint_name_conventions as jnc
 # The numpy half moved into the tamp submodule with the solvers (core.config
 # put it on sys.path); imported under the same private name as before.
 from husky_assembly_tamp.keyframe import walkable_ground as _walkable_np
-from core.rhino_helpers import block_instance_xform_mm, doc_unit_scale_to_mm
+from core.rhino_helpers import (
+    block_instance_xform_mm,
+    doc_unit_scale_to_mm,
+    objects_on_layers,
+)
 
 
 # Object types accepted on the WalkableGround layer (same set rs_ik_keyframe uses).
@@ -413,9 +417,7 @@ def anchor_insertion_axes_mm(bar_id):
     """
     axes = []
     for layer in jnc.TOOL_BEARING_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             if rs.GetUserText(oid, jnc.UT_PARENT_BAR) != bar_id:
                 continue
             try:
@@ -566,11 +568,9 @@ def _other_bar_segments_mm(exclude_bar_oid):
 
 def _environment_boxes_mm():
     """Return ``[(min_corner_mm, max_corner_mm)]`` for the environment obstacles."""
-    if not rs.IsLayer(config.LAYER_ENVIRONMENT):
-        return []
     scale = doc_unit_scale_to_mm()
     boxes = []
-    for oid in rs.ObjectsByLayer(config.LAYER_ENVIRONMENT) or []:
+    for oid in objects_on_layers(config.LAYER_ENVIRONMENT):
         corners = rs.BoundingBox(oid)
         if not corners:
             continue

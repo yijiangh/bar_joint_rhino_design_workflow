@@ -68,7 +68,7 @@ from core.rhino_bar_registry import (
     set_fake_bar,
 )
 from core.rhino_bar_pick import bar_or_tube_filter, resolve_picked_to_bar_curve
-from core.rhino_helpers import curve_endpoints
+from core.rhino_helpers import ask_option, curve_endpoints, objects_on_layers
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -196,9 +196,7 @@ def _clear_dots(dot_ids):
 
 def _find_tube_for_bar(bar_id):
     """Find the tube object on TUBE_LAYER whose tube_bar_id matches *bar_id*."""
-    if not rs.IsLayer(TUBE_LAYER):
-        return None
-    for oid in rs.ObjectsByLayer(TUBE_LAYER) or []:
+    for oid in objects_on_layers(TUBE_LAYER):
         if rs.GetUserText(oid, TUBE_BAR_ID_KEY) == bar_id:
             return oid
     return None
@@ -353,24 +351,12 @@ def pick_length_group(groups, default_mm=None, command="RSBarEdit"):
 
 def _ask_mode():
     """Ask for BarLength or FakeBar.  Returns ``"length"`` / ``"fake"`` / None."""
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("Edit bar lengths, or mark bars as non-fabricated staging")
-    length_idx = go.AddOption("BarLength")
-    fake_idx = go.AddOption("FakeBar")
-    go.SetCommandPromptDefault("BarLength")
-    go.AcceptNothing(True)
-    while True:
-        res = go.Get()
-        if res == Rhino.Input.GetResult.Nothing:
-            return "length"
-        if res == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == length_idx:
-                return "length"
-            if chosen == fake_idx:
-                return "fake"
-            continue
-        return None
+    choice = ask_option(
+        "Edit bar lengths, or mark bars as non-fabricated staging",
+        ("BarLength", "FakeBar"),
+        default="BarLength",
+    )
+    return {"BarLength": "length", "FakeBar": "fake"}.get(choice)
 
 
 def _pick_bar_curve(prompt):

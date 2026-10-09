@@ -17,23 +17,10 @@ from core.rhino_bar_registry import (
     _bar_curve_and_tube,
     get_bar_seq_map,
 )
+from core.rhino_helpers import objects_on_layers, reset_object_color, set_object_color
 
 
 ENV_GREEN = (60, 179, 60)
-
-
-def _set_obj_color(oid, color):
-    if not rs.IsObject(oid):
-        return False
-    rs.ObjectColorSource(oid, 1)
-    rs.ObjectColor(oid, color)
-    return True
-
-
-def _reset_obj_color(oid):
-    if not rs.IsObject(oid):
-        return
-    rs.ObjectColorSource(oid, 0)
 
 
 def highlight_env_for_ik(active_bar_id):
@@ -56,16 +43,15 @@ def highlight_env_for_ik(active_bar_id):
         for bid in built_bar_ids:
             oid = bar_map[bid][0]
             for obj in _bar_curve_and_tube(oid):
-                if _set_obj_color(obj, ENV_GREEN):
+                if rs.IsObject(obj):
+                    set_object_color(obj, ENV_GREEN)
                     touched.append(obj)
 
-        for layer in jnc.JOINT_LAYERS:
-            if not rs.IsLayer(layer):
-                continue
-            for joint_oid in rs.ObjectsByLayer(layer) or []:
-                if rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) in built_bar_ids:
-                    if _set_obj_color(joint_oid, ENV_GREEN):
-                        touched.append(joint_oid)
+        for joint_oid in objects_on_layers(*jnc.JOINT_LAYERS):
+            if rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) in built_bar_ids:
+                if rs.IsObject(joint_oid):
+                    set_object_color(joint_oid, ENV_GREEN)
+                    touched.append(joint_oid)
     finally:
         rs.EnableRedraw(True)
     return touched
@@ -77,7 +63,6 @@ def revert_env_highlight(token):
         return
     rs.EnableRedraw(False)
     try:
-        for oid in token:
-            _reset_obj_color(oid)
+        reset_object_color(token)
     finally:
         rs.EnableRedraw(True)

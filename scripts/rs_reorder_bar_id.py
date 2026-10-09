@@ -46,7 +46,6 @@ import importlib
 import os
 import sys
 
-import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -67,7 +66,7 @@ from core.rhino_bar_registry import (
     get_bar_seq_map,
     repair_on_entry,
 )
-from core.rhino_helpers import suspend_redraw
+from core.rhino_helpers import ask_option, objects_on_layers, suspend_redraw
 from core.single_sided_placement import is_single_sided_block
 
 
@@ -100,34 +99,18 @@ def _build_bar_rename(seq_map):
     return {bid: jnc.bar_id(seq) for bid, (_, seq) in seq_map.items()}
 
 
-def _layers_for(*names):
-    return [n for n in names if rs.IsLayer(n)]
-
-
 def _iter_joint_block_oids():
     """Halves placed by a mate: receiver (Female / MoCap) + Male, ``J…`` ids."""
-    out = []
-    for layer in _layers_for(*jnc.PAIRED_LAYERS):
-        out.extend(
-            oid for oid in rs.ObjectsByLayer(layer) or [] if not is_single_sided_block(oid)
-        )
-    return out
+    return [
+        oid for oid in objects_on_layers(*jnc.PAIRED_LAYERS) if not is_single_sided_block(oid)
+    ]
 
 
 def _iter_single_sided_block_oids():
     """Ground blocks, and MoCap blocks placed alone on a bar (``M…`` ids)."""
-    out = []
-    for layer in _layers_for(*jnc.SINGLE_SIDED_LAYERS):
-        out.extend(
-            oid for oid in rs.ObjectsByLayer(layer) or [] if is_single_sided_block(oid)
-        )
-    return out
-
-
-def _iter_tool_block_oids():
-    if not rs.IsLayer(config.LAYER_TOOL_INSTANCES):
-        return []
-    return list(rs.ObjectsByLayer(config.LAYER_TOOL_INSTANCES) or [])
+    return [
+        oid for oid in objects_on_layers(*jnc.SINGLE_SIDED_LAYERS) if is_single_sided_block(oid)
+    ]
 
 
 def _build_joint_id_remap(bar_rename):
@@ -213,39 +196,14 @@ def _choose_operation():
 
     Returns ``"renumber"``, ``"relink"``, or ``None`` (cancelled).
     """
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("RSReorderBarID - choose operation")
-    renumber_idx = go.AddOption("RenumberBars")
-    relink_idx = go.AddOption("RelinkJointsAndTools")
-    go.AcceptNothing(False)
-    while True:
-        result = go.Get()
-        if result == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == renumber_idx:
-                return "renumber"
-            if chosen == relink_idx:
-                return "relink"
-        else:
-            return None
+    choice = ask_option(
+        "RSReorderBarID - choose operation", ("RenumberBars", "RelinkJointsAndTools")
+    )
+    return {"RenumberBars": "renumber", "RelinkJointsAndTools": "relink"}.get(choice)
 
 
 def _confirm_apply(prompt="Apply?"):
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt(prompt)
-    apply_idx = go.AddOption("Apply")
-    cancel_idx = go.AddOption("Cancel")
-    go.AcceptNothing(False)
-    while True:
-        result = go.Get()
-        if result == Rhino.Input.GetResult.Option:
-            chosen = go.OptionIndex()
-            if chosen == apply_idx:
-                return True
-            if chosen == cancel_idx:
-                return False
-        else:
-            return False
+    return ask_option(prompt, ("Apply", "Cancel")) == "Apply"
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +300,7 @@ def _apply_rename(bar_rename, jid_remap, seq_map):
                 n_singles += 1
 
         # 7. Tool instances - inherit joint_id from jid_remap.
-        for oid in _iter_tool_block_oids():
+        for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
             old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             new_jid = jid_remap.get(old_jid, old_jid)
             if new_jid and new_jid != old_jid:

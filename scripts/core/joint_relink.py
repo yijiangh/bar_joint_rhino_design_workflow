@@ -66,7 +66,7 @@ import rhinoscriptsyntax as rs
 
 from core import config
 from core import joint_name_conventions as jnc
-from core.rhino_helpers import curve_endpoints, suspend_redraw
+from core.rhino_helpers import curve_endpoints, objects_on_layers, suspend_redraw
 from core.joint_pick_helpers import block_instance_frame
 from core.rhino_bar_registry import get_bar_seq_map
 from core.robotic_tool import load_robotic_tools
@@ -100,11 +100,6 @@ def _parse_float(s):
     except (TypeError, ValueError):
         return None
 
-
-def _layer_oids(layer):
-    if not rs.IsLayer(layer):
-        return []
-    return list(rs.ObjectsByLayer(layer) or [])
 
 
 def _point_segment_distance(p, a, b):
@@ -461,7 +456,7 @@ def build_plan():
     single_edits = []
     for layer in jnc.JOINT_LAYERS:
         subtype = jnc.subtype_of_layer(layer)
-        for oid in _layer_oids(layer):
+        for oid in objects_on_layers(layer):
             # Single-sided: every Ground block, and a MoCap block whose id says
             # it is standalone (M…) rather than the receiver of a pair (J…).
             if jnc.is_single_sided(subtype, rs.GetUserText(oid, jnc.UT_JOINT_ID)):
@@ -481,7 +476,7 @@ def build_plan():
     ]
     tools_reg = load_robotic_tools()
     tool_edits = [_tool_edit(oid, targets, tools_reg)
-                  for oid in _layer_oids(config.LAYER_TOOL_INSTANCES)]
+                  for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES)]
 
     edits = joint_edits + tool_edits
     warnings = _consistency_warnings(joint_edits)
@@ -570,7 +565,7 @@ def verify_links():
 
     joint_ids = set()
     for layer in jnc.JOINT_LAYERS:
-        for oid in _layer_oids(layer):
+        for oid in objects_on_layers(layer):
             jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
             if jid:
                 joint_ids.add(jid)
@@ -580,7 +575,7 @@ def verify_links():
                     f"{rs.ObjectName(oid) or oid}: parent_bar_id '{pid}' is not a live bar"
                 )
 
-    for oid in _layer_oids(config.LAYER_TOOL_INSTANCES):
+    for oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
         if jid and jid not in joint_ids:
             problems.append(

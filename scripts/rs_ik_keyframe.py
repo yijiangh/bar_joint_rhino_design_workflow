@@ -1158,6 +1158,11 @@ def _use_engine_preview(cell=None):
     _PREVIEW["layer"] = LAYER_KEY_CORE if cell is not None else ik_viz.LAYER_KEY_ASSEMBLY
 
 
+def _preview_mode(mesh_mode):
+    """The mesh mode previews can show: the Core engine's cell has collision meshes only."""
+    return ik_viz.MESH_MODE_COLLISION if _PREVIEW["cell"] is not None else mesh_mode
+
+
 def _core_design(command):
     """The document as a schema 2 design, with the session's geometry cache; prints what was left out."""
     result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
@@ -1203,7 +1208,7 @@ def _render_preview_pose(planner, state, mesh_mode):
     rs.EnableRedraw(False)
     try:
         ik_viz.update_state(state, robot_cell=_PREVIEW["cell"], layer_key=_PREVIEW["layer"])
-        ik_viz.set_active_mesh_mode(_PREVIEW["layer"], mesh_mode)
+        ik_viz.set_active_mesh_mode(_PREVIEW["layer"], _preview_mode(mesh_mode))
     finally:
         rs.EnableRedraw(True)
         sc.doc.Views.Redraw()
@@ -1374,7 +1379,7 @@ def _preview_robot_at_base(planner, template_state, base_frame_mm, mesh_mode):
     rcell = _PREVIEW["cell"] or robot_cell.get_or_load_robot_cell()
     # Same layer_key as ShowIK so the cache is shared across commands (Core: its own layer).
     ik_viz.update_state(state, robot_cell=rcell, layer_key=_PREVIEW["layer"])
-    ik_viz.set_active_mesh_mode(_PREVIEW["layer"], mesh_mode)
+    ik_viz.set_active_mesh_mode(_PREVIEW["layer"], _preview_mode(mesh_mode))
 
 
 def _hide_inactive_tool_blocks(active_bar_id):
@@ -2749,7 +2754,8 @@ def _run_support_flow(bar_id: str, bar_oid, engine="legacy", stack=None, after=N
 
         # * ---- 8. Preview + accept -> write the split keys.
         robot_cell_support.set_cell_state(sr_planner, held_state)
-        _render_support_pose(sr_cell, held_state, mesh_mode)
+        # ? The Core engine's cell has collision meshes only.
+        _render_support_pose(sr_cell, held_state, ik_viz.MESH_MODE_COLLISION if engine == "core" else mesh_mode)
         print(f"RSIKKeyframe(support): {robot_name}'s held pose reachable. Previewing...")
 
         if _ask_accept_support(

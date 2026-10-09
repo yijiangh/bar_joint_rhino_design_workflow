@@ -24,11 +24,12 @@ along its bar; a standalone MoCap joint (one bar, no male) opens the
 
 **MoveJoint** - slide a joint along the bar it is attached to, carrying its own
 bar and that bar's other joint with it.  Pick the joint, pick which of its two
-bars should move, then give the slide as TWO points: what to align, and what to
-align it with.  Both are free picks, so snap them to whatever you are lining up
-by -- a joint face, a bar end, an intersection.  Only the component along the
-bar is applied, because that is a joint's one degree of freedom; the across-bar
-part is reported, not silently dropped.
+bars should move, then give the slide either as a typed distance (mm, positive
+the way the magenta arrow points) or as TWO points: what to align, and what to
+align it with.  The points are free picks, so snap them to whatever you are
+lining up by -- a joint face, a bar end, an intersection.  Only the component
+along the bar is applied, because that is a joint's one degree of freedom; the
+across-bar part is reported, not silently dropped.
 
 The two joints on the moving bar keep their current separation, so moving one
 forces the other to slide along its own bar; both joints' angles change, and
@@ -122,6 +123,7 @@ from core.rhino_block_import import require_block_definition
 from core.rhino_helpers import (
     ask_option,
     curve_endpoints,
+    doc_unit_scale_to_mm,
     numpy_to_xform,
     objects_on_layers,
 )
@@ -299,9 +301,13 @@ def _replace_joint_pair(
 
 # Marker colors for the MoveJoint preview.  Deliberately unlike the bar
 # blue/green/grey so a marker never reads as a bar that changed color.
-MARKER_ANCHOR = (255, 230, 0)  # yellow -- the point that lands on your click
+MARKER_ANCHOR = (255, 230, 0)  # yellow -- the point that slides
 MARKER_FOLLOW = (255, 150, 0)  # orange -- the far joint, dragged along
 MARKER_CENTRE = (0, 200, 255)  # cyan   -- the joint's screw centre
+MARKER_DIRECTION = (230, 0, 200)  # magenta -- which way a positive distance slides
+
+#: Length of the MoveJoint direction arrow, in mm.
+DIRECTION_ARROW_MM = 150.0
 
 
 def _pt3d(point):
@@ -551,31 +557,35 @@ def _run_move_joint():
         rs.Redraw()
         print("RSJointEdit: MoveJoint cancelled; everything is back where it was.")
 
-    def _pick_alignment_pair():
-        """Two free points: what to line up, and what to line it up with.
+    def _pick_slide():
+        """How far the joint slides along its bar, in document units.
 
-        Deliberately NOT constrained to the sliding bar.  The joint's own
-        origin is an invisible point inside the block, so picking a target for
-        it is guesswork; snapping both ends of a measurement to real features
-        -- a joint face, a bar end, an intersection -- is how you actually
-        align something.  Only the component along the bar is usable (a joint
-        has one degree of freedom, along its bar), which the caller resolves;
-        this returns the raw pair so that decision lives in one place.
+        Either a typed number (mm, positive the way the arrow points) or two
+        free points: what to line up, and what to line it up with.  The points
+        are deliberately NOT constrained to the sliding bar -- the joint's own
+        origin is an invisible point inside the block, so snapping both ends
+        of a measurement to real features (a joint face, a bar end, an
+        intersection) is how you actually align something.  Only their
+        component along the bar is usable (a joint has one degree of freedom,
+        along its bar); the across-bar part is reported, not silently dropped.
 
-        Returns ``(from_point, to_point, outcome)`` with outcome "ok",
-        "cancel" (Esc -- the caller reverts) or "done" (Enter -- keep as is).
+        Returns ``(outcome, along)`` with outcome "ok", "cancel" (Esc -- the
+        caller reverts) or "done" (Enter -- keep as is).
         """
         def _outcome(result):
             return "cancel" if result == Rhino.Input.GetResult.Cancel else "done"
 
         first = Rhino.Input.Custom.GetPoint()
         first.SetCommandPrompt(
-            f"Pick the point to align FROM, on or near {near_joint_id} "
-            "(Esc cancels the whole move)"
+            f"Type how far {near_joint_id} slides (mm, + along the arrow), or pick "
+            "the point to align FROM (Esc cancels the whole move)"
         )
+        first.AcceptNumber(True, False)
         result = first.Get()
+        if result == Rhino.Input.GetResult.Number:
+            return "ok", float(first.Number()) / doc_unit_scale_to_mm()
         if result != Rhino.Input.GetResult.Point:
-            return None, None, _outcome(result)
+            return _outcome(result), None
         base = first.Point()
 
         second = Rhino.Input.Custom.GetPoint()
@@ -584,8 +594,21 @@ def _run_move_joint():
         second.DrawLineFromPoint(base, True)
         result = second.Get()
         if result != Rhino.Input.GetResult.Point:
-            return None, None, _outcome(result)
-        return base, second.Point(), "ok"
+            return _outcome(result), None
+        to_pt = second.Point()
+        delta = np.array(
+            [to_pt.X - base.X, to_pt.Y - base.Y, to_pt.Z - base.Z], dtype=float
+        )
+        along = float(np.dot(delta, slide_dir))
+        across = float(np.linalg.norm(delta - along * slide_dir))
+        if across > 0.05:
+            to_mm = doc_unit_scale_to_mm()
+            print(
+                f"RSJointEdit: sliding {along * to_mm:.1f} mm along {sliding_bar_id}; "
+                f"the {across * to_mm:.1f} mm across the bar is ignored -- a joint "
+                "only slides along its bar."
+            )
+        return "ok", along
 
     def _show_markers(markers):
         """Draw the point that will move, the one that follows, and both centres."""
@@ -596,6 +619,10 @@ def _run_move_joint():
         marks, lines = [], []
         if near_anchor is not None:
             marks.append((_pt3d(near_anchor), f"{near_joint_id} moves", MARKER_ANCHOR))
+            # The positive direction for a typed distance.
+            tip = near_anchor + slide_dir * (DIRECTION_ARROW_MM / doc_unit_scale_to_mm())
+            lines.append((_pt3d(near_anchor), _pt3d(tip), MARKER_DIRECTION))
+            marks.append((_pt3d(tip), "+", MARKER_DIRECTION))
         if far_anchor is not None:
             marks.append((_pt3d(far_anchor), f"{far_joint_id} follows", MARKER_FOLLOW))
         # The screw centre is what the joint LOOKS centred on; the anchor is
@@ -627,7 +654,7 @@ def _run_move_joint():
                 span = float(np.linalg.norm(far_anchor - near_anchor))
                 _show_markers(markers)
 
-                from_pt, to_pt, outcome = _pick_alignment_pair()
+                outcome, along = _pick_slide()
                 if outcome == "cancel":
                     if moved:
                         _restore()
@@ -635,29 +662,12 @@ def _run_move_joint():
                 if outcome != "ok":
                     print("RSJointEdit: MoveJoint finished.")
                     return
-
-                # Split the pick into the part the joint CAN do and the part it
-                # cannot.  Sliding along the bar is one degree of freedom, so
-                # only the along-bar component survives; report the rest rather
-                # than silently under-moving and looking broken.
-                delta = np.array(
-                    [to_pt.X - from_pt.X, to_pt.Y - from_pt.Y, to_pt.Z - from_pt.Z],
-                    dtype=float,
-                )
-                along = float(np.dot(delta, slide_dir))
-                across = float(np.linalg.norm(delta - along * slide_dir))
                 if abs(along) < 1e-6:
                     print(
-                        f"RSJointEdit: those two points are level along "
-                        f"{sliding_bar_id} -- nothing to slide.  Pick again."
+                        f"RSJointEdit: nothing to slide along {sliding_bar_id}.  "
+                        "Pick or type again."
                     )
                     continue
-                if across > 0.05:
-                    print(
-                        f"RSJointEdit: sliding {along:.1f} mm along "
-                        f"{sliding_bar_id}; the {across:.1f} mm across the bar is "
-                        "ignored -- a joint only slides along its bar."
-                    )
                 target_pt = near_anchor + along * slide_dir
 
                 landings = points_on_line_at_distance(

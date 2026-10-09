@@ -50,15 +50,12 @@ the tool in world space.  At placement time the tool block is inserted at
 
 from __future__ import annotations
 
-import contextlib
 import importlib
 import os
 import sys
 
 import numpy as np
-import Rhino
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(__file__)
@@ -66,11 +63,12 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import config_generated_ik as _generated_ik
+from core import joint_pick_helpers as _picks_module
 from core import robotic_tool as _robotic_tool_module
 from core.rhino_block_export import export_block_definition_to_3dm
 from core.rhino_block_obj_export import export_picked_meshes_to_obj_mm
 from core.rhino_frame_io import reconstruct_frame, resolve_frame_group
-from core.rhino_helpers import doc_unit_scale_to_mm, point_to_array, suspend_redraw
+from core.rhino_helpers import doc_unit_scale_to_mm, suspend_redraw
 from core.rhino_tool_place import get_default_tool_name, set_default_tool_name
 
 
@@ -80,7 +78,8 @@ DEFAULT_GRIPPER_KIND = "Robotiq"
 def _reload():
     global robotic_tool, RoboticToolDef, save_robotic_tool, DEFAULT_ASSET_DIR
     global arm_side_from_tool_name, resolve_pair_for_tool, get_active_pair_names
-    global frame_from_x_and_y_hint, invert_transform
+    global frame_from_x_and_y_hint, invert_transform, picks
+    picks = importlib.reload(_picks_module)
     importlib.reload(_robotic_tool_module)
     robotic_tool = _robotic_tool_module
     RoboticToolDef = robotic_tool.RoboticToolDef
@@ -99,87 +98,6 @@ def _reload():
 
 
 _reload()
-
-
-# ---------------------------------------------------------------------------
-# Doc-unit scaling
-# ---------------------------------------------------------------------------
-
-
-def _frame_to_mm(matrix: np.ndarray, scale_to_mm: float) -> np.ndarray:
-    out = np.array(matrix, dtype=float, copy=True)
-    out[:3, 3] *= scale_to_mm
-    return out
-
-
-def _vec_to_mm(vector: np.ndarray, scale_to_mm: float) -> np.ndarray:
-    return np.asarray(vector, dtype=float) * scale_to_mm
-
-
-# ---------------------------------------------------------------------------
-# Hide / show helpers
-# ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _temporarily_hidden(object_ids):
-    hidden: list = []
-    try:
-        for oid in object_ids:
-            if oid is not None and rs.IsObject(oid):
-                if rs.HideObject(oid):
-                    hidden.append(oid)
-        yield
-    finally:
-        for oid in hidden:
-            if rs.IsObject(oid):
-                rs.ShowObject(oid)
-
-
-# ---------------------------------------------------------------------------
-# Pickers
-# ---------------------------------------------------------------------------
-
-
-def _pick_block_instance(prompt: str):
-    return rs.GetObject(prompt, filter=4096, preselect=False, select=False)
-
-
-def _pick_point(prompt: str):
-    return rs.GetObject(prompt, filter=1, preselect=False, select=False)
-
-
-def _pick_collision_sources(prompt: str):
-    """Pick one or more collision-mesh objects (filter 32, mesh only).
-
-    Block instances are intentionally NOT accepted here: collision meshes must
-    be hand-modeled low-poly Mesh objects, never auto-derived from a block
-    definition. Returns a list of guids or None.
-    """
-    return rs.GetObjects(
-        prompt, filter=32, preselect=False, select=False, minimum_count=1
-    )
-
-
-def _block_instance_frame(block_instance_id) -> tuple[np.ndarray, str]:
-    rh_obj = sc.doc.Objects.FindId(block_instance_id)
-    if rh_obj is None or not isinstance(rh_obj, Rhino.DocObjects.InstanceObject):
-        raise ValueError("Selected object is not a block instance.")
-    xform = rh_obj.InstanceXform
-    matrix = np.array(
-        [[xform[r, c] for c in range(4)] for r in range(4)],
-        dtype=float,
-    )
-    instance_def = rh_obj.InstanceDefinition
-    block_name = instance_def.Name if instance_def is not None else ""
-    return matrix, block_name
-
-
-def _point_xyz(point_id) -> np.ndarray:
-    point_obj = sc.doc.Objects.FindId(point_id)
-    if point_obj is None:
-        raise ValueError("Failed to resolve selected point.")
-    return point_to_array(point_obj.Geometry.Location)
 
 
 # ---------------------------------------------------------------------------
@@ -219,25 +137,25 @@ def _run_assembly_tool_mode() -> None:
 
     selected: list = []
 
-    block_id = _pick_block_instance("Pick TOOL block instance (baked at robot flange)")
+    block_id = picks.pick_block_instance("Pick TOOL block instance (baked at robot flange)")
     if block_id is None:
         return
     selected.append(block_id)
 
-    with _temporarily_hidden(selected):
-        tcp_origin_id = _pick_point("Pick TCP origin point")
+    with picks.temporarily_hidden(selected):
+        tcp_origin_id = picks.pick_point("Pick TCP origin point")
     if tcp_origin_id is None:
         return
     selected.append(tcp_origin_id)
 
-    with _temporarily_hidden(selected):
-        x_tip_id = _pick_point("Pick TCP +X axis tip point")
+    with picks.temporarily_hidden(selected):
+        x_tip_id = picks.pick_point("Pick TCP +X axis tip point")
     if x_tip_id is None:
         return
     selected.append(x_tip_id)
 
-    with _temporarily_hidden(selected):
-        y_tip_id = _pick_point("Pick TCP +Y axis tip point")
+    with picks.temporarily_hidden(selected):
+        y_tip_id = picks.pick_point("Pick TCP +Y axis tip point")
     if y_tip_id is None:
         return
     selected.append(y_tip_id)
@@ -246,8 +164,8 @@ def _run_assembly_tool_mode() -> None:
     # AND the TCP points) so only the hand-modeled low-poly mesh objects are left
     # to pick. Block instances are not accepted in this step (mesh objects only);
     # we never auto-derive a collision mesh from a block definition.
-    with _temporarily_hidden(selected):
-        mesh_ids = _pick_collision_sources(
+    with picks.temporarily_hidden(selected):
+        mesh_ids = picks.pick_meshes(
             "Pick collision MESH object(s), then press Enter"
         )
     if not mesh_ids:
@@ -286,7 +204,7 @@ def _run_assembly_tool_mode() -> None:
         )
         return
 
-    block_xform_doc, source_block_name = _block_instance_frame(block_id)
+    block_xform_doc, source_block_name = picks.block_instance_frame(block_id)
     if not source_block_name:
         rs.MessageBox(
             "Block instance must reference a named block definition.",
@@ -295,9 +213,9 @@ def _run_assembly_tool_mode() -> None:
         )
         return
 
-    tcp_origin_doc = _point_xyz(tcp_origin_id)
-    x_tip_doc = _point_xyz(x_tip_id)
-    y_tip_doc = _point_xyz(y_tip_id)
+    tcp_origin_doc = picks.point_xyz(tcp_origin_id)
+    x_tip_doc = picks.point_xyz(x_tip_id)
+    y_tip_doc = picks.point_xyz(y_tip_id)
 
     # Validate non-collinearity of the three TCP-defining points.
     x_vec = x_tip_doc - tcp_origin_doc
@@ -316,10 +234,10 @@ def _run_assembly_tool_mode() -> None:
 
     # Convert to mm and compute world TCP frame, then take its expression
     # in the block's local frame.
-    block_frame_mm = _frame_to_mm(block_xform_doc, scale_to_mm)
-    tcp_origin_mm = _vec_to_mm(tcp_origin_doc, scale_to_mm)
-    x_tip_mm = _vec_to_mm(x_tip_doc, scale_to_mm)
-    y_tip_mm = _vec_to_mm(y_tip_doc, scale_to_mm)
+    block_frame_mm = picks.frame_to_mm(block_xform_doc, scale_to_mm)
+    tcp_origin_mm = picks.vec_to_mm(tcp_origin_doc, scale_to_mm)
+    x_tip_mm = picks.vec_to_mm(x_tip_doc, scale_to_mm)
+    y_tip_mm = picks.vec_to_mm(y_tip_doc, scale_to_mm)
     tcp_frame_world_mm = _world_tcp_frame(tcp_origin_mm, x_tip_mm, y_tip_mm)
     M_tcp_from_block = invert_transform(block_frame_mm) @ tcp_frame_world_mm
 

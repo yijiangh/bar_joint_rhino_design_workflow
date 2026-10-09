@@ -79,7 +79,9 @@ def setup():
     schedule = (("J", "bars/B1"), ("H", "bars/B1"), ("R", "bars/B1"), ("HR", "bars/B1"))
     built = build_actions(design, schedule, {"bars/B1": record}, {"bars/B1": hold}).design
     store = {}
-    yield built, store, reach, alice_tool0
+    rebuild = lambda **keyframes: build_actions(design, schedule, {"bars/B1": replace(record, **keyframes)},  # noqa
+                                                {"bars/B1": hold}).design
+    yield built, store, reach, alice_tool0, rebuild
     from core.design_planning import close_mirrors
     close_mirrors(store)
 
@@ -89,7 +91,7 @@ def test_keyframe_chain_solves_on_the_mirror(setup):
     from husky_assembly_tamp.keyframe.ik_keyframe import solve_keyframe_chain
     from core.design_planning import keyframe_movements
 
-    design, store, reach, _ = setup
+    design, store, reach, _, _ = setup
     mirror, movements = keyframe_movements(design, store, "bars/B1")
     assert set(movements) == {"M1", "M2", "M3", "M4"} and movements["M4"].target_configuration is not None
     assert movements["M2"].start_state.rigid_body_states["bars/B1"].attached_to_link == "left_ur_arm_tool0"
@@ -111,7 +113,7 @@ def test_geometry_unchanged_keeps_the_cell(setup):
     """A second sync of the same design reuses the mirror's cell (no rebuild)."""
     from core.design_planning import keyframe_movements
 
-    design, store, _, _ = setup
+    design, store, _, _, _ = setup
     mirror, _ = keyframe_movements(design, store, "bars/B1")
     cell = mirror.cell
     keyframe_movements(design, store, "bars/B1")
@@ -124,7 +126,7 @@ def test_support_ik_and_release_check(setup):
     from bar_assembly_core.mirrors.compas import frame_from_pose
     from core.design_planning import hold_solve_state, release_check
 
-    design, store, _, alice_tool0 = setup
+    design, store, _, alice_tool0, _ = setup
     mirror, state = hold_solve_state(design, store, "bars/B1")
     assert state.rigid_body_states["bars/B1"].is_hidden  # the gripper wraps the held bar
     target = FrameTarget(frame_from_pose(alice_tool0), TargetMode.ROBOT, tolerance_position=1e-4,
@@ -135,3 +137,28 @@ def test_support_ik_and_release_check(setup):
     assert cfg is not None
     verdict = release_check(design, store, "bars/B1")
     assert verdict.startswith(("OK", "collides")), verdict
+
+
+def test_plan_design_writes_solutions(setup, tmp_path):
+    """Keyframes solved on the mirror go into the design; plan_design plans Cindy's movements and writes solutions."""
+    from husky_assembly_tamp.keyframe.ik_keyframe import solve_keyframe_chain
+    from bar_assembly_core.design import read, write
+    from bar_assembly_core.design.solutions import read_solutions
+    from core.design_planning import keyframe_movements
+    import plan_design
+
+    design, store, _, _, rebuild = setup
+    mirror, movements = keyframe_movements(design, store, "bars/B1")
+    with mirror.lend() as planner:
+        solved = solve_keyframe_chain(planner, [(r, movements[r]) for r in ("M1", "M2", "M3")], np.eye(4),
+                                      check_collision=True)
+    joints = {role: dict(zip(solved[r].robot_configuration.joint_names, solved[r].robot_configuration.joint_values))
+              for role, r in (("approach", "M1"), ("assembled", "M2"), ("retreat", "M3"))}
+    folder = tmp_path / "design"
+    write(rebuild(**joints), folder, package_dirs=[PKG])
+    plan_design.main([str(folder), "--tamp", str(TAMP), "--free-time", "5", "--transfer-time", "10"])
+    solutions = read_solutions(read(folder))
+    statuses = {m: r.status for s in solutions.values() for m, r in s.movements.items()}
+    assert statuses["B1_J_insert"] == "solved" and statuses["B1_R_retreat"] == "solved", statuses
+    assert statuses["B1_J_load"] == "not_planned"
+    print(statuses)

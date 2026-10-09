@@ -132,6 +132,10 @@
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001d</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001f</right_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-0000000000a0" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-0000000000a0</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-0000000000a1</right_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000040" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000040</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000041</right_macro_id>
@@ -622,7 +626,7 @@
         <locale_1033>RSExportDesign</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Write the document as a schema 2 design folder through bar_assembly_core, then print the file checks (A) and plan checks (B).</locale_1033>
+        <locale_1033>Left-click: write the document as a schema 2 design folder through bar_assembly_core, then print the file checks (A) and plan checks (B). Right-click: RSCheckDesign on an existing design folder.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_export_design.py"</script>
     </macro_item>

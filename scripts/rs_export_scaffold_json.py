@@ -290,6 +290,10 @@ def main():
     importlib.reload(config)
     importlib.reload(sj)
     repair_on_entry(float(config.BAR_RADIUS), "RSExportScaffoldJSON")
+    print(
+        "RSExportScaffoldJSON: NOTE -- not re-tested since the 2026-10 joint-naming refactor; "
+        "check the result (todos.md)."
+    )
 
     records = _collect_bars()
     if not records:

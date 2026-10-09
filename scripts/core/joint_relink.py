@@ -84,6 +84,9 @@ _PRINT_CAP = 40
 # review instead of silently mis-binding.
 _UNCERTAIN_ABS_MM = 100.0   # nearest bar this far away -> block floats off any bar
 _UNCERTAIN_RATIO = 0.5      # own_dist must be < ratio * connected_dist to be confident
+# The mate is the 2nd-nearest bar.  When a 3rd bar is within this much of it,
+# which bar is the mate is a coin toss -- flag it rather than guess silently.
+_MATE_MARGIN_MM = 20.0
 # A tool's TCP point should land ~exactly on its joint block's origin; allow a
 # little slack for unit/rounding noise before flagging the tool match uncertain.
 _TOOL_TCP_TOL_MM = 50.0
@@ -210,6 +213,13 @@ def _female_male_edit(oid, subtype, segs):
     conn_dist, conn_seg = ranked[1]
     own_bar, conn_bar = own_seg[0], conn_seg[0]
     uncertain, reason = _pair_confidence(own_dist, conn_dist)
+    if not uncertain and len(ranked) > 2 and ranked[2][0] - conn_dist < _MATE_MARGIN_MM:
+        third_dist, third_seg = ranked[2]
+        uncertain = True
+        reason = (
+            f"mate unclear: {conn_bar} at {conn_dist:.0f}mm vs {third_seg[0]} at "
+            f"{third_dist:.0f}mm"
+        )
 
     if subtype in jnc.RECEIVER_SUBTYPES:
         female_bar, male_bar = own_bar, conn_bar
@@ -353,13 +363,12 @@ def _tool_edit(oid, targets, tools_reg):
         probe = frame[:3, 3]  # fallback: raw tool origin (less precise)
         tol = None
 
-    best = None
-    for _t_oid, t_origin, t_jid in targets:
-        if t_origin is None:
-            continue
-        d = float(np.linalg.norm(probe - t_origin))
-        if best is None or d < best[0]:
-            best = (d, t_jid)
+    ranked = sorted(
+        (float(np.linalg.norm(probe - t_origin)), t_jid)
+        for _t_oid, t_origin, t_jid in targets
+        if t_origin is not None
+    )
+    best = ranked[0] if ranked else None
 
     old_jid = rs.GetUserText(oid, jnc.UT_JOINT_ID) or ""
     old_tid = rs.GetUserText(oid, jnc.UT_TOOL_ID) or ""
@@ -373,6 +382,12 @@ def _tool_edit(oid, targets, tools_reg):
         elif d > tol:
             uncertain = True
             reason = f"TCP {d:.0f}mm from nearest joint block"
+        elif len(ranked) > 1 and ranked[1][0] <= tol:
+            uncertain = True
+            reason = (
+                f"two joint blocks near the TCP: {new_jid} at {d:.0f}mm, "
+                f"{ranked[1][1]} at {ranked[1][0]:.0f}mm"
+            )
         else:
             uncertain, reason = False, ""
 

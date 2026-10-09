@@ -378,6 +378,11 @@ def _run_renumber(all_bars):
 
 def _run_relink():
     """Geometrically relink every joint/tool block to its current parent bar(s)."""
+    print(
+        "RSReorderBarID: KNOWN ISSUE -- RelinkJointsAndTools can bind a joint or a "
+        "tool to the wrong bar when bars or joints sit close together.  Rows "
+        "marked '?' are the suspect ones; check each before applying (todos.md)."
+    )
     plan = joint_relink.build_plan()
     if not plan["edits"]:
         print("RSReorderBarID: no joint/tool blocks found to relink.")
@@ -387,6 +392,8 @@ def _run_relink():
             "RSReorderBarID: all joints/tools already consistent with their bars. "
             "Nothing to do."
         )
+        if plan["n_uncertain"]:
+            joint_relink.print_plan(plan)  # still show the suspect matches
         return
 
     joint_relink.print_plan(plan)

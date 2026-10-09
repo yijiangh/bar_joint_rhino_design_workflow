@@ -215,6 +215,10 @@ def main():
     importlib.reload(config)
     importlib.reload(sj)
     repair_on_entry(float(config.BAR_RADIUS), "RSImportScaffoldJSON")
+    print(
+        "RSImportScaffoldJSON: NOTE -- not re-tested since the 2026-10 joint-naming refactor; "
+        "check the result (todos.md)."
+    )
 
     if rs.UnitSystem() != _UNIT_SYSTEM_MILLIMETERS:
         print(

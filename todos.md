@@ -5,6 +5,15 @@
 - [ ] Add validation examples for prefab export edge cases (missing bar IDs, missing joint metadata).
 - [x] `RSGroundPlace` (`rs_ground_place.py`): pick a bar + a point on the bar, pick a registered ground joint, auto-compute `jr` so block +Y aligns with world +Z, click-to-flip preview, bake on `LAYER_JOINT_GROUND_INSTANCES` with re-edit metadata. `RSJointEdit` recognises ground blocks and flips by 180 deg.
 
+## HS
+
+- [ ] `RSReorderBarID` > RelinkJointsAndTools binds a joint or tool to the wrong bar when bars or
+  joints sit close together (it never compared the mate bar with the 3rd-nearest, and tools only
+  took the nearest block within 50 mm). For now those matches are flagged uncertain (`?`) and the
+  command prints a warning; the relink itself still needs a real fix.
+- [ ] Re-test `RSImportScaffoldJSON` / `RSExportScaffoldJSON` after the 2026-10 joint-naming
+  refactor, then drop the NOTE they print at start.
+
 ## YH 
 
 ### Assembly IK

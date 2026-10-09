@@ -1,6 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSSetRodLayer - assign ``layer_id`` (and the ``grounded`` flag it implies).
 
 ``layer_id`` is the storey index the stability simulation reads out of
@@ -38,6 +37,10 @@ import rhinoscriptsyntax as rs
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 from core import joint_name_conventions as jnc
 from core import rhino_bar_pick as bar_pick

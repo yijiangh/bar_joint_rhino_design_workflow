@@ -163,8 +163,10 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
    external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core commits `962e371` and `de396c5` are
    local until pushed to jeliag/bar_assembly_core.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
-3. Optional: run `scripts/register_command_aliases.py` once so `RSExportDesign` and `RSCheckDesign` can be typed. The
-   first run installs trimesh 4.12.2 (`# r:` line).
+3. Optional: run `scripts/register_command_aliases.py` once so `RSExportDesign` and `RSCheckDesign` can be typed
+   (both are also on the RSDesign toolbar: left- and right-click of one button).
+4. The first command installs `requirements-rhino.txt` (README, step 3): several minutes, pybullet is compiled and needs
+   Visual Studio Build Tools. Without ssik set up, IK uses the gradient backend (one line in the command history).
 
 **Test 1: export** (`YH_ik_test.3dm`, in the repo; 4 bars, only B3 has a solved keyframe, and it is stale):
 `RSExportDesign` → `Wrote …: 13 bodies, 4 mates, 2 actions, 8 movements; 1/1 bars with IK`, `A (file checks): passed`,

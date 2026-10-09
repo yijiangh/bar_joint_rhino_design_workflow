@@ -1,13 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
-# r: compas==2.13.0
-# compas_fab is loaded from the in-repo submodule `external/compas_fab` via the
-# sys.path injection in `core.core_lib`. Do NOT list it under `# r:` (the pip
-# cache would ignore submodule SHA changes).
-# r: compas_robots==0.6.0
-# r: trimesh==4.12.2
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSGHPreviewWarmup -- one-shot robot pre-loader for RSGHSequencePreview.
 
 Click the button ONCE per Rhino session: it reads the document into a design,
@@ -35,6 +27,10 @@ import System  # noqa: F401  (type hints are converted to .NET types)
 # is named outright. Change this one line if the repo moves.
 SCRIPTS = r"c:\Users\SU\Documents\GitHub\bar_joint_rhino_design_workflow\scripts"
 if SCRIPTS not in sys.path: sys.path.insert(0, SCRIPTS)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 from core import gh_bridge as _gh_bridge_module
 from core import gh_warmup as _gh_warmup_module

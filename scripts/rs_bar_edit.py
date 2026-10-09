@@ -1,6 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSBarEdit - Visualize bar lengths, batch resize bars, mark staging bars.
 
 Two modes, chosen at the first prompt:
@@ -52,6 +51,10 @@ import System.Drawing as sd
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 from core import config
 from core.rhino_bar_registry import (

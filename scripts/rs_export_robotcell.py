@@ -1,8 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
-# r: trimesh==4.12.2
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSExportRobotCell - Export the document as a schema 2 design folder (= RSExportDesign).
 
 There is no ``RobotCell.json`` any more: the design folder written through the
@@ -20,6 +17,10 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 
 def main() -> None:

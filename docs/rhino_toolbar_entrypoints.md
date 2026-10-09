@@ -397,8 +397,8 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   the registry `active` tool is not blocked; that `active` side is cleared —
   re-pick the active pair afterwards with RSSwapRoboticTool.
 - Read-only toward the Rhino document (touches only `robotic_tools.json` + asset
-  files). Close the PyBullet window to end the command. Needs PyBullet (provided
-  by the `scaffolding_env` `# r:` header, same as RSIKKeyframe).
+  files). Close the PyBullet window to end the command. Needs PyBullet (from
+  `requirements-rhino.txt`, same as RSIKKeyframe).
 
 ### RSPBStart (`rs_pb_start.py`) and RSPBStop (`rs_pb_stop.py`)
 

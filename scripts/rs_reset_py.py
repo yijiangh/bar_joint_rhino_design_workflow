@@ -1,5 +1,4 @@
 #! python 3
-# venv: scaffolding_env
 """RSResetPy - Purge project modules from `sys.modules` so next import reloads from disk.
 
 A lightweight substitute for the ScriptEditor's "Reload Python 3 (CPython)

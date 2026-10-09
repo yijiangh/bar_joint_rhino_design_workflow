@@ -1,14 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
-# r: compas==2.13.0
-# compas_fab is loaded from the in-repo submodule `external/compas_fab` via sys.path injection in `core.core_lib`. Do not list it under `# r:` (pip cache would ignore SHA changes).
-# r: compas_robots==0.6.0
-# r: pybullet==3.2.7
-# r: pybullet_planning==0.6.1
-# r: trimesh==4.12.2
-# r: txaio
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSPBStart - Warm up planning: build every robot's planning world now (optional).
 
 No command needs this any more: the IK commands and viewers build each robot's
@@ -29,6 +20,10 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 import rs_rebuild_robot_cell
 

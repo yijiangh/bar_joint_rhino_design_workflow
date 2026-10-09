@@ -1,6 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSSelectBar - Select bars by id, or a whole length group at once.
 
 Two modes, chosen at the first prompt:
@@ -37,6 +36,10 @@ import rhinoscriptsyntax as rs
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 import rs_bar_edit as _bar_edit_module
 from core import joint_name_conventions as jnc

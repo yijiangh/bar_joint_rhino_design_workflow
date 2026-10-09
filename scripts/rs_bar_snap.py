@@ -1,7 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSBarSnap - Snap a new bar onto an existing bar at contact distance.
 
 The user is first prompted to confirm the active joint pair (Enter accepts
@@ -14,14 +12,18 @@ import importlib
 import os
 import sys
 
+SCRIPT_DIR = os.path.dirname(__file__)
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
+
 import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
-
-SCRIPT_DIR = os.path.dirname(__file__)
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
 
 from core import config
 from core import geometry

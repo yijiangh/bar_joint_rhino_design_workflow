@@ -5,8 +5,8 @@ Import this module before any `bar_assembly_core` import; it needs only os and s
 
 - ! Never `importlib.reload` a `bar_assembly_core` module, nor this one's import of it: Rhino commands reload their
   own modules on every run, but a reloaded core breaks `isinstance` checks and the core's caches.
-- ! compas_fab comes from the submodule, never from `# r:` (the pip cache would ignore SHA changes,
-  `tasks/yh_lesson.md`). After switching its SHA, reload Rhino's Python engine.
+- ! compas_fab comes from the submodule, never from `requirements-rhino.txt` (the pip cache would ignore SHA
+  changes, `tasks/yh_lesson.md`). After switching its SHA, reload Rhino's Python engine.
 """
 
 from __future__ import annotations

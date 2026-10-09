@@ -1,5 +1,5 @@
 #! python 3
-# venv: scaffolding_env
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """Read one OptiTrack rigid body and bake its labeled markers into Rhino.
 
 Connects to a Motive NatNet stream, waits for one frame containing the
@@ -38,6 +38,10 @@ except ImportError:  # standalone import (e.g. from the smoke test)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 from optitrack.NatNetClient import NatNetClient  # noqa: E402
 

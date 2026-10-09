@@ -1,6 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSSelectJoint - Select a joint block by typing its id.
 
 Type a joint id like ``J40-53_female`` (case-insensitive) and this selects that
@@ -35,6 +34,10 @@ import rhinoscriptsyntax as rs
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 # Every name below -- the "_female" suffix of an object name, the "joint_"
 # prefix of a pasted PyBullet key, the layer a block's role is read from --

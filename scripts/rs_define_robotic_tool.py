@@ -1,6 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSDefineRoboticTool - ONE button for everything tool-definition related.
 
 Two modes, chosen at the first command-line prompt:
@@ -55,15 +54,19 @@ import importlib
 import os
 import sys
 
+SCRIPT_DIR = os.path.dirname(__file__)
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
-
-SCRIPT_DIR = os.path.dirname(__file__)
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
 
 from core import config_generated_ik as _generated_ik
 from core import robotic_tool as _robotic_tool_module

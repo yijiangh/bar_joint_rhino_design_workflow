@@ -1,19 +1,21 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """Rhino entry point for drawing the closest segment between two finite lines."""
 
 import os
 import sys
 
-import numpy as np
-import rhinoscriptsyntax as rs
-
-
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
+
+import numpy as np
+import rhinoscriptsyntax as rs
+
 
 from core.geometry import closest_params_finite_segments
 

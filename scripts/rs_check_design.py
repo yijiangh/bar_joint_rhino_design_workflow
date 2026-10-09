@@ -1,8 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
-# r: trimesh==4.12.2
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSCheckDesign - read a schema 2 design folder and print its file checks (A) and plan checks (B).
 
 The core (`external/bar_assembly_core`) does both: `read` runs A1-A13 and refuses a broken folder, `check_plan` runs
@@ -20,6 +17,10 @@ import scriptcontext as sc
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
 from bar_assembly_core.design import DesignError, read  # noqa: E402

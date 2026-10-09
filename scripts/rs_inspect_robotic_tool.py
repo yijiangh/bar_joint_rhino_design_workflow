@@ -1,8 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: pybullet==3.2.7
-# r: pybullet_planning==0.6.1
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSInspectRoboticTool - inspect robotic tool candidates in PyBullet.
 
 Opens a PyBullet GUI with a slider that steps through the tool candidates in
@@ -29,9 +26,9 @@ simply cleared (refill it later in Rhino with RSSwapRoboticTool).
 How to run
 ----------
 Primary use is the **RSInspectRoboticTool** toolbar button (RSSetup group),
-which runs this file through the Rhino ScriptEditor. The ``# r:`` header above
-provisions numpy + pybullet + pybullet_planning into the ``scaffolding_env``
-venv (the same one ``rs_ik_keyframe.py`` uses); a separate PyBullet window
+which runs this file through the Rhino ScriptEditor. ``rhino_env.activate()``
+puts numpy + pybullet + pybullet_planning on sys.path (requirements-rhino.txt,
+the same packages ``rs_ik_keyframe.py`` uses); a separate PyBullet window
 opens. No Rhino geometry is touched -- it only reads / edits robotic_tools.json.
 
 It also runs standalone from any interpreter that already has those packages
@@ -51,6 +48,14 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
+
 import numpy as np
 
 
@@ -58,9 +63,6 @@ import numpy as np
 # The tool data model + JSON I/O live in scripts/core/robotic_tool.py (pure
 # Python + numpy, no Rhino). This file sits in scripts/, so adding its own
 # directory to sys.path is enough to import the ``core`` package.
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
 
 import pybullet as p
 import pybullet_planning as pp

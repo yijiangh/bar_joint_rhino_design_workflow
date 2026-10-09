@@ -1,10 +1,8 @@
 #! python 3
-# venv: scaffolding_env
-# ! No `# r:` package lines on purpose: the bridge only uses the Python standard
-# ! library. The venv line is still important -- it makes this script run in the
-# ! same scaffolding_env interpreter as the other RS* buttons, so code sent in by
-# ! Claude Code sees the same installed packages and the same `sc.sticky` state
-# ! (for example the planning mirrors and drawing cells the IK commands keep).
+# ! No `# venv:` line, like every RS* command: they all run in Rhino's default environment, the same
+# ! interpreter, so code sent in by Claude Code sees the same `sc.sticky` state (for example the planning
+# ! mirrors and drawing cells the IK commands keep). The bridge itself needs only the standard library;
+# ! `rhino_env.activate()` below puts the commands' packages (requirements-rhino.txt) on sys.path for that code.
 """RSLamcpBridgeStart - Let Claude Code drive this Rhino session (no Grasshopper needed).
 
 Left-click: start the LAMCP bridge, a small HTTP server on
@@ -36,6 +34,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import sys
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler
@@ -44,6 +44,14 @@ from http.server import HTTPServer
 import Rhino
 import scriptcontext as sc
 import System
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (the commands' packages, for the code Claude Code sends in)
+
+rhino_env.activate()
 
 
 # ---- Session-wide storage keys inside `sc.sticky`. Same names as the official

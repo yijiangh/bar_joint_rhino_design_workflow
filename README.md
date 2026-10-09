@@ -101,21 +101,30 @@ Example install location:
 
 ### 3. Run any toolbar command once
 
-**No manual pip install is needed for Rhino usage.** Each Rhino entry-point
-script declares its own virtual environment and requirements using Rhino 8
-ScriptEditor directives:
+**No manual pip install is needed for Rhino usage.** The Python packages of
+all commands are listed once, in [requirements-rhino.txt](requirements-rhino.txt).
+The first command you run installs them, with one pip call, into
+`%LOCALAPPDATA%\bar_joint_rhino\python\py39-<hash>` (`scripts/rhino_env.py`);
+every command then puts that folder on `sys.path` before it imports anything.
 
-```python
-#! python 3
-# venv: scaffolding_env
-# r: numpy
-# r: scipy
-```
-
-The first time you run any script, Rhino's ScriptEditor creates the
-shared `scaffolding_env` venv and installs the required packages. If the
-install ever fails, reset via **Tools → Advanced → Reset Python 3
-(CPython) Runtime** in the ScriptEditor and re-run.
+- **First run: several minutes, and Rhino does not respond meanwhile.** pybullet
+  has no ready-made build for Python 3.9 on Windows, so pip compiles it. That
+  needs **Visual Studio Build Tools** with the workload *Desktop development
+  with C++* ([download](https://visualstudio.microsoft.com/visual-cpp-build-tools/)).
+  Without it the command stops with a message saying so; install it and run the
+  command again. pip caches the build, so later installs take about a minute.
+- The install log is `%LOCALAPPDATA%\bar_joint_rhino\python\py39-<hash>.log`.
+- Editing `requirements-rhino.txt` makes the next command install a fresh folder
+  (the hash changes); the old one can be deleted once Rhino is closed.
+- The scripts have **no** `# venv:` or `# r:` lines, on purpose: Rhino installs
+  each `# r:` line with its own pip call, so a later package overwrote the pins
+  of an earlier one (scipy installed numpy 2.0.2 over 1.24.4, compas_robots
+  compas 2.15.1 over 2.13.0), which broke fresh installs. Do not add them back;
+  add the package to `requirements-rhino.txt` instead.
+- Upgrading from the old setup: nothing to do. The old
+  `~\.rhinocode\py39-rh8\site-envs\scaffolding_env-*` folder is no longer used
+  and can be deleted. If a command warns that a package is loaded from outside
+  the new folder, restart Rhino.
 
 ## Setup (Robotic workflows and tests)
 
@@ -126,7 +135,7 @@ preview) builds its compas_fab cells through the shared core
 [`bar_assembly_core`](https://github.com/jeliag/bar_assembly_core), vendored at
 `external/bar_assembly_core`, which plans with a specific development branch of
 [compas_fab](https://github.com/compas-dev/compas_fab/tree/wip_process),
-vendored at `external/compas_fab`, rather than pulled from PyPI via `# r:` --
+vendored at `external/compas_fab`, rather than pulled from PyPI --
 this keeps iteration on the branch deterministic and avoids the pip-cache SHA
 gotcha described in [tasks/yh_lesson.md](tasks/yh_lesson.md).
 
@@ -142,11 +151,11 @@ scripts see the submodule versions automatically. To switch to a different
 upstream commit, `cd external/<submodule> && git fetch && git checkout <sha>`,
 then reload Rhino's Python engine.
 
-The scripts declare the remaining dependencies (`compas`, `compas_robots`,
-`pybullet`, `pybullet_planning`, `trimesh`, plus `numpy` / `scipy`) via `# r:`
-so Rhino's ScriptEditor installs them into `scaffolding_env` on first run. Do
-**not** add `# r: compas_fab` or `# r: bar_assembly_core` -- that would bypass
-the submodules and silently shadow them.
+The remaining dependencies (`compas`, `compas_robots`, `pybullet`,
+`pybullet_planning`, `roslibpy`, `trimesh`, plus `numpy` / `scipy`) come from
+[requirements-rhino.txt](requirements-rhino.txt) (see step 3 above). Do **not**
+add `compas_fab` or `bar_assembly_core` to it -- that would bypass the
+submodules and silently shadow them.
 
 `external/rs_data_structure` (the old `BarAssemblyAction` schema) is no longer
 imported by this plugin; only the core's optional `legacy/` converter (old
@@ -156,9 +165,9 @@ A third submodule, [husky_assembly_tamp](https://github.com/yijiangh/husky_assem
 
 ### Analytical IK solver (ssik) — one-time venv
 
-[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` (and the headless planner) — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env`. The sidecar code and its path resolution live in the tamp submodule (`husky_assembly_tamp.keyframe.config`): the default is `<this repo>/external/ssik_env` + artifacts in the tamp submodule at `external/husky_assembly_tamp/asset/ssik`, overridable per machine with the `HUSKY_SSIK_VENV_DIR` / `HUSKY_SSIK_ARTIFACT_DIR` environment variables. The scripts start and talk to the sidecar automatically. (Offline planning in a Python 3.11 venv imports ssik **in-process** instead — no sidecar; the sidecar is a Rhino-only workaround.)
+[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` (and the headless planner) — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env`. The sidecar code and its path resolution live in the tamp submodule (`husky_assembly_tamp.keyframe.config`): the default is `<this repo>/external/ssik_env` + the per-arm solver modules at `<this repo>/asset/ssik`, overridable per machine with the `HUSKY_SSIK_VENV_DIR` / `HUSKY_SSIK_ARTIFACT_DIR` environment variables. The scripts start and talk to the sidecar automatically. (Offline planning in a Python 3.11 venv imports ssik **in-process** instead — no sidecar; the sidecar is a Rhino-only workaround.)
 
-**The per-arm solver modules are already built and committed in the tamp submodule** (`external/husky_assembly_tamp/asset/ssik/left_ur_arm_ik.py`, `.../right_ur_arm_ik.py`), so you never run `ssik build` — you only create the venv once. They live there (not in this repo's `asset/`) so the tamp planner also runs standalone without this repo.
+**Until both exist, the Rhino commands use the `gradient` backend automatically** (`scripts/rhino_env.py` says so once per session). The built solver modules (`left_ur_arm_ik.py`, `right_ur_arm_ik.py`) are not in the tamp commit this repo pins: they are committed on tamp branches such as `yh/ssik-speedup`, at the tamp repo's own `asset/ssik`. Copy them to `<this repo>/asset/ssik`, or point `HUSKY_SSIK_ARTIFACT_DIR` at them.
 
 You do **not** need Python 3.11 to be your system/default interpreter — your everyday `python` can stay 3.8–3.10. The easiest way is [uv](https://docs.astral.sh/uv/), a standalone tool (not run "through" your Python). Install it once (needs no Python):
 
@@ -174,7 +183,7 @@ uv pip install --python external/ssik_env ssik
 
 That's the whole setup. Run `RSIKKeyframe` -- the sidecar spawns on the first solve and is shut down by `RSPBStop`.
 
-There is also a pure-PyBullet `gradient` backend that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. Select it with the `HUSKY_IK_BACKEND=gradient` environment variable (default is `ssik`; see `husky_assembly_tamp.keyframe.config`). To regenerate the solver modules after a URDF change, see [external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md](external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md).
+There is also a pure-PyBullet `gradient` backend that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. Select it with the `HUSKY_IK_BACKEND=gradient` environment variable (default is `ssik` when it is set up, else `gradient`; see `husky_assembly_tamp.keyframe.config` and `scripts/rhino_env.py`). To regenerate the solver modules after a URDF change, see [external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md](external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md).
 
 ### Optional developer install
 

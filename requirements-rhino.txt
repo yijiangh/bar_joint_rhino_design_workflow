@@ -1,0 +1,15 @@
+# Python packages of the Rhino commands, for Rhino 8's CPython 3.9.
+# Installed once, in ONE pip call, by scripts/rhino_env.py on the first command that needs them; editing this file
+# makes the next command install a fresh environment. Do not add `# r:` lines to the scripts instead: Rhino installs
+# each one with its own pip call, and later packages then overwrite the pins of earlier ones (numpy 2, compas 2.15).
+# compas_fab, bar_assembly_core and husky_assembly_tamp come from the submodules in external/, never from here.
+numpy==1.24.4
+scipy==1.13.1
+trimesh==4.12.2
+compas==2.13.0
+compas_robots==0.6.0
+# pybullet has no wheel for Python 3.9 on Windows: pip compiles it once (Visual Studio Build Tools, ~5 min).
+pybullet==3.2.7
+pybullet_planning==0.6.1
+# compas_fab.backends imports its ROS client, which needs roslibpy.
+roslibpy==1.8.1

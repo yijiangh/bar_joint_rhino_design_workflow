@@ -1,6 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSDefineJointMate - Define a mate between two existing joint halves.
 
 Workflow:
@@ -37,13 +36,17 @@ import importlib
 import os
 import sys
 
-import numpy as np
-import rhinoscriptsyntax as rs
-
-
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
+
+import numpy as np
+import rhinoscriptsyntax as rs
+
 
 from core import joint_name_conventions as jnc
 from core import joint_pair as _joint_pair_module

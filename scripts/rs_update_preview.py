@@ -1,7 +1,5 @@
 #! python 3
-# venv: scaffolding_env
-# r: numpy==1.24.4
-# r: scipy==1.13.1
+# Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSUpdatePreview - bring the document back in line with the registries.
 
 **Left-click** runs the repair pass below, then paints the diagnostic overlay
@@ -46,6 +44,10 @@ import rhinoscriptsyntax as rs
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)
+
+rhino_env.activate()
 
 from core import config
 from core.rhino_bar_registry import repair_on_entry, update_all_previews

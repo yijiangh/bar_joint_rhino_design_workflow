@@ -1,9 +1,8 @@
 #! python 3
-# venv: scaffolding_env
 """RSGHCameraControl -- drive the Rhino viewport camera from Grasshopper.
 
 No numpy / compas / pybullet here: this component only touches the viewport,
-so it carries no ``# r:`` requirements and loads instantly.
+so it needs no ``rhino_env.activate()`` (requirements-rhino.txt) and loads instantly.
 
 Setup and troubleshooting live in docs/grasshopper_animation.md -- this
 docstring is deliberately short: the paste-time parameter sync reads the whole

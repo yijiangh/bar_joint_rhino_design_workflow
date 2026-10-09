@@ -66,7 +66,33 @@ Those `.pth` files are processed at every interpreter startup, prepending teleop
 
 ---
 
+## No `# r:` lines: one requirements file, one pip call (2026-10-09)
+
+Supersedes the next lesson. The scripts have no `# venv:` / `# r:` lines any more; `requirements-rhino.txt` lists every
+package with an exact pin, and `scripts/rhino_env.py` installs it with ONE pip call into
+`%LOCALAPPDATA%/bar_joint_rhino/python/py39-<hash>` and puts that on `sys.path`.
+
+**Why:** Rhino installs each `# r:` line with its own `pip install --target <site-env> --upgrade <one package>`. pip
+cannot see the other pins in that call, so a later package overwrote the pins of an earlier one: on a fresh Windows
+machine scipy==1.13.1 pulled numpy 2.0.2 over numpy==1.24.4 (the import then failed with `numpy.exceptions` missing),
+and compas_robots pulled compas 2.15.1 over compas==2.13.0. Rhino also rebuilt `scaffolding_env-<hash>` from scratch
+after packages were installed into it by hand. Pinning every line (the lesson below) did not help.
+
+**How to apply:**
+
+- A new package goes into `requirements-rhino.txt`, pinned; never back into a script header.
+- Every command calls `rhino_env.activate()` before importing numpy, compas, pybullet or `core`.
+- Changing the file changes the hash: the next command installs a fresh folder, so a package Rhino has loaded is
+  never overwritten in place.
+- pybullet has no Windows wheel for Python 3.9: the first install compiles it (Visual Studio Build Tools, ~5 min);
+  pip caches the wheel afterwards.
+- compas_fab's `backends` imports its ROS client, so `roslibpy` is required even without ROS.
+
+---
+
 ## Pin every `# r:` requirement to an exact version
+
+(Superseded by the lesson above: there are no `# r:` lines any more; the pins live in `requirements-rhino.txt`.)
 
 From now on, every `# r:` line in a Rhino script pins an exact version (`# r: numpy==1.24.4`, not `# r: numpy`).
 

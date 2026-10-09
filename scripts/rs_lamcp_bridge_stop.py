@@ -1,8 +1,6 @@
 #! python 3
-# venv: scaffolding_env
-# ! Keep the venv line identical to rs_lamcp_bridge_start.py: stop must run in
-# ! the SAME interpreter as start, otherwise it cannot see the server handle
-# ! stored in `sc.sticky`.
+# ! No `# venv:` line, like rs_lamcp_bridge_start.py: stop must run in the SAME
+# ! interpreter as start, otherwise it cannot see the server handle stored in `sc.sticky`.
 """RSLamcpBridgeStop - Right-click entry for RSLamcpBridgeStart.
 
 Thin wrapper around `rs_lamcp_bridge_start.stop`: shuts down the LAMCP bridge

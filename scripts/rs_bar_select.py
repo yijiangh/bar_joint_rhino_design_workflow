@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
 # r: numpy==1.24.4
-"""RSSelectBar - Select bars by id, or a whole length group at once.
+"""RSBarSelect - Select bars by id, or a whole length group at once.
 
 Two modes, chosen at the first prompt:
 
@@ -45,7 +45,7 @@ from core.rhino_helpers import ask_option, objects_on_layers
 
 
 # Command name used in every command-line message + dialog title.
-CMD = "RSSelectBar"
+CMD = "RSBarSelect"
 
 
 def _reload():

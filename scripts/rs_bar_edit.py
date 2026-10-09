@@ -122,7 +122,7 @@ def build_length_groups(bar_map):
     color_by_bin    : {length_bin: System.Drawing.Color}
     length_per_bar  : {bar_id: actual_length_mm}
 
-    Public because ``RSSelectBar > SelectByLength`` groups with it too -- a
+    Public because ``RSBarSelect > SelectByLength`` groups with it too -- a
     length group must mean the same thing in both commands.
     """
     length_per_bar = {}
@@ -331,7 +331,7 @@ def pick_length_group(groups, default_mm=None, command="RSBarEdit"):
     selecting the nearest one -- picking the wrong 20 bars is worse than picking
     none.  ``None`` therefore means the user cancelled, nothing else.
 
-    Shared with ``RSSelectBar > SelectByLength``.
+    Shared with ``RSBarSelect > SelectByLength``.
     """
     if not groups:
         return None

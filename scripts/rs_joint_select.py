@@ -1,7 +1,7 @@
 #! python 3
 # venv: scaffolding_env
 # r: numpy==1.24.4
-"""RSSelectJoint - Select a joint block by typing its id.
+"""RSJointSelect - Select a joint block by typing its id.
 
 Type a joint id like ``J40-53_female`` (case-insensitive) and this selects that
 placed joint block instance and zooms to it, so you can locate one joint in a
@@ -44,7 +44,7 @@ from core import joint_name_conventions as jnc
 
 
 # Command name used in every command-line message + dialog title.
-CMD = "RSSelectJoint"
+CMD = "RSJointSelect"
 
 
 def _normalize_token(token: str):

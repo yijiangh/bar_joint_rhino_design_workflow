@@ -5,7 +5,7 @@ swept along a curve (with the same slider that drives
 :mod:`core.gh_seq_preview`) produces a moving shot of the assembly sequence.
 
 Before this, the repo had no camera control at all -- the only camera-adjacent
-call anywhere was ``rs.ZoomSelected()`` in ``rs_select_bar.py``.
+call anywhere was ``rs.ZoomSelected()`` in ``rs_bar_select.py``.
 
 Units
 -----

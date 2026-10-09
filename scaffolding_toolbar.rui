@@ -298,21 +298,21 @@
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000051">
       <text>
-        <locale_1033>RSSelectBar</locale_1033>
+        <locale_1033>RSBarSelect</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Type a bar id like B4 (case-insensitive; a bare number works too) to select and zoom to that bar's centerline + tube preview. Comma-separate ids (B4,B7) to select several; the prompt loops so you can jump between bars. Read-only.</locale_1033>
+        <locale_1033>Select bars. SelectByName: type a bar id like B4 (a bare number works too; comma-separate several) to select and zoom to it. SelectByLength: bars are colored and tagged by length; type a length to select that group, optionally with its joints.</locale_1033>
       </tooltip>
-      <script>! _-ScriptEditor _R "rs_select_bar.py"</script>
+      <script>! _-ScriptEditor _R "rs_bar_select.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000053">
       <text>
-        <locale_1033>RSSelectJoint</locale_1033>
+        <locale_1033>RSJointSelect</locale_1033>
       </text>
       <tooltip>
         <locale_1033>Type a joint id like J40-53_female (case-insensitive) to select and zoom to that placed joint block. Drop the suffix (J40-53) to select both halves; ground ids like G4-floor-0 and pasted PyBullet body keys like joint_J25-26_male work too. Comma-separate ids to select several; the prompt loops so you can jump between joints. Read-only.</locale_1033>
       </tooltip>
-      <script>! _-ScriptEditor _R "rs_select_joint.py"</script>
+      <script>! _-ScriptEditor _R "rs_joint_select.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001d">
       <text>

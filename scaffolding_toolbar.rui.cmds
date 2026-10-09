@@ -3,6 +3,7 @@
 <locale_1033>RSBakeFrame</locale_1033>
 <locale_1033>RSBarBrace</locale_1033>
 <locale_1033>RSBarEdit</locale_1033>
+<locale_1033>RSBarSelect</locale_1033>
 <locale_1033>RSBarSnap</locale_1033>
 <locale_1033>RSBarSubfloor</locale_1033>
 <locale_1033>RSClearColorPreview</locale_1033>
@@ -25,6 +26,7 @@
 <locale_1033>RSInspectRoboticTool</locale_1033>
 <locale_1033>RSJointEdit</locale_1033>
 <locale_1033>RSJointPlace</locale_1033>
+<locale_1033>RSJointSelect</locale_1033>
 <locale_1033>RSLamcpBridgeStart</locale_1033>
 <locale_1033>RSLamcpBridgeStop</locale_1033>
 <locale_1033>RSLoadSolvedBarAction</locale_1033>
@@ -39,8 +41,6 @@
 <locale_1033>RSRegisterAliases</locale_1033>
 <locale_1033>RSRemoveBar</locale_1033>
 <locale_1033>RSReorderBarID</locale_1033>
-<locale_1033>RSSelectBar</locale_1033>
-<locale_1033>RSSelectJoint</locale_1033>
 <locale_1033>RSSequenceEdit</locale_1033>
 <locale_1033>RSSequencePreview</locale_1033>
 <locale_1033>RSSequenceRenumber</locale_1033>

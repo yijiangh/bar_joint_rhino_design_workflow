@@ -146,11 +146,11 @@ HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
 # Approach (M1 target = M2 start): BOTH tool0 frames translated by
 # ``-unit(avg(male z)) * LM_APPROACH_DISTANCE`` off the assembled pose -- one
 # shared axis, so the bar stays rigid between the arms
-# (`core.bar_action._compute_approach_targets_mm`).
+# (`core.design_builder.Builder.jointing`, the transfer's link targets).
 LM_APPROACH_DISTANCE = 15.0  # mm
 # Retreat (M3 target): bar released, so each arm pulls back INDEPENDENTLY along
 # its OWN male joint's world -Z by this distance
-# (`core.bar_action._retreat_tool0_target_mm`).
+# (`core.design_builder.Builder.release`, the retreat's lines).
 LM_RETREAT_DISTANCE = 50.0  # mm
 
 # Fixed dual-arm "home" configuration used by Plan M4 (return-to-home after
@@ -165,9 +165,8 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 
 # The 12-DOF home split into its two 6-DOF arm halves, keeping the authored
 # left-then-right order (first 6 -> left arm, last 6 -> right arm). These feed
-# Plan M4's return-to-home `target_configuration` in
-# `core.bar_action._build_m4`, so the exported action and the RSShowIK preview
-# both show the same home pose.
+# the design's home target (`core.design_source`, Cindy's R_home), so the
+# exported design and every preview show the same home pose.
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
@@ -243,7 +242,7 @@ KEY_TOOL_SIDE_MANUAL = "tool_side_manual"
 # seeds and returns the first collision-free one (raises if none of them are
 # collision-free). Higher = more chances to find a collision-free pose, slower.
 # NOTE: only the single-arm SUPPORT robot uses this (see
-# core.robot_cell_support). The dual-arm path forces max_results=1 (deterministic
+# core.support_ik). The dual-arm path forces max_results=1 (deterministic
 # single descent) and owns its own random restarts in solve_dual_arm_ik so the
 # two arms are resampled together -- see IK_MAX_RESTART_ITER (now in the tamp
 # keyframe config).
@@ -413,9 +412,9 @@ LAYER_WALKABLE_GROUND = _managed_layer("Walkable Ground")
 # Joint layers, roles and every other joint name: core.joint_name_conventions.
 
 # Static environment obstacle meshes (tables, walls, scaffolding, etc.). Any
-# mesh placed on this layer is registered as a static `obstacle_<name>` rigid
-# body by `core.env_collision.collect_environment_geometry` and checked for
-# collision against the robot, tools, and grasped workpieces.
+# mesh or brep placed on this layer becomes a static `obstacles/<name>` body of
+# the design (`core.design_source`) and is checked for collision against the
+# robots, tools, and grasped workpieces.
 LAYER_ENVIRONMENT = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Environment Obstacles"
 # Cached IK preview meshes (robot links + tool models). Baked once on first
 # `ik_viz.update_state(...)`; toggled visible only inside an IK preview session.

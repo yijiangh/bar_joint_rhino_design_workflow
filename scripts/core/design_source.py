@@ -42,7 +42,7 @@ REPO = "bar_joint_rhino_design_workflow"
 SERIALS = {"Cindy": "0806", "Alice": "0804", "Belle": "0805"}
 #: Tool kinds (format §7). ? Rhino has no source: Cindy's tools are scaffolding_v3, the support gripper a Robotiq.
 ASSEMBLY_TOOL_KIND, SUPPORT_TOOL_KIND = "scaffolding_v3", "robotiq"
-#: Flange side -> robot links Cindy's tools may touch (as `core.robot_cell._ARM_TOOL_WRIST_TOUCH_LINKS`).
+#: Flange side -> robot links Cindy's tools may touch (the tools sit a few mm from wrist 2).
 ARM_TOOL_TOUCH_LINKS = {"left": ("left_ur_arm_wrist_2_link", "left_ur_arm_wrist_3_link"),
                         "right": ("right_ur_arm_wrist_2_link", "right_ur_arm_wrist_3_link")}
 #: A block transform whose rotation part is further than this from a rotation is refused (scaled or mirrored).

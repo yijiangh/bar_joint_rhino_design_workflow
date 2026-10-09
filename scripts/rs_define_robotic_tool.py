@@ -408,8 +408,8 @@ def _run_assembly_tool_mode() -> None:
         print(
             "  ERROR: collision OBJ export FAILED for block "
             f"'{source_block_name}' (see console lines above). The registry entry "
-            "was saved WITHOUT a collision mesh, and RSRebuildRobotCell will "
-            "REFUSE this tool until it exists. Re-run RSDefineRoboticTool "
+            "was saved WITHOUT a collision mesh: planning treats this tool as "
+            "never colliding until it exists. Re-run RSDefineRoboticTool "
             "(AssemblyTool mode) and pick valid mesh objects."
         )
 

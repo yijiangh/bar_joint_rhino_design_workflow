@@ -4,7 +4,7 @@
 # ! library. The venv line is still important -- it makes this script run in the
 # ! same scaffolding_env interpreter as the other RS* buttons, so code sent in by
 # ! Claude Code sees the same installed packages and the same `sc.sticky` state
-# ! (for example the live PyBullet client started by RSPBStart).
+# ! (for example the planning mirrors and drawing cells the IK commands keep).
 """RSLamcpBridgeStart - Let Claude Code drive this Rhino session (no Grasshopper needed).
 
 Left-click: start the LAMCP bridge, a small HTTP server on

@@ -1,15 +1,13 @@
 """Generate `docs/three_module_pipeline.png`.
 
-A companion to `robotcell_state_lifecycle.png`. Where that diagram zooms INTO
-one repo (how a RobotCellState is stamped per movement), THIS one zooms OUT to
-the whole three-module pipeline: (1) the Rhino 8 design frontend in this repo
-exports clean JSONs, (2) the Rhino-free offline planner in the
-`external/husky_assembly_tamp` submodule solves base + IK keyframes and RRT
-motions into `*.solved_*.json` sidecars, and (3) the live execution stack
-(`husky-assembly-teleop`, ROS2) runs the solved plans on the real robot,
-replanning the arms live against the original tool0 targets once the
-mocap-tracked base stops. Solved sidecars also flow BACK into Rhino for
-visualization.
+The whole three-module pipeline: (1) the Rhino 8 design frontend in this repo
+solves IK keyframes and exports a schema 2 design folder through the shared core
+`bar_assembly_core`, (2) `scripts/plan_design.py` plans the movements with the
+`external/husky_assembly_tamp` motion planner into `solutions/`, and (3) the
+live execution stack (`husky-assembly-teleop`, ROS2) runs the solved plans on
+the real robot, replanning the arms live against the original tool0 targets once
+the mocap-tracked base stops. Solutions also flow BACK into Rhino. Every module
+builds its compas_fab cells from the design with the core.
 
 Run with the plain (non-Rhino) Python that has matplotlib:
     python docs/three_module_pipeline.py
@@ -24,7 +22,7 @@ from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
 
 # ---------------------------------------------------------------------------
-# Palette (mirrors the robotcell_state_lifecycle.png colour language)
+# Palette
 # ---------------------------------------------------------------------------
 C_DESIGN   = ("#e8f0fb", "#2f6fb0")   # blue   -- Module 1: Rhino design frontend
 C_PLANNER  = ("#fdf0e0", "#d98a2b")   # orange -- Module 2: offline planner
@@ -104,7 +102,7 @@ def main():
     # ! Column headers: one per module, left to right.
     heads = [
         (12.5, "1 · DESIGN\nRhino 8 (Windows)"),
-        (51.5, "2 · OFFLINE PLANNING\nhusky_assembly_tamp (Windows + Ubuntu)"),
+        (51.5, "2 · OFFLINE PLANNING\nplan_design.py + husky_assembly_tamp"),
         (88.5, "3 · LIVE EXECUTION\nhusky-assembly-teleop (ROS2, Ubuntu)"),
     ]
     for hx, ht in heads:
@@ -122,24 +120,24 @@ def main():
         file="rs_create_bar.py · rs_joint_place.py · …")
 
     box(ax, 2, 67, 21, 10,
-        "Quick IK check   [RSIKKeyframe]",
-        ["pick a base, solve the M1→M2→M3",
-         "dual-arm IK chain, preview in Rhino,",
-         "save keyframes on the bar",
-         "(optional — module 2 can solve instead)"],
+        "IK keyframes   [RSIKKeyframe / All]",
+        ["pick a base, solve approach→assembled→",
+         "retreat on the core's mirror (tamp",
+         "solvers), preview, save keyframes",
+         "on the bar"],
         C_DESIGN, title_size=10.5, file="rs_ik_keyframe.py")
 
     box(ax, 2, 55, 21, 8,
-        "Export   [RSExportAllBarActions]",
-        ["write the three clean JSONs (right) via",
-         "compas / compas_fab serialization"],
-        C_DESIGN, title_size=10.5, file="rs_export_all_bar_actions.py")
+        "Export   [RSExportDesign]",
+        ["write one schema 2 design folder",
+         "(right) through bar_assembly_core"],
+        C_DESIGN, title_size=10.5, file="rs_export_design.py")
 
     # Grey auxiliary box: solved plans come back into Rhino for viewing.
     box(ax, 2, 25, 21, 9,
         "Solved-plan viewer (back in Rhino)",
-        ["load solved sidecars, then step through",
-         "keyframes / full trajectories on the model"],
+        ["write solved keyframes onto the bars,",
+         "step through poses / trajectories"],
         C_AUX, title_size=10.5,
         file="RSLoadSolvedBarAction · RSShowBarActionPlan")
 
@@ -151,62 +149,58 @@ def main():
     # * Interface 1|2 — the clean exports (brown JSON artifacts)
     # -------------------------------------------------------------------
     box(ax, 25.5, 51, 13, 16,
-        "CLEAN EXPORTS",
-        ["RobotCell.json",
-         "  robot + SRDF semantics +",
-         "  tools + bars/joints/obstacles",
+        "DESIGN FOLDER",
+        ["design.json",
+         "  robots, tools, bodies,",
+         "  mates, schedule",
          "",
-         "BarActions/<bar>.json",
-         "  M0–M4 movements: start",
-         "  states, target frames/configs",
+         "actions/<id>.json",
+         "  movements: start states,",
+         "  link / joint targets",
          "",
-         "WalkableGround.json",
-         "  ground meshes for base search"],
+         "meshes/ · robots/",
+         "  geometry, URDF/SRDF"],
         C_ARTIFACT, title_size=10, body_size=7.8)
 
     # Export box WRITES the clean JSONs (solid).
     arrow(ax, (23, 59.5), (25.5, 61), C_DESIGN[1], rad=-0.1)
     # Offline planner READS them (dashed) — JSON is the source of truth.
     arrow(ax, (38.5, 64), (40.5, 79), C_ARTIFACT[1], style="--", rad=-0.2)
-    ax.text(37.6, 73.0, "reads (JSON =\nsource of truth)", ha="center",
+    ax.text(37.6, 73.0, "reads (design =\nsource of truth)", ha="center",
             va="center", fontsize=7.5, style="italic", color=C_ARTIFACT[1])
 
     # -------------------------------------------------------------------
     # * Column 2 — offline planner (husky_assembly_tamp submodule)
     # -------------------------------------------------------------------
     box(ax, 40.5, 75.5, 22, 11,
-        "Keyframe solving",
-        ["base search on WalkableGround meshes,",
-         "then M1→M2→M3 dual-arm IK chain;",
-         "ssik analytical backend in a Python 3.11",
-         "sidecar, or pure-PyBullet gradient",
-         "(HUSKY_IK_BACKEND = ssik | gradient)"],
+        "Scenes → compas_fab cells",
+        ["Design.scene_at(movement) → the core's",
+         "CompasFabMirror (one PyBullet world per",
+         "robot); the tamp solvers plan on its",
+         "lent planner (Rhino's IK check too)"],
         C_PLANNER, title_size=10.5,
-        file="husky_assembly_tamp/keyframe/")
+        file="bar_assembly_core/mirrors/")
 
     box(ax, 40.5, 61, 22, 10,
         "Motion planning",
-        ["RRT trajectories for M1..M4, collision-",
-         "checked against the exported RobotCell;",
-         "home config read from M4's",
-         "target_configuration"],
+        ["transfer, insert, retreat and home of",
+         "the assembly robot (tamp motion API);",
+         "support-robot moves not planned yet"],
         C_PLANNER, title_size=10.5,
         file="husky_assembly_tamp/motion_planner/")
 
     box(ax, 40.5, 44, 22, 12.5,
-        "CLI entry points (drive both steps above)",
-        ["headless_bar_action_planner.py",
-         "  solve keyframes + plan motions",
-         "replay_bar_action_plan.py",
-         "  re-run / inspect a solved plan",
-         "data root: HUSKY_ASSEMBLY_DATA_ROOT",
+        "CLI entry point (drives both steps above)",
+        ["plan_design.py <design folder>",
+         "  plan the movements, write solutions/",
+         "  --bars B3,B10 plans some bars only",
          "runs on Windows or Ubuntu"],
         C_PLANNER, title_size=9.5,
-        file="external/husky_assembly_tamp/scripts/")
+        file="scripts/plan_design.py  (this repo)")
 
     # Keyframe configs seed the motion planner (solid: produces the seeds).
     arrow(ax, (51.5, 75.5), (51.5, 71.4), C_PLANNER[1])
-    ax.text(52.3, 73.5, "keyframe configs seed planning", ha="left",
+    ax.text(52.3, 73.5, "one cell per robot, kept", ha="left",
             va="center", fontsize=7.5, style="italic", color=C_PLANNER[1])
 
     # Both planner stages WRITE their solved sidecars (solid).
@@ -217,17 +211,13 @@ def main():
     # * Interface 2|3 — the solved sidecars (brown JSON artifacts)
     # -------------------------------------------------------------------
     box(ax, 64.5, 51, 13, 14,
-        "SOLVED SIDECARS",
-        ["<bar>.solved_keyframe.json",
-         "  base frame + IK keyframe",
-         "  configs (M1–M3)",
+        "SOLUTIONS",
+        ["solutions/<action>.json",
+         "  start / end joints,",
+         "  trajectories, bases",
          "",
-         "<bar>.solved_motion.json",
-         "  full planned trajectories",
-         "  (M1..M4)",
-         "",
-         "re-runnable on any machine",
-         "via module 2's replay CLI"],
+         "stale once the design",
+         "  changes (hashes)"],
         C_ARTIFACT, title_size=10, body_size=7.8)
 
     # Live executor READS the solved plans (dashed).
@@ -240,8 +230,8 @@ def main():
     # -------------------------------------------------------------------
     box(ax, 79.5, 79, 18.5, 7.5,
         "Load + live monitor",
-        ["load solved JSONs; monitor + execute",
-         "the assembly bar-by-bar"],
+        ["load the design + solutions; monitor",
+         "and execute the assembly bar by bar"],
         C_LIVE, title_size=10.5)
 
     box(ax, 79.5, 67, 18.5, 8,
@@ -279,21 +269,21 @@ def main():
     # * Shared schema note (grey): the contract every artifact speaks.
     # -------------------------------------------------------------------
     box(ax, 36, 8, 38, 9,
-        "Shared JSON schema — the interchange contract",
-        ["Movement / BarAssemblyAction / RobotCell(State) classes;",
-         "every brown artifact box above is serialized with these classes"],
+        "Shared core — the interchange contract",
+        ["design format (schema 2), scenes and compas_fab cells;",
+         "every module reads and builds its cells with it"],
         C_AUX, title_size=10,
-        file="external/rs_data_structure  (git submodule)")
+        file="external/bar_assembly_core  (git submodule)")
 
     # -------------------------------------------------------------------
     # Legend
     # -------------------------------------------------------------------
     leg = [
         (C_DESIGN,   "Module 1 — design frontend (this repo, Rhino 8 scripts)"),
-        (C_PLANNER,  "Module 2 — offline planner (husky_assembly_tamp submodule)"),
+        (C_PLANNER,  "Module 2 — offline planner (plan_design.py + husky_assembly_tamp)"),
         (C_LIVE,     "Module 3 — live execution (husky-assembly-teleop, ROS2)"),
         (C_ARTIFACT, "JSON artifacts — the interfaces between the modules"),
-        (C_AUX,      "Auxiliary (Rhino replay viewer · shared schema note)"),
+        (C_AUX,      "Auxiliary (Rhino plan viewers · shared core note)"),
     ]
     lx, ly = 3, 3.0
     for i, (colors, label) in enumerate(leg):
@@ -309,7 +299,7 @@ def main():
             "Solid arrow = produces / writes.   Dashed arrow = supplies data (reads).   "
             "The robot never reaches the planned base pose exactly — mocap tracks the real base,\n"
             "and once the base stops the ARM motion is replanned live against the ORIGINAL tool0 targets.   "
-            "The JSON schema contract lives in external/rs_data_structure.",
+            "The design format and its cells live in the shared core, external/bar_assembly_core.",
             ha="center", va="center", fontsize=8.3, style="italic", color="#444")
 
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)),

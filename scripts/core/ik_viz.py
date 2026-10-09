@@ -532,9 +532,9 @@ def _rb_mode_guids(rb_so, mesh_mode: str) -> list:
 def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
     """Show one mesh mode and hide the other, keeping not-yet-built bars hidden.
 
-    The current step marks every rigid body whose parent bar comes later in the
-    assembly order than the bar being built with ``is_hidden=True`` (done in
-    ``ik_collision_setup.build_full_assembly_state``). :func:`update_state` copies
+    The current step marks every rigid body absent from it (bars not built yet,
+    say) with ``is_hidden=True`` (the core's cell states: absent bodies are
+    disabled in the design's scenes). :func:`update_state` copies
     those ids onto the bundle as ``hidden_rb_ids``, and here we keep their meshes
     hidden in BOTH mesh modes. Without this, flipping the mesh mode would re-show
     every rigid body, so the preview would draw all bars at their final assembled

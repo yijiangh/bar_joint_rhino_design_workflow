@@ -67,9 +67,7 @@ def _as_4x4(value) -> np.ndarray:
 def arm_side_from_tool_name(tool_name: str) -> str | None:
     """Classify an arm side from a tool name's L/R suffix.
 
-    This is THE single home of the naming rule (previously copy-pasted in
-    ``robot_cell`` / ``ik_collision_setup`` / ``rs_ik_keyframe`` /
-    ``bar_action``; they all import from here now).
+    This is THE single home of the naming rule; every caller imports it from here.
 
     Args:
         tool_name (str): registry tool name, e.g. ``"AT3L"`` / ``"AT3R"``.

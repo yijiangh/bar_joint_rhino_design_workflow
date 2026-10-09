@@ -297,8 +297,7 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
         if issues:
             print(
                 "  Repair: run RSReorderBarID -> Relink to re-derive ids from "
-                "geometry (review its printed plan before applying), then "
-                "RSRebuildRobotCell."
+                "geometry (review its printed plan before applying)."
             )
     return issues
 

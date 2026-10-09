@@ -58,14 +58,12 @@ command swaps both sides:
 It refuses cleanly (nothing changes) if the pair partner is missing or a
 `.3dm`/`.obj` is absent.
 
-## 4. Rebuild the collision cell and re-solve IK
+## 4. Re-solve IK
 
-1. **RSPBStart** (if PyBullet isn't running).
-2. Accept the rebuild prompt at the end of the swap, or click
-   **RSRebuildRobotCell**. The summary should list `AT4L`/`AT4R`.
-   (If you forget, the next IK command shows a staleness prompt — the active
-   tool pair is part of the cell fingerprint.)
-3. **RSIKKeyframe** on the bars you care about and check solve success /
+1. Nothing to rebuild: the next IK command reads the document into a design with
+   the new tools, and the shared core rebuilds each planning and drawing cell
+   whose tools changed (`RSRebuildRobotCell` forces it and lists the tools).
+2. **RSIKKeyframe** on the bars you care about and check solve success /
    collision results as usual. **RSClearIKKeyframe** to erase stale solves.
 
 ## 5. Compare the two sets
@@ -75,6 +73,6 @@ Repeat steps 3–4 with the other set (`RSSwapRoboticTool` → type `AT5L` or
 with better margins wins. The registry remembers only one active pair at a
 time.
 
-After settling on a tool, re-export (`RSExportBarAction` / RobotCell JSON) —
-exported files embed the tool geometry and names, so exports made with the
-old pair are stale.
+After settling on a tool, re-export (`RSExportDesign`) — the design folder
+embeds the tool geometry and names, so designs exported with the old pair are
+stale.

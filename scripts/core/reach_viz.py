@@ -46,8 +46,7 @@ def _link_name(endpoint) -> str:
 def _frame_to_mm4(frame) -> np.ndarray:
     """Convert a compas ``Frame`` (meters) to a 4x4 numpy transform in mm.
 
-    Same conversion as ``core.bar_action._frame_to_mm4``; duplicated here so this
-    module stays importable without pulling in the movement builder.
+    Kept local so this module needs no frame helpers from elsewhere.
     """
     matrix = np.eye(4, dtype=float)
     matrix[:3, 0] = np.asarray(frame.xaxis, dtype=float)

@@ -371,7 +371,7 @@ def _bar_center_mm(bar_oid):
 #
 # The heading comes from the bar's anchor joints: each joint block's local +Z is
 # its insertion axis (retreat is -Z -- see
-# ``core.bar_action._retreat_tool0_target_mm``). Naively averaging those axes
+# ``core.design_source``'s retreat directions). Naively averaging those axes
 # degenerates in three ways, all of which used to put the base on an arbitrary
 # (often opposite) side:
 #

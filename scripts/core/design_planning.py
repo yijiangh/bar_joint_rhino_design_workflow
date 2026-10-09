@@ -205,7 +205,7 @@ def hold_solve_scene(design: Design, bar: str) -> Scene:
 
 
 def hold_solve_state(design: Design, store: dict, bar: str, log=print):
-    """A support robot's mirror and template state for solving one hold (`robot_cell_support.solve_support_ik`).
+    """A support robot's mirror and template state for solving one hold (`support_ik.solve_support_ik`).
 
     Returns:
         tuple: (the support robot's mirror, a compas_fab `RobotCellState` to fork per base).

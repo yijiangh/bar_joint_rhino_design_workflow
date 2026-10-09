@@ -2212,7 +2212,7 @@ is hand-written, about 20 lines, and there are **four different shapes**:
 
 | shape | how Enter behaves | where |
 |---|---|---|
-| Enter takes a default | `SetCommandPromptDefault` + `AcceptNothing(True)` | RSBarEdit, RSJointEdit, RSJointPlace, RSSelectBar |
+| Enter takes a default | `SetCommandPromptDefault` + `AcceptNothing(True)` | RSBarEdit, RSJointEdit, RSJointPlace, RSBarSelect |
 | must choose | `AcceptNothing(False)`, no default line | RSReorderBarID x2 |
 | default set but never *shown* | `AcceptNothing(True)` but **no** `SetCommandPromptDefault` | `rs_ik_keyframe._ask_reuse_saved_base` |
 | default, but Esc returns `"cancel"` not `None` | | `rs_ik_keyframe._ask_save_base_or_continue` |

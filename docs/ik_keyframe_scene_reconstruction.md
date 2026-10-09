@@ -637,7 +637,7 @@ highlighted. This diagnostic path does not exist for the gradient backend.
 
 **Base sampling.** If the whole M1→M2→M3 chain fails at the seed base,
 `_solve_chain_with_sampling` tries up to `IK_BASE_SAMPLE_MAX_ITER = 10` offset base
-frames within `IK_BASE_SAMPLE_RADIUS = 500` mm, each re-snapped to the walkable
+frames within `IK_BASE_SAMPLE_RADIUS = 1000` mm (Rhino's own value in `core/config.py`), each re-snapped to the walkable
 brep. Samples keep their +X axis aimed at the same **heading point**; they do not
 preserve a constant heading vector, so translating the base can also rotate it. A
 base is accepted only if the **whole** chain solves.

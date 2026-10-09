@@ -18,10 +18,10 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSDesign | RSBarSubfloor | `rs_bar_subfloor.py` | Add a subfloor bar between two existing bars, with independent left/right joint pairs | Workshop participants |
 | RSDesign | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer/editor | Workshop participants |
 | RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
-| RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
-| RSDesign | RSBarEdit | `rs_bar_edit.py` | Color, filter, and resize bars by length | Workshop participants |
-| RSDesign | RSSelectBar | `rs_select_bar.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: type a length in mm to select every bar of that length plus their male/ground joints, grouped exactly as RSBarEdit groups them. Both loop. Read-only. | Workshop participants |
-| RSDesign | RSSelectJoint | `rs_select_joint.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
+| RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
+| RSDesign | RSBarEdit | `rs_bar_edit.py` | **BarLength**: color bars by length and resize the selected bars about their midpoints. **FakeBar**: mark staging bars | Workshop participants |
+| RSDesign | RSBarSelect | `rs_bar_select.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: bars are colored and tagged by length; type a length to select that group, then optionally its **BearingJoints** or **PairedJoints**. The model is never edited. | Workshop participants |
+| RSDesign | RSJointSelect | `rs_joint_select.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
 | RSDesign | RSShowAssemblyPlan | `rs_show_assembly_plan.py` | Step through the WHOLE assembly movement by movement: every bar's poses concatenated in sequence order, with support robots appearing/leaving per the hold schedule. Enter=next, Prev/Jump/GoToBar, or click a bar to jump there. | Advanced IK users |
 | RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's timeline (approach / assembled / hold / retreat / home + base frame), with support robots appearing per pose exactly as the hold schedule says; the last stabilizer of a hold also plays that hold's release pose. Right-click (`rs_show_bar_action_plan_motion.py`): load the bar's planned motion if needed and scrub the trajectory with a slider. | Advanced IK users |
@@ -87,9 +87,10 @@ Three modes, chosen at the first prompt (Enter = JointPairAndTool):
   Solves the assembly variants; click the receiver or male block to flip it;
   Enter / `Accept` bakes, and the male gets its tool.
 - **ToolOnly** — pick a male or ground joint and put a tool on it (Flip swaps L/R).
-- **JointOnly** — place ONE single-sided joint on one bar: pick the bar, a point
-  on it, and the joint (`T20_Ground` / `T20_MoCap`; skipped when only one is
-  registered). **Ground**: `Accept | Flip` — its angle about the bar is automatic
+- **JointOnly** — place ONE single-sided joint on one bar: first choose
+  **Ground | MoCap** on the command line (only kinds with a registered block are
+  offered; a second prompt picks the Type only when a kind has several), then pick
+  the bar, then a point on it. **Ground**: `Accept | Flip` — its angle about the bar is automatic
   (block +Y, the foot, faces the floor); Flip turns it end-for-end. **MoCap**:
   `Accept | Rotate` — it starts with its marker plate (block +Z) facing up, or +X
   on a bar within 15° of vertical; Rotate turns it about the bar by the angle you
@@ -110,7 +111,9 @@ Three modes, chosen at the first prompt (Enter = FlipJoint):
   end-for-end (its tool follows); click a standalone MoCap joint to re-aim it
   with the `Accept | Rotate` preview. Reads stored orientation state from user-text.
 - **MoveJoint** — slide a paired joint along its bar (see the command's docstring).
-  Single-sided joints are not counted among the two joints a moved bar carries.
+  At the first prompt either **type a distance** in mm — positive the way the
+  magenta arrow from the joint points — or pick two points to align. Single-sided
+  joints are not counted among the two joints a moved bar carries.
 - **ReplaceJoint** — click any half of a placed pair; its receiver swaps
   `T20_Female` ↔ `T20_MoCap`, keeping the joint id, both bars and the tool
   (`J40-53_female` ↔ `J40-53_mocap`). The pair is re-solved with the new block,
@@ -125,20 +128,25 @@ Three modes, chosen at the first prompt (Enter = FlipJoint):
 
 ### RSBarEdit (`rs_bar_edit.py`)
 
-- Groups bars by rounded length and color-codes groups.
-- Supports select-by-length, resize-about-midpoint, refresh, and clean exit.
+- **BarLength**: groups bars by rounded length, color-codes the groups and tags each bar with
+  its length; **ResizeSelected** resizes the bars selected *before* the command about their
+  midpoints (select a whole length group with RSBarSelect › SelectByLength); Refresh; clean exit.
+- **FakeBar**: Add / Delete the fake-bar mark (see the colour reference).
 
-### RSSelectBar (`rs_select_bar.py`)
+### RSBarSelect (`rs_bar_select.py`)
 
 Two modes, chosen at the first prompt: **SelectByName** (the default — press Enter) or **SelectByLength**.
 
 - **SelectByName.** Type a bar id at the command line — `B4`, `b4`, or a bare `4` all resolve to bar `B4` — and it selects that bar's centerline curve **and** tube preview, then `ZoomSelected` frames it. Handy for finding one bar in a crowded model.
 - Comma-separate ids (`B4,B7`) to select several at once. The prompt loops so you can jump from bar to bar; each entry **replaces** the selection. Enter on an empty prompt (or Esc) ends the command.
-- **SelectByLength.** Type a length in mm (`1050`) and it selects every bar of that length **plus the male and ground joint blocks sitting on them** — the halves that belong to those bars, the way their tube previews do. The *female* half of a joint belongs to the bar on the other side of the pair and is deliberately left alone. A summary of every length, its bar count and its bar ids is printed on entry, and the prompt loops with your last length as the default.
-- The grouping, the length prompt and that summary are RSBarEdit's own (`build_length_groups` / `pick_length_group` / `print_length_summary`), so a length means the **same set of bars** in both commands. Only the selecting is this command's.
-- **Read-only** — reads each bar's stored `bar_id` as-is and never heals / renumbers / moves anything, so it is safe to run any time. Note RSBarEdit reaches the same groups through `get_all_bars`, which *does* heal bar ids as it goes; this command does not. No PyBullet needed. On the RSDesign toolbar.
+- **SelectByLength.** Every bar is colored by its length group and tagged with its length while you choose, and a summary of every length, its bar count and its bar ids is printed. Type a length in mm (`1050`) to select every bar of that length. Then, optionally, also select their joints:
+  - **BearingJoints** — the tool-bearing halves on those bars (Male and Ground).
+  - **PairedJoints** — both halves of every joint pair touching those bars: the Male and its Female / MoCap receiver, whichever bar each sits on.
+  Type another length to switch groups; **Enter or Esc** finishes and keeps the selection. The colors and tags are removed, and every bar's previous color (IK, fake, sequence) is put back.
+- The grouping is shared with RSBarEdit (`core/bar_length_groups.py`), so a length means the **same set of bars** in both commands.
+- **The model is never edited** — each bar's stored `bar_id` is read as-is (nothing is healed / renumbered / moved), so it is safe to run any time. No PyBullet needed. On the RSDesign toolbar.
 
-### RSSelectJoint (`rs_select_joint.py`)
+### RSJointSelect (`rs_joint_select.py`)
 
 - Type a joint id at the command line — `J40-53_female`, `j40-53_male`, `J40-53_mocap`, `G4-T20-0_ground` or `M7-T20-0_mocap` (all case-insensitive) — and it selects that placed joint block instance, then `ZoomSelected` frames it. Handy for finding one joint in a crowded model.
 - The role suffix is optional: `J40-53` selects **both** halves of the pair at once, and bare pair numbers (`40-53`) get the `J` prefix added automatically.
@@ -306,9 +314,14 @@ changed transform.
 
 ### RSReorderBarID (`rs_reorder_bar_id.py`)
 
-- Renumbers bars so `B<n>` matches sequence `n`.
-- Cascades updated IDs into dependent joint/ground/MoCap/tool metadata
+- **RenumberBars**: renumbers bars so `B<n>` matches sequence `n`, and cascades the new
+  ids into dependent joint/ground/MoCap/tool metadata
   (`J7-9` → `J12-9`, `G7-T20-0` → `G12-T20-0`, `M7-T20-0` → `M12-T20-0`).
+- **RelinkJointsAndTools**: re-derives each joint's and tool's bar from geometry (after a
+  copy/paste) and prints a plan to apply. **Known issue:** when bars or joints sit close
+  together it can bind to the wrong bar. The command warns, and marks the suspect rows `?`:
+  a joint whose mate bar has a 3rd bar within 20 mm of it, and a tool with two joint blocks
+  near its TCP. Check those rows before applying (recorded in `todos.md`).
 
 ### RSExportPrefab (`rs_export_prefab.py`)
 
@@ -422,7 +435,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Multi-select bars; places a mobile base on each and optionally solves them all in one batch.
 - **Standoff** is typed at the prompt, defaulting to `config.IK_BASE_STANDOFF_MULTIBAR_MM` = **500 mm** — deliberately the *middle* base-guide offset, so the auto-placed base lands exactly on the middle guide line and 375 / 625 read as the two alternatives either side of it.
 - Each processed bar gets its own guide-line set plus a base marker and reach circle.
-- **FlipAll / FlipOne** at the off-ramp prompt move bases to the other side of their bar (FlipOne asks you to click a base marker). The guides, the saved base frame, and the L/R tool sides all follow the flip; a flip also clears any hand-picked tool side, since it is you re-deciding the approach.
+- **FlipAll / FlipOne** at the off-ramp prompt move bases to the other side of their bar (FlipOne asks for the bar: click its centre line, tube or base marker; only bars with a placed base are pickable). The guides, the saved base frame, and the L/R tool sides all follow the flip; a flip also clears any hand-picked tool side, since it is you re-deciding the approach.
 - Bars whose base side could not be derived with confidence — anchor axes cancelling, or the ground running out before the standoff — are flagged **"Ambiguous heading — verify the side"** in the summary popup, with the per-bar diagnosis printed to the command line.
 - All preview geometry (guides, base markers, reach circles) is removed on **every** exit path: solved, ESC at any prompt, SaveAndExit, or an exception. The saved base frames on the bars are untouched.
 
@@ -503,6 +516,9 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Fits model bars to three mocap bars and applies a rigid transform to managed geometry.
 
 ### RSImportScaffoldJSON (`rs_import_scaffold_json.py`)
+
+> **Not re-tested** since the 2026-10 joint-naming refactor; the command prints a note at
+> start (recorded in `todos.md`). The same holds for RSExportScaffoldJSON.
 
 - Reads a `node_list` / `rod_list` / `coupler_list` layout JSON (e.g. `large_scaffold.json`, produced by the upstream stability/layout generator) and bakes **one registered bar per rod** — same registration RSCreateBar does (`bar_type` / `bar_id` / `bar_guid` / `bar_seq` user text, object name, centerline layer, tube preview).
 - `bar_id` is set to **`B<rod_id>`** so the Rhino id reads the same as the rod id. The rod id is *also* written to the `rod_id` user-text key, which is what the export reads — so RSReorderBarID renumbering `bar_id`, or a copy/paste making `ensure_bar_id` re-issue one, cannot break the correspondence.

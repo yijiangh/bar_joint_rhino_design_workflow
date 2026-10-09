@@ -1,21 +1,20 @@
 """Logic behind the ``RSGHPreviewWarmup`` Grasshopper component.
 
 A one-shot cache warmer for ``RSGHSequencePreview``: reading the document into a
-design, loading the robot models (Cindy the dual-arm, Alice and Belle the
-support Huskies) into the core's drawing cell and baking their display meshes is
+design, reading the robot models (Cindy the dual-arm, Alice and Belle the
+support Huskies) and their meshes, and baking them into the document is
 the ONLY heavy work in the whole preview -- and it is one-time, cached for the
 Rhino session.  Without this component the preview pays it on its first frame
 (a visible stall); with it, the user clicks one button while setting up the
 canvas and every later scrub is mesh-transform only.
 
 No PyBullet anywhere -- "warm-up" here means model loading + mesh baking,
-nothing else.  The bake targets the SAME cache entries the preview uses (the
-assembly robot's drawing cell, which holds the support robots as tools, on the
-``Assembly`` layer), which is what makes it count.  Everything baked is left
-hidden; the preview decides visibility per frame.
+nothing else.  The bake targets the SAME cache entries the preview uses (every
+robot placed, on the ``Assembly`` layer), which is what makes it count.
+Everything baked is left hidden; the preview decides visibility per frame.
 
-Clicking the button again is harmless: the cell and the mesh cache are kept
-while the document's geometry is unchanged, so a second click only re-poses.
+Clicking the button again is harmless: the baked parts are kept while the
+robots' and tools' geometry is unchanged, so a second click only re-poses.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from core import ik_viz
 
 
 def run(ghenv, run=False):
-    """Warm the drawing cell and its meshes on the button's rising edge.
+    """Read the robots and bake their meshes on the button's rising edge.
 
     Args:
         ghenv: the component's ``ghenv`` (or ``self`` in SDK mode).
@@ -63,8 +62,7 @@ def run(ghenv, run=False):
             for other, robot in scene.robots.items():
                 design_display.place(scene, other, robot.base, update=False)
             design_display.refresh(scene)
-            cell, state = design_display.cell_and_state(sc.sticky, scene, robot_id)
-            ik_viz.update_state(state, robot_cell=cell, layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
+            ik_viz.update_state(scene, robot_id=robot_id, layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
                                 mesh_mode=ik_viz.MESH_MODE_VISUAL, hide_bodies=True)
             ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
             notes.append(f"{', '.join(sorted(design.robots))}: loaded + tools + meshes baked")

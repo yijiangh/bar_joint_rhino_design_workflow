@@ -2,8 +2,8 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSPBStop - Close every planning world and drop the cached cells; stop the ssik sidecar.
 
-The robots' planning mirrors (PyBullet worlds owned by the shared core), the
-drawing cells and the preview meshes are closed or forgotten; the next IK
+The robots' planning mirrors (PyBullet worlds owned by the shared core) and
+the preview meshes are closed or forgotten; the next IK
 command or viewer rebuilds what it needs. The ssik IK sidecar (a Python 3.11
 process, started by the "ssik" IK backend) is shut down too.
 """

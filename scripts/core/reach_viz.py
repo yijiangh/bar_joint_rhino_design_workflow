@@ -61,7 +61,7 @@ def _chain_to_link(robot_model, target_link: str):
 
     Walks the joint tree from the target link UP to the root, composing each
     joint's ``origin``. Composing origins alone IS forward kinematics at the ZERO
-    configuration -- which is exactly the pose the ghost robot meshes are baked at
+    configuration -- which is exactly the pose the ghost robot meshes are copied at
     (``rs_ik_keyframe._bake_robot_meshes_at_zero``), so the spheres line up with
     the ghost by construction. That also means no joint values and no
     version-sensitive ``forward_kinematics`` call are needed: this uses only plain

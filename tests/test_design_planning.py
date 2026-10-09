@@ -135,6 +135,34 @@ def test_keyframe_chain_solves_on_the_mirror(setup):
     assert np.allclose(flange.position, target.position, atol=1e-3)
 
 
+def test_state_scene_draws_a_solver_state(setup):
+    """A mirror's state as a scene to draw: the robot at its base and joints, the bar held or let go as the state
+    has it (the transfer scene holds it; M3, the retreat, starts with it released)."""
+    from bar_assembly_core.geometry import Pose
+    from bar_assembly_core.mirrors.compas import frame_from_pose
+    from bar_assembly_core.scene import Attachment
+    from core.design_planning import keyframe_movements, movement, state_scene
+
+    design, store, reach, _, _ = setup
+    _mirror, movements = keyframe_movements(design, store, "bars/B1")
+    transfer = design.scene_at(movement(design, "bars/B1", "J", "J_transfer"))
+    assert isinstance(transfer.bodies["bars/B1"].placement, Attachment)
+    state = movements["M3"].start_state.copy()
+    state.robot_base_frame = frame_from_pose(Pose((1.0, 2.0, 0.0)))
+    names = state.robot_configuration.joint_names
+    state.robot_configuration.joint_values = [reach.get(name, 0.0) for name in names]
+    drawn = state_scene(transfer, "robots/cindy", state)
+    robot = drawn.robots["robots/cindy"]
+    assert np.allclose(robot.base.position, (1.0, 2.0, 0.0)) and robot.base_tracked
+    assert all(robot.joints[name] == pytest.approx(value) for name, value in reach.items())
+    released = drawn.bodies["bars/B1"].placement
+    assert isinstance(released, Pose)
+    assert np.allclose(released.position, list(state.rigid_body_states["bars/B1"].frame.point))
+    assert isinstance(transfer.bodies["bars/B1"].placement, Attachment)  # the given scene is untouched
+    held = state_scene(transfer, "robots/cindy", movements["M2"].start_state)
+    assert held.bodies["bars/B1"].placement.link == "left_ur_arm_tool0"
+
+
 def test_geometry_unchanged_keeps_the_cell(setup):
     """A second sync of the same design reuses the mirror's cell (no rebuild)."""
     from core.design_planning import keyframe_movements

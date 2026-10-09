@@ -429,12 +429,12 @@ scripts/
     design_source.py                    # Rhino document -> schema 2 design (bar_assembly_core)
     design_builder.py                   # Keyframe records -> the design's actions (Rhino-free)
     design_planning.py                  # Design scenes -> the core's CompasFabMirror -> tamp / compas_fab solvers
-    design_display.py                   # Design scenes -> the core's drawing cells (no PyBullet)
+    design_display.py                   # Design scenes -> the parts ik_viz draws (no compas, no PyBullet)
     plan_steps.py                       # The viewers' poses, timeline and solutions as moments of the design
     keyframe_store.py                   # Solved keyframes in bar user text (the persistent store)
     support_ik.py                       # Support-arm IK on a lent planner
     core_lib.py                         # Puts bar_assembly_core + compas_fab (submodules) on sys.path
-    ik_viz.py                           # Rhino preview cache for the core's cells
+    ik_viz.py                           # Rhino preview cache: a core Scene baked part by part
     scaffold_json.py                    # node/rod/coupler layout-JSON round trip, for the
                                         #   stability-simulation exchange (see RSStability below)
     robotic_tool.py                     # Robotic tool registry helpers

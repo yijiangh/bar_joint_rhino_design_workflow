@@ -2,7 +2,7 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSRebuildRobotCell - Refresh the planning cells: re-read the document and rebuild them through the core.
 
-The planning and drawing cells are built by the shared core from the document
+The planning cells are built by the shared core from the document
 read as a schema 2 design (``core.design_source``): every bar, joint half,
 walkable ground and environment obstacle, the robots and their tools. The IK
 commands and viewers keep them in the session (``sc.sticky``) and rebuild one
@@ -16,8 +16,8 @@ This button forces a clean start and pays the load up front:
 2. AUTO-POPULATES a heuristic seed base pose on every bar that has none yet
    (non-destructive: hand-picked and IK-solved bases are kept).
 3. Drops every cached cell, mirror and preview mesh, re-reads the document, and
-   builds each robot's planning mirror (its own PyBullet world) and the
-   assembly robot's drawing cell, so the next IK command or viewer starts warm.
+   builds each robot's planning mirror (its own PyBullet world) and reads the
+   robots' meshes, so the next IK command or viewer starts warm.
 
 RSPBStart (left-click) runs the same; its right-click, RSPBStartGUI, also opens
 the assembly robot's planning world in PyBullet's window. RSPBStop closes them.
@@ -54,13 +54,11 @@ from core.rhino_bar_registry import repair_on_entry
 
 
 def close_all(store) -> None:
-    """Close every planning mirror, forget the drawing cells, the geometry cache and the preview meshes."""
+    """Close every planning mirror, forget the geometry cache and the preview meshes."""
     design_planning = importlib.reload(_design_planning_module)
-    design_display = importlib.reload(_design_display_module)
     design_source = importlib.reload(_design_source_module)
     ik_viz = importlib.reload(_ik_viz_module)
     design_planning.close_mirrors(store)
-    design_display.forget_cells(store)
     store.pop(design_source.GEOMETRY_CACHE_KEY, None)
     ik_viz.discard_cache()
 
@@ -76,7 +74,7 @@ def refresh(command: str = "RSRebuildRobotCell", gui: bool = False) -> None:
     walkable = importlib.reload(_walkable_module)
     importlib.reload(_design_builder_module)
     design_source = importlib.reload(_design_source_module)
-    design_display = importlib.reload(_design_display_module)
+    importlib.reload(_design_display_module)
     design_planning = importlib.reload(_design_planning_module)
 
     repair_on_entry(float(config.BAR_RADIUS), command)
@@ -102,8 +100,8 @@ def refresh(command: str = "RSRebuildRobotCell", gui: bool = False) -> None:
                 if gui and robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
                     design_planning.mirror_for(sc.sticky, robot_id).set_gui(True)
                 design_planning.sync_seeded(sc.sticky, scene, robot_id, report_parked=False)
-                if robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
-                    design_display.cell_and_state(sc.sticky, scene, robot_id)
+                # The meshes the previews draw (read once per file, kept by the core).
+                scene.robots[robot_id].model.link_geometry
                 built.append(robot_id)
             except Exception as exc:  # noqa: BLE001 -- one robot must not stop the others
                 failed.append(f"{robot_id}: {type(exc).__name__}: {exc}")

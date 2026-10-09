@@ -29,8 +29,8 @@ centerline midpoint (its ground projection is where the base stands behind of) a
 the average of the bar's male-joint blocks' +Z (their insertion axis).
 
 The ghost robot is FK-only (no PyBullet): its link meshes are harvested once at
-the home pose via ``core.ik_viz.get_robot_link_meshes_at_state`` from the core's
-drawing cell, with only the robot shown (``core.design_display.robot_scene``),
+the home pose via ``core.ik_viz.robot_meshes`` from the core's geometry, with
+only the robot shown (``core.design_display.robot_scene``),
 and drawn translucent through ``core.dynamic_preview.mesh_preview`` -- the same
 style as the IK base-sampling ghost -- rigidly transformed onto the computed base
 frame.
@@ -72,11 +72,6 @@ CMD = "RSAssignAndShowWalkableGround"
 
 # Object types the re-assign pick accepts (same set as the WalkableGround layer).
 _WALKABLE_FILTER = rs.filter.surface | rs.filter.polysurface | rs.filter.extrusion
-
-# ik_viz sub-layer key for the base-placement ghost's harvested meshes. Kept
-# distinct from the viewer's "Assembly"/"Support" keys so it never clashes with
-# an RSShowBarActionPlan cache bundle.
-GHOST_LAYER_KEY = "BasePlacement"
 
 # Opacity of the translucent ghost robot (1.0 = opaque, 0.0 = invisible).
 GHOST_ALPHA = 0.4
@@ -141,10 +136,10 @@ def _prepare_ghost_meshes():
     """Harvest the assembly robot's visual link meshes at the home pose (for the conduit).
 
     The document is read into a design (``core.design_source``) and the robot is
-    drawn alone at the world origin from the core's drawing cell
-    (``core.design_display.robot_scene``: every body hidden), posed at the home
-    arm configuration; its duplicated link meshes are returned. The conduit later
-    rigidly transforms this whole mesh set onto each computed base frame.
+    put alone at the world origin (``core.design_display.robot_scene``), posed at
+    the home arm configuration; copies of its link and tool meshes are returned
+    (``core.ik_viz.robot_meshes``). The conduit later rigidly transforms this whole
+    mesh set onto each computed base frame.
 
     Returns:
         list | None: the ghost link meshes, or ``None`` if the robot can't be
@@ -161,9 +156,7 @@ def _prepare_ghost_meshes():
         home = dict(zip([f"{side}_ur_arm_{j}" for side in ("left", "right") for j in UR_JOINT_NAMES],
                         (float(v) for v in config.HUSKY_DUAL_ARM_HOME_CONF_12)))
         scene = design_display.robot_scene(result.design, robot_id, home)
-        cell, state = design_display.cell_and_state(sc.sticky, scene, robot_id)
-        meshes = ik_viz.get_robot_link_meshes_at_state(state, robot_cell=cell, layer_key=GHOST_LAYER_KEY)
-        return meshes or None
+        return ik_viz.robot_meshes(scene.robots[robot_id]) or None
     except Exception as exc:  # noqa: BLE001 -- the ghost is an aid, never a blocker
         print(f"{CMD}: ghost robot unavailable ({type(exc).__name__}: {exc}); showing base frame only.")
         return None
@@ -378,11 +371,6 @@ def main() -> None:
             # A brand-new brep may have just been given an id -> refresh the map.
             grounds = walkable_rhino.get_all_walkable_grounds()
     finally:
-        # Remove the hidden baked robot the harvest left on the IK cache layer.
-        try:
-            ik_viz.discard_cache()
-        except Exception:
-            pass
         rs.Redraw()
 
 

@@ -9,7 +9,7 @@ RSIKKeyframe button can reuse them:
   tracking the cursor;
 - the two-phase BASE pick on a WalkableGround brep (origin, then heading),
   with a ghost of the assigned support robot tracking the cursor (its meshes
-  come from the caller: the core's drawing cell).
+  come from the caller: ``core.ik_viz.robot_meshes``).
 
 All Rhino-side (rhinoscriptsyntax / RhinoCommon); world outputs are 4x4
 numpy matrices in mm.
@@ -424,7 +424,7 @@ def pick_base_frame_on_walkable(brep_id, robot_name: str, robot_meshes,
         brep_id: the WalkableGround object id.
         robot_name (str): the robot being placed ("Alice"/"Belle"), for prompts.
         robot_meshes (list): its link meshes at zero config and identity base
-            (the ghost; from the core's drawing cell, see ``rs_ik_keyframe``).
+            (the ghost; ``core.ik_viz.robot_meshes``, see ``rs_ik_keyframe``).
         command_label (str): title for error message boxes.
 
     Returns:

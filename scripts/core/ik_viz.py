@@ -1,82 +1,51 @@
-"""Rhino-side scene cache for showing robots during IK preview and plan viewing.
+"""Rhino-side drawing cache: robots, tools and bodies of a core `Scene`, for IK previews and plan viewing.
 
 What this module owns
 ---------------------
-For each ``(robot_cell, layer_key)`` pair it keeps one drawing object for the
-robot, one per tool, and one per rigid body (bars, joints, environment). In
-compas these drawing objects are called "scene objects", so throughout this file
-a variable named ``*_so`` (``robot_so``, ``tool_sos``, ``rb_sos``) is one of
-them.
+For each ``layer_key`` (one preview, e.g. "Assembly" or "SupportSolve") it keeps one entry per part of the scene,
+keyed by the part's id (``core.design_display.drawn_parts``, from the core's ``scene_parts``): bodies ("bars/B3"),
+robot links with shapes ("robots/cindy/left_ur_arm_wrist_3_link") and mounted tools ("tools/AT3L"). Each part is
+baked into the Rhino document ONCE, a visual and a collision mesh, each named by the part's id, on the sub-layers
+``LAYER_IK_CACHE::<layer_key>::Visual`` and ``::Collision``. No compas: the meshes come from the core's `Geometry`.
 
-The cells always come from the shared core: a planning mirror's cell
-(``CompasFabMirror.cell``, collision meshes only) or a drawing cell
-(``core.design_display``, with visual meshes). This module never builds one. One
-layer key holds one cell: a new cell on a layer (the core rebuilt it) replaces
-the old one's meshes. Robots the core parks far away (absent, or base unknown)
-are hidden.
-
-Owning each piece on its own (instead of one big combined wrapper) means we can
-throw away and rebuild just one piece without touching the others. For example,
-when the set of rigid bodies changes as the user switches bars, the robot and
-tool meshes are left alone.
-
-How the meshes are drawn
-------------------------
-Every scene object is baked into the Rhino document ONCE, with both its display
-mesh (``draw_visual``) and its collision mesh (``draw_collision``). Switching
-between "show display mesh" and "show collision mesh" is then just hiding one set
-of Rhino objects and showing the other -- nothing is baked again.
+How the meshes move
+-------------------
+:func:`update_state` moves each part's objects by the change in its transform since the last call, and hides the
+parts the scene does not show (disabled bodies, robots that are absent or parked, see
+``design_display.parked``). A part is baked again only when its `Geometry` object changes (the core shares them and
+never changes one); parts whose id leaves the scene are deleted, new ids are baked. Switching between the visual
+and the collision meshes is a sub-layer visibility flip -- nothing is baked again.
 
 Session lifecycle
 -----------------
 
-* :func:`begin_session` builds the drawing objects for ``layer_key`` and bakes
-  them up front (so the first :func:`update_state` is fast). It hides the
-  user-modeled document layers that overlap the preview and restores them in
-  :func:`end_session`.
-* :func:`update_state` poses everything to match a :class:`RobotCellState`. It
-  compares the current set of rigid bodies against the cached one and adds or
-  removes drawing objects in place.
-* :func:`set_active_mesh_mode` flips which mesh set is visible; nothing is baked.
-* :func:`end_session` hides the cache layer but leaves the geometry in place, so
-  the next session resumes by just moving the existing meshes.
-* :func:`discard_cache` deletes everything; use it only on a hard reset.
+* :func:`begin_session` shows the cache layer and hides the user-modeled document layers that overlap the preview;
+  :func:`end_session` hides the cache layer and restores them.
+* :func:`update_state` draws a scene on one layer key; the other layer keys are hidden (one preview at a time).
+* :func:`set_active_mesh_mode` flips which mesh set is visible.
+* :func:`objects_of` finds the drawn objects of design ids (offender highlighting); :func:`robot_meshes` copies a
+  robot's meshes for a see-through ghost without touching the document.
+* :func:`end_session` leaves the geometry in place, so the next session only moves it;
+  :func:`discard_cache` deletes everything (hard reset).
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional
 
+import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 import Rhino  # noqa: F401  (kept so other scripts can import Rhino through this file)
 
 from core import config
 from core import joint_name_conventions as jnc
-from core.rhino_helpers import ensure_layer
-
-#: Where the core parks an absent robot, metres (`bar_assembly_core.mirrors.compas.PARKED_POSITION`).
-_PARKED_POSITION = (50.0, 50.0, 0.0)
-
-
-def _require_cell(robot_cell, caller: str):
-    """The cell to draw; raises if none was given (the cells come from the core, see the module docstring)."""
-    if robot_cell is None:
-        raise ValueError(f"ik_viz.{caller} needs a robot cell from the core (core.design_display or a mirror)")
-    return robot_cell
-
-
-def _is_parked(frame) -> bool:
-    """Whether a compas frame sits where the core parks absent robots."""
-    if frame is None:
-        return False
-    return all(abs(float(a) - b) < 1e-6 for a, b in zip(frame.point, _PARKED_POSITION))
-
+from core.rhino_helpers import ensure_layer, numpy_to_xform
 
 # ---------------------------------------------------------------------------
 # * Shared layer-key names
 # ---------------------------------------------------------------------------
-# Both rs_show_ik and rs_ik_keyframe use these names, so they land in the same
+# Both rs_show_bar_action_plan and rs_ik_keyframe use these names, so they land in the same
 # cache slot and share one baked preview.
 
 LAYER_KEY_ASSEMBLY = "Assembly"
@@ -89,28 +58,20 @@ LAYER_KEY_SUPPORT = "Support"
 # Rhino's ``sc.sticky`` is a dictionary that survives between script runs in the
 # same Rhino session, so we stash our cache there under these keys.
 
-# The bundle cache maps (id(robot_cell), layer_key) -> a dict shaped like:
-#     {
-#         "robot_so":  drawing object for the robot,
-#         "tool_sos":  {tool_id: drawing object},
-#         "rb_sos":    {rigid_body_id: drawing object},
-#         "rb_keyset": frozenset of the rigid-body ids currently cached,
-#         "active_mesh_mode": "visual" or "collision",
-#         "layer": Rhino layer path the meshes live on,
-#     }
-_STICKY_BUNDLE_CACHE = "bar_joint:ik_viz_bundle_cache"
+# The part cache maps layer_key -> {"layer": Rhino layer path, "parts": {part id: part}, "mode": mesh mode}, a part
+# being {"geometry", "owner", "xform" (4x4, document units), "visual": [guids], "collision": [guids], "shown"}.
+_STICKY_PART_CACHE = "bar_joint:ik_viz_part_cache"
+# (id(geometry), mesh mode, scale) -> (geometry, Rhino mesh at the identity, document units): shared by every layer
+# and by the ghosts. The geometry is kept so its id is not reused.
+_STICKY_MESHES = "bar_joint:ik_viz_meshes"
 _STICKY_CACHE_INITIALIZED = "bar_joint:ik_viz_cache_initialized"
 _STICKY_HIDDEN_DOC_LAYERS = "bar_joint:ik_viz_hidden_doc_layers"
 _STICKY_MESH_MODE = "bar_joint:ik_viz_mesh_mode"
 # Which Rhino document this cache was built for. If the user opens a different
-# .3dm file in the same Rhino session, the cached drawing objects point at Rhino
+# .3dm file in the same Rhino session, the cached parts point at Rhino
 # objects that no longer exist, and leftover meshes from the previous file may
 # still sit on LAYER_IK_CACHE -- both need to be cleared.
 _STICKY_DOC_SERIAL = "bar_joint:ik_viz_doc_serial"
-
-# Older keys still read by the yj_functions/ scripts; kept for those callers.
-_STICKY_SCENE_OBJECT = "bar_joint:ik_viz_scene_object"
-_STICKY_DRAWN_IDS = "bar_joint:ik_viz_drawn_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +81,8 @@ _STICKY_DRAWN_IDS = "bar_joint:ik_viz_drawn_ids"
 MESH_MODE_VISUAL = "visual"
 MESH_MODE_COLLISION = "collision"
 _VALID_MESH_MODES = (MESH_MODE_VISUAL, MESH_MODE_COLLISION)
+#: Sub-layer of each mesh mode under a layer key.
+_MODE_LAYERS = {MESH_MODE_VISUAL: "Visual", MESH_MODE_COLLISION: "Collision"}
 
 
 def set_mesh_mode(mode: str) -> None:
@@ -138,29 +101,23 @@ def get_mesh_mode() -> str:
     return sc.sticky.get(_STICKY_MESH_MODE, MESH_MODE_VISUAL)
 
 
+def _check_mode(mesh_mode: str) -> str:
+    """The mesh mode, or a ValueError if it is not one."""
+    if mesh_mode not in _VALID_MESH_MODES:
+        raise ValueError(f"mesh mode must be one of {_VALID_MESH_MODES}, got {mesh_mode!r}")
+    return mesh_mode
+
+
 # ---------------------------------------------------------------------------
-# * Internals: unit scaling, layer clean-up, drawing-object lifecycle
+# * Internals: units, layers, meshes
 # ---------------------------------------------------------------------------
 
 
-def _native_scale_for_doc() -> float:
-    """Return how many meters one Rhino document unit represents.
-
-    compas geometry is stored in meters. The base robot-cell drawing object
-    scales geometry by ``1 / native_scale`` to reach the document's unit, so
-    ``native_scale`` has to be the "meters per document unit" ratio.
-
-    Example: in a millimeter document one unit is 0.001 m, so this returns 0.001.
-
-    Returns:
-        float: meters per document unit.
-    """
+def _doc_units_per_metre() -> float:
+    """Document units in one metre (1000 in a millimetre document); the core's geometry is in metres."""
     from core.rhino_helpers import doc_unit_scale_to_mm
 
-    # `doc_unit_scale_to_mm()` gives "millimeters per document unit". Dividing by
-    # 1000 turns that into "meters per document unit", which is what the base
-    # robot-model drawing object expects.
-    return doc_unit_scale_to_mm() / 1000.0
+    return 1000.0 / doc_unit_scale_to_mm()
 
 
 def _delete_layer_objects(layer_name: str, recursive: bool = True) -> int:
@@ -193,101 +150,27 @@ def _delete_layer_objects(layer_name: str, recursive: bool = True) -> int:
             all_oids.extend(oids)
     if not all_oids:
         return 0
-    was = sc.doc.Views.RedrawEnabled
-    try:
-        sc.doc.Views.RedrawEnabled = False
-        rs.DeleteObjects(all_oids)
-    finally:
-        sc.doc.Views.RedrawEnabled = was
+    _delete(all_oids)
     return len(all_oids)
 
 
-def _ensure_compas_fab_rhino_registered() -> None:
-    """Load the compas_fab Rhino plugin so we get Rhino-flavored drawing objects.
-
-    Importing ``compas_fab.rhino.scene`` registers the Rhino versions of
-    ``RobotModelObject`` / ``RigidBodyObject``. Without it, compas hands back the
-    cross-context base classes, whose draw methods raise ``NotImplementedError``.
-    """
+def _delete(guids) -> None:
+    """Delete Rhino objects without redrawing in between."""
+    if not guids:
+        return
+    was = sc.doc.Views.RedrawEnabled
     try:
-        import compas_fab.rhino.scene  # noqa: F401
-    except Exception as exc:  # pragma: no cover -- defensive
-        print(f"ik_viz: compas_fab.rhino.scene import failed ({exc}); "
-              "Rhino SceneObjects will not be available.")
+        sc.doc.Views.RedrawEnabled = False
+        rs.DeleteObjects(list(guids))
+    finally:
+        sc.doc.Views.RedrawEnabled = was
 
 
-def _import_rhino_scene_classes():
-    """Import the Rhino drawing-object classes, only when actually needed.
-
-    Kept lazy so importing this module in a non-Rhino test does not trip over
-    module load-order problems.
-
-    Returns:
-        tuple: ``(SceneObject, RobotModelObject, RigidBodyObject)``.
-    """
-    _ensure_compas_fab_rhino_registered()
-    from compas.scene import SceneObject
-    from compas_fab.rhino.scene import RobotModelObject, RigidBodyObject
-    return SceneObject, RobotModelObject, RigidBodyObject
-
-
-def _create_robot_so(robot_cell, layer_name: str):
-    """Build the drawing object for the cell's robot model.
-
-    Both the display mesh and the collision mesh are baked at once; switching
-    between them later is just hiding one set of Rhino objects and showing the
-    other.
-
-    Args:
-        robot_cell: the cell whose ``robot_model`` is drawn.
-        layer_name (str): Rhino layer path to bake onto.
-
-    Returns:
-        The robot drawing object.
-    """
-    SceneObject, RobotModelObject, _ = _import_rhino_scene_classes()
-    return SceneObject(
-        item=robot_cell.robot_model,
-        sceneobject_type=RobotModelObject,
-        draw_visual=True,
-        draw_collision=True,
-        native_scale=_native_scale_for_doc(),
-        layer=layer_name,
-    )
-
-
-def _create_tool_so(tool_model, layer_name: str):
-    """Build the drawing object for one tool model (display + collision meshes)."""
-    SceneObject, RobotModelObject, _ = _import_rhino_scene_classes()
-    return SceneObject(
-        item=tool_model,
-        sceneobject_type=RobotModelObject,
-        draw_visual=True,
-        draw_collision=True,
-        native_scale=_native_scale_for_doc(),
-        layer=layer_name,
-    )
-
-
-def _create_rb_so(rigid_body, layer_name: str):
-    """Build the drawing object for one rigid body (display + collision meshes)."""
-    SceneObject, _, RigidBodyObject = _import_rhino_scene_classes()
-    return SceneObject(
-        item=rigid_body,
-        sceneobject_type=RigidBodyObject,
-        draw_visual=True,
-        draw_collision=True,
-        native_scale=_native_scale_for_doc(),
-        layer=layer_name,
-    )
-
-
-def _bundle_cache() -> dict:
-    """Return the sticky bundle cache, creating an empty one on first use."""
-    cache = sc.sticky.get(_STICKY_BUNDLE_CACHE)
+def _cache() -> dict:
+    """Return the sticky part cache, creating an empty one on first use."""
+    cache = sc.sticky.get(_STICKY_PART_CACHE)
     if cache is None:
-        cache = {}
-        sc.sticky[_STICKY_BUNDLE_CACHE] = cache
+        cache = sc.sticky[_STICKY_PART_CACHE] = {}
     return cache
 
 
@@ -299,8 +182,8 @@ def _flush_cache_layer_once() -> None:
     cache is touched for a document.
 
     We notice a new document by watching ``sc.doc.RuntimeSerialNumber``: when it
-    changes, the cached drawing objects point at Rhino objects that are gone, so
-    we drop the bundle cache and the "already cleaned" flag and start fresh.
+    changes, the cached parts point at Rhino objects that are gone, so we drop the
+    part cache and the "already cleaned" flag and start fresh.
     """
     try:
         cur_serial = int(sc.doc.RuntimeSerialNumber)
@@ -308,32 +191,22 @@ def _flush_cache_layer_once() -> None:
         cur_serial = None
     prev_serial = sc.sticky.get(_STICKY_DOC_SERIAL)
     if cur_serial is not None and prev_serial != cur_serial:
-        # A different document is open now (file reopened, new file, etc.). The
-        # cached drawing objects point at Rhino objects that are gone, and stray
-        # meshes from the old file may still sit on LAYER_IK_CACHE.
-        sc.sticky.pop(_STICKY_BUNDLE_CACHE, None)
+        sc.sticky.pop(_STICKY_PART_CACHE, None)
         sc.sticky.pop(_STICKY_CACHE_INITIALIZED, None)
         sc.sticky[_STICKY_DOC_SERIAL] = cur_serial
     if sc.sticky.get(_STICKY_CACHE_INITIALIZED):
         return
     # Clear every temporary preview layer the IK commands draw onto. LAYER_IK_CACHE
-    # holds the robot / tool / rigid-body meshes (on per-layer_key, per-mesh-mode
-    # sub-layers); the preview layers hold inserted block copies (tool previews,
-    # the Robotiq gripper) placed by rs_show_ik / rs_ik_keyframe. All of these are
-    # throwaway previews, so it is safe to delete them on the first IK action in a
-    # freshly-opened document. "IKPineapplePreview" is an old layer name we still
-    # clear so older documents tidy themselves up on first run.
+    # holds the part meshes (on per-layer_key, per-mesh-mode sub-layers); the preview
+    # layers hold inserted block copies (tool previews, the Robotiq gripper) placed by
+    # rs_ik_keyframe. All of these are throwaway previews, so it is safe to delete them
+    # on the first IK action in a freshly-opened document. "IKPineapplePreview" is an
+    # old layer name we still clear so older documents tidy themselves up on first run.
     ensure_layer(config.LAYER_IK_CACHE)
-    purge_targets = [
-        config.LAYER_IK_CACHE,
-        getattr(config, "SUPPORT_PREVIEW_LAYER", None),
-        "IKPineapplePreview",
-    ]
     total = 0
-    for lname in purge_targets:
-        if not lname:
-            continue
-        total += _delete_layer_objects(lname)
+    for lname in (config.LAYER_IK_CACHE, getattr(config, "SUPPORT_PREVIEW_LAYER", None), "IKPineapplePreview"):
+        if lname:
+            total += _delete_layer_objects(lname)
     if total:
         print(f"ik_viz: purged {total} orphan preview object(s) before initial bake.")
     sc.sticky[_STICKY_CACHE_INITIALIZED] = True
@@ -350,232 +223,92 @@ def _resolve_layer(layer_key: Optional[str]) -> str:
     return config.LAYER_IK_CACHE
 
 
-def _bundle_key(robot_cell, layer_key: Optional[str]):
-    """Build the cache key for a ``(robot_cell, layer_key)`` pair."""
-    return (id(robot_cell), layer_key or "")
+def _mode_layer(parent: str, mesh_mode: str) -> str:
+    """The sub-layer one mesh mode's objects live on."""
+    return config.LAYER_PATH_SEP.join((parent, _MODE_LAYERS[mesh_mode]))
 
 
-def _rb_so_guids(rb_so) -> list:
-    """Return every Rhino object id (display + collision) a rigid body drew."""
-    return list(rb_so._visual_mesh_native_geometry or []) + list(rb_so._collision_mesh_native_geometry or [])
-
-
-def _delete_rb_so_geometry(rb_so) -> None:
-    """Delete all Rhino objects a rigid body's drawing object baked."""
-    guids = _rb_so_guids(rb_so)
-    if not guids:
-        return
-    was = sc.doc.Views.RedrawEnabled
-    try:
-        sc.doc.Views.RedrawEnabled = False
-        rs.DeleteObjects(guids)
-    finally:
-        sc.doc.Views.RedrawEnabled = was
-
-
-def _force_initial_draw_rb(rb_so) -> None:
-    """Make sure a rigid body has actually baked its meshes.
-
-    A rigid body's ``draw()`` performs the first bake and fills in its display and
-    collision geometry lists; this triggers it only if those lists are still empty.
-    """
-    if not rb_so._visual_mesh_native_geometry and not rb_so._collision_mesh_native_geometry:
-        rb_so.draw()
-
-
-def _force_initial_draw_robot(robot_so, base_frame=None) -> None:
-    """Make sure a robot (or tool) has baked its link meshes onto the layer.
-
-    The first ``draw()`` call is what actually creates the link geometry.
-
-    Args:
-        robot_so: the robot or tool drawing object to bake.
-        base_frame: optional compas Frame to bake at; when omitted the meshes are
-            baked at the world origin.
-    """
-    if not robot_so._links_visual_mesh_native_geometry and not robot_so._links_collision_mesh_native_geometry:
-        # Calling .draw() with no configuration bakes the link geometry at the
-        # zero configuration / world-origin base, which is all we need here.
-        robot_so.draw()
-
-
-def _sync_rb_keyset(bundle: dict, robot_cell) -> None:
-    """Make the cached rigid-body drawing objects match the cell's rigid bodies.
-
-    * Any cached rigid body the cell no longer has is removed (its baked Rhino
-      objects are deleted).
-    * Any rigid body the cell has but the cache does not is added and baked.
-
-    The robot and the tools are left untouched.
-
-    Args:
-        bundle (dict): the cache bundle for one ``(cell, layer_key)`` pair.
-        robot_cell: the cell whose ``rigid_body_models`` is the source of truth.
-    """
-    layer_name = bundle["layer"]
-    rb_sos = bundle["rb_sos"]
-    desired = set(robot_cell.rigid_body_models.keys())
-    cached = set(rb_sos.keys())
-
-    # Rigid bodies the cell dropped: delete their meshes and forget them.
-    for stale in cached - desired:
-        try:
-            _delete_rb_so_geometry(rb_sos[stale])
-        except Exception as exc:
-            print(f"ik_viz: error deleting RB SO geometry for {stale!r}: {exc}")
-        del rb_sos[stale]
-
-    # Rigid bodies the cell added: build and bake a drawing object for each.
-    for new_id in desired - cached:
-        rb = robot_cell.rigid_body_models[new_id]
-        rb_sos[new_id] = _create_rb_so(rb, layer_name)
-        _force_initial_draw_rb(rb_sos[new_id])
-
-    bundle["rb_keyset"] = frozenset(desired)
-
-
-def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
-    """Return the cache bundle for ``(cell, layer_key)``, building it if needed.
-
-    On the first call it creates the drawing objects, makes sure the parent layer
-    exists, and bakes the initial geometry so the bundle is ready for
-    :func:`update_state`. Later calls return the cached bundle as-is (callers that
-    need the rigid-body set refreshed should call :func:`_sync_rb_keyset`).
-
-    Returns:
-        dict: the bundle, shaped like ``{robot_so, tool_sos, rb_sos, ...}``.
-    """
+def _entry(layer_key: Optional[str]) -> dict:
+    """The cache entry of one layer key, its layers made on first use."""
     _flush_cache_layer_once()
-    cache = _bundle_cache()
-    key = _bundle_key(robot_cell, layer_key)
-    bundle = cache.get(key)
-    # ? Keyed by id(cell): a freed cell's address can be reused, so check the cell itself too.
-    if bundle is not None and bundle.get("cell") is robot_cell:
-        return bundle
-
-    layer_name = _resolve_layer(layer_key)
-    # * One cell per layer key: a new cell (the core rebuilt it) replaces the old one's meshes.
-    stale = [k for k in cache if k[1] == key[1]]
-    if stale:
-        for k in stale:
-            del cache[k]
-        _delete_layer_objects(layer_name, recursive=False)
-    ensure_layer(layer_name)
-
-    robot_so = _create_robot_so(robot_cell, layer_name)
-    _force_initial_draw_robot(robot_so)
-
-    tool_sos = {}
-    for tool_id, tool in robot_cell.tool_models.items():
-        tool_sos[tool_id] = _create_tool_so(tool, layer_name)
-        _force_initial_draw_robot(tool_sos[tool_id])
-
-    rb_sos = {}
-    for rb_id, rb in robot_cell.rigid_body_models.items():
-        rb_sos[rb_id] = _create_rb_so(rb, layer_name)
-        _force_initial_draw_rb(rb_sos[rb_id])
-
-    bundle = {
-        "robot_so": robot_so,
-        "tool_sos": tool_sos,
-        "rb_sos": rb_sos,
-        "rb_keyset": frozenset(rb_sos.keys()),
-        "active_mesh_mode": get_mesh_mode(),
-        # Ids of the rigid bodies the current step keeps hidden (bars/joints that
-        # are not built yet). Refreshed by update_state and read by
-        # _set_visibility_for_mode. Empty until the first state is applied.
-        "hidden_rb_ids": set(),
-        # Robots the current state parks far away (absent): the cell's own robot and other robots' tools.
-        "robot_hidden": False,
-        "hidden_tool_ids": set(),
-        "layer": layer_name,
-        "layer_key": layer_key or "",
-        # The cell drawn (kept alive, so its id cannot be reused while cached).
-        "cell": robot_cell,
-    }
-    cache[key] = bundle
-    return bundle
+    cache = _cache()
+    key = layer_key or ""
+    entry = cache.get(key)
+    if entry is None:
+        layer = _resolve_layer(layer_key)
+        entry = cache[key] = {"layer": layer, "parts": {}, "mode": get_mesh_mode()}
+    for mode in _VALID_MESH_MODES:
+        if not rs.IsLayer(_mode_layer(entry["layer"], mode)):
+            ensure_layer(_mode_layer(entry["layer"], mode))
+    return entry
 
 
-def _so_mode_guids(so, mesh_mode: str) -> list:
-    """Every Rhino object id a robot or tool drawing object baked for one mesh mode (from its per-link dict)."""
-    link_dict = (so._links_visual_mesh_native_geometry if mesh_mode == MESH_MODE_VISUAL
-                 else so._links_collision_mesh_native_geometry)
-    return [g for guids in (link_dict or {}).values() for g in guids]
+def _rhino_mesh(geometry, mesh_mode: str, scale: float):
+    """One Rhino mesh of a geometry's visual or collision shapes, in its own frame, in document units; cached.
 
-
-def _robot_tool_mode_guids(bundle: dict, mesh_mode: str):
-    """Robot and tool Rhino object ids for one mesh mode, split into (shown, parked) by the current state.
-
-    Rigid bodies are handled separately (see :func:`_rb_mode_guids`). A robot the
-    state parks far away (absent from the scene) is hidden in both modes.
-
-    Args:
-        bundle (dict): the cache bundle.
-        mesh_mode (str): ``"visual"`` or ``"collision"``.
-
-    Returns:
-        tuple: ``(shown, parked)`` lists of Rhino object ids.
+    Returns None if the geometry has no shapes of that kind (a body without collision shapes never collides).
     """
-    shown, parked = [], []
-    (parked if bundle.get("robot_hidden") else shown).extend(_so_mode_guids(bundle["robot_so"], mesh_mode))
-    hidden_tools = bundle.get("hidden_tool_ids") or set()
-    for tool_id, tool_so in (bundle["tool_sos"] or {}).items():
-        (parked if tool_id in hidden_tools else shown).extend(_so_mode_guids(tool_so, mesh_mode))
-    return shown, parked
+    from bar_assembly_core.geometry import shape_mesh
+
+    meshes = sc.sticky.setdefault(_STICKY_MESHES, {})
+    key = (id(geometry), mesh_mode, scale)
+    found = meshes.get(key)
+    if found is not None and found[0] is geometry:
+        return found[1]
+    shapes = geometry.visual if mesh_mode == MESH_MODE_VISUAL else geometry.collision
+    if not shapes:
+        meshes[key] = (geometry, None)
+        return None
+    mesh = Rhino.Geometry.Mesh()
+    # ? Double-precision vertices: parts are moved by many small transforms, single precision would drift.
+    mesh.Vertices.UseDoublePrecisionVertices = True
+    for shape in shapes:
+        triangles = shape_mesh(shape)
+        offset = mesh.Vertices.Count
+        for x, y, z in (np.asarray(triangles.vertices) * scale).tolist():
+            mesh.Vertices.Add(x, y, z)
+        for a, b, c in (np.asarray(triangles.faces) + offset).tolist():
+            mesh.Faces.AddFace(a, b, c)
+    mesh.Normals.ComputeNormals()
+    mesh.Compact()
+    meshes[key] = (geometry, mesh)
+    return mesh
 
 
-def _rb_mode_guids(rb_so, mesh_mode: str) -> list:
-    """Return one rigid body's baked Rhino object ids for a mesh mode (flat list)."""
-    if mesh_mode == MESH_MODE_VISUAL:
-        return list(rb_so._visual_mesh_native_geometry or [])
-    return list(rb_so._collision_mesh_native_geometry or [])
+def _pose_xform(pose, scale: float) -> np.ndarray:
+    """A world pose as a 4x4 transform in document units."""
+    matrix = pose.matrix()
+    matrix[:3, 3] *= scale
+    return matrix
 
 
-def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
-    """Show one mesh mode and hide the other, keeping not-yet-built bars hidden.
+def _bake(part_id: str, geometry, layer: str, scale: float) -> dict:
+    """Bake a part's visual and collision meshes at the identity, named by its id, on its layer's sub-layers."""
+    baked = {}
+    for mode in _VALID_MESH_MODES:
+        mesh = _rhino_mesh(geometry, mode, scale)
+        baked[mode] = []
+        if mesh is None:
+            continue
+        attributes = Rhino.DocObjects.ObjectAttributes()
+        attributes.LayerIndex = sc.doc.Layers.FindByFullPath(_mode_layer(layer, mode), -1)
+        attributes.Name = part_id
+        baked[mode].append(sc.doc.Objects.AddMesh(mesh, attributes))
+    return baked
 
-    The current step marks every rigid body absent from it (bars not built yet,
-    say) with ``is_hidden=True`` (the core's cell states: absent bodies are
-    disabled in the design's scenes). :func:`update_state` copies
-    those ids onto the bundle as ``hidden_rb_ids``, and here we keep their meshes
-    hidden in BOTH mesh modes. Without this, flipping the mesh mode would re-show
-    every rigid body, so the preview would draw all bars at their final assembled
-    pose instead of only the ones that exist at this step.
 
-    Visibility is flipped per Rhino object with ``rs.HideObjects`` / ``rs.ShowObjects``.
+def _guids(part: dict) -> list:
+    """Every Rhino object of a part, both mesh modes."""
+    return part[MESH_MODE_VISUAL] + part[MESH_MODE_COLLISION]
 
-    Args:
-        bundle (dict): the cache bundle.
-        mesh_mode (str): the mesh mode to show; the other one is hidden.
-    """
-    other = MESH_MODE_COLLISION if mesh_mode == MESH_MODE_VISUAL else MESH_MODE_VISUAL
-    hidden_rb_ids = bundle.get("hidden_rb_ids") or set()
 
-    # Robot + tools: show the active mode, hide the other; a parked (absent) robot stays hidden.
-    show, hide = _robot_tool_mode_guids(bundle, mesh_mode)
-    hide = hide + [g for part in _robot_tool_mode_guids(bundle, other) for g in part]
-
-    # Rigid bodies: a not-yet-built bar stays hidden in both modes; a bar that
-    # exists at this step follows the mesh-mode toggle like everything else.
-    for rb_id, rb_so in (bundle["rb_sos"] or {}).items():
-        hide.extend(_rb_mode_guids(rb_so, other))
-        active_guids = _rb_mode_guids(rb_so, mesh_mode)
-        if rb_id in hidden_rb_ids:
-            hide.extend(active_guids)
-        else:
-            show.extend(active_guids)
-
-    was = sc.doc.Views.RedrawEnabled
-    try:
-        sc.doc.Views.RedrawEnabled = False
-        if hide:
-            rs.HideObjects(hide)
-        if show:
-            rs.ShowObjects(show)
-    finally:
-        sc.doc.Views.RedrawEnabled = was
-    bundle["active_mesh_mode"] = mesh_mode
+def _show_mode(entry: dict, mesh_mode: str) -> None:
+    """Show one mesh mode's sub-layer of an entry and hide the other's."""
+    for mode in _VALID_MESH_MODES:
+        layer = _mode_layer(entry["layer"], mode)
+        if rs.IsLayer(layer) and bool(rs.LayerVisible(layer)) != (mode == mesh_mode):
+            rs.LayerVisible(layer, mode == mesh_mode)
+    entry["mode"] = mesh_mode
 
 
 # ---------------------------------------------------------------------------
@@ -583,35 +316,17 @@ def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _normalize_modes(mesh_modes, mesh_mode) -> tuple:
-    """Turn the various mesh-mode arguments into a validated tuple of modes."""
-    if mesh_modes is not None:
-        modes = tuple(mesh_modes)
-    elif mesh_mode is not None:
-        modes = (mesh_mode,)
-    else:
-        modes = (get_mesh_mode(),)
-    for m in modes:
-        if m not in _VALID_MESH_MODES:
-            raise ValueError(f"mesh mode must be one of {_VALID_MESH_MODES}, got {m!r}")
-    return modes
-
-
 def begin_session(
-    robot_cell=None,
     mesh_mode: Optional[str] = None,
     hide_tool_instances: bool = True,  # back-compat shim; use hide_doc_layers
     layer_key: Optional[str] = None,
     *,
-    mesh_modes: Optional[Iterable[str]] = None,
     active_mesh_mode: Optional[str] = None,
     hide_doc_layers: Optional[Iterable[str]] = None,
 ) -> None:
-    """Start an interactive IK preview session.
+    """Start an interactive preview session.
 
-    * Bakes the robot, tools, and rigid bodies (both mesh modes at once) so that
-      toggling display <-> collision later is only a visibility flip.
-    * Leaves only ``active_mesh_mode`` visible.
+    * Shows the cache layer and ``layer_key``'s sub-layer, with only ``active_mesh_mode`` visible.
     * Hides every layer in ``hide_doc_layers`` for the length of the session and
       restores each one's previous visibility in :func:`end_session`. The default
       is the user-modeled document layers that overlap the preview (tube previews,
@@ -619,33 +334,26 @@ def begin_session(
       robot/tool/environment meshes are the only thing on screen. Pass an empty
       list to keep everything visible.
 
+    The meshes are baked by the first :func:`update_state`.
+
     Args:
-        robot_cell: the cell to preview, from the core (required).
-        mesh_mode (str | None): older single-mode argument; still accepted.
+        mesh_mode (str | None): older name of ``active_mesh_mode``.
         hide_tool_instances (bool): older flag; when False the tool-copy layer is
             left visible. Prefer ``hide_doc_layers``.
-        layer_key (str | None): which sub-layer bundle to use.
-        mesh_modes (Iterable[str] | None): older argument; informational only now.
-        active_mesh_mode (str | None): which mesh mode to show first.
+        layer_key (str | None): which preview's sub-layer to use.
+        active_mesh_mode (str | None): which mesh mode to show first; None keeps the remembered one.
         hide_doc_layers (Iterable[str] | None): document layers to hide for the
             session; ``None`` uses the default overlapping layers.
     """
-    # We always bake both mesh modes now, so mesh_modes is only informational; it
-    # stays in the signature so existing callers keep working.
-    _ = _normalize_modes(mesh_modes, mesh_mode)
-    if active_mesh_mode is None:
-        active_mesh_mode = get_mesh_mode()
-    if active_mesh_mode not in _VALID_MESH_MODES:
-        raise ValueError(f"active_mesh_mode must be one of {_VALID_MESH_MODES}, got {active_mesh_mode!r}")
+    active_mesh_mode = _check_mode(active_mesh_mode or mesh_mode or get_mesh_mode())
     set_mesh_mode(active_mesh_mode)
-    robot_cell = _require_cell(robot_cell, "begin_session")
 
     ensure_layer(config.LAYER_IK_CACHE)
     rs.LayerVisible(config.LAYER_IK_CACHE, True)
-    parent = _resolve_layer(layer_key)
-    if parent != config.LAYER_IK_CACHE:
-        ensure_layer(parent)
-        rs.LayerVisible(parent, True)
+    entry = _entry(layer_key)
+    if entry["layer"] != config.LAYER_IK_CACHE:
+        rs.LayerVisible(entry["layer"], True)
+    _show_mode(entry, active_mesh_mode)
 
     if hide_doc_layers is None:
         # Default: the user-modeled document layers that overlap the preview
@@ -661,11 +369,6 @@ def begin_session(
                 ln for ln in hide_doc_layers if ln != config.LAYER_TOOL_INSTANCES
             )
     _hide_doc_layers(hide_doc_layers)
-
-    # Build the bundle so all geometry (robot, tools, rigid bodies, both mesh
-    # modes) is baked before the first update_state.
-    bundle = _get_or_create_bundle(robot_cell, layer_key)
-    _set_visibility_for_mode(bundle, active_mesh_mode)
 
 
 def _hide_doc_layers(layer_names: Iterable[str]) -> None:
@@ -694,113 +397,98 @@ def _restore_hidden_doc_layers() -> None:
 
 
 def update_state(
-    state,
+    scene,
     *,
-    robot_cell=None,
+    robot_id: Optional[str] = None,
     mesh_mode: Optional[str] = None,
     layer_key: Optional[str] = None,
-    mesh_modes: Optional[Iterable[str]] = None,
     hide_bodies: bool = False,
 ) -> None:
-    """Pose the cached preview to match ``state``.
-
-    The first call (per ``(robot_cell, layer_key)``) bakes the meshes (both mesh
-    modes); later calls just move the existing meshes into place. On every call the
-    cached set of rigid bodies is compared against the cell: new bodies are baked
-    and removed ones are deleted, so switching bars or environments does not need a
-    manual :func:`discard_cache`.
-
-    ``mesh_mode`` / ``mesh_modes`` are still accepted but only decide which mesh
-    mode is currently visible; the bundle always holds both.
+    """Draw a scene on one preview layer: bake new parts, move the others, hide what the scene does not show.
 
     Args:
-        state (RobotCellState): the pose to show.
-        robot_cell: the cell to pose, from the core (required); ``state`` must be one of its states.
-        mesh_mode (str | None): which mesh mode to leave visible.
-        layer_key (str | None): which sub-layer bundle to use.
-        mesh_modes (Iterable[str] | None): older argument; accepted but unused.
+        scene: The core `Scene` to draw; not changed.
+        robot_id: The acting robot: drawn even while some of its joints are unknown (at 0). Other robots with
+            unknown joints, and robots that are absent or whose base is unknown, are hidden.
+        mesh_mode (str | None): which mesh mode to show; None keeps the layer's.
+        layer_key (str | None): which preview's sub-layer to draw on; the other previews are hidden.
         hide_bodies (bool): draw the robots and tools only (the document's own
             geometry shows the bars, e.g. in the Grasshopper preview).
     """
-    robot_cell = _require_cell(robot_cell, "update_state")
-    bundle = _get_or_create_bundle(robot_cell, layer_key)
-    _sync_rb_keyset(bundle, robot_cell)
+    from core.design_display import drawn_parts
 
-    # get_robot_link_meshes_at_state() hides LAYER_IK_CACHE on the way out so that
-    # only the ghost preview shows while the user picks a base. After IK solves,
-    # update_state has to force the root layer visible again -- otherwise the
-    # sub-layer toggle below turns geometry on, but the hidden parent layer keeps
-    # everything off screen.
+    entry = _entry(layer_key)
+    parts = entry["parts"]
+    scale = _doc_units_per_metre()
+    wanted = drawn_parts(scene, (robot_id,) if robot_id else (), hide_bodies=hide_bodies)
+
+    # A layer hidden by `robot_meshes`' callers, `end_session` or another preview is shown again.
     if rs.IsLayer(config.LAYER_IK_CACHE) and not rs.LayerVisible(config.LAYER_IK_CACHE):
         rs.LayerVisible(config.LAYER_IK_CACHE, True)
-    parent = _resolve_layer(layer_key)
-    if parent != config.LAYER_IK_CACHE and rs.IsLayer(parent) and not rs.LayerVisible(parent):
-        rs.LayerVisible(parent, True)
-    # * One preview at a time: the other sub-layers' bundles (another command's last pose) are hidden.
-    for other in {b["layer"] for b in _bundle_cache().values()} - {parent}:
-        if other != config.LAYER_IK_CACHE and rs.IsLayer(other) and rs.LayerVisible(other):
-            rs.LayerVisible(other, False)
-
-    # Work out where each attached rigid body sits (same as the base cell does).
-    state = robot_cell.compute_attach_objects_frames(state)
-
-    # Record which rigid bodies this step keeps hidden: the not-yet-built
-    # bars/joints whose parent bar is later in the assembly order than the bar
-    # being built (marked is_hidden=True by build_full_assembly_state). The
-    # visibility pass below keeps them hidden so the preview shows only the bars
-    # that actually exist at this step.
-    bundle["hidden_rb_ids"] = {
-        rb_id
-        for rb_id, rbs in state.rigid_body_states.items()
-        if getattr(rbs, "is_hidden", False)
-    }
-    bundle["robot_hidden"] = _is_parked(state.robot_base_frame)
-    bundle["hidden_tool_ids"] = {tool_id for tool_id, ts in state.tool_states.items()
-                                 if ts.attached_to_group is None and _is_parked(ts.frame)}
-    if bundle["robot_hidden"]:
-        # The parked robot's mounted tools ride with it, far away.
-        bundle["hidden_tool_ids"] |= {tool_id for tool_id, ts in state.tool_states.items()
-                                      if ts.attached_to_group is not None}
-        # What a parked robot holds is parked with it, far away: hide that too.
-        bundle["hidden_rb_ids"] |= {rb_id for rb_id, rbs in state.rigid_body_states.items()
-                                    if getattr(rbs, "attached_to_link", None)}
-    if hide_bodies:
-        bundle["hidden_rb_ids"] |= set(state.rigid_body_states)
+    if entry["layer"] != config.LAYER_IK_CACHE and not rs.LayerVisible(entry["layer"]):
+        rs.LayerVisible(entry["layer"], True)
+    # * One preview at a time: the other layer keys' meshes (another command's last pose) are hidden.
+    for other in _cache().values():
+        if other is not entry and other["layer"] != config.LAYER_IK_CACHE and rs.IsLayer(other["layer"]) \
+                and rs.LayerVisible(other["layer"]):
+            rs.LayerVisible(other["layer"], False)
 
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        bundle["robot_so"].update(
-            state.robot_configuration, state.robot_base_frame
-        )
-        for tool_id, tool_so in bundle["tool_sos"].items():
-            ts = state.tool_states.get(tool_id)
-            if ts is None:
-                continue
-            tool_so.update(ts.configuration, ts.frame)
-        for rb_id, rb_so in bundle["rb_sos"].items():
-            rbs = state.rigid_body_states.get(rb_id)
-            if rbs is None:
-                continue
-            rb_so.update(rbs)
-        # Re-apply the active mesh mode's visibility (anything newly baked by
-        # _sync_rb_keyset starts out visible by default).
-        active = mesh_mode if mesh_mode in _VALID_MESH_MODES else bundle["active_mesh_mode"]
-        _set_visibility_for_mode(bundle, active)
+        gone = [part_id for part_id in parts if part_id not in wanted]
+        _delete([g for part_id in gone for g in _guids(parts[part_id])])
+        for part_id in gone:
+            del parts[part_id]
+
+        hide, show = [], []
+        for part_id, drawn in wanted.items():
+            part = parts.get(part_id)
+            if part is not None and part["geometry"] is not drawn.geometry:
+                _delete(_guids(part))
+                del parts[part_id]
+                part = None
+            if drawn.pose is None:
+                if part is not None and part["shown"]:
+                    hide += _guids(part)
+                    part["shown"] = False
+                continue  # ? Never shown yet: baked when it first is.
+            if part is None:
+                part = parts[part_id] = {"geometry": drawn.geometry, "owner": drawn.owner, "xform": np.eye(4),
+                                         "shown": True, **_bake(part_id, drawn.geometry, entry["layer"], scale)}
+            part["owner"] = drawn.owner
+            target = _pose_xform(drawn.pose, scale)
+            delta = target @ np.linalg.inv(part["xform"])
+            if not np.allclose(delta, np.eye(4), rtol=0.0, atol=1e-9):
+                guids = _guids(part)
+                if guids:
+                    # ? Keep the ids Rhino returns (the same ones, unless it replaced an object).
+                    moved = list(rs.TransformObjects(guids, numpy_to_xform(delta)) or guids)
+                    count = len(part[MESH_MODE_VISUAL])
+                    part[MESH_MODE_VISUAL], part[MESH_MODE_COLLISION] = moved[:count], moved[count:]
+                part["xform"] = target
+            if not part["shown"]:
+                show += _guids(part)
+                part["shown"] = True
+        if hide:
+            rs.HideObjects(hide)
+        if show:
+            rs.ShowObjects(show)
+        _show_mode(entry, _check_mode(mesh_mode) if mesh_mode else entry["mode"])
     finally:
         sc.doc.Views.RedrawEnabled = was
     sc.doc.Views.Redraw()
 
 
 def set_layer_visible(layer_key: Optional[str], visible: bool) -> None:
-    """Show or hide a single sub-layer of the IK cache.
+    """Show or hide one preview's layer of the cache.
 
     ``layer_key=None`` toggles the root cache layer, which cascades to all its
-    sub-layers. Use this to hide one cell's preview (for example the support arm
+    sub-layers. Use this to hide one preview (for example the support arm
     when the active bar carries no support load) while leaving others visible.
 
     Args:
-        layer_key (str | None): the sub-layer to toggle; ``None`` for the root.
+        layer_key (str | None): the preview to toggle; ``None`` for the root.
         visible (bool): show it when True, hide it when False.
     """
     layer_name = _resolve_layer(layer_key)
@@ -809,132 +497,62 @@ def set_layer_visible(layer_key: Optional[str], visible: bool) -> None:
 
 
 def set_active_mesh_mode(layer_key: Optional[str], mesh_mode: str) -> None:
-    """Show one mesh mode's objects and hide the other's, without re-baking.
-
-    Only the bundle for ``layer_key`` is affected; other bundles are left alone.
+    """Show one mesh mode's objects of a preview and hide the other's (sub-layer visibility, nothing is baked).
 
     Args:
-        layer_key (str | None): which bundle to switch.
+        layer_key (str | None): which preview to switch.
         mesh_mode (str): ``"visual"`` or ``"collision"``.
     """
-    if mesh_mode not in _VALID_MESH_MODES:
-        raise ValueError(f"mesh mode must be one of {_VALID_MESH_MODES}, got {mesh_mode!r}")
-    set_mesh_mode(mesh_mode)
-    cache = _bundle_cache()
-    target_lkey = layer_key or ""
-    for k, bundle in cache.items():
-        if k[1] != target_lkey:
-            continue
-        _set_visibility_for_mode(bundle, mesh_mode)
+    set_mesh_mode(_check_mode(mesh_mode))
+    _show_mode(_entry(layer_key), mesh_mode)
 
 
-def get_cached_bundle(robot_cell, layer_key: Optional[str]):
-    """Return the cache bundle for ``(cell, layer_key)``, or ``None`` if absent.
+def objects_of(ids: Iterable[str], layer_key: Optional[str], mesh_mode: str) -> List:
+    """The Rhino objects drawn for design ids on one preview, in one mesh mode (e.g. collision offenders).
 
-    The bundle is shaped like ``{"robot_so", "tool_sos", "rb_sos", "rb_keyset",
-    "active_mesh_mode", "layer", "layer_key"}``.
+    An id is a part ("bars/B3", "tools/AT3L", "robots/cindy/left_ur_arm_wrist_3_link"), or a robot
+    ("robots/alice": every link and tool it carries). Ids drawn nowhere (a link without shapes) give nothing.
+
+    Args:
+        ids: The design ids.
+        layer_key (str | None): the preview.
+        mesh_mode (str): ``"visual"`` or ``"collision"``.
     """
-    return _bundle_cache().get(_bundle_key(robot_cell, layer_key))
-
-
-def get_cached_scene_object(robot_cell, layer_key: Optional[str], mesh_mode: str):
-    """Return the cached robot drawing object (``mesh_mode`` is ignored).
-
-    Older callers asked for a single per-mode combined object; they now get the
-    one robot drawing object. Tools and rigid bodies are reached through
-    :func:`get_cached_bundle`.
-    """
-    bundle = get_cached_bundle(robot_cell, layer_key)
-    return bundle["robot_so"] if bundle else None
-
-
-def get_link_native_geometry(robot_cell, layer_key: Optional[str], mesh_mode: str) -> dict:
-    """Return ``{link_name: [rhino_object_id, ...]}`` for the cached robot model.
-
-    Used by the collision-highlight code to recolor specific links.
-    """
-    bundle = get_cached_bundle(robot_cell, layer_key)
-    if bundle is None:
-        return {}
-    rmo = bundle["robot_so"]
-    if mesh_mode == MESH_MODE_VISUAL:
-        return dict(rmo._links_visual_mesh_native_geometry or {})
-    return dict(rmo._links_collision_mesh_native_geometry or {})
-
-
-def get_rb_native_geometry(robot_cell, layer_key: Optional[str], mesh_mode: str) -> dict:
-    """Return ``{rigid_body_id: [rhino_object_id, ...]}`` of the cached bodies (design ids on core cells)."""
-    bundle = get_cached_bundle(robot_cell, layer_key)
-    if bundle is None:
-        return {}
-    return {rb_id: _rb_mode_guids(rb_so, mesh_mode) for rb_id, rb_so in (bundle["rb_sos"] or {}).items()}
-
-
-def get_tool_native_geometry(
-    robot_cell, layer_key: Optional[str], mesh_mode: str
-) -> dict:
-    """Return ``{tool_name: [rhino_object_id, ...]}``, flattened across tool links."""
-    bundle = get_cached_bundle(robot_cell, layer_key)
-    if bundle is None:
-        return {}
-    out = {}
-    for tool_name, tool_so in (bundle["tool_sos"] or {}).items():
-        guids = []
-        meshes = (
-            tool_so._links_visual_mesh_native_geometry
-            if mesh_mode == MESH_MODE_VISUAL
-            else tool_so._links_collision_mesh_native_geometry
-        )
-        for lst in (meshes or {}).values():
-            guids.extend(lst)
-        out[tool_name] = guids
+    entry = _cache().get(layer_key or "")
+    if entry is None:
+        return []
+    parts = entry["parts"]
+    out = []
+    for object_id in ids:
+        if object_id in parts:
+            out += parts[object_id][_check_mode(mesh_mode)]
+        else:
+            out += [g for part in parts.values() if part["owner"] == object_id for g in part[mesh_mode]]
     return out
 
 
-def get_robot_link_meshes_at_state(state, robot_cell=None, layer_key: Optional[str] = None):
-    """Return a flat list of Rhino meshes for every robot link posed at ``state``.
+def robot_meshes(robot, mesh_mode: str = MESH_MODE_VISUAL) -> List:
+    """Copies of a robot's meshes (links and mounted tools) where its base and joints put them, document units.
 
-    Poses the cached robot drawing object at ``state``'s configuration and base
-    frame, then makes a standalone copy of each display link mesh (so the caller
-    can hand them to a see-through preview -- see ``core.dynamic_preview.mesh_preview``
-    -- without owning the cached document objects). Bakes the geometry first if it
-    has not been baked yet.
-
-    On exit the cache layer is left HIDDEN, so the caller's ghost preview is the
-    only robot on screen; the next :func:`begin_session` / :func:`update_state`
-    call shows the baked copy again.
+    For see-through previews (``core.dynamic_preview``) that own their meshes; nothing is added to the document.
+    Parts without shapes of `mesh_mode` give their other mesh instead.
 
     Args:
-        state (RobotCellState): the pose to harvest; its ``robot_configuration``
-            and ``robot_base_frame`` are pushed onto the robot before copying.
-        robot_cell (RobotCell): the cell to bake from, from the core (required). A
-            drawing cell gives its visual meshes; a mirror's cell (no visual
-            meshes) its collision meshes.
-        layer_key (str | None): which sub-layer bundle to use.
-
-    Returns:
-        list: copied ``Rhino.Geometry.Mesh`` objects at the posed positions.
+        robot: A core `RobotObject`, e.g. from ``design_display.ghost_scene``.
+        mesh_mode (str): which meshes to copy.
     """
-    robot_cell = _require_cell(robot_cell, "get_robot_link_meshes_at_state")
-    bundle = _get_or_create_bundle(robot_cell, layer_key)
-    rmo = bundle["robot_so"]
-    # The cached drawing object still holds meshes at whatever pose the LAST
-    # update_state left them, so re-pose to `state` before copying (otherwise the
-    # ghost would show a stale pose).
-    was = sc.doc.Views.RedrawEnabled
-    try:
-        sc.doc.Views.RedrawEnabled = False
-        rmo.update(state.robot_configuration, state.robot_base_frame)
-    finally:
-        sc.doc.Views.RedrawEnabled = was
+    from bar_assembly_core.scene import robot_parts
+
+    other = MESH_MODE_COLLISION if _check_mode(mesh_mode) == MESH_MODE_VISUAL else MESH_MODE_VISUAL
+    scale = _doc_units_per_metre()
     meshes = []
-    guids = _so_mode_guids(rmo, MESH_MODE_VISUAL) or _so_mode_guids(rmo, MESH_MODE_COLLISION)
-    for g in guids:
-        m = rs.coercemesh(g)
-        if m is not None:
-            meshes.append(m.DuplicateMesh())
-    if rs.IsLayer(config.LAYER_IK_CACHE):
-        rs.LayerVisible(config.LAYER_IK_CACHE, False)
+    for _part_id, geometry, pose in robot_parts(robot):
+        mesh = _rhino_mesh(geometry, mesh_mode, scale) or _rhino_mesh(geometry, other, scale)
+        if mesh is None:
+            continue
+        copy = mesh.DuplicateMesh()
+        copy.Transform(numpy_to_xform(_pose_xform(pose, scale)))
+        meshes.append(copy)
     return meshes
 
 
@@ -942,8 +560,7 @@ def end_session() -> None:
     """End the preview session: hide the cache layer and restore the doc layers.
 
     The geometry on the cache layer is deliberately NOT deleted; the next session
-    picks it up through the cached drawing objects and keeps moving it from its
-    current pose.
+    picks it up through the cached parts and keeps moving it from its current pose.
     """
     if rs.IsLayer(config.LAYER_IK_CACHE):
         rs.LayerVisible(config.LAYER_IK_CACHE, False)
@@ -952,29 +569,13 @@ def end_session() -> None:
 
 
 def discard_cache() -> None:
-    """Hard reset: delete every object on the cache layer (and its sub-layers) and
-    drop the cached bundles.
+    """Hard reset: delete every object on the cache layer (and its sub-layers) and drop the cached parts and meshes.
 
-    Use this only for a hard reset (PyBullet restart, or an explicit user flush).
-    Switching bars or environments does NOT need it -- :func:`update_state` already
-    keeps the rigid-body set in sync as it goes.
+    Use this only for a hard reset (robot or tool files changed, or an explicit user flush). Switching bars or
+    environments does NOT need it -- :func:`update_state` keeps the parts in sync as it goes.
     """
-    cache = sc.sticky.pop(_STICKY_BUNDLE_CACHE, None) or {}
+    sc.sticky.pop(_STICKY_PART_CACHE, None)
+    sc.sticky.pop(_STICKY_MESHES, None)
     sc.sticky.pop(_STICKY_CACHE_INITIALIZED, None)
-    seen_layers = set()
-    for bundle in cache.values():
-        layer_name = bundle.get("layer")
-        if layer_name and layer_name not in seen_layers:
-            _delete_layer_objects(layer_name)
-            seen_layers.add(layer_name)
-    if rs.IsLayer(config.LAYER_IK_CACHE) and config.LAYER_IK_CACHE not in seen_layers:
-        _delete_layer_objects(config.LAYER_IK_CACHE)
+    _delete_layer_objects(config.LAYER_IK_CACHE)
     sc.doc.Views.Redraw()
-
-
-def clear_scene() -> None:
-    """Older clear: discard the cache and delete every baked mesh.
-
-    Newer callers should prefer :func:`end_session`, which hides without deleting.
-    """
-    discard_cache()

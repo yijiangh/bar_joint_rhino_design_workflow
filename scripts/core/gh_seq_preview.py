@@ -27,8 +27,8 @@ What is drawn per frame
 * every robot where the design has it at this step -- the dual-arm assembly
   robot WITH its assembly tools, the support robots holding bars (frozen
   holders, the bar's own holder from the hold pose onward, release retreats)
-  -- all from the core's drawing cell of the step's scene
-  (``core.design_display``), on the ``Assembly`` preview layer;
+  -- the step's scene drawn part by part (``core.ik_viz``), on the
+  ``Assembly`` preview layer;
 * fake (staging) bars and robotic tool instances are NEVER shown.
 
 Why a conduit and not object attributes
@@ -46,7 +46,7 @@ even where a centerline runs INSIDE its bar's tube.
 What it deliberately does NOT do
 --------------------------------
 * **Never starts PyBullet.**  All robots are drawn by forward kinematics only,
-  from the core's drawing cell (compas_fab without PyBullet).
+  from the core's scene parts (``core.ik_viz``; no compas, no PyBullet).
 * **Never renumbers a sequence** (``repair_on_entry`` is never called) and
   **never writes the build-stage latch**.
 * **Never touches the display mode.**  No PrintDisplay, no display-mode
@@ -81,7 +81,6 @@ import scriptcontext as sc
 
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_display
 from core import design_source
 from core import gh_bridge
 from core import ik_viz
@@ -292,7 +291,7 @@ def _update_guide_lines(store, bar_map, active_bar_id, active_seq,
 
 
 # ---------------------------------------------------------------------------
-# Robot rendering (the core's drawing cell -- no PyBullet anywhere below)
+# Robot rendering (the core's scene parts -- no PyBullet anywhere below)
 # ---------------------------------------------------------------------------
 
 
@@ -309,34 +308,31 @@ def _render_robots(store, design, step, notes):
     """Draw every robot of this step: the assembly robot with its tools, and every support robot present.
 
     The step's scene (``plan_steps.step_scene``) puts each robot where the
-    design has it at that moment; the assembly robot's drawing cell holds the
-    support robots as tools, so one ``update_state`` draws them all. Robots
-    absent from the moment (or whose base is not solved yet) are parked and
+    design has it at that moment, and ``ik_viz`` draws them all with their
+    tools. Robots absent from the moment (or whose base is not solved yet) are
     hidden. Bodies are hidden: the document's own geometry shows the bars.
     """
     robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
-    try:
-        cell, state = design_display.cell_and_state(sc.sticky, plan_steps.step_scene(design, step), robot_id)
-    except Exception as exc:  # noqa: BLE001 -- a bad step must not kill the solve
-        notes.append(f"robots not drawn: {exc}")
-        ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
-        return False
     rs.EnableRedraw(False)
     try:
-        if store.get("session") is not cell:
+        if not store.get("session"):
             # hide_doc_layers=() is essential: the default hides tubes / joints
             # for the session, which would override the per-object visibility
             # this component drives through show_sequence_colors.
             ik_viz.begin_session(
-                robot_cell=cell,
                 active_mesh_mode=ik_viz.MESH_MODE_VISUAL,
                 layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
                 hide_doc_layers=(),
             )
-            store["session"] = cell
-        ik_viz.update_state(state, robot_cell=cell, layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
-                            mesh_mode=ik_viz.MESH_MODE_VISUAL, hide_bodies=True)
+            store["session"] = True
+        ik_viz.update_state(plan_steps.step_scene(design, step), robot_id=robot_id,
+                            layer_key=ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode=ik_viz.MESH_MODE_VISUAL,
+                            hide_bodies=True)
         ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, True)
+    except Exception as exc:  # noqa: BLE001 -- a bad step must not kill the solve
+        notes.append(f"robots not drawn: {exc}")
+        ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
+        return False
     finally:
         rs.EnableRedraw(True)
     return True
@@ -374,7 +370,7 @@ def _teardown(store):
     """Put the document back exactly as the component found it."""
     _drop_conduit(store)
     reset_sequence_colors()  # colours + visibility (and legacy width/dash resets)
-    if store.get("session") is not None:
+    if store.pop("session", None):
         ik_viz.end_session()
     ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
     _restore_layer(store, "tool_layer_prev", config.LAYER_TOOL_INSTANCES)

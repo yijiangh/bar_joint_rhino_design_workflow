@@ -6,6 +6,9 @@
 numpy==1.24.4
 scipy==1.13.1
 trimesh==4.12.2
+# The core reads URDFs with yourdfpy: without it no core import works. It pulls trimesh[easy] (shapely, lxml, ...);
+# all have wheels for Python 3.9 on Windows.
+yourdfpy==0.0.60
 compas==2.13.0
 compas_robots==0.6.0
 # pybullet has no wheel for Python 3.9 on Windows: pip compiles it once (Visual Studio Build Tools, ~5 min).

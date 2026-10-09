@@ -15,12 +15,12 @@ that pair:
        asset/<tool_name>.3dm files, so no candidate source block is needed
     4. bars carrying solved IK keyframes are listed in a WARNING (they were
        solved against the OLD tools; re-run RSIKKeyframe per bar)
-    5. the IK preview mesh cache is dropped so the next RSIKKeyframe redraws
-       the new tool (its baked tool meshes are not auto-refreshed on a swap)
+    5. the IK preview mesh cache is dropped, so the old tools' meshes leave
+       the document (a preview would rebake a changed tool by itself anyway)
 
-The planning and drawing cells need no rebuild: the next IK command or viewer
-reads the document into a design with the new tools, and the core rebuilds
-each cell whose tools changed.
+The planning cells need no rebuild: the next IK command or viewer reads the
+document into a design with the new tools, and the core rebuilds each cell
+whose tools changed.
 
 Nothing is changed until the pre-flight checks pass: both sides of the pair
 must be registered, and each side needs its .3dm asset AND collision OBJ
@@ -190,14 +190,10 @@ def main() -> None:
     # 4. Stale solved keyframes: warn only (never auto-cleared).
     _warn_stale_keyframes(config)
 
-    # 5. Drop the IK preview cache. The ik_viz bundle bakes the robot + TOOL
-    #    meshes once, keyed by the robot-cell object, and never re-syncs the tools
-    #    when the active pair changes (update_state only diffs rigid bodies). So
-    #    without this, the next RSIKKeyframe preview (e.g. the toggle-pose phase)
-    #    would still draw the OLD tool. Dropping the bundle forces a fresh bake of
-    #    the new tool on the next IK run; safe even if no IK preview ran this session.
+    # 5. Drop the IK preview cache: the old tools' meshes leave the document. ik_viz
+    #    rebakes a part whose geometry changed by itself, so this only tidies up.
     ik_viz.discard_cache()
-    print("  IK preview cache dropped (next RSIKKeyframe re-bakes the new tool).")
+    print("  IK preview cache dropped (the next preview bakes the new tools).")
 
     # 6. Re-assert the build-stage filter -- MANDATORY here, and the last
     #    visibility-touching step on purpose.  Step 2 above deleted and

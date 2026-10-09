@@ -34,8 +34,8 @@ block instances ARE the wrist+tool proxies; their world origins are tool0
 Planning runs on the shared core (``core.design_planning``): the document is read
 into a schema 2 design (``core.design_source``), each keyframe's scene comes from
 ``Design.scene_at`` and is synced into the robot's ``CompasFabMirror``, whose
-planner the tamp solvers borrow. Previews draw the core's drawing cell of the same
-scene (``core.design_display``, with visual meshes). No PyBullet session
+planner the tamp solvers borrow. Previews draw the same scene posed by the
+solver's states (``design_planning.state_scene``, drawn by ``core.ik_viz``). No PyBullet session
 (RSPBStart) is needed: the mirrors own their PyBullet worlds.
 
 Right after the base point + heading are chosen (step 2), the command offers an
@@ -174,7 +174,7 @@ def _reload_runtime_modules():
     # path take effect without restarting Rhino.
     dual_arm_ik = importlib.reload(_dual_arm_ik_module)
     ik_keyframe = importlib.reload(_ik_keyframe_module)
-    # * document -> design -> scene -> mirror (plans) / drawing cell (previews).
+    # * document -> design -> scene -> mirror (plans) / ik_viz (previews).
     # * The core itself is never reloaded (core.core_lib).
     importlib.reload(_design_builder_module)
     design_source = importlib.reload(_design_source_module)
@@ -627,30 +627,27 @@ def _show_context(scene, robot_id, layer_key, mesh_mode):
     Args:
         scene: The planning moment's scene (from the design); not changed.
         robot_id (str): The robot being placed, e.g. "robots/cindy".
-        layer_key (str): The ik_viz sub-layer of that robot's drawing cell.
+        layer_key (str): The ik_viz sub-layer to draw on.
         mesh_mode (str): Which mesh set to show.
     """
     context = scene.copy()
     design_display.place(context, robot_id, enabled=False)
-    cell, state = design_display.cell_and_state(sc.sticky, context, robot_id)
-    ik_viz.update_state(state, robot_cell=cell, layer_key=layer_key, mesh_mode=mesh_mode)
+    ik_viz.update_state(context, layer_key=layer_key, mesh_mode=mesh_mode)
 
 
 def _ghost_meshes(scene, robot_id, layer_key, mesh_mode=None):
-    """Rhino meshes of a robot's links at zero joints and the world origin, for the cursor ghost.
+    """Rhino meshes of a robot's links and tools at zero joints and the world origin, for the cursor ghost.
 
-    Harvested from the robot's drawing cell (visual meshes; same cell and layer as its previews, so nothing is
-    baked twice). The harvest hides the IK cache; the scene's context (`_show_context`) is drawn again and the
-    cache shown, so the ghost moves through the built structure and the robots already there.
+    Copied from the core's geometry (`ik_viz.robot_meshes`, visual meshes); the scene's context (`_show_context`)
+    is drawn too, so the ghost moves through the built structure and the robots already there.
 
     Args:
         scene: The planning moment's scene; not changed.
         robot_id (str): Whose ghost.
-        layer_key (str): The robot's ik_viz sub-layer.
+        layer_key (str): The ik_viz sub-layer the context is drawn on.
         mesh_mode (str | None): The context's mesh set; None keeps the user's.
     """
-    cell, state = design_display.cell_and_state(sc.sticky, design_display.ghost_scene(scene, robot_id), robot_id)
-    meshes = ik_viz.get_robot_link_meshes_at_state(state, cell, layer_key)
+    meshes = ik_viz.robot_meshes(design_display.ghost_scene(scene, robot_id).robots[robot_id])
     _show_context(scene, robot_id, layer_key, mesh_mode or ik_viz.get_mesh_mode())
     return meshes
 
@@ -1130,24 +1127,25 @@ def _ask_accept(prompt="Accept this IK keyframe and save it on the bar", allow_a
 
 
 # ---------------------------------------------------------------------------
-# * Planning on the core: design -> scene -> CompasFabMirror (plans), drawing cell (previews)
+# * Planning on the core: design -> scene -> CompasFabMirror (plans); the scene, posed by a state, is drawn
 # ---------------------------------------------------------------------------
 
-#: The drawing cell, ik_viz layer, planning scene and acting robot this run's assembly previews use.
-#: Set by `_use_preview`; the planner's states (a mirror's) draw on it: the core builds both cells from one scene.
-_PREVIEW = {"cell": None, "layer": ik_viz.LAYER_KEY_ASSEMBLY, "scene": None, "robot": None}
+#: The ik_viz layer, planning scene and acting robot this run's assembly previews use. Set by `_use_preview`; the
+#: planner's states (its mirror's, synced with this scene) are drawn as this scene posed by them
+#: (`design_planning.state_scene`).
+_PREVIEW = {"layer": ik_viz.LAYER_KEY_ASSEMBLY, "scene": None, "robot": None}
 
 
 def _use_preview(scene, robot_id, layer_key=ik_viz.LAYER_KEY_ASSEMBLY):
-    """Draw this run's previews with the drawing cell of `scene`'s robot `robot_id`, on `layer_key`."""
-    cell, _state = design_display.cell_and_state(sc.sticky, scene, robot_id)
-    _PREVIEW.update(cell=cell, layer=layer_key, scene=scene, robot=robot_id)
-    return cell
+    """Draw this run's previews as `scene` with `robot_id` posed by the solver's states, on `layer_key`."""
+    _PREVIEW.update(layer=layer_key, scene=scene, robot=robot_id)
 
 
-def _preview_mode(mesh_mode):
-    """The mesh mode previews show (drawing cells carry both mesh sets)."""
-    return mesh_mode
+def _draw_state(view, state, layer_key, mesh_mode):
+    """Draw a solver's state: `view` (scene, robot id) posed by it (`design_planning.state_scene`)."""
+    scene, robot_id = view
+    ik_viz.update_state(design_planning.state_scene(scene, robot_id, state), robot_id=robot_id,
+                        layer_key=layer_key, mesh_mode=mesh_mode)
 
 
 def _core_design(command):
@@ -1179,9 +1177,9 @@ def _render_preview_pose(state, mesh_mode):
     """Render one solved keyframe pose on the cached preview meshes.
 
     Shared by the first assembled-pose preview and the ``TogglePose`` cycle in
-    :func:`_ask_accept_with_pose_preview`. Delta-updates the drawing cell's Rhino
-    meshes to ``state`` (a state of the mirror the solve ran on; same scene, same
-    keys) and forces the chosen mesh mode (visual / collision) visible.
+    :func:`_ask_accept_with_pose_preview`. Draws the preview scene posed by
+    ``state`` (a state of the mirror the solve ran on) and forces the chosen mesh
+    mode (visual / collision) visible.
 
     Args:
         state (RobotCellState): The keyframe pose to show.
@@ -1192,8 +1190,7 @@ def _render_preview_pose(state, mesh_mode):
     """
     rs.EnableRedraw(False)
     try:
-        ik_viz.update_state(state, robot_cell=_PREVIEW["cell"], layer_key=_PREVIEW["layer"])
-        ik_viz.set_active_mesh_mode(_PREVIEW["layer"], _preview_mode(mesh_mode))
+        _draw_state((_PREVIEW["scene"], _PREVIEW["robot"]), state, _PREVIEW["layer"], mesh_mode)
     finally:
         rs.EnableRedraw(True)
         sc.doc.Views.Redraw()
@@ -1353,14 +1350,13 @@ def _ask_save_base_or_continue():
 def _preview_robot_at_base(template_state, base_frame_mm, mesh_mode):
     """Render the dual-arm robot at `base_frame_mm` with the template's arm config.
 
-    Cheap visualization for the reuse-base prompt: no IK, just the drawing
-    cell's meshes posed at the saved base. Caller is responsible for clearing
+    Cheap visualization for the reuse-base prompt: no IK, just the preview
+    scene with the robot at the saved base. Caller is responsible for clearing
     via `ik_viz.end_session()`.
     """
     state = template_state.copy()
     support_ik.apply_base_frame_mm(state, base_frame_mm)
-    ik_viz.update_state(state, robot_cell=_PREVIEW["cell"], layer_key=_PREVIEW["layer"])
-    ik_viz.set_active_mesh_mode(_PREVIEW["layer"], _preview_mode(mesh_mode))
+    _draw_state((_PREVIEW["scene"], _PREVIEW["robot"]), state, _PREVIEW["layer"], mesh_mode)
 
 
 def _hide_inactive_tool_blocks(active_bar_id):
@@ -1918,35 +1914,28 @@ def _ask_chain_failure(allow_inspect: bool, prompt: str = None):
         return "give_up"
 
 
-def _oids_for_offenders(offenders, mesh_mode, rcell, layer_key):
+def _oids_for_offenders(offenders, mesh_mode, robot_id, layer_key):
     """Map resolved ``(kind, name)`` offenders to the Rhino oids to red-highlight.
 
     ``offenders`` come already named + classified from the tamp enumerators
     (``dual_arm_ik.enumerate_ssik_candidate_pairs``,
     ``support_ik.enumerate_support_ik_candidates``), named by the planning cell's
-    keys: link names, tool ids ("tools/AT3L", "robots/alice") and body ids
-    ("bars/B3"). The drawing cell the preview shows uses the same keys, so each
-    resolves to its baked preview geometry in ``mesh_mode``.
+    keys: link names of the planned robot, tool ids ("tools/AT3L", "robots/alice")
+    and body ids ("bars/B3"). As design ids (links become "robots/<name>/<link>")
+    each resolves to its drawn part on the preview (``ik_viz.objects_of``).
 
     Args:
         offenders (list): ``[(kind, name), ...]`` with ``kind`` in ``{"link",
             "tool", "rigid_body"}``.
         mesh_mode (str): which mesh mode's GUIDs to color.
-        rcell (RobotCell): the drawing cell whose baked bundle shows the pose.
-        layer_key (str): that bundle's sub-layer key.
+        robot_id (str): the planned robot, e.g. "robots/cindy".
+        layer_key (str): the preview's sub-layer key.
 
     Returns:
         list: Rhino object ids to highlight (may repeat; caller dedups on apply).
     """
-    geometry = {
-        "link": ik_viz.get_link_native_geometry(rcell, layer_key, mesh_mode),
-        "tool": ik_viz.get_tool_native_geometry(rcell, layer_key, mesh_mode),
-        "rigid_body": ik_viz.get_rb_native_geometry(rcell, layer_key, mesh_mode),
-    }
-    oids = []
-    for kind, name in offenders:
-        oids.extend(geometry.get(kind, {}).get(name, []))
-    return oids
+    ids = [f"{robot_id}/{name}" if kind == "link" else name for kind, name in offenders]
+    return ik_viz.objects_of(ids, layer_key, mesh_mode)
 
 
 def _apply_red_highlight(oids):
@@ -2001,7 +1990,7 @@ def _cycle_ssik_candidates(role, candidates):
         cand = candidates[i]
         _render_preview_pose(cand["state"], mesh_mode)
         new_oids = _apply_red_highlight(
-            _oids_for_offenders(cand["offenders"], mesh_mode, _PREVIEW["cell"], _PREVIEW["layer"])
+            _oids_for_offenders(cand["offenders"], mesh_mode, _PREVIEW["robot"], _PREVIEW["layer"])
         )
         sc.doc.Views.Redraw()
         status = "CLEAR (no collision)" if not cand["in_collision"] else cand["summary"]
@@ -2139,18 +2128,17 @@ def _ask_accept_support(prompt: str) -> bool:
     return str(answer).strip().lower().startswith("a")
 
 
-def _render_support_pose(sr_cell, state, mesh_mode):
-    """Draw one support-robot pose on its solve sub-layer (pure viz, no push)."""
+def _render_support_pose(sr_view, state, mesh_mode):
+    """Draw one support-robot pose on its solve sub-layer (pure viz, no push); `sr_view` is (hold scene, robot id)."""
     rs.EnableRedraw(False)
     try:
-        ik_viz.update_state(state, robot_cell=sr_cell, layer_key=SUPPORT_SOLVE_LAYER_KEY)
-        ik_viz.set_active_mesh_mode(SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
+        _draw_state(sr_view, state, SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
     finally:
         rs.EnableRedraw(True)
         sc.doc.Views.Redraw()
 
 
-def _cycle_support_candidates(sr_cell, label, candidates):
+def _cycle_support_candidates(sr_view, label, candidates):
     """Step through support IK candidates, red-highlighting each pose's offenders.
 
     The single-arm twin of :func:`_cycle_ssik_candidates`: renders one
@@ -2160,7 +2148,7 @@ def _cycle_support_candidates(sr_cell, label, candidates):
     ``Done`` / Esc exit. Highlights are always cleared on exit.
 
     Args:
-        sr_cell (RobotCell): the support robot's drawing cell (for geometry lookup).
+        sr_view (tuple): (hold scene, support robot id) the candidates are drawn in.
         label (str): which target these candidates are for ("held"/"approach").
         candidates (list): ``enumerate_support_ik_candidates`` candidate dicts.
     """
@@ -2171,9 +2159,9 @@ def _cycle_support_candidates(sr_cell, label, candidates):
     def _show(i):
         _revert_red_highlight(highlighted)
         cand = candidates[i]
-        _render_support_pose(sr_cell, cand["state"], mesh_mode)
+        _render_support_pose(sr_view, cand["state"], mesh_mode)
         new_oids = _apply_red_highlight(
-            _oids_for_offenders(cand["offenders"], mesh_mode, sr_cell, SUPPORT_SOLVE_LAYER_KEY)
+            _oids_for_offenders(cand["offenders"], mesh_mode, sr_view[1], SUPPORT_SOLVE_LAYER_KEY)
         )
         sc.doc.Views.Redraw()
         status = "CLEAR (no collision)" if not cand["in_collision"] else cand["summary"]
@@ -2217,7 +2205,7 @@ def _cycle_support_candidates(sr_cell, label, candidates):
         sc.doc.Views.Redraw()
 
 
-def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_mm,
+def _inspect_support_candidates(sr_planner, sr_view, template_state, base_frame_mm,
                                 tool0_grasp_mm, include_self, include_env,
                                 mesh_mode):
     """Diagnose a support IK failure by cycling the failing target's candidates.
@@ -2232,7 +2220,7 @@ def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_
 
     Args:
         sr_planner: the support robot's planner (its mirror, lent).
-        sr_cell (RobotCell): its drawing cell (previews and highlights).
+        sr_view (tuple): (hold scene, support robot id), drawn for previews and highlights.
         template_state (RobotCellState): the hold-time scene state.
         base_frame_mm (np.ndarray): the base the user is on.
         tool0_grasp_mm (np.ndarray): the flange target at the grasp.
@@ -2286,7 +2274,7 @@ def _inspect_support_candidates(sr_planner, sr_cell, template_state, base_frame_
     # Show collision meshes so overlaps are visible; restore the user's mode after.
     ik_viz.set_active_mesh_mode(SUPPORT_SOLVE_LAYER_KEY, ik_viz.MESH_MODE_COLLISION)
     try:
-        _cycle_support_candidates(sr_cell, label, candidates)
+        _cycle_support_candidates(sr_view, label, candidates)
     finally:
         ik_viz.set_active_mesh_mode(SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
         sc.doc.Views.Redraw()
@@ -2488,7 +2476,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
 
         # * ---- 3. The backdrop the grasp is picked around: the moment the bar is
         # built (Cindy still holds it, other holders in place), without this
-        # support robot. Drawn by the core on the support robot's drawing cell.
+        # support robot.
         try:
             design = _core_design("RSIKKeyframe")
             built = design.scene_at(design_planning.movement(design, f"bars/{bar_id}", "R", "R_ungrasp"))
@@ -2507,7 +2495,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
             design = _core_design("RSIKKeyframe")
             sr_mirror, template_state = design_planning.hold_solve_state(design, sc.sticky, f"bars/{bar_id}")
             hold_scene = design_planning.hold_scene(design, f"bars/{bar_id}", 0)
-            sr_view, _state = design_display.cell_and_state(sc.sticky, hold_scene, robot_id)
+            sr_view = (hold_scene, robot_id)
         except (KeyError, ValueError, RuntimeError) as exc:
             rs.MessageBox(f"Cannot build the hold scene of {bar_id}: {exc}", 0, "RSIKKeyframe")
             return
@@ -2742,7 +2730,7 @@ def _main(stack, after):
     )
 
     # * The movements are the design's transfer / insert / retreat (+ home), synced into Cindy's mirror;
-    # * the tool blocks just placed are the flange targets. Previews draw Cindy's drawing cell of the same scene.
+    # * the tool blocks just placed are the flange targets. Previews draw the same scene posed by the solves.
     try:
         design = _core_design("RSIKKeyframe")
         bar = f"bars/{target_bar_id}"
@@ -2787,7 +2775,7 @@ def _main(stack, after):
         saved_base = _read_saved_assembly_base_frame(target_bar_oid)
         allow_saved_base_prompt = True
         # Arm reach volumes, built once and reused by every ghost this run.
-        reach_meshes = _reach_sphere_meshes(_PREVIEW["cell"])
+        reach_meshes = _reach_sphere_meshes(rcell)
 
         while True:
             # A base is "freshly decided" this turn only when we don't already

@@ -61,8 +61,8 @@ It refuses cleanly (nothing changes) if the pair partner is missing or a
 ## 4. Re-solve IK
 
 1. Nothing to rebuild: the next IK command reads the document into a design with
-   the new tools, and the shared core rebuilds each planning and drawing cell
-   whose tools changed (`RSRebuildRobotCell` forces it and lists the tools).
+   the new tools, and the shared core rebuilds each planning cell
+   whose tools changed (previews rebake changed tools) (`RSRebuildRobotCell` forces it and lists the tools).
 2. **RSIKKeyframe** on the bars you care about and check solve success /
    collision results as usual. **RSClearIKKeyframe** to erase stale solves.
 

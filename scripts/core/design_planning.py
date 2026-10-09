@@ -3,8 +3,8 @@ Plan on the shared core: design -> `scene_at` -> `CompasFabMirror` -> the existi
 
 The Rhino commands get their movements, planner and cell from here: `keyframe_movements` for Cindy's chain
 (RSIKKeyframe, RSIKKeyframeAll), `hold_solve_state` and `hold_release_collisions` for a support robot's hold,
-`release_check` for a hold's release, `scene_collisions` for the viewers' collision check. Rhino-free; needs the core's
-`[mirrors]` stack (compas_fab, PyBullet).
+`release_check` for a hold's release, `scene_collisions` for the viewers' collision check, `state_scene` to draw a
+solver's state. Rhino-free; needs the core's `[mirrors]` stack (compas_fab, PyBullet).
 
 Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_at` derives the allowed part contacts,
 `scenes.seeded` fills in the robot being planned for, the mirror parks other robots whose base or joints are unknown
@@ -213,3 +213,38 @@ def scene_collisions(design: Design, store: dict, scene: Scene, log=print) -> Li
         mirror = sync_seeded(store, scene.copy(), robot_id, log=log)
         pairs |= {tuple(sorted(pair)) for pair in mirror.collisions(full_report=True)}
     return sorted(pairs)
+
+
+def state_scene(scene: Scene, robot_id: str, state) -> Scene:
+    """A solver's state as a scene to draw: a copy of `scene` with `robot_id` and the bodies where `state` has them.
+
+    The solvers work on a mirror's compas_fab states; viewers draw scenes (`core.ik_viz`). The robot takes the
+    state's base and joints; a body takes the state's attachment to the robot, or its world frame when the state
+    holds it still, and is shown only if the state shows it.
+
+    Args:
+        scene: The scene the mirror was synced with (same robot, same bodies); not changed.
+        robot_id: The mirror's robot, e.g. "robots/cindy".
+        state: A `RobotCellState` of that mirror.
+    """
+    from bar_assembly_core.mirrors.compas import pose_from_frame
+    from bar_assembly_core.scene import Attachment
+    from core.design_display import place
+
+    out = scene.copy()
+    movable = set(out.robots[robot_id].model.movable_joints)
+    configuration = state.robot_configuration
+    joints = {name: value for name, value in zip(configuration.joint_names, configuration.joint_values)
+              if name in movable}
+    for body_id, body_state in state.rigid_body_states.items():
+        body = out.bodies.get(body_id)
+        if body is None:
+            continue
+        body.enabled = not body_state.is_hidden
+        if body_state.attached_to_link:
+            body.placement = Attachment(robot_id, body_state.attached_to_link,
+                                        pose_from_frame(body_state.attachment_frame))
+        elif isinstance(body.placement, Attachment) and body.placement.parent == robot_id:
+            body.placement = pose_from_frame(body_state.frame)
+    place(out, robot_id, pose_from_frame(state.robot_base_frame), joints)
+    return out

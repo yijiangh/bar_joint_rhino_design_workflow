@@ -1,42 +1,40 @@
 """
-Draw a design's scenes in Rhino: the core's drawing cells (`CompasFabCell(visual=True)`), one per acting robot.
+Draw a design's scenes in Rhino: what `core.ik_viz` draws of a core `Scene`, part by part.
 
 A scene comes from the design (`Design.scene_at`, `scene_after`); `place` moves a robot in it (a solved keyframe, a
-trajectory row, a ghost at the origin); `cell_and_state` turns it into the cell and state `core.ik_viz` draws. No
-PyBullet: the Grasshopper preview uses this too.
+trajectory row, a ghost at the origin); `drawn_parts` says what of it is shown, and where. No PyBullet and no
+compas: the Grasshopper preview uses this too.
 
-- ! Keep the cells in `store` (Rhino's `sc.sticky`) and build the design with the same geometry cache every time
-  (`design_source.geometry_cache`): a cell rebuilds (seconds) only when a geometry or robot object changes.
-- Needs the core's `[mirrors]` stack without PyBullet (compas, compas_robots, compas_fab).
+- Parts are the core's (`bar_assembly_core.scene.scene_parts`): bodies, robot links with shapes
+  ("robots/cindy/<link>") and mounted tools ("tools/<name>", at their flange). Their `Geometry` objects are shared
+  and never change, so `ik_viz` bakes a part again only when its object does.
+- ! Build the design with the same geometry cache every time (`design_source.geometry_cache`), or every body's
+  geometry is new and is baked again.
 """
 
 from __future__ import annotations
 
-from typing import Mapping, Optional, Tuple
+from typing import Dict, Iterable, Mapping, NamedTuple, Optional
 
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.geometry import Pose
+from bar_assembly_core.geometry import Geometry, Pose
+from bar_assembly_core.ids import link_id
 from bar_assembly_core.kinematics import link_pose
-from bar_assembly_core.scene import Scene, world_poses
-
-#: `sc.sticky` key of the drawing cells, robot id -> CompasFabCell.
-CELLS_KEY = "bar_joint:core_display_cells"
+from bar_assembly_core.scene import Attachment, Scene, robot_parts, world_poses
 
 
-def display_cell(store: dict, robot_id: str):
-    """The drawing cell of one acting robot, kept in `store` between commands."""
-    from bar_assembly_core.mirrors.cell import CompasFabCell
+class Drawn(NamedTuple):
+    """One part of a scene as `ik_viz` draws it.
 
-    cells = store.setdefault(CELLS_KEY, {})
-    cell = cells.get(robot_id)
-    if cell is None:
-        cell = cells[robot_id] = CompasFabCell(robot_id, visual=True)
-    return cell
+    Attributes:
+        geometry: Its shapes, in its own frame.
+        pose: Its world pose; None: hidden (disabled, or its robot is parked).
+        owner: The robot id it belongs to (a link or a mounted tool), or None for a body.
+    """
 
-
-def forget_cells(store: dict) -> None:
-    """Drop every drawing cell kept in `store` (the next draw reloads the robot models)."""
-    store.pop(CELLS_KEY, None)
+    geometry: Geometry
+    pose: Optional[Pose]
+    owner: Optional[str]
 
 
 def refresh(scene: Scene) -> None:
@@ -68,27 +66,66 @@ def place(scene: Scene, robot_id: str, base: Optional[Pose] = None, joints: Opti
         refresh(scene)
 
 
-def cell_and_state(store: dict, scene: Scene, robot_id: str, log=print) -> Tuple[object, object]:
-    """The drawing cell of `robot_id`, rebuilt only if the scene's models changed, and the scene as its state.
+def parked(scene: Scene, acting: Iterable[str] = ()) -> set:
+    """Robots in the scene that are not drawn: absent, base unknown, or (unless acting) joints unknown.
 
-    Robots absent from the scene, or whose base is unknown, are parked far away (`ik_viz` hides them); unknown joints
-    are 0.
+    An acting robot is drawn with its unknown joints at their guess (0), as the planners' drawing did.
 
-    Returns:
-        tuple: (compas_fab RobotCell, RobotCellState) for `core.ik_viz.update_state`.
+    Args:
+        scene: The scene.
+        acting: Robot ids drawn even with unknown joints.
     """
-    cells = display_cell(store, robot_id)
-    why = cells.update(scene)
-    if why is not None:
-        log(f"core.design_display: rebuilt the drawing cell for {robot_id}; why: {why}")
-    return cells.cell, cells.state(scene, strict=False)
+    acting = set(acting)
+    return {robot_id for robot_id, robot in scene.robots.items()
+            if not robot.enabled or not robot.base_tracked or (robot.unmeasured and robot_id not in acting)}
+
+
+def _holder(scene: Scene, body_id: str) -> Optional[str]:
+    """The robot a body hangs from through its chain of attachments, or None if it stands in the world."""
+    seen = set()
+    while body_id in scene.bodies and body_id not in seen:
+        seen.add(body_id)
+        placement = scene.bodies[body_id].placement
+        if not isinstance(placement, Attachment):
+            return None
+        if placement.parent in scene.robots:
+            return placement.parent
+        body_id = placement.parent
+    return None
+
+
+def drawn_parts(scene: Scene, acting: Iterable[str] = (), hide_bodies: bool = False) -> Dict[str, Drawn]:
+    """Every part of every body and robot in the scene, by id, with where it is drawn (None: hidden).
+
+    Hidden: disabled bodies, bodies without a world pose, bodies held by a parked robot, every part of a parked
+    robot (`parked`), and every body if `hide_bodies` (the document's own geometry shows the bars).
+
+    Args:
+        scene: The scene; it is not modified.
+        acting: Robot ids drawn even with unknown joints.
+        hide_bodies: Draw the robots and their tools only.
+    """
+    away = parked(scene, acting)
+    out: Dict[str, Drawn] = {}
+    for body_id, body in scene.bodies.items():
+        shown = (not hide_bodies and body.enabled and body_id in scene.world_poses
+                 and _holder(scene, body_id) not in away)
+        out[body_id] = Drawn(body.geometry, scene.world_poses[body_id] if shown else None, None)
+    for robot_id, robot in scene.robots.items():
+        if robot_id in away:
+            model = robot.model
+            for link, geometry in model.link_geometry.items():
+                out[link_id(robot_id, link)] = Drawn(geometry, None, robot_id)
+            for tool in model.tools.values():
+                out[tool.id] = Drawn(tool.geometry, None, robot_id)
+            continue
+        for part_id, geometry, pose in robot_parts(robot):
+            out[part_id] = Drawn(geometry, pose, robot_id)
+    return out
 
 
 def robot_scene(design, robot_id: str, joints: Optional[Mapping[str, float]] = None) -> Scene:
     """A scene of one design robot alone at the world origin (every body hidden), even before any action exists.
-
-    It holds the same bodies and robot models as the design's own scenes, so a drawing cell built from either is
-    the same cell.
 
     Args:
         design: The design.

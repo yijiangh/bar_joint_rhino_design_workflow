@@ -6,7 +6,7 @@ something you can film:
 | Component | File to paste | What it does |
 | --- | --- | --- |
 | `RSGHSequencePreview` | [scripts/gh/RSGHSequencePreview.py](../scripts/gh/RSGHSequencePreview.py) | one slider walks the **whole assembly timeline** — bars, joints, guide lines, the dual-arm robot and the support robots |
-| `RSGHPreviewWarmup` | [scripts/gh/RSGHPreviewWarmup.py](../scripts/gh/RSGHPreviewWarmup.py) | one button, once per Rhino session: reads the document into a design and pre-loads the robot models into the core's drawing cell so the first scrub has no stall |
+| `RSGHPreviewWarmup` | [scripts/gh/RSGHPreviewWarmup.py](../scripts/gh/RSGHPreviewWarmup.py) | one button, once per Rhino session: reads the document into a design, reads the robots' meshes and bakes them so the first scrub has no stall |
 | `RSGHCameraControl` | [scripts/gh/RSGHCameraControl.py](../scripts/gh/RSGHCameraControl.py) | drives the Rhino viewport camera from GH points |
 
 None is an `RS*` toolbar command, so none appears in
@@ -24,8 +24,8 @@ The timeline itself is **not** re-implemented here: `gh_seq_preview` reads the d
 into a schema 2 design (`core.design_source`) and walks the same
 [`core.plan_steps.timeline`](../scripts/core/plan_steps.py) the `RSShowAssemblyPlan`
 command uses, so the two viewers cannot drift apart. Each step's scene comes from the
-design (`plan_steps.step_scene`) and is drawn on the shared core's drawing cell
-(`core.design_display`).
+design (`plan_steps.step_scene`) and is drawn part by part from the shared core's
+geometry (`core.ik_viz`).
 
 ---
 
@@ -188,35 +188,34 @@ retreated on its release frame, and is hidden from the next frame on.
 
 ## No PyBullet
 
-Every robot is drawn by **forward kinematics only**, from the shared core's drawing cell
-(`bar_assembly_core.mirrors.cell.CompasFabCell(visual=True)`: compas_fab without
-PyBullet). Nothing in the component or its import chain starts a PyBullet world, so it
-works on a freshly opened `.3dm`.
+Every robot is drawn by **forward kinematics only**, from the shared core's scene parts
+(`bar_assembly_core.scene.scene_parts`: each link with shapes and each mounted tool, in
+the world; no compas, no PyBullet). Nothing in the component or its import chain starts a
+PyBullet world, so it works on a freshly opened `.3dm`.
 
 Two consequences:
 
 - **No collision checking.** This is a viewer. A frame can look fine and still be a pose
   the planner would reject.
 - **The arms carry their assembly tools automatically**: the design holds each flange's
-  tool (from `robotic_tools.json` and the tools' collision OBJs), and the drawing cell
-  mounts them. A tool whose OBJ export is missing is drawn without geometry (the design's
+  tool (from `robotic_tools.json` and the tools' collision OBJs), drawn at its flange. A tool whose OBJ export is missing is drawn without geometry (the design's
   notes say so).
-- **One cell draws every robot**: the assembly robot is the cell's robot, the support
-  robots are tools in it; robots absent from a step (or whose base is not solved yet) are
-  hidden. The cell's bodies are hidden too: the document's own geometry shows the bars.
+- **One scene draws every robot**: each link and tool is a Rhino object named by its
+  id; robots absent from a step (or whose base is not solved yet) are hidden. The scene's
+  bodies are hidden too: the document's own geometry shows the bars.
 
 ---
 
 ## Speed: what is slow, and what the warm-up fixes
 
-The only genuinely heavy work is **reading the document into a design, loading the robot
-models into the drawing cell and baking their display meshes** — one-time per Rhino
-session, cached in `sc.sticky` (the cell is kept while the document's geometry is
-unchanged). Everything else per frame is building the step's scene plus mesh transforms.
+The only genuinely heavy work is **reading the document into a design, reading the robot
+meshes and baking them** — one-time per Rhino session, cached in `sc.sticky` (a part is
+baked again only when its geometry changes). Everything else per frame is building the
+step's scene plus mesh transforms.
 
 `RSGHPreviewWarmup` pays that cost up front: click its Button once while setting up the
-canvas and it loads Cindy, Alice and Belle into the same drawing cell the preview renders
-from and bakes their meshes, leaving the layer hidden. Skipping it is legal — the preview
+canvas and it bakes Cindy, Alice and Belle into the same preview layer the preview
+draws on, leaving the layer hidden. Skipping it is legal — the preview
 then stalls once on its first frame.
 
 Three more things keep scrubbing cheap, all in `gh_seq_preview.run`:

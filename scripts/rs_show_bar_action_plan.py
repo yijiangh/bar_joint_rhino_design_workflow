@@ -18,8 +18,8 @@ through its planned trajectories (transfer -> insert -> retreat -> home) from th
 COMMAND LINE (Enter/Next/Prev/Jump), so the viewport stays free to zoom/orbit.
 Held bars follow the arm.
 
-Everything draws the core's drawing cell of each scene (``core.design_display``:
-visual and collision meshes, no PyBullet); CheckCollision and the jog dialog
+Every view is a core scene drawn part by part (``core.ik_viz``: visual and
+collision meshes, no compas, no PyBullet); CheckCollision and the jog dialog
 check on the robots' planning mirrors (``core.design_planning``). The preview is
 non-baked: everything is cleaned up on exit and the sequence display is restored.
 """
@@ -70,6 +70,7 @@ from core.rhino_bar_registry import (
 )
 from core.rhino_helpers import suspend_redraw
 from rs_check_design import DESIGN_FOLDER_STICKY_KEY  # the last design folder, shared with RSExportDesign
+from bar_assembly_core.urdf import UR_JOINT_NAMES, load_urdf  # after core_lib: it puts the core on sys.path
 
 
 # Temporary color painted on the active bar's assigned WalkableGround brep(s) so
@@ -78,7 +79,7 @@ from rs_check_design import DESIGN_FOLDER_STICKY_KEY  # the last design folder, 
 # blue bar-selection color and the red collision highlight).
 WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 COLLISION_COLOR = (255, 40, 40)
-#: ik_viz sub-layer of the viewers' drawing cell (the assembly robot's; the support robots are drawn in it).
+#: ik_viz sub-layer the viewers draw their scenes on (every robot, every body).
 IK_LAYER_KEY_ASSEMBLY = "Assembly"
 #: `sc.sticky` key of the bars RSLoadSolvedBarAction just loaded: {"bars": [bar ids], "folder": design folder}.
 LOADED_STICKY_KEY = "bar_joint:loaded_solved_bars"
@@ -130,7 +131,7 @@ def design_folder(command, folder=None):
 
 
 def assembly_robot_id():
-    """The assembly robot's id ("robots/cindy"): the viewers' drawing cell is its; the others are drawn in it."""
+    """The assembly robot's id ("robots/cindy"): drawn even while some of its joints are unknown."""
     return design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
 
 
@@ -210,7 +211,6 @@ class PlanSession:
         self.show_unbuilt = False
         self.mesh_mode = ik_viz.get_mesh_mode()
         self.scene = None
-        self.cell = None
         self._session_started = False
         self._seq_colored_for = None
         self._highlight_oids = []
@@ -290,18 +290,17 @@ class PlanSession:
         print(f"{self.command}: {view.label} ({self.index + 1}/{len(self.views)})")
 
     def draw(self, scene):
-        """Draw a scene on the drawing cell; it becomes the scene collision checks look at."""
-        cell, state = design_display.cell_and_state(sc.sticky, scene, self.robot_id)
+        """Draw a scene; it becomes the scene collision checks look at."""
         rs.EnableRedraw(False)
         try:
-            if not self._session_started or cell is not self.cell:
-                ik_viz.begin_session(robot_cell=cell, active_mesh_mode=self.mesh_mode,
-                                     layer_key=IK_LAYER_KEY_ASSEMBLY)
+            if not self._session_started:
+                ik_viz.begin_session(active_mesh_mode=self.mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY)
                 self._session_started = True
-            ik_viz.update_state(state, robot_cell=cell, layer_key=IK_LAYER_KEY_ASSEMBLY, mesh_mode=self.mesh_mode)
+            ik_viz.update_state(scene, robot_id=self.robot_id, layer_key=IK_LAYER_KEY_ASSEMBLY,
+                                mesh_mode=self.mesh_mode)
         finally:
             rs.EnableRedraw(True)
-        self.scene, self.cell = scene, cell
+        self.scene = scene
 
     # ---- collision diagnostic ------------------------------------------
 
@@ -327,8 +326,7 @@ class PlanSession:
             for a, b in pairs:
                 print(f"{self.command}: COLLISION -- {a} x {b}")
         ids = {i for pair in pairs for i in pair}
-        owners = {tool: robot for robot, spec in self.design.robots.items() for tool in spec.tools.values()}
-        self._apply_highlight(_guids_for_ids(self.cell, self.robot_id, ids, self.mesh_mode, owners))
+        self._apply_highlight(ik_viz.objects_of(ids, IK_LAYER_KEY_ASSEMBLY, self.mesh_mode))
         if verbose and pairs:
             print(f"{self.command}: {len(pairs)} colliding pair(s); highlighted "
                   f"{len(self._highlight_oids)} object(s).")
@@ -348,16 +346,15 @@ class PlanSession:
             return
         self._revert_highlight()
         joint_specs = []  # (group, name, lower, upper)
-        for group in (config.LEFT_GROUP, config.RIGHT_GROUP):
-            try:
-                names = list(self.cell.get_configurable_joint_names(group))
-            except Exception as exc:  # noqa: BLE001
-                print(f"{self.command}: no joints for group {group!r} ({exc}); skipping it.")
-                continue
-            for name in names:
-                limit = getattr(self.cell.robot_model.get_joint_by_name(name), "limit", None)
-                lo = float(getattr(limit, "lower", -math.pi)) if limit is not None else -math.pi
-                hi = float(getattr(limit, "upper", math.pi)) if limit is not None else math.pi
+        urdf_joints = load_urdf(robot.model.urdf).joint_map
+        for group, side in ((config.LEFT_GROUP, "left"), (config.RIGHT_GROUP, "right")):
+            for name in (f"{side}_ur_arm_{joint}" for joint in UR_JOINT_NAMES):
+                if name not in urdf_joints:
+                    print(f"{self.command}: no joint {name!r} in the robot; skipping it.")
+                    continue
+                limit = urdf_joints[name].limit
+                lo = float(limit.lower) if limit is not None and limit.lower is not None else -math.pi
+                hi = float(limit.upper) if limit is not None and limit.upper is not None else math.pi
                 if hi <= lo:
                     lo, hi = -math.pi, math.pi
                 joint_specs.append((group, name, lo, hi))
@@ -442,31 +439,6 @@ class PlanSession:
             reset_sequence_colors()
         except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome
             print(f"{self.command}: failed to restore sequence colors ({exc}); continuing.")
-
-
-def _guids_for_ids(cell, robot_id, ids, mesh_mode, owners=None):
-    """The drawn meshes of design ids: bodies, tools, the drawing robot's links, other robots (as tools).
-
-    Args:
-        owners: Tool id -> the robot it is mounted on; a tool of another robot is drawn as part of that robot.
-    """
-    links = ik_viz.get_link_native_geometry(cell, IK_LAYER_KEY_ASSEMBLY, mesh_mode)
-    tools = ik_viz.get_tool_native_geometry(cell, IK_LAYER_KEY_ASSEMBLY, mesh_mode)
-    bodies = ik_viz.get_rb_native_geometry(cell, IK_LAYER_KEY_ASSEMBLY, mesh_mode)
-    out = []
-    for object_id in ids:
-        parts = object_id.split("/")
-        if object_id in bodies:
-            out += bodies[object_id]
-        elif object_id in tools:
-            out += tools[object_id]
-        elif (owners or {}).get(object_id) in tools:
-            out += tools[owners[object_id]]
-        elif parts[0] == "robots" and "/".join(parts[:2]) == robot_id:
-            out += links.get(parts[2], []) if len(parts) > 2 else [g for gs in links.values() for g in gs]
-        elif parts[0] == "robots":
-            out += tools.get("/".join(parts[:2]), [])
-    return out
 
 
 # ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSInspectRoboticTool | `rs_inspect_robotic_tool.py` | PyBullet viewer for ALL tool candidates: a slider steps through L/R pairs (L at origin, R at +0.30 m), each showing its tool0 + TCP frame (`M_tcp_from_block`); a two-step GUI confirm deletes a whole candidate pair (registry entries + `.3dm`/`.obj`). Reads/edits `robotic_tools.json` only — no Rhino geometry. | Advanced IK users |
 | RSSetup | RSPBStart | `rs_pb_start.py` | Optional warm-up (= RSRebuildRobotCell): build every robot's planning world now. Right-click, **RSPBStartGUI** (`rs_pb_start_gui.py`): also show the assembly robot's world in PyBullet's window | Advanced IK users |
 | RSSetup | RSPBStop | `rs_pb_stop.py` | Close the planning worlds, drop the cached cells, stop the ssik sidecar | Advanced IK users |
-| RSSetup | RSRebuildRobotCell | `rs_rebuild_robot_cell.py` | Auto-assign WalkableGround surfaces to bars by distance and seed missing bases (non-destructive: keeps manual picks), then rebuild the core's planning and drawing cells from the document. Optional: the IK commands and viewers rebuild a cell whose geometry changed by themselves. | Planning/export users |
+| RSSetup | RSRebuildRobotCell | `rs_rebuild_robot_cell.py` | Auto-assign WalkableGround surfaces to bars by distance and seed missing bases (non-destructive: keeps manual picks), then rebuild the core's planning cells from the document and read the robots' meshes. Optional: the IK commands and viewers rebuild a cell whose geometry changed by themselves. | Planning/export users |
 | RSSetup | RSExportBarAction | `rs_export_bar_action.py` | Runs RSExportDesign (schema 2 has no single-bar file; plan one bar with `plan_design.py --bars`). Right-click: the same (`rs_export_all_bar_actions.py`). | Planning/export users |
 | RSSetup | RSExportAllBarActions | `rs_export_all_bar_actions.py` | Right-click companion of RSExportBarAction (no standalone button): runs RSExportDesign, the schema 2 design folder. | Planning/export users |
 | RSDesign | RSExportDesign | `rs_export_design.py` | Left-click: write the document as a schema 2 design folder through `bar_assembly_core` (asks for a parent folder, then the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckDesign** (`rs_check_design.py`): read an existing design folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
@@ -372,7 +372,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Updates the registry `active` entry, re-places EVERY placed tool instance with
   the side-matching new tool (each joint keeps its arm side), force-refreshes both
   block definitions from `asset/`, warns about bars whose solved IK keyframes are
-  now stale. The planning and drawing cells pick the new tools up by themselves
+  now stale. The planning cells and previews pick the new tools up by themselves
   (the next design read carries them).
 - Pre-flight: both sides must be registered with their `.3dm` + collision `.obj`
   on disk -- otherwise nothing is changed.
@@ -406,14 +406,14 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   use and kept for the session.
 - RSPBStart = RSRebuildRobotCell (walkable-ground passes, then every planning world built now); right-click
   (`rs_pb_start_gui.py`) also opens the assembly robot's world in PyBullet's own window, for debugging.
-- RSPBStop closes the planning worlds, drops the cached drawing cells and preview meshes, and stops the ssik sidecar.
+- RSPBStop closes the planning worlds, drops the cached preview meshes, and stops the ssik sidecar.
 
 ### RSIKKeyframe (`rs_ik_keyframe.py`)
 
 - Dual-arm IK for two selected male joints sharing one Ln bar.
 - Plans on the shared core: the document is read into a design, the bar's keyframe scenes are synced into the
-  robot's planning mirror and the tamp solvers borrow its planner; previews draw the core's drawing cell of the same
-  scene (visual meshes; MeshMode flips to collision). No RSPBStart needed.
+  robot's planning mirror and the tamp solvers borrow its planner; previews draw the same
+  scene posed by the solves (visual meshes; MeshMode flips to collision). No RSPBStart needed.
 - Supports collision options and base-sampling fallback when direct solve fails.
 - Saves the split `KEY_ASSEMBLY_*` keys on the shared Ln bar.
 - **A rejected pick points at the joints, not the bar.** The bar must carry exactly two tool-bearing joints (male or ground) and be in the bar registry. If it does not, the offending **joint blocks** are painted `COLOR_FAILED` pink and named on the command line — you already know which bar you just clicked; what you cannot see is which of its joint blocks the count is complaining about. A bar with no tool-bearing joint at all is marked itself, there being nothing else to point at. The count is of *blocks*, so a duplicated block instance makes a visibly-two-joint bar report three; that case is called out by name, since it is otherwise baffling. The mark clears on the next pick and on exit, and restores whatever colour the block carried before — it never eats a sequence colour or a broken-link mark.
@@ -479,7 +479,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   1. **View.** Pick a bar (first run). Its assigned WalkableGround(s) are highlighted green; the default mobile-base placement is computed — the same heuristic the headless solver uses in `--base sample` mode (`husky_assembly_tamp.keyframe.walkable_ground`: `derive_seed_base` + `frame_from_origin_normal_heading`): the base stands a standoff **behind** the bar and **faces along the average anchor-joint insertion direction** (the way the bar is pushed to mate), which removes the left/right side ambiguity. That average now covers **both** male and ground joints, discards near-vertical axes, and detects the case where a bar's two anchors cancel, falling back to the open side of the bar instead of to a noise direction (`core.rhino_walkable_ground.resolve_bar_heading`; see `docs/coordinate_conventions.md` §7). It's drawn as a base-frame marker + a **half-transparent ghost robot** standing on that base. The ground ids + base position are printed. Then it asks: *change the assignment?*
   2. **Re-assign** (only if you answer Yes). Select the WalkableGround brep(s) you want (multiple allowed), Enter to confirm. That set **overwrites** the bar's assignment (saved to user-text), and it loops back to step 1 to re-visualize. Answer No / Esc at step 1 to finish.
 - If a bar has no assignment yet, the nearest ground(s) are auto-assigned + saved first so step 1 always has something to show.
-- The ghost robot is FK-only (no PyBullet needed): its link meshes are harvested once at the home pose (`core.ik_viz.get_robot_link_meshes_at_state`, from the core's drawing cell with only the robot shown, `core.design_display.robot_scene`) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.
+- The ghost robot is FK-only (no PyBullet needed): its link and tool meshes are copied once at the home pose (`core.ik_viz.robot_meshes` of the robot alone, `core.design_display.robot_scene`) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.
 - Auto-assignment also runs inside RSRebuildRobotCell, so this command is for inspecting/correcting a specific bar. On the RSDesign toolbar.
 
 ### RSClearIKKeyframe (`rs_clear_ik_keyframe.py`) / RSClearIKKeyframeAll (`rs_clear_ik_keyframe_all.py`)

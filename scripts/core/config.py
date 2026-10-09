@@ -416,8 +416,8 @@ LAYER_WALKABLE_GROUND = _managed_layer("Walkable Ground")
 # the design (`core.design_source`) and is checked for collision against the
 # robots, tools, and grasped workpieces.
 LAYER_ENVIRONMENT = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Environment Obstacles"
-# Cached IK preview meshes (robot links + tool models). Baked once on first
-# `ik_viz.update_state(...)`; toggled visible only inside an IK preview session.
+# Cached preview meshes (robot links, tools, bodies), by part id. Baked once on first
+# `ik_viz.update_state(...)`; toggled visible only inside a preview session.
 LAYER_IK_CACHE = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "IK Cache"
 
 # Back-compat alias used by IK keyframe scripts.

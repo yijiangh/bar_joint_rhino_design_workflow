@@ -1,7 +1,7 @@
 #! python 3
 # ! No `# venv:` line, like every RS* command: they all run in Rhino's default environment, the same
 # ! interpreter, so code sent in by Claude Code sees the same `sc.sticky` state (for example the planning
-# ! mirrors and drawing cells the IK commands keep). The bridge itself needs only the standard library;
+# ! mirrors and preview meshes the IK commands keep). The bridge itself needs only the standard library;
 # ! `rhino_env.activate()` below puts the commands' packages (requirements-rhino.txt) on sys.path for that code.
 """RSLamcpBridgeStart - Let Claude Code drive this Rhino session (no Grasshopper needed).
 

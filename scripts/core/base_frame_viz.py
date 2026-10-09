@@ -32,7 +32,6 @@ _AXIS_COLORS = {
     "z": (40, 90, 220),    # blue
 }
 _FOOTPRINT_COLOR = (150, 150, 150)  # grey rectangle
-_REACH_CIRCLE_COLOR = (100, 100, 220)  # light blue -- matches the live reach circle
 
 
 def _ensure_preview_layer() -> str:
@@ -99,7 +98,7 @@ def draw_base_frame(bar_id: str, base_frame_mm, circle_radius_mm=None) -> list:
                                    [x_axis[0], x_axis[1], x_axis[2]])
         circle = rs.AddCircle(plane, float(circle_radius_mm) * scale_from_mm)
         if circle:
-            rs.ObjectColor(circle, _REACH_CIRCLE_COLOR)
+            rs.ObjectColor(circle, config.REACH_CLEAR_COLOR)  # as the live reach circle
             created.append(circle)
 
     # Ground footprint rectangle in the base XY plane (corners ordered CCW).

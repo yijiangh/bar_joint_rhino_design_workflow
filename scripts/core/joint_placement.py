@@ -47,12 +47,6 @@ from core.rhino_helpers import (
 # ---------------------------------------------------------------------------
 
 # Per-variant preview colors (cycled by variant index).
-PREVIEW_COLORS = [
-    (230, 80, 80),
-    (80, 80, 230),
-    (80, 200, 80),
-    (200, 160, 50),
-]
 
 # A solved variant is "acceptable" when the receiver/male screw frames
 # coincide within these tolerances.  Special joint geometries sometimes
@@ -454,7 +448,6 @@ def remove_joint_blocks(joint_id, subtypes=jnc.SUBTYPES) -> int:
 
 # Re-export what callers most commonly need.
 __all__ = [
-    "PREVIEW_COLORS",
     "RECOVER_SIDES",
     "VARIANT_OK_ORIGIN_TOL_MM",
     "VARIANT_OK_Z_AXIS_TOL_RAD",

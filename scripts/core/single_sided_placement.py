@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from core import config
 from core import joint_name_conventions as jnc
 from core.joint_pair import canonical_bar_frame_from_line
 from core.transforms import (
@@ -52,9 +53,9 @@ from core.transforms import (
 _FLIP_Y_PI = make_transform(rotation=rotation_matrix((0.0, 1.0, 0.0), np.pi))
 
 #: Preview colour per Subtype (no variant cycling for single-sided joints).
-PREVIEW_COLORS = {
-    jnc.GROUND: (180, 120, 60),
-    jnc.MOCAP: (60, 150, 200),
+_PREVIEW_COLOR_BY_SUBTYPE = {
+    jnc.GROUND: config.GROUND_PREVIEW_COLOR,
+    jnc.MOCAP: config.MOCAP_PREVIEW_COLOR,
 }
 
 #: A MoCap joint's plate faces along its block-local +Z (the back of the
@@ -214,7 +215,7 @@ def insert_single_sided_preview(definition, frame: np.ndarray):
     return insert_block_instance(
         definition.block_name,
         frame,
-        color=PREVIEW_COLORS[subtype],
+        color=_PREVIEW_COLOR_BY_SUBTYPE[subtype],
         subtype=subtype,
     )
 
@@ -296,7 +297,6 @@ def single_sided_definitions(registry) -> list:
 
 
 __all__ = [
-    "PREVIEW_COLORS",
     "MOCAP_PLATE_AXIS",
     "subtype_of",
     "effective_M_block_from_bar",

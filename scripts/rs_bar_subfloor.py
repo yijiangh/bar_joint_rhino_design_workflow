@@ -76,13 +76,6 @@ from core.rhino_bar_registry import (
 )
 from core.joint_auto_place import auto_place_joint_pair
 
-SELECTED_BAR_COLOR = config.SELECTED_BAR_COLOR
-_PREVIEW_COLORS = [
-    (230, 80, 80),
-    (80, 80, 230),
-    (80, 200, 80),
-    (200, 160, 50),
-]
 
 _BAR_CENTERLINE_LAYER = config.LAYER_BAR_CENTERLINES
 _TUBE_LAYER = config.LAYER_BAR_TUBE_PREVIEWS
@@ -190,7 +183,7 @@ def _create_previews(solutions, ce1, ce2, brace_length):
         direction = sol["nn"] / np.linalg.norm(sol["nn"])
         pt_a = midpoint - half_length * direction
         pt_b = midpoint + half_length * direction
-        color = _PREVIEW_COLORS[index % len(_PREVIEW_COLORS)]
+        color = config.VARIANT_PREVIEW_COLORS[index % len(config.VARIANT_PREVIEW_COLORS)]
 
         line_id = rs.AddLine(pt_a, pt_b)
         _place_axis_line(line_id, color=color, label=f"RSBarSubfloor_preview_{index + 1}")
@@ -246,8 +239,8 @@ def _print_report(report):
 def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
     ce1 = point_to_array(ce1)
     ce2 = point_to_array(ce2)
-    ce1_ref_id = _bake_reference_point(ce1, "RSBarSubfloor_Ce1", (230, 80, 80))
-    ce2_ref_id = _bake_reference_point(ce2, "RSBarSubfloor_Ce2", (80, 80, 230))
+    ce1_ref_id = _bake_reference_point(ce1, "RSBarSubfloor_Ce1", config.VARIANT_PREVIEW_COLORS[0])
+    ce2_ref_id = _bake_reference_point(ce2, "RSBarSubfloor_Ce2", config.VARIANT_PREVIEW_COLORS[1])
     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
     solutions, report = _solve(le1_id, le2_id, ce1, ce2, target_distance)
@@ -345,10 +338,10 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
                     _cleanup_previews(preview_items)
                     delete_objects(ref_ids)
                     ce1_ref_id = _bake_reference_point(
-                        ce1, "RSBarSubfloor_Ce1", (230, 80, 80)
+                        ce1, "RSBarSubfloor_Ce1", config.VARIANT_PREVIEW_COLORS[0]
                     )
                     ce2_ref_id = _bake_reference_point(
-                        ce2, "RSBarSubfloor_Ce2", (80, 80, 230)
+                        ce2, "RSBarSubfloor_Ce2", config.VARIANT_PREVIEW_COLORS[1]
                     )
                     ref_ids = as_object_id_list([ce1_ref_id, ce2_ref_id])
 
@@ -513,14 +506,14 @@ def main():
     try:
         ensure_bar_id(le1_id)
         ensure_bar_preview(le1_id, float(config.BAR_RADIUS))
-        paint_bar(le1_id, SELECTED_BAR_COLOR)
+        paint_bar(le1_id, config.SELECTED_BAR_COLOR)
 
         le2_id = pick_bar("Select second existing bar (becomes RIGHT bar)")
         if le2_id is None:
             return
         ensure_bar_id(le2_id)
         ensure_bar_preview(le2_id, float(config.BAR_RADIUS))
-        paint_bar(le2_id, SELECTED_BAR_COLOR)
+        paint_bar(le2_id, config.SELECTED_BAR_COLOR)
 
         ce1 = rs.GetPointOnCurve(le1_id, "Pick contact point on LEFT bar")
         if ce1 is None:

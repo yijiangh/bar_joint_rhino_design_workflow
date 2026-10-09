@@ -701,8 +701,9 @@ def collect_hold_inputs(bar_map=None):
 
 #: Colour for bars that have already been assembled (earlier in sequence).
 SEQ_COLOR_BUILT = (60, 179, 60)  # green — already assembled
-#: Colour for the bar currently being assembled (active step).
-SEQ_COLOR_ACTIVE = (30, 100, 220)  # blue — current step
+#: Colour for the bar currently being assembled (active step) -- the same
+#: "bar in hand" blue every command uses for its selected bar.
+SEQ_COLOR_ACTIVE = config.SELECTED_BAR_COLOR
 #: Colour for bars not yet assembled (later in sequence).
 SEQ_COLOR_UNBUILT = (160, 160, 160)  # grey — not yet assembled
 #: Colour for built bars that still need temporary support (teal — between
@@ -1751,7 +1752,7 @@ def restore_object_colors(token):
 # live during an rs_ik_keyframe_all solve run, never stored on the bar, so
 # `show_all_ik_preview` cannot reconstruct it.
 COLOR_HAS_IK = (75, 120, 150)    # bar has a solved IK keyframe
-COLOR_FAILED = (230, 115, 150)   # IK attempted at the placed base but failed
+COLOR_FAILED = SEQ_COLOR_FAKE    # IK attempted at the placed base but failed
 
 
 def ik_preview_legend_lines():

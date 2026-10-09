@@ -14,13 +14,12 @@ import rhinoscriptsyntax as rs
 
 from core import joint_name_conventions as jnc
 from core.rhino_bar_registry import (
+    SEQ_COLOR_BUILT,
     _bar_curve_and_tube,
     get_bar_seq_map,
 )
 from core.rhino_helpers import objects_on_layers, reset_object_color, set_object_color
 
-
-ENV_GREEN = (60, 179, 60)
 
 
 def highlight_env_for_ik(active_bar_id):
@@ -44,13 +43,13 @@ def highlight_env_for_ik(active_bar_id):
             oid = bar_map[bid][0]
             for obj in _bar_curve_and_tube(oid):
                 if rs.IsObject(obj):
-                    set_object_color(obj, ENV_GREEN)
+                    set_object_color(obj, SEQ_COLOR_BUILT)
                     touched.append(obj)
 
         for joint_oid in objects_on_layers(*jnc.JOINT_LAYERS):
             if rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR) in built_bar_ids:
                 if rs.IsObject(joint_oid):
-                    set_object_color(joint_oid, ENV_GREEN)
+                    set_object_color(joint_oid, SEQ_COLOR_BUILT)
                     touched.append(joint_oid)
     finally:
         rs.EnableRedraw(True)

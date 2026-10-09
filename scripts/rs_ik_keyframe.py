@@ -1931,7 +1931,7 @@ def _apply_red_highlight(oids):
     with suspend_redraw():
         for oid in oids or []:
             try:
-                rs.ObjectColor(oid, (255, 40, 40))
+                rs.ObjectColor(oid, config.COLLISION_COLOR)
             except Exception:
                 continue
             applied.append(oid)

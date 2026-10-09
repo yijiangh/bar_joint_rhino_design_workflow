@@ -85,6 +85,28 @@ BAR_RADIUS = 10.0
 # interactive scripts that show selection feedback (snap, brace, …).
 SELECTED_BAR_COLOR = (30, 100, 220)  # blue
 
+# UI: preview colors shared by several commands -- one definition each, so a
+# color keeps one meaning everywhere (docs/color_preview_reference.md).
+#: The four solver variants of a joint pair or candidate bar, in variant order.
+VARIANT_PREVIEW_COLORS = (
+    (230, 80, 80),    # red
+    (80, 80, 230),    # blue
+    (80, 200, 80),    # green
+    (200, 160, 50),   # amber
+)
+#: RSJointPlace > JointOnly previews, by joint kind.
+GROUND_PREVIEW_COLOR = (180, 120, 60)
+MOCAP_PREVIEW_COLOR = (60, 150, 200)
+#: Walkable-ground breps assigned to a bar.
+WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
+#: Bodies reported in collision.
+COLLISION_COLOR = (255, 40, 40)
+#: Arm reach outline: clear, or touching an obstacle / the ground edge.
+REACH_CLEAR_COLOR = (100, 100, 220)
+REACH_TOUCH_COLOR = (255, 100, 100)
+#: Translucent robot that follows the cursor while a base is picked.
+GHOST_ROBOT_COLOR = (180, 180, 220)
+
 # UI: RSUpdatePreview paints broken model links so they are visible without
 # reading the command history. Neither case can be auto-repaired (the bar is
 # gone / the joint needs RSJointPlace) -- see

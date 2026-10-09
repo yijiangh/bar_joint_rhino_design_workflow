@@ -82,7 +82,6 @@ GHOST_ALPHA = 0.4
 
 # Temporary color painted on the assigned WalkableGround brep(s) during the
 # preview, reverted to ByLayer on exit (green, matching RSShowBarActionPlan).
-GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 
 
 def _reload():
@@ -187,7 +186,7 @@ def _highlight_grounds(ground_oids) -> list:
     colored = []
     for oid in ground_oids:
         try:
-            rs.ObjectColor(oid, GROUND_HIGHLIGHT_COLOR)
+            rs.ObjectColor(oid, config.WALKABLE_GROUND_HIGHLIGHT_COLOR)
             colored.append(oid)
         except Exception:
             continue

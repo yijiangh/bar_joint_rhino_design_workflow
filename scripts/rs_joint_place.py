@@ -108,7 +108,6 @@ def _reload_runtime_modules():
     global config, joint_pair_module, joint_placement, single_sided
     global compute_variant, interface_metrics, is_variant_acceptable
     global place_joint_blocks, insert_block_instance
-    global PREVIEW_COLORS
 
     config = importlib.reload(_config_module)
     joint_pair_module = importlib.reload(_joint_pair_module)
@@ -121,7 +120,6 @@ def _reload_runtime_modules():
     is_variant_acceptable = joint_placement.is_variant_acceptable
     place_joint_blocks = joint_placement.place_joint_blocks
     insert_block_instance = joint_placement.insert_block_instance
-    PREVIEW_COLORS = joint_placement.PREVIEW_COLORS
 
 
 _reload_runtime_modules()
@@ -207,7 +205,7 @@ class _JointSession:
             delete_objects(existing)
             var = self.current_variant
             index = joint_placement.variant_index(self.le_rev, self.ln_rev)
-            color = PREVIEW_COLORS[index % len(PREVIEW_COLORS)]
+            color = config.VARIANT_PREVIEW_COLORS[index % len(config.VARIANT_PREVIEW_COLORS)]
             self.receiver_id = insert_block_instance(
                 self.receiver_block_name,
                 var["female_frame"],

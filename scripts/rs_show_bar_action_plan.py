@@ -87,7 +87,6 @@ RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 # the user can see which ground surface the robot base is allowed to stand on.
 # Reverted to ByLayer on bar switch / session cleanup (green, distinct from the
 # blue bar-selection color and the red collision highlight).
-WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 
 # Pose taxonomy -- TogglePose steps through the bar's timeline. Which poses a
 # bar gets depends on the hold plan (see _PreviewSession._rebuild_hold_context):
@@ -1115,7 +1114,7 @@ class _PreviewSession:
                     rb_names.add(name)
 
         rcell = robot_cell.get_or_load_robot_cell()
-        red = (255, 40, 40)
+        red = config.COLLISION_COLOR
         oids_to_highlight = []
 
         # Robot links on the currently-visible mode.
@@ -1261,7 +1260,7 @@ class _PreviewSession:
                     )
                     continue
                 try:
-                    rs.ObjectColor(oid, WALKABLE_GROUND_HIGHLIGHT_COLOR)
+                    rs.ObjectColor(oid, config.WALKABLE_GROUND_HIGHLIGHT_COLOR)
                 except Exception:
                     continue
                 self._wg_highlight_oids.append(oid)

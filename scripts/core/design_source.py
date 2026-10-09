@@ -9,13 +9,17 @@ mm to metres.
   commands: the document may change in between.
 - Fake bars and their halves are left out. Duplicate ids and scaled or mirrored blocks are refused.
 - Needs numpy, the core and Rhino; not compas, compas_fab, PyBullet or the tamp submodule.
+- ! Pass the same `cache` (a dict in `sc.sticky`, `geometry_cache`) on every command: an unchanged document then
+  gives the same `Geometry` and `Tool` objects, so the planning mirrors keep their cells instead of rebuilding.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -31,7 +35,7 @@ from bar_assembly_core.design.version import writer_info
 from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh, compose
 from bar_assembly_core.kinematics import link_pose
 from bar_assembly_core.robot import Tool
-from bar_assembly_core.urdf import UR_JOINT_NAMES, urdf_links
+from bar_assembly_core.urdf import UR_JOINT_NAMES, copy_robot, urdf_links
 
 REPO = "bar_joint_rhino_design_workflow"
 #: Robot name -> hardware serial. ? Rhino has no source for these; same values as the monitor's config.
@@ -123,6 +127,51 @@ def body_id(prefix: str, name: str) -> str:
     return f"{prefix}/{clean or 'unnamed'}"
 
 
+#: `sc.sticky` key of the geometry cache.
+GEOMETRY_CACHE_KEY = "bar_joint:core_geometry_cache"
+
+
+def geometry_cache(store: dict) -> dict:
+    """The geometry cache kept in `store` (Rhino's `sc.sticky`); a new one when the core was reloaded.
+
+    ? A plain dict, not a class: this module is reloaded on every command, the cache must outlive it.
+    """
+    cache = store.get(GEOMETRY_CACHE_KEY)
+    if not isinstance(cache, dict) or cache.get("core") is not Geometry:
+        cache = store[GEOMETRY_CACHE_KEY] = {"core": Geometry, "items": {}, "hits": 0, "misses": 0}
+    return cache
+
+
+def cached(cache: dict, key: tuple, make):
+    """The object cached under a content key, made by `make()` on a miss."""
+    items = cache["items"]
+    if key in items:
+        cache["hits"] += 1
+    else:
+        cache["misses"] += 1
+        items[key] = make()
+    return items[key]
+
+
+def file_digest(path: str) -> str:
+    """SHA-1 of a file's bytes: the content key of a mesh file."""
+    with open(path, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()
+
+
+def robot_files(cache: dict, name: str, urdf: Path, srdf: Path) -> Tuple[Path, Path]:
+    """A robot's URDF and SRDF with relative mesh paths (copied once per cache), as the mirrors need them.
+
+    ? The source URDFs name their meshes `package://`; compas_fab cannot load those from a design in memory.
+    """
+    stamp = tuple(os.path.getmtime(f) for f in (urdf, srdf))
+
+    def make():
+        dest = Path(tempfile.gettempdir()) / "bar_joint_core" / "robots" / name.lower()
+        return copy_robot(urdf, srdf, dest, package_dirs=[Path(config.HUSKY_PKG_PATH)])
+    return cached(cache, ("robot", str(urdf), str(srdf), stamp), make)
+
+
 def _git(*args: str) -> Optional[str]:
     """Run git in this repository; None if git is missing or fails (Rhino on Windows may have no git on PATH)."""
     try:
@@ -144,15 +193,20 @@ def producer(command: str) -> Producer:
 class RhinoDesignSource:
     """Builds a `Design` from the active Rhino document. Make a new one per command."""
 
-    def __init__(self, command: str):
-        """Remember the command name for `producer` and messages."""
+    def __init__(self, command: str, cache: Optional[dict] = None):
+        """Remember the command name for `producer` and messages.
+
+        Args:
+            command: The Rhino command, for `producer`.
+            cache: A `geometry_cache`, kept between commands; a fresh one if None.
+        """
         self.command = command
+        self.cache = cache if cache is not None else geometry_cache({})
         self.problems: List[str] = []
         self.bodies: Dict[str, BodySpec] = {}
         self.duplicates: List[str] = []
         self.ground_oids: Dict[str, object] = {}
         self.tool_names: Dict[str, str] = {}
-        self._meshes: Dict[str, TriMesh] = {}
 
     def build(self) -> SourceResult:
         """Read the document and build the design with its actions.
@@ -239,17 +293,20 @@ class RhinoDesignSource:
                 radius_mm = float(rs.GetUserText(oid, BAR_RADIUS_KEY) or config.BAR_RADIUS)
             except ValueError:
                 radius_mm = float(config.BAR_RADIUS)
-            cylinder = CylinderShape(radius_mm / 1000.0, length_mm / 1000.0)
-            self._add(BodySpec(f"bars/{bar}", bar_pose(frame_mm, length_mm), Geometry((cylinder,), (cylinder,))),
-                      f"bar {bar}")
+            size = (round(radius_mm / 1000.0, 9), round(length_mm / 1000.0, 9))
+            geometry = cached(self.cache, ("cylinder",) + size, lambda: Geometry((CylinderShape(*size),),
+                                                                                  (CylinderShape(*size),)))
+            self._add(BodySpec(f"bars/{bar}", bar_pose(frame_mm, length_mm), geometry), f"bar {bar}")
 
-    def _mesh(self, path: str, scale: float = 0.001) -> Optional[TriMesh]:
-        """A collision OBJ (in mm unless `scale` says otherwise) read once per command; None if missing."""
-        if path not in self._meshes:
-            if not path or not os.path.isfile(path):
-                return None
-            self._meshes[path] = read_obj(path, scale)
-        return self._meshes[path]
+    def _file_geometry(self, path: str, scale: float = 0.001) -> Optional[Geometry]:
+        """The geometry of a collision OBJ (in mm unless `scale` says otherwise), by content; None if missing."""
+        if not path or not os.path.isfile(path):
+            return None
+
+        def make():
+            mesh = read_obj(path, scale)
+            return Geometry((mesh,), (mesh,))
+        return cached(self.cache, ("obj", path, scale, file_digest(path)), make)
 
     def _read_halves(self, rs, bars, fake) -> Dict[str, Tuple[str, str, str]]:
         """Every joint block on a real bar, with part, mount and markers.
@@ -286,20 +343,20 @@ class RhinoDesignSource:
                 if why:
                     self.duplicates.append(f"{half}: its block transform is refused: {why}")
                     continue
-                mesh = self._mesh(definition.collision_path())
-                if mesh is None:
+                geometry = self._file_geometry(definition.collision_path())
+                if geometry is None:
                     self.problems.append(f"{half}: collision OBJ of {block} missing; the half never collides")
-                shapes = (mesh,) if mesh is not None else ()
+                    geometry = cached(self.cache, ("empty",), lambda: Geometry((), ()))
                 markers = {str(label): tuple(float(c) / 1000.0 for c in point)
                            for label, point in getattr(definition, "marker_points_mm", {}).items()}
                 type_, block_subtype = jnc.split_block_name(block)
-                self._add(BodySpec(half, pose_from_mm(xform), Geometry(shapes, shapes), part=f"{type_}/{block_subtype}",
+                self._add(BodySpec(half, pose_from_mm(xform), geometry, part=f"{type_}/{block_subtype}",
                                    markers=markers, mount=f"bars/{parent}"), f"joint block {name}")
                 out[half] = (jid, subtype, parent)
         return out
 
-    def _rhino_mesh(self, oid) -> Optional[TriMesh]:
-        """A mesh or meshable brep in world coordinates, metres; None if neither."""
+    def _rhino_geometry(self, oid) -> Optional[Geometry]:
+        """A mesh or meshable brep in world coordinates, metres, by content; None if neither."""
         import Rhino
         import rhinoscriptsyntax as rs
         from core.env_collision import _coerce_env_brep
@@ -324,7 +381,13 @@ class RhinoDesignSource:
             triangles.append((f.A, f.B, f.C))
             if f.C != f.D:  # * Rhino stores triangles as quads with D == C
                 triangles.append((f.A, f.C, f.D))
-        return TriMesh.from_arrays(vertices, triangles)
+        vertices, triangles = np.asarray(vertices, dtype=float), np.asarray(triangles, dtype=np.int64)
+        digest = hashlib.sha1(vertices.round(9).tobytes() + triangles.tobytes()).hexdigest()
+
+        def make():
+            trimesh = TriMesh.from_arrays(vertices, triangles)
+            return Geometry((trimesh,), (trimesh,))
+        return cached(self.cache, ("rhino", digest), make)
 
     def _read_ground(self, rs) -> Dict[str, object]:
         """Every walkable ground brep with an id, as a world-frame mesh. Returns ground id -> Rhino object id."""
@@ -335,11 +398,11 @@ class RhinoDesignSource:
             if not gid:
                 self.problems.append(f"walkable ground {oid} has no id; left out (run RSAssignAndShowWalkableGround)")
                 continue
-            mesh = self._rhino_mesh(oid)
-            if mesh is None:
+            geometry = self._rhino_geometry(oid)
+            if geometry is None:
                 self.problems.append(f"walkable ground {gid} could not be meshed; left out")
                 continue
-            self._add(BodySpec(f"ground/{gid}", Pose(), Geometry((mesh,), (mesh,))), f"walkable ground {gid}")
+            self._add(BodySpec(f"ground/{gid}", Pose(), geometry), f"walkable ground {gid}")
             out[f"ground/{gid}"] = oid
         return out
 
@@ -347,15 +410,15 @@ class RhinoDesignSource:
         """Every mesh or brep on the environment layer, as a world-frame mesh."""
         layer = config.LAYER_ENVIRONMENT
         for i, oid in enumerate((rs.ObjectsByLayer(layer) or []) if rs.IsLayer(layer) else []):
-            mesh = self._rhino_mesh(oid)
-            if mesh is None:
+            geometry = self._rhino_geometry(oid)
+            if geometry is None:
                 self.problems.append(f"environment object {oid} is neither a mesh nor a brep; left out")
                 continue
             name = body_id("obstacles", rs.ObjectName(oid) or f"env{i}")
             base, k = name, 1
             while name in self.bodies:
                 name, k = f"{base}_{k}", k + 1
-            self._add(BodySpec(name, Pose(), Geometry((mesh,), (mesh,))), f"environment object {oid}")
+            self._add(BodySpec(name, Pose(), geometry), f"environment object {oid}")
 
     # * Robots, tools, mates
 
@@ -394,28 +457,36 @@ class RhinoDesignSource:
         for side, tool in self._assembly_tools().items():
             self.tool_names[side] = tool.name
             tool_id = f"tools/{tool.name}"
-            mesh = self._mesh(tool.collision_path())
-            shapes = (mesh,) if mesh is not None else ()
             touch = tuple(f"{cindy}/{link}" for link in ARM_TOOL_TOUCH_LINKS[side])
-            tools[tool_id] = Tool(tool_id, Geometry(shapes, shapes), pose_from_mm(tool.M_tcp_from_block),
-                                  ASSEMBLY_TOOL_KIND, touch)
+            tools[tool_id] = self._tool(tool_id, self._file_geometry(tool.collision_path()),
+                                        pose_from_mm(tool.M_tcp_from_block), ASSEMBLY_TOOL_KIND, touch)
             flanges[config.ASSEMBLY_TOOL0_LINKS[side]] = tool_id
+        urdf, srdf = robot_files(self.cache, config.ASSEMBLY_ROBOT_NAME, urdf, srdf)
         robots[cindy] = RobotSpec(cindy, urdf, srdf, SERIALS.get(config.ASSEMBLY_ROBOT_NAME), flanges, wheels(urdf))
 
-        gripper = self._mesh(config.ROBOTIQ_GRIPPER_TOOL_MESH, scale=1.0)  # * this OBJ is in metres
+        gripper = self._file_geometry(config.ROBOTIQ_GRIPPER_TOOL_MESH, scale=1.0)  # * this OBJ is in metres
         tcp = pose_from_mm(np.linalg.inv(np.asarray(config.BAR_GRASP_TO_TOOL0["Robotiq"], dtype=float)))
         for name in config.SUPPORT_ROBOT_NAMES:
             rid = robot_id(name)
             spec = config.SUPPORT_ROBOTS[name]
             urdf = Path(pkg, config.SUPPORT_URDF_PKG_NAME, "urdf", spec["urdf_filename"])
             srdf = Path(pkg, config.SUPPORT_URDF_PKG_NAME, spec["srdf_rel_path"])
+            urdf, srdf = robot_files(self.cache, name, urdf, srdf)
             tool_id = f"tools/{name.lower()}/{config.SUPPORT_TOOL_NAME}"
-            shapes = (gripper,) if gripper is not None else ()
-            tools[tool_id] = Tool(tool_id, Geometry(shapes, shapes), tcp, SUPPORT_TOOL_KIND,
-                                  tuple(f"{rid}/{link}" for link in config.SUPPORT_TOOL_TOUCH_LINKS))
+            tools[tool_id] = self._tool(tool_id, gripper, tcp, SUPPORT_TOOL_KIND,
+                                        tuple(f"{rid}/{link}" for link in config.SUPPORT_TOOL_TOUCH_LINKS))
             robots[rid] = RobotSpec(rid, urdf, srdf, SERIALS.get(name), {config.SUPPORT_TOOL0_LINK: tool_id},
                                     wheels(urdf))
         return robots, tools
+
+    def _tool(self, tool_id: str, geometry: Optional[Geometry], tcp: Pose, kind: str, touch) -> Tool:
+        """A tool, the same object while nothing about it changed; no geometry means it never collides."""
+        if geometry is None:
+            self.problems.append(f"{tool_id}: collision OBJ missing; the tool never collides")
+            geometry = cached(self.cache, ("empty",), lambda: Geometry((), ()))
+        key = ("tool", tool_id, id(geometry), tuple(np.round(tcp.position, 9)), tuple(np.round(tcp.orientation, 9)),
+               kind, tuple(touch))
+        return cached(self.cache, key, lambda: Tool(tool_id, geometry, tcp, kind, tuple(touch)))
 
     def _mates(self, halves, grounds) -> List[Tuple[str, str]]:
         """Male with receiver by joint id; each ground half with the nearest walkable ground."""

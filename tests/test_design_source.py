@@ -118,3 +118,21 @@ def test_real_documents_write(name, actions, tmp_path):
     design = write(result.design, tmp_path / "design", package_dirs=[PKG])
     assert len(design.actions) == actions
     assert any("needs a left and a right tool" in p for p in result.problems)
+
+
+def test_geometry_cache_keeps_objects(source):
+    """Two builds with one cache share every Geometry, Tool and robot model; a resized bar gets a new Geometry."""
+    from bar_assembly_core.design.scenes import design_model
+
+    store = {}
+    first = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
+    second = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
+    assert all(second.bodies[b].geometry is first.bodies[b].geometry for b in first.bodies)
+    assert all(second.tools[t] is first.tools[t] for t in first.tools)
+    assert design_model(second, "robots/cindy") is design_model(first, "robots/cindy")
+    rs = __import__("rhinoscriptsyntax")
+    b1 = next(oid for oid in rs.AllObjects() if rs.GetUserText(oid, "bar_id") == "B1")
+    rs.coercerhinoobject(b1).end = (900, 0, 50)
+    third = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
+    assert third.bodies["bars/B1"].geometry is not first.bodies["bars/B1"].geometry
+    assert third.bodies["bars/B2"].geometry is first.bodies["bars/B2"].geometry

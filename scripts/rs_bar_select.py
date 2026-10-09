@@ -13,15 +13,22 @@ more than one at once. The prompt loops so you can jump from bar to bar -- each
 entry REPLACES the previous selection; press Enter on an empty prompt (or Esc) to
 finish.
 
-**SelectByLength** - type a length in mm (``1050``) and select every bar of that
-length, together with the **male and ground joints** on those bars. The summary printed
-on entry lists each length, its bar count and its bar ids. The grouping and the
-prompt are RSBarEdit's, so a length means the same set of bars in both commands.
-The prompt loops until Enter/Esc.
+**SelectByLength** - every bar is colored by its length group and tagged with
+its length while you choose; the summary printed on entry lists each length, its
+bar count and its bar ids.  Type a length in mm (``1050``) to select every bar of
+that length.  Then, optionally, also select their joints:
 
-Read-only: it never edits the document (it reads each bar's stored ``bar_id`` as
-is, and does not heal / renumber anything), so it is safe to run any time. No
-PyBullet needed.
+  - ``BearingJoints``: the tool-bearing halves on those bars (Male and Ground).
+  - ``PairedJoints``: both halves of every joint pair touching those bars -- the
+    Male and its Female / MoCap receiver, whichever bar each sits on.
+
+Type another length to switch groups; Enter or Esc finishes and keeps the
+selection.  The grouping is shared with RSBarEdit (``core.bar_length_groups``),
+so a length means the same set of bars in both commands.
+
+The model is never edited: bar ids are read as stored (nothing is healed or
+renumbered), and the length colors and tags are removed on exit, with every
+bar's previous color restored.  No PyBullet needed.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ import importlib
 import os
 import sys
 
+import Rhino
 import rhinoscriptsyntax as rs
 
 
@@ -37,7 +45,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-import rs_bar_edit as _bar_edit_module
+from core import bar_length_groups as _length_groups_module
 from core import joint_name_conventions as jnc
 from core import rhino_bar_registry as _registry_module
 from core.rhino_bar_registry import BAR_ID_KEY, BAR_TYPE_KEY, BAR_TYPE_VALUE
@@ -49,14 +57,14 @@ CMD = "RSBarSelect"
 
 
 def _reload():
-    """Re-import the bar registry + RSBarEdit so ScriptEditor picks up changes.
+    """Re-import the bar registry + length groups so ScriptEditor picks up changes.
 
-    Rebinds the module-level ``registry`` / ``bar_edit`` globals to the freshly
-    reloaded modules.  Matches the reload pattern used by the other RS* commands.
+    Rebinds the module-level ``registry`` / ``length_groups`` globals to the
+    freshly reloaded modules.  Matches the reload pattern of the other commands.
     """
-    global registry, bar_edit
+    global registry, length_groups
     registry = importlib.reload(_registry_module)
-    bar_edit = importlib.reload(_bar_edit_module)
+    length_groups = importlib.reload(_length_groups_module)
 
 
 _reload()
@@ -105,32 +113,42 @@ def _oids_to_select(bar_oids) -> list:
     return ids
 
 
-def _bar_joint_oids(bar_ids) -> list:
-    """Male + ground joint instances whose ``parent_bar_id`` is in *bar_ids*.
+def _bearing_joint_oids(bar_ids) -> list:
+    """Male and Ground blocks whose ``parent_bar_id`` is in *bar_ids*.
 
-    Those two halves belong to the bar they are placed on, so they are part of
-    "that bar" the way its tube preview is.  The **female** half of a joint
-    belongs to the *other* bar of the pair and is deliberately left alone.
-
-    Args:
-        bar_ids (list[str]): bar ids of the group being selected.
-
-    Returns:
-        list: joint block instance ids; layers that do not exist are skipped.
+    The tool-bearing halves: they belong to the bar they sit on.
     """
     wanted = set(bar_ids)
-    out = []
-    for layer in jnc.TOOL_BEARING_LAYERS:
-        out.extend(
-            oid
-            for oid in objects_on_layers(layer)
-            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in wanted
-        )
-    return out
+    return [
+        oid
+        for oid in objects_on_layers(*jnc.TOOL_BEARING_LAYERS)
+        if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in wanted
+    ]
 
 
-def _apply_selection(to_select) -> int:
-    """Replace the current selection with *to_select* and zoom to it.
+def _paired_joint_oids(bar_ids) -> list:
+    """Both halves of every joint pair with a half on one of *bar_ids*.
+
+    The Male and its Female / MoCap receiver, whichever bar each sits on.
+    Ground and standalone MoCap joints are not pairs and are left out.
+    """
+    wanted = set(bar_ids)
+    halves = []  # (oid, joint_id) of every paired half in the document
+    joint_ids = set()
+    for layer in jnc.PAIRED_LAYERS:
+        subtype = jnc.subtype_of_layer(layer)
+        for oid in objects_on_layers(layer):
+            jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
+            if not jid or not jnc.is_paired_half(subtype, jid):
+                continue
+            halves.append((oid, jid))
+            if rs.GetUserText(oid, jnc.UT_PARENT_BAR) in wanted:
+                joint_ids.add(jid)
+    return [oid for oid, jid in halves if jid in joint_ids]
+
+
+def _apply_selection(to_select, zoom=True) -> int:
+    """Replace the current selection with *to_select* (and zoom to it).
 
     Returns:
         int: how many objects ended up selected.
@@ -138,10 +156,11 @@ def _apply_selection(to_select) -> int:
     rs.UnselectAllObjects()
     if to_select:
         rs.SelectObjects(to_select)
-        try:
-            rs.ZoomSelected()
-        except Exception:
-            pass  # zoom is a convenience -- never let it break the selection
+        if zoom:
+            try:
+                rs.ZoomSelected()
+            except Exception:
+                pass  # zoom is a convenience -- never let it break the selection
     return len(to_select)
 
 
@@ -211,48 +230,83 @@ def _run_select_by_name(bars) -> None:
         bars = _scan_bars()
 
 
-def _run_select_by_length(bars) -> None:
-    """Type a length in mm; select those bars + their male/ground joints, in a loop.
+def _ask_length(groups, has_selection):
+    """Typed length, ``BearingJoints`` / ``PairedJoints``, or ``None`` when done.
 
-    The grouping, the prompt and the printed summary come straight from RSBarEdit
-    (``build_length_groups`` / ``pick_length_group`` / ``print_length_summary``),
-    so ``1050`` means the same set of bars in both commands.  Only the selection
-    is this command's own, which keeps the read-only promise: RSBarEdit reaches
-    the same groups through ``get_all_bars``, which heals bar ids as it goes.
+    Returns ``("length", group_index)``, ``("joints", option_name)`` or
+    ``None`` (Enter or Esc).  A length with no group is reported with the
+    lengths that exist and asked again.
+    """
+    while True:
+        gn = Rhino.Input.Custom.GetNumber()
+        gn.SetCommandPrompt(
+            "Length (mm) of the bars to select"
+            + (", or also select their joints" if has_selection else "")
+            + " (Enter when done)"
+        )
+        gn.AcceptNothing(True)
+        if has_selection:
+            gn.AddOption("BearingJoints")
+            gn.AddOption("PairedJoints")
+        result = gn.Get()
+        if result == Rhino.Input.GetResult.Option:
+            return "joints", gn.Option().EnglishName
+        if result != Rhino.Input.GetResult.Number:
+            return None
+        index = length_groups.find_length_group(groups, gn.Number())
+        if index is not None:
+            return "length", index
+        print(
+            f"{CMD}: no bars at {gn.Number():.0f} mm.  Available lengths: "
+            f"{length_groups.available_lengths(groups)}."
+        )
+
+
+def _run_select_by_length(bars) -> None:
+    """Color and tag bars by length; select a group, optionally with its joints.
 
     Args:
         bars (dict): ``{bar_id: [oid, ...]}`` from :func:`_scan_bars`.
     """
-    # build_length_groups keys by a single oid per bar; a duplicate id is grouped
-    # by its first oid, but every oid under that id is selected below.
+    # Grouped by each id's first oid; every oid under that id is selected below.
     bar_map = {bar_id: oids[0] for bar_id, oids in bars.items()}
-    groups, _colors, _lengths = bar_edit.build_length_groups(bar_map)
+    groups, color_by_bin, length_per_bar = length_groups.build_length_groups(bar_map)
     if not groups:
         print(f"{CMD}: no bars to group by length.")
         return
-    bar_edit.print_length_summary(groups)
+    length_groups.print_length_summary(groups)
 
-    last_length_mm = None  # remembered as the default of the next prompt
-    while True:
-        group_idx = bar_edit.pick_length_group(
-            groups, default_mm=last_length_mm, command=CMD
-        )
-        if group_idx is None:
-            return  # Enter / Esc
-
-        length_bin, bar_ids = groups[group_idx]
-        last_length_mm = length_bin
-        to_select = []
-        for bar_id in bar_ids:
-            to_select.extend(_oids_to_select(bars[bar_id]))
-        joint_oids = _bar_joint_oids(bar_ids)
-        to_select.extend(joint_oids)
-        n = _apply_selection(to_select)
-        print(
-            f"{CMD}: selected {len(bar_ids)} bar(s) at {length_bin:.0f} mm "
-            f"+ {len(joint_oids)} male/ground joint(s) ({n} object(s)): "
-            f"{', '.join(bar_ids)}."
-        )
+    preview = length_groups.LengthPreview(
+        bar_map, color_by_bin, length_per_bar, name_prefix="rsbarselect_dot"
+    )
+    bar_ids, bar_oids = [], []
+    try:
+        while True:
+            answer = _ask_length(groups, has_selection=bool(bar_ids))
+            if answer is None:
+                return
+            kind, value = answer
+            if kind == "length":
+                length_bin, bar_ids = groups[value]
+                bar_oids = [o for b in bar_ids for o in _oids_to_select(bars[b])]
+                n = _apply_selection(bar_oids)
+                print(
+                    f"{CMD}: selected {len(bar_ids)} bar(s) at {length_bin:.0f} mm "
+                    f"({n} object(s)): {', '.join(bar_ids)}."
+                )
+                continue
+            joint_oids = (
+                _bearing_joint_oids(bar_ids) if value == "BearingJoints"
+                else _paired_joint_oids(bar_ids)
+            )
+            _apply_selection(bar_oids + joint_oids, zoom=False)
+            print(
+                f"{CMD}: {len(bar_ids)} bar(s) + {len(joint_oids)} "
+                f"{'bearing' if value == 'BearingJoints' else 'paired'} joint "
+                "block(s) selected."
+            )
+    finally:
+        preview.close()
 
 
 def main() -> None:

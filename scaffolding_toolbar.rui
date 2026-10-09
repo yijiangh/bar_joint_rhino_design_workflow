@@ -202,7 +202,7 @@
         <locale_1033>RSBarEdit</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Color bars by length, select-by-length, batch resize about midpoint</locale_1033>
+        <locale_1033>BarLength: color bars by length and resize the selected bars about their midpoints (select them first, e.g. with RSBarSelect). FakeBar: mark staging bars.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_bar_edit.py"</script>
     </macro_item>

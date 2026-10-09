@@ -17,18 +17,17 @@ through.  Only fabrication output and the sequence display treat it differently.
 Entering the mode paints every fake bar pink, each Add/Delete repaints the
 picked bar at once, and bars are picked by centerline or tube preview.
 
-On entry: scans every registered bar, groups bars by length (1mm bins),
-paints each bar centerline+tube preview a distinct color per length group,
-and adds a temporary text-dot at the bar midpoint showing
-``"<bar_id>\\n<length>mm"``.
+On entry: scans every registered bar, groups bars by length (1mm bins, shared
+with RSBarSelect > SelectByLength through ``core.bar_length_groups``), paints
+each bar centerline+tube preview a distinct color per length group, and adds a
+temporary text-dot at the bar midpoint showing ``"<bar_id>\\n<length>mm"``.
 
 Interactive options (looped):
-  - SelectByLength : type a length in mm (``1050``); selects every bar
-    (curve+tube) of that length.  The printed summary lists each length with
-    its bar ids.  Selection is preserved on Exit.
   - ResizeSelected : prompt for a new length; every currently-selected bar
     is shortened/elongated about its midpoint, the tube preview is
-    regenerated, and the color/label scheme is refreshed.
+    regenerated, and the color/label scheme is refreshed.  Select the bars
+    before running the command -- RSBarSelect > SelectByLength selects a whole
+    length group.
   - Refresh        : recompute color groups and dots (after manual edits).
   - Exit           : remove dots, restore by-layer colors, KEEP current
     Rhino selection.
@@ -37,22 +36,19 @@ Only straight-line bars are resized in place (LineCurve replacement).
 Curved bars are skipped with a warning.
 """
 
-import colorsys
 import importlib
-import math
 import os
 import sys
-from collections import defaultdict
 
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
-import System.Drawing as sd
 
 SCRIPT_DIR = os.path.dirname(__file__)
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import bar_length_groups as length_groups
 from core import config
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
@@ -68,24 +64,18 @@ from core.rhino_bar_registry import (
     set_fake_bar,
 )
 from core.rhino_bar_pick import bar_or_tube_filter, resolve_picked_to_bar_curve
-from core.rhino_helpers import ask_option, curve_endpoints, objects_on_layers
+from core.rhino_helpers import ask_option, curve_endpoints, delete_objects, objects_on_layers
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_LENGTH_BIN_MM = 1.0  # round bar lengths to nearest 1 mm for grouping
 _DOT_PREFIX = "rsbaredit_dot"  # ObjectName prefix for our temporary dots
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _bar_length(curve_id):
-    s, e = curve_endpoints(curve_id)
-    return float(((e - s) ** 2).sum() ** 0.5)
 
 
 def _bar_midpoint(curve_id):
@@ -102,59 +92,6 @@ def _bar_unit_dir(curve_id):
     return v / n
 
 
-def _bin_length(L):
-    return round(L / _LENGTH_BIN_MM) * _LENGTH_BIN_MM
-
-
-def _color_for_index(i, n):
-    """Distinct RGB color via evenly-spaced HSV hue."""
-    if n <= 0:
-        return sd.Color.FromArgb(200, 200, 200)
-    h = (i / float(n)) % 1.0
-    r, g, b = colorsys.hsv_to_rgb(h, 0.65, 0.95)
-    return sd.Color.FromArgb(int(r * 255), int(g * 255), int(b * 255))
-
-
-def build_length_groups(bar_map):
-    """Return (groups, color_by_bin, length_per_bar).
-
-    groups          : ordered list of (length_bin, [bar_id, ...])
-    color_by_bin    : {length_bin: System.Drawing.Color}
-    length_per_bar  : {bar_id: actual_length_mm}
-
-    Public because ``RSBarSelect > SelectByLength`` groups with it too -- a
-    length group must mean the same thing in both commands.
-    """
-    length_per_bar = {}
-    for bar_id, oid in bar_map.items():
-        length_per_bar[bar_id] = _bar_length(oid)
-
-    bin_to_bars = defaultdict(list)
-    for bar_id, L in length_per_bar.items():
-        bin_to_bars[_bin_length(L)].append(bar_id)
-
-    sorted_bins = sorted(bin_to_bars.keys())
-    groups = [(b, sorted(bin_to_bars[b])) for b in sorted_bins]
-    n = len(groups)
-    color_by_bin = {b: _color_for_index(i, n) for i, b in enumerate(sorted_bins)}
-    return groups, color_by_bin, length_per_bar
-
-
-# ---------------------------------------------------------------------------
-# Paint / dot helpers
-# ---------------------------------------------------------------------------
-
-
-def _paint_all(bar_map, color_by_bin, length_per_bar):
-    rs.EnableRedraw(False)
-    try:
-        for bar_id, oid in bar_map.items():
-            color = color_by_bin[_bin_length(length_per_bar[bar_id])]
-            paint_bar(oid, color)
-    finally:
-        rs.EnableRedraw(True)
-
-
 def _reset_all_colors(bar_map):
     rs.EnableRedraw(False)
     try:
@@ -162,31 +99,6 @@ def _reset_all_colors(bar_map):
             reset_bar_color(oid)
     finally:
         rs.EnableRedraw(True)
-
-
-def _add_length_dots(bar_map, length_per_bar):
-    """Add a text-dot at each bar midpoint.  Returns the list of dot GUIDs."""
-    dot_ids = []
-    rs.EnableRedraw(False)
-    try:
-        for bar_id, oid in bar_map.items():
-            mid = _bar_midpoint(oid)
-            label = f"{bar_id}\n{length_per_bar[bar_id]:.0f}mm"
-            dot_id = rs.AddTextDot(label, (float(mid[0]), float(mid[1]), float(mid[2])))
-            if dot_id:
-                rs.ObjectName(dot_id, f"{_DOT_PREFIX}_{bar_id}")
-                dot_ids.append(dot_id)
-    finally:
-        rs.EnableRedraw(True)
-    return dot_ids
-
-
-def _clear_dots(dot_ids):
-    if not dot_ids:
-        return
-    alive = [d for d in dot_ids if rs.IsObject(d)]
-    if alive:
-        rs.DeleteObjects(alive)
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +184,14 @@ def _do_resize_selected(bar_map, selected_bar_ids):
     Returns True if any bar was resized.
     """
     if not selected_bar_ids:
-        print("RSBarEdit: No bars selected. Use SelectByLength first or pick bars manually.")
+        print(
+            "RSBarEdit: No bars selected.  Select them before running RSBarEdit "
+            "(RSBarSelect > SelectByLength selects a whole length group)."
+        )
         return False
 
     # Suggest the average current length as default.
-    cur_lengths = [_bar_length(bar_map[b]) for b in selected_bar_ids]
+    cur_lengths = [length_groups.bar_length(bar_map[b]) for b in selected_bar_ids]
     default_L = sum(cur_lengths) / len(cur_lengths)
 
     new_L = rs.GetReal(
@@ -305,48 +220,6 @@ def _do_resize_selected(bar_map, selected_bar_ids):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-
-
-def print_length_summary(groups):
-    """Print each length group -- the length, the count, and its bar ids.
-
-    This is where the bar ids live: SelectByLength asks for a typed length, so
-    the summary is the only place that maps ``1050`` to ``B14,B15``.
-    """
-    print("\n--- Bar Length Groups ---")
-    total = 0
-    for L, bids in groups:
-        total += len(bids)
-        print(f"  {L:.0f} mm  x{len(bids)}  : {','.join(bids)}")
-    print(f"  Total bars: {total}")
-    print("--- End ---\n")
-
-
-def pick_length_group(groups, default_mm=None, command="RSBarEdit"):
-    """Ask for a length in mm; return the matching index into *groups*, or None.
-
-    The user types the number they read off the summary (``1050``), rounded to
-    the same 1 mm bin the grouping uses.  A length with no group is reported
-    together with the lengths that do exist and re-prompts, rather than silently
-    selecting the nearest one -- picking the wrong 20 bars is worse than picking
-    none.  ``None`` therefore means the user cancelled, nothing else.
-
-    Shared with ``RSBarSelect > SelectByLength``.
-    """
-    if not groups:
-        return None
-    while True:
-        typed = rs.GetReal(
-            "Length (mm) of the group to select", number=default_mm, minimum=0.0
-        )
-        if typed is None:
-            return None  # Enter / Esc
-        target = _bin_length(float(typed))
-        for i, (length_bin, _bar_ids) in enumerate(groups):
-            if abs(length_bin - target) < _LENGTH_BIN_MM * 0.5:
-                return i
-        available = ", ".join(f"{L:.0f}" for L, _ in groups)
-        print(f"{command}: no bars at {typed:.0f} mm.  Available lengths: {available}.")
 
 
 def _ask_mode():
@@ -483,20 +356,19 @@ def _run_bar_length():
         print("RSBarEdit: No registered bars in the document.")
         return
 
-    groups, color_by_bin, length_per_bar = build_length_groups(bar_map)
-    _paint_all(bar_map, color_by_bin, length_per_bar)
-    dot_ids = _add_length_dots(bar_map, length_per_bar)
-    print_length_summary(groups)
+    def _show_groups():
+        groups, color_by_bin, length_per_bar = length_groups.build_length_groups(bar_map)
+        length_groups.paint_length_groups(bar_map, color_by_bin, length_per_bar)
+        length_groups.print_length_summary(groups)
+        return length_groups.add_length_dots(bar_map, length_per_bar, _DOT_PREFIX)
 
-    last_length_mm = None  # remembered as the default of the next length prompt
-
+    dot_ids = _show_groups()
     try:
         while True:
             go = Rhino.Input.Custom.GetOption()
             go.SetCommandPrompt("RSBarEdit (Esc to exit)")
             go.AcceptNothing(True)
 
-            sel_idx = go.AddOption("SelectByLength")
             resize_idx = go.AddOption("ResizeSelected")
             refresh_idx = go.AddOption("Refresh")
             exit_idx = go.AddOption("Exit")
@@ -514,37 +386,21 @@ def _run_bar_length():
             if opt is None:
                 continue
 
-            if opt.Index == sel_idx:
-                group_idx = pick_length_group(groups, default_mm=last_length_mm)
-                if group_idx is None:
-                    continue
-                L_bin, bar_ids = groups[group_idx]
-                last_length_mm = L_bin
-                _select_bars(bar_map, bar_ids)
-                print(f"RSBarEdit: selected {len(bar_ids)} bar(s) at {L_bin:.0f} mm.")
-                continue
-
             if opt.Index == resize_idx:
                 sel_bar_ids = _selected_bar_ids(bar_map)
                 if _do_resize_selected(bar_map, sel_bar_ids):
                     # Recompute everything after geometry changes.
                     bar_map = get_all_bars()
-                    groups, color_by_bin, length_per_bar = build_length_groups(bar_map)
-                    _clear_dots(dot_ids)
-                    dot_ids = _add_length_dots(bar_map, length_per_bar)
-                    _paint_all(bar_map, color_by_bin, length_per_bar)
-                    print_length_summary(groups)
+                    delete_objects(dot_ids)
+                    dot_ids = _show_groups()
                     # Re-select the just-resized bars so the user can iterate.
                     _select_bars(bar_map, [b for b in sel_bar_ids if b in bar_map])
                 continue
 
             if opt.Index == refresh_idx:
                 bar_map = get_all_bars()
-                groups, color_by_bin, length_per_bar = build_length_groups(bar_map)
-                _clear_dots(dot_ids)
-                dot_ids = _add_length_dots(bar_map, length_per_bar)
-                _paint_all(bar_map, color_by_bin, length_per_bar)
-                print_length_summary(groups)
+                delete_objects(dot_ids)
+                dot_ids = _show_groups()
                 continue
 
             if opt.Index == exit_idx:
@@ -552,7 +408,7 @@ def _run_bar_length():
     finally:
         # Always restore display state, but preserve the user's selection.
         preserved_selection = list(rs.SelectedObjects() or [])
-        _clear_dots(dot_ids)
+        delete_objects(dot_ids)
         _reset_all_colors(bar_map)
         _paint_fake_bars(bar_map)  # re-assert: the fake mark outlives the overlay
         rs.UnselectAllObjects()
@@ -565,6 +421,7 @@ def _run_bar_length():
 
 def main():
     importlib.reload(config)
+    importlib.reload(length_groups)
     repair_on_entry(float(config.BAR_RADIUS), "RSBarEdit")
 
     mode = _ask_mode()

@@ -112,13 +112,13 @@ from core.rhino_bar_registry import (
     SEQ_COLOR_ACTIVE,
     SEQ_COLOR_BUILT,
     SEQ_COLOR_UNBUILT,
-    TUBE_BAR_ID_KEY,
     ensure_bar_preview,
     get_all_bars,
     paint_bar,
     repair_on_entry,
     reset_bar_color,
 )
+from core.rhino_bar_pick import pick_bar_among
 from core.rhino_block_import import require_block_definition
 from core.rhino_helpers import (
     ask_option,
@@ -383,29 +383,11 @@ def _paint_move_context(moving_bar_id, stationary_bar_ids):
 
 
 def _pick_bar_to_move(bar_a_id, bar_b_id):
-    """Click the bar that should move.  Returns its bar id, or None on Esc.
-
-    Restricted to the two bars the selected joint connects -- either their
-    centerline or their tube -- so an unrelated bar simply is not selectable
-    rather than being accepted and rejected afterwards.
-    """
-    allowed = {bar_a_id, bar_b_id}
-
-    def _filter(rhino_object, geometry, component_index):
-        oid = rhino_object.Id
-        if rs.GetUserText(oid, BAR_ID_KEY) in allowed:
-            return True
-        # Tubes carry their bar id under their own key, not BAR_ID_KEY.
-        return rs.GetUserText(oid, TUBE_BAR_ID_KEY) in allowed
-
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt(f"Select the bar that should move ({bar_a_id} or {bar_b_id})")
-    go.EnablePreSelect(False, False)
-    go.SetCustomGeometryFilter(_filter)
-    if go.Get() != Rhino.Input.GetResult.Object:
-        return None
-    oid = go.Object(0).ObjectId
-    return rs.GetUserText(oid, BAR_ID_KEY) or rs.GetUserText(oid, TUBE_BAR_ID_KEY)
+    """Click the bar that should move -- one of the two the joint connects.
+    Returns its bar id, or None on Esc."""
+    return pick_bar_among(
+        (bar_a_id, bar_b_id), f"Select the bar that should move ({bar_a_id} or {bar_b_id})"
+    )
 
 
 def _run_move_joint():

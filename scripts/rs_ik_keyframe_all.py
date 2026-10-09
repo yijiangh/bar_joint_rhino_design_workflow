@@ -85,7 +85,11 @@ from core import rhino_tool_place as _rhino_tool_place_module
 # module object, so reloading it below refreshes the shared solver code.
 from husky_assembly_tamp.keyframe import walkable_ground as _wg_np_module
 from core import rhino_walkable_ground as _rwg_module
-from core.rhino_bar_pick import bar_or_tube_filter, resolve_picked_to_bar_curve
+from core.rhino_bar_pick import (
+    bar_or_tube_filter,
+    pick_bar_among,
+    resolve_picked_to_bar_curve,
+)
 from core.rhino_helpers import block_instance_xform_mm
 # IK preview colors + the show helper live in rhino_bar_registry (single source of
 # truth, shared with RSUpdatePreview / RSClearColorPreview) -- see that module's
@@ -600,11 +604,15 @@ def main():
                 _flip_bars(rwg, placed, flipped, {c[0] for c in placed},
                            standoff, grounds, soup_cache)
             elif decision == "flip_one":
-                marker = rs.GetObject("Pick a base marker to flip", preselect=False,
-                                      select=False)
-                bar_id = base_frame_viz.bar_id_of_picked(marker) if marker else ""
+                bar_id = pick_bar_among(
+                    [c[0] for c in placed],
+                    "Pick the bar whose base should flip to its other side "
+                    "(centre line, tube or base marker)",
+                    also=lambda oid: (base_frame_viz.bar_id_of_picked(oid)
+                                      or base_guide_viz.bar_id_of_picked(oid)),
+                )
                 if not bar_id:
-                    print("RSIKKeyframeAll: no base marker picked; nothing flipped.")
+                    print("RSIKKeyframeAll: no bar picked; nothing flipped.")
                     continue
                 _flip_bars(rwg, placed, flipped, {bar_id},
                            standoff, grounds, soup_cache)

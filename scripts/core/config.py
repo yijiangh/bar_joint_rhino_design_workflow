@@ -47,12 +47,11 @@ if _TAMP_ROOT not in sys.path:
 
 # Solver tuning is owned by the solver package; re-imported here so Rhino-side
 # call sites keep reading `config.IK_*` with ONE definition project-wide. This
-# import is cheap (os/sys only -- no compas / pybullet).
+# import is cheap (os/sys only -- no compas / pybullet).  The base-search values
+# (IK_BASE_SAMPLE_*, IK_BASE_STANDOFF_MM) are NOT imported: Rhino keeps its own,
+# defined below.
 from husky_assembly_tamp.keyframe.config import (  # noqa: E402
     IK_BACKEND,
-    IK_BASE_SAMPLE_RADIUS,
-    IK_BASE_SAMPLE_MAX_ITER,
-    IK_BASE_STANDOFF_MM,
     IK_MAX_DESCEND_ITERATIONS,
     IK_MAX_RESTART_ITER,
     IK_TOLERANCE_POSITION,
@@ -189,7 +188,8 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
-# IK base sampling fallback
+# IK base sampling fallback.  Rhino's own values (tamp's own defaults differ:
+# 20 iterations, 700 mm standoff); Rhino passes them to tamp explicitly.
 IK_BASE_SAMPLE_RADIUS = 1000.0  # mm
 IK_BASE_SAMPLE_MAX_ITER = 10
 # How far BEHIND the bar the SEED mobile base stands (mm). The seed is offset
@@ -249,11 +249,11 @@ INSERTION_DIR_CANCEL_TOL = 0.30      # |sum(unit axes)| / n
 # instance because re-placing a tool deletes and recreates the tool object.
 # Cleared by an explicit base Flip (that IS the user re-deciding the side).
 KEY_TOOL_SIDE_MANUAL = "tool_side_manual"
-# NOTE: the IK/base-search tuning constants (IK_BASE_SAMPLE_*, IK_BASE_STANDOFF_MM,
-# IK_MAX_DESCEND_ITERATIONS, IK_MAX_RESTART_ITER, IK_TOLERANCE_*, IK_BACKEND) and
-# the ssik sidecar wiring moved to `husky_assembly_tamp.keyframe.config` with the
-# solvers; they are re-imported near the top of this file so Rhino call sites keep
-# reading `config.IK_*`.
+# NOTE: the IK solver tuning constants (IK_MAX_DESCEND_ITERATIONS,
+# IK_MAX_RESTART_ITER, IK_TOLERANCE_*, IK_BACKEND) and the ssik sidecar wiring
+# live in `husky_assembly_tamp.keyframe.config` with the solvers; they are
+# re-imported near the top of this file so Rhino call sites keep reading
+# `config.IK_*`.  The base-search values are Rhino's own (see above).
 
 # IK solver tuning (compas_fab PyBullet planner)
 # How many candidate IK solutions the PyBullet planner generates in ONE

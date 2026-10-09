@@ -59,6 +59,8 @@ class SourceResult:
 
     design: Design
     problems: List[str] = field(default_factory=list)
+    #: Body id -> the Rhino object it was read from (bar curve, joint block, ground or environment object).
+    objects: Dict[str, object] = field(default_factory=dict)
 
 
 # --- --- --- --- --- PURE HELPERS (no Rhino) --- --- --- --- ---
@@ -208,6 +210,7 @@ class RhinoDesignSource:
         self.cache = cache if cache is not None else geometry_cache({})
         self.problems: List[str] = []
         self.bodies: Dict[str, BodySpec] = {}
+        self.objects: Dict[str, object] = {}
         self.duplicates: List[str] = []
         self.ground_oids: Dict[str, object] = {}
         self.tool_names: Dict[str, str] = {}
@@ -260,17 +263,19 @@ class RhinoDesignSource:
             design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
             retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,
             support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0)
-        return SourceResult(result.design, self.problems + result.problems)
+        return SourceResult(result.design, self.problems + result.problems, dict(self.objects))
 
     # * Bodies
 
-    def _add(self, body: BodySpec, source: str) -> None:
-        """Add a body; a second body with the same id is a duplicate."""
+    def _add(self, body: BodySpec, source: str, oid=None) -> None:
+        """Add a body read from Rhino object `oid`; a second body with the same id is a duplicate."""
         if body.id in self.bodies:
             self.duplicates.append(f"duplicate id {body.id} ({source}); run RSUpdatePreview, then RSReorderBarID "
                                    f"-> Relink")
             return
         self.bodies[body.id] = body
+        if oid is not None:
+            self.objects[body.id] = oid
 
     def _check_duplicate_bars(self, rs) -> None:
         """Two bar curves with one `bar_id` (copy/paste) are a duplicate."""
@@ -285,11 +290,11 @@ class RhinoDesignSource:
     def _read_bars(self, bars) -> None:
         """Every real bar as a cylinder at its midpoint frame."""
         import rhinoscriptsyntax as rs
-        from core.env_collision import _bar_world_frame_mm
+        from core.rhino_helpers import bar_world_frame_mm
         from core.rhino_bar_registry import BAR_RADIUS_KEY
 
         for bar, (oid, _seq) in bars.items():
-            length_mm, frame_mm = _bar_world_frame_mm(oid)
+            length_mm, frame_mm = bar_world_frame_mm(oid)
             if length_mm <= 0.0:
                 self.problems.append(f"bar {bar} has zero length; left out")
                 continue
@@ -300,7 +305,7 @@ class RhinoDesignSource:
             size = (round(radius_mm / 1000.0, 9), round(length_mm / 1000.0, 9))
             geometry = cached(self.cache, (f"bars/{bar}", "cylinder") + size,
                               lambda: Geometry((CylinderShape(*size),), (CylinderShape(*size),)))
-            self._add(BodySpec(f"bars/{bar}", bar_pose(frame_mm, length_mm), geometry), f"bar {bar}")
+            self._add(BodySpec(f"bars/{bar}", bar_pose(frame_mm, length_mm), geometry), f"bar {bar}", oid)
 
     def _file_geometry(self, owner: str, path: str, scale: float = 0.001) -> Optional[Geometry]:
         """The geometry of a body or tool from a collision OBJ (mm unless `scale` says otherwise); None if missing.
@@ -356,7 +361,7 @@ class RhinoDesignSource:
                            for label, point in getattr(definition, "marker_points_mm", {}).items()}
                 type_, block_subtype = jnc.split_block_name(block)
                 self._add(BodySpec(half, pose_from_mm(xform), geometry, part=f"{type_}/{block_subtype}",
-                                   markers=markers, mount=f"bars/{parent}"), f"joint block {name}")
+                                   markers=markers, mount=f"bars/{parent}"), f"joint block {name}", oid)
                 out[half] = (jid, subtype, parent)
         return out
 
@@ -364,13 +369,12 @@ class RhinoDesignSource:
         """A mesh or meshable brep in world coordinates, metres, by content; None if neither."""
         import Rhino
         import rhinoscriptsyntax as rs
-        from core.env_collision import _coerce_env_brep
-        from core.rhino_helpers import doc_unit_scale_to_mm
+        from core.rhino_helpers import coerce_brep, doc_unit_scale_to_mm
 
         if rs.IsMesh(oid):
             mesh = rs.coercemesh(oid)
         else:
-            brep = _coerce_env_brep(oid)
+            brep = coerce_brep(oid)
             if brep is None:
                 return None
             mesh = Rhino.Geometry.Mesh()
@@ -407,7 +411,7 @@ class RhinoDesignSource:
             if geometry is None:
                 self.problems.append(f"walkable ground {gid} could not be meshed; left out")
                 continue
-            self._add(BodySpec(f"ground/{gid}", Pose(), geometry), f"walkable ground {gid}")
+            self._add(BodySpec(f"ground/{gid}", Pose(), geometry), f"walkable ground {gid}", oid)
             out[f"ground/{gid}"] = oid
         return out
 
@@ -423,7 +427,7 @@ class RhinoDesignSource:
             if geometry is None:
                 self.problems.append(f"environment object {oid} is neither a mesh nor a brep; left out")
                 continue
-            self._add(BodySpec(name, Pose(), geometry), f"environment object {oid}")
+            self._add(BodySpec(name, Pose(), geometry), f"environment object {oid}", oid)
 
     # * Robots, tools, mates
 
@@ -497,7 +501,7 @@ class RhinoDesignSource:
     def _mates(self, halves, grounds) -> List[Tuple[str, str]]:
         """Male with receiver by joint id; each ground half with the nearest walkable ground."""
         import Rhino
-        from core.env_collision import _coerce_env_brep
+        from core.rhino_helpers import coerce_brep
 
         by_jid = {}
         for half, (jid, subtype, _bar) in halves.items():
@@ -507,7 +511,7 @@ class RhinoDesignSource:
             receivers = [sides[s] for s in jnc.RECEIVER_SUBTYPES if s in sides]
             if jnc.MALE in sides and receivers:
                 mates.append(tuple(sorted((sides[jnc.MALE], receivers[0]))))
-        breps = {g: _coerce_env_brep(oid) for g, oid in grounds.items()}
+        breps = {g: coerce_brep(oid) for g, oid in grounds.items()}
         for half, (_jid, subtype, _bar) in sorted(halves.items()):
             if subtype != jnc.GROUND or not breps:
                 continue
@@ -589,7 +593,7 @@ class RhinoDesignSource:
     def _ground_insert_direction(self, bar: str, ground_halves) -> Tuple[float, float, float]:
         """A ground bar is inserted straight down onto the ground: against the nearest ground's normal."""
         import Rhino
-        from core.env_collision import _coerce_env_brep
+        from core.rhino_helpers import coerce_brep
 
         normals = []
         scale = 1000.0 / self._doc_scale_mm()
@@ -598,7 +602,7 @@ class RhinoDesignSource:
             point = Rhino.Geometry.Point3d(p[0] * scale, p[1] * scale, p[2] * scale)
             best = None
             for oid in self.ground_oids.values():
-                brep = _coerce_env_brep(oid)
+                brep = coerce_brep(oid)
                 if brep is None:
                     continue
                 try:

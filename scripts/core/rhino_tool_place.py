@@ -520,6 +520,50 @@ def find_tool_for_joint(joint_id: str):
     return None
 
 
+def tool_bearing_joints_on_bar(bar_id: str) -> list:
+    """The male and ground joint blocks mounted on a bar (the halves a tool can sit on)."""
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    out = []
+    for layer in jnc.TOOL_BEARING_LAYERS:
+        if rs.IsLayer(layer):
+            out.extend(oid for oid in rs.ObjectsByLayer(layer) or []
+                       if rs.GetUserText(oid, jnc.UT_PARENT_BAR) == bar_id)
+    return out
+
+
+def resolve_arm_tools_on_bar(bar_id: str):
+    """Which placed tool block sits on each arm for a bar.
+
+    Returns:
+        tuple: ``({"left": tool_oid, "right": tool_oid}, None)``, or ``(None, why)`` when the bar does not have
+        exactly one left and one right tool on its two tool-bearing joints.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    joints = tool_bearing_joints_on_bar(bar_id)
+    if len(joints) != 2:
+        return None, f"Bar '{bar_id}' has {len(joints)} tool-bearing joint(s) (male+ground); need exactly 2."
+    sides = {"left": None, "right": None}
+    for joint_oid in joints:
+        jid = rs.GetUserText(joint_oid, jnc.UT_JOINT_ID)
+        if not jid:
+            return None, f"Joint block on bar '{bar_id}' missing 'joint_id'."
+        tool_oid = find_tool_for_joint(jid)
+        if tool_oid is None:
+            return None, f"Joint '{jid}' on bar '{bar_id}' has no robotic tool placed."
+        side = _robotic_tool.arm_side_from_tool_name(rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or "")
+        if side is None:
+            return None, f"Tool on joint '{jid}' has no L/R suffix; cannot decide arm side."
+        if sides[side] is not None:
+            return None, f"Bar '{bar_id}' has two {side.upper()}-suffix tools."
+        sides[side] = tool_oid
+    if sides["left"] is None or sides["right"] is None:
+        missing = "left" if sides["left"] is None else "right"
+        return None, f"Bar '{bar_id}' missing the {missing}-arm tool."
+    return sides, None
+
+
 def get_tool_name_for_joint(joint_id: str) -> str | None:
     """Return the ``tool_name`` user-text on the tool instance tagged with
     *joint_id*, or ``None`` if no tool is placed for that joint."""

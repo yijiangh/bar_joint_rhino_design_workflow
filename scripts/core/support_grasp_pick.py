@@ -8,9 +8,8 @@ RSIKKeyframe button can reuse them:
   the gripper's rotation about the bar), with a ghost Robotiq gripper
   tracking the cursor;
 - the two-phase BASE pick on a WalkableGround brep (origin, then heading),
-  with a ghost of the assigned support robot tracking the cursor;
-- the ghost bake of the dual-arm robot at its captured assembled pose
-  (collision context the user picks the grasp around).
+  with a ghost of the assigned support robot tracking the cursor (its meshes
+  come from the caller: the core's drawing cell).
 
 All Rhino-side (rhinoscriptsyntax / RhinoCommon); world outputs are 4x4
 numpy matrices in mm.
@@ -23,21 +22,11 @@ import math
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 from core import config
 from core import dynamic_preview
-from core import ik_viz
-from core import robot_cell
-from core import robot_cell_support
 from core.rhino_block_import import has_block_definition
 from core.rhino_helpers import doc_unit_scale_to_mm, np_mm_to_xform, xform_to_np_mm
-
-
-# ik_viz sub-layer (bundle) keys owned by the support flow. Distinct from the
-# assembly preview's keys so showing/hiding one never touches the other.
-DUAL_ARM_CONTEXT_LAYER_KEY = "SupportContext"      # Cindy frozen at assembled
-SUPPORT_GHOST_LAYER_PREFIX = "SupportGhost"        # per-robot harvest bundles
 
 
 # ---------------------------------------------------------------------------
@@ -422,110 +411,20 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
 
 
 # ---------------------------------------------------------------------------
-# * Ghost previews (dual-arm collision context + support robot for the base pick)
-# ---------------------------------------------------------------------------
-
-
-def show_dual_arm_context(assembled: dict, mesh_mode):
-    """Show Cindy frozen at her captured assembled pose (the pick backdrop).
-
-    Drawn through ik_viz's cached bundle system on its OWN sub-layer
-    (``DUAL_ARM_CONTEXT_LAYER_KEY``), so later ghost-mesh harvesting and
-    support-pose previews never wipe or hide it. The flow's final
-    ``ik_viz.clear_scene()`` removes it with everything else.
-
-    Purely visual — collision with the dual-arm robot is handled by its
-    frozen ToolModel obstacle in the support cell.
-
-    Args:
-        assembled (dict): ``{"base_frame_world_mm", "joint_values_left",
-            "joint_values_right", "joint_names_left", "joint_names_right"}``.
-        mesh_mode: ik_viz mesh mode to display.
-    """
-    deps = robot_cell.import_compas_stack()
-    Frame = deps["Frame"]
-    Configuration = deps["Configuration"]
-
-    da_cell = robot_cell.get_or_load_robot_cell()
-    da_state = da_cell.default_cell_state()
-    da_state.robot_base_frame = robot_cell._mm_matrix_to_m_frame(
-        Frame, np.asarray(assembled["base_frame_world_mm"], dtype=float)
-    )
-
-    zero_cfg = da_cell.robot_model.zero_configuration()
-    cfg_names = list(zero_cfg.joint_names)
-    cfg_types = list(zero_cfg.joint_types)
-    cfg_values = list(zero_cfg.joint_values)
-    captured = dict(zip(
-        list(assembled["joint_names_left"]) + list(assembled["joint_names_right"]),
-        list(assembled["joint_values_left"]) + list(assembled["joint_values_right"]),
-    ))
-    for i, name in enumerate(cfg_names):
-        if name in captured:
-            cfg_values[i] = float(captured[name])
-    da_state.robot_configuration = Configuration(
-        joint_values=cfg_values, joint_types=cfg_types, joint_names=cfg_names,
-    )
-
-    ik_viz.update_state(
-        da_state,
-        robot_cell=da_cell,
-        mesh_mode=mesh_mode,
-        layer_key=DUAL_ARM_CONTEXT_LAYER_KEY,
-    )
-    # A leftover ASSEMBLY preview from an earlier RSIKKeyframe run shares the
-    # cache layer update_state just forced visible — hide it so only the
-    # frozen context shows.
-    ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
-    sc.doc.Views.Redraw()
-
-
-def support_robot_ghost_meshes(robot_name: str):
-    """One support robot's link meshes at zero config + identity base.
-
-    Harvested through ``ik_viz.get_robot_link_meshes_at_state`` (which bakes
-    into a per-robot bundle and returns standalone mesh COPIES for a cursor
-    ghost). That harvest hides the whole IK cache layer on exit — assuming
-    the ghost should be the only robot on screen — but here Cindy's frozen
-    context must STAY visible behind the base pick, so the cache layer is
-    turned back on and only the harvest bundle's sub-layer is hidden.
-
-    Args:
-        robot_name (str): "Alice" or "Belle".
-
-    Returns:
-        list: ``Rhino.Geometry.Mesh`` copies (base-link local, doc units).
-    """
-    cell = robot_cell_support.get_or_load_support_cell(robot_name)
-    state = robot_cell_support.default_support_cell_state(robot_name)
-    deps = robot_cell.import_compas_stack()
-    state.robot_base_frame = deps["Frame"].worldXY()
-
-    ghost_layer_key = f"{SUPPORT_GHOST_LAYER_PREFIX} {robot_name}"
-    meshes = ik_viz.get_robot_link_meshes_at_state(state, cell, layer_key=ghost_layer_key)
-    # Keep the frozen-Cindy backdrop on screen; hide only the harvest bake
-    # (a static robot parked at the world origin otherwise shows through).
-    if rs.IsLayer(config.LAYER_IK_CACHE):
-        rs.LayerVisible(config.LAYER_IK_CACHE, True)
-    ik_viz.set_layer_visible(ghost_layer_key, False)
-    ik_viz.set_layer_visible(DUAL_ARM_CONTEXT_LAYER_KEY, True)
-    sc.doc.Views.Redraw()
-    return meshes
-
-
-# ---------------------------------------------------------------------------
 # * Base-pose picker (ghost support robot dynamic preview)
 # ---------------------------------------------------------------------------
 
 
-def pick_base_frame_on_walkable(brep_id, robot_name: str,
+def pick_base_frame_on_walkable(brep_id, robot_name: str, robot_meshes,
                                 command_label: str = "RSIKKeyframe"):
     """Pick base origin + heading on the walkable brep, with the assigned
     support robot's ghost mesh tracking the cursor.
 
     Args:
         brep_id: the WalkableGround object id.
-        robot_name (str): whose ghost meshes to show ("Alice"/"Belle").
+        robot_name (str): the robot being placed ("Alice"/"Belle"), for prompts.
+        robot_meshes (list): its link meshes at zero config and identity base
+            (the ghost; from the core's drawing cell, see ``rs_ik_keyframe``).
         command_label (str): title for error message boxes.
 
     Returns:
@@ -533,7 +432,6 @@ def pick_base_frame_on_walkable(brep_id, robot_name: str,
         or all None on cancel.
     """
     brep = as_brep(brep_id)
-    robot_meshes = support_robot_ghost_meshes(robot_name)
 
     with dynamic_preview.mesh_preview(robot_meshes, alpha=0.4) as conduit:
         # Phase A: base origin on brep.

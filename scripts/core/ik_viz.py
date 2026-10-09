@@ -1,4 +1,4 @@
-"""Rhino-side scene cache for showing the dual-arm robot during IK preview.
+"""Rhino-side scene cache for showing robots during IK preview and plan viewing.
 
 What this module owns
 ---------------------
@@ -7,6 +7,13 @@ robot, one per tool, and one per rigid body (bars, joints, environment). In
 compas these drawing objects are called "scene objects", so throughout this file
 a variable named ``*_so`` (``robot_so``, ``tool_sos``, ``rb_sos``) is one of
 them.
+
+The cells always come from the shared core: a planning mirror's cell
+(``CompasFabMirror.cell``, collision meshes only) or a drawing cell
+(``core.design_display``, with visual meshes). This module never builds one. One
+layer key holds one cell: a new cell on a layer (the core rebuilt it) replaces
+the old one's meshes. Robots the core parks far away (absent, or base unknown)
+are hidden.
 
 Owning each piece on its own (instead of one big combined wrapper) means we can
 throw away and rebuild just one piece without touching the others. For example,
@@ -47,7 +54,23 @@ import Rhino  # noqa: F401  (kept so other scripts can import Rhino through this
 from core import config
 from core import joint_name_conventions as jnc
 from core.rhino_helpers import ensure_layer
-from core.robot_cell import default_cell_state, get_or_load_robot_cell, import_compas_stack
+
+#: Where the core parks an absent robot, metres (`bar_assembly_core.mirrors.compas.PARKED_POSITION`).
+_PARKED_POSITION = (50.0, 50.0, 0.0)
+
+
+def _require_cell(robot_cell, caller: str):
+    """The cell to draw; raises if none was given (the cells come from the core, see the module docstring)."""
+    if robot_cell is None:
+        raise ValueError(f"ik_viz.{caller} needs a robot cell from the core (core.design_display or a mirror)")
+    return robot_cell
+
+
+def _is_parked(frame) -> bool:
+    """Whether a compas frame sits where the core parks absent robots."""
+    if frame is None:
+        return False
+    return all(abs(float(a) - b) < 1e-6 for a, b in zip(frame.point, _PARKED_POSITION))
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +453,12 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
         return bundle
 
     layer_name = _resolve_layer(layer_key)
+    # * One cell per layer key: a new cell (the core rebuilt it) replaces the old one's meshes.
+    stale = [k for k in cache if k[1] == key[1]]
+    if stale:
+        for k in stale:
+            del cache[k]
+        _delete_layer_objects(layer_name, recursive=False)
     ensure_layer(layer_name)
 
     robot_so = _create_robot_so(robot_cell, layer_name)
@@ -455,6 +484,9 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
         # are not built yet). Refreshed by update_state and read by
         # _set_visibility_for_mode. Empty until the first state is applied.
         "hidden_rb_ids": set(),
+        # Robots the current state parks far away (absent): the cell's own robot and other robots' tools.
+        "robot_hidden": False,
+        "hidden_tool_ids": set(),
         "layer": layer_name,
         "layer_key": layer_key or "",
     }
@@ -462,41 +494,32 @@ def _get_or_create_bundle(robot_cell, layer_key: Optional[str]) -> dict:
     return bundle
 
 
-def _iter_robot_tool_mode_guids(bundle: dict, mesh_mode: str):
-    """Yield every robot and tool Rhino object id baked for one mesh mode.
+def _so_mode_guids(so, mesh_mode: str) -> list:
+    """Every Rhino object id a robot or tool drawing object baked for one mesh mode (from its per-link dict)."""
+    link_dict = (so._links_visual_mesh_native_geometry if mesh_mode == MESH_MODE_VISUAL
+                 else so._links_collision_mesh_native_geometry)
+    return [g for guids in (link_dict or {}).values() for g in guids]
 
-    The robot and tools keep their meshes in per-link dictionaries
-    (``_links_<mode>_mesh_native_geometry`` maps ``link_name -> [id, ...]``).
-    Rigid bodies are handled separately (see :func:`_rb_mode_guids`) so each
-    body's per-step hidden/shown state can be respected -- the robot and tools are
-    never hidden step by step.
+
+def _robot_tool_mode_guids(bundle: dict, mesh_mode: str):
+    """Robot and tool Rhino object ids for one mesh mode, split into (shown, parked) by the current state.
+
+    Rigid bodies are handled separately (see :func:`_rb_mode_guids`). A robot the
+    state parks far away (absent from the scene) is hidden in both modes.
 
     Args:
         bundle (dict): the cache bundle.
         mesh_mode (str): ``"visual"`` or ``"collision"``.
 
-    Yields:
-        Rhino object ids for the robot and tool links.
+    Returns:
+        tuple: ``(shown, parked)`` lists of Rhino object ids.
     """
-    is_visual = mesh_mode == MESH_MODE_VISUAL
-    robot_so = bundle["robot_so"]
-    link_dict = (
-        robot_so._links_visual_mesh_native_geometry
-        if is_visual
-        else robot_so._links_collision_mesh_native_geometry
-    )
-    for guids in (link_dict or {}).values():
-        for g in guids:
-            yield g
-    for tool_so in (bundle["tool_sos"] or {}).values():
-        link_dict = (
-            tool_so._links_visual_mesh_native_geometry
-            if is_visual
-            else tool_so._links_collision_mesh_native_geometry
-        )
-        for guids in (link_dict or {}).values():
-            for g in guids:
-                yield g
+    shown, parked = [], []
+    (parked if bundle.get("robot_hidden") else shown).extend(_so_mode_guids(bundle["robot_so"], mesh_mode))
+    hidden_tools = bundle.get("hidden_tool_ids") or set()
+    for tool_id, tool_so in (bundle["tool_sos"] or {}).items():
+        (parked if tool_id in hidden_tools else shown).extend(_so_mode_guids(tool_so, mesh_mode))
+    return shown, parked
 
 
 def _rb_mode_guids(rb_so, mesh_mode: str) -> list:
@@ -526,10 +549,9 @@ def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
     other = MESH_MODE_COLLISION if mesh_mode == MESH_MODE_VISUAL else MESH_MODE_VISUAL
     hidden_rb_ids = bundle.get("hidden_rb_ids") or set()
 
-    # Robot + tools: show the active mode, hide the other. They are never hidden
-    # step by step.
-    show = list(_iter_robot_tool_mode_guids(bundle, mesh_mode))
-    hide = list(_iter_robot_tool_mode_guids(bundle, other))
+    # Robot + tools: show the active mode, hide the other; a parked (absent) robot stays hidden.
+    show, hide = _robot_tool_mode_guids(bundle, mesh_mode)
+    hide = hide + [g for part in _robot_tool_mode_guids(bundle, other) for g in part]
 
     # Rigid bodies: a not-yet-built bar stays hidden in both modes; a bar that
     # exists at this step follows the mesh-mode toggle like everything else.
@@ -595,7 +617,7 @@ def begin_session(
       list to keep everything visible.
 
     Args:
-        robot_cell: the cell to preview; ``None`` loads the default dual-arm cell.
+        robot_cell: the cell to preview, from the core (required).
         mesh_mode (str | None): older single-mode argument; still accepted.
         hide_tool_instances (bool): older flag; when False the tool-copy layer is
             left visible. Prefer ``hide_doc_layers``.
@@ -613,9 +635,7 @@ def begin_session(
     if active_mesh_mode not in _VALID_MESH_MODES:
         raise ValueError(f"active_mesh_mode must be one of {_VALID_MESH_MODES}, got {active_mesh_mode!r}")
     set_mesh_mode(active_mesh_mode)
-
-    if robot_cell is None:
-        robot_cell = get_or_load_robot_cell()
+    robot_cell = _require_cell(robot_cell, "begin_session")
 
     ensure_layer(config.LAYER_IK_CACHE)
     rs.LayerVisible(config.LAYER_IK_CACHE, True)
@@ -691,14 +711,12 @@ def update_state(
 
     Args:
         state (RobotCellState): the pose to show.
-        robot_cell: the cell to pose; ``None`` loads the default dual-arm cell.
+        robot_cell: the cell to pose, from the core (required); ``state`` must be one of its states.
         mesh_mode (str | None): which mesh mode to leave visible.
         layer_key (str | None): which sub-layer bundle to use.
         mesh_modes (Iterable[str] | None): older argument; accepted but unused.
     """
-    if robot_cell is None:
-        robot_cell = get_or_load_robot_cell()
-
+    robot_cell = _require_cell(robot_cell, "update_state")
     bundle = _get_or_create_bundle(robot_cell, layer_key)
     _sync_rb_keyset(bundle, robot_cell)
 
@@ -726,6 +744,13 @@ def update_state(
         for rb_id, rbs in state.rigid_body_states.items()
         if getattr(rbs, "is_hidden", False)
     }
+    bundle["robot_hidden"] = _is_parked(state.robot_base_frame)
+    bundle["hidden_tool_ids"] = {tool_id for tool_id, ts in state.tool_states.items()
+                                 if ts.attached_to_group is None and _is_parked(ts.frame)}
+    if bundle["robot_hidden"]:
+        # What a parked robot holds is parked with it, far away: hide that too.
+        bundle["hidden_rb_ids"] |= {rb_id for rb_id, rbs in state.rigid_body_states.items()
+                                    if getattr(rbs, "attached_to_link", None)}
 
     was = sc.doc.Views.RedrawEnabled
     try:
@@ -822,6 +847,14 @@ def get_link_native_geometry(robot_cell, layer_key: Optional[str], mesh_mode: st
     return dict(rmo._links_collision_mesh_native_geometry or {})
 
 
+def get_rb_native_geometry(robot_cell, layer_key: Optional[str], mesh_mode: str) -> dict:
+    """Return ``{rigid_body_id: [rhino_object_id, ...]}`` of the cached bodies (design ids on core cells)."""
+    bundle = get_cached_bundle(robot_cell, layer_key)
+    if bundle is None:
+        return {}
+    return {rb_id: _rb_mode_guids(rb_so, mesh_mode) for rb_id, rb_so in (bundle["rb_sos"] or {}).items()}
+
+
 def get_tool_native_geometry(
     robot_cell, layer_key: Optional[str], mesh_mode: str
 ) -> dict:
@@ -859,15 +892,15 @@ def get_robot_link_meshes_at_state(state, robot_cell=None, layer_key: Optional[s
     Args:
         state (RobotCellState): the pose to harvest; its ``robot_configuration``
             and ``robot_base_frame`` are pushed onto the robot before copying.
-        robot_cell (RobotCell | None): the cell to bake from; ``None`` uses the
-            cached dual-arm cell.
+        robot_cell (RobotCell): the cell to bake from, from the core (required). A
+            drawing cell gives its visual meshes; a mirror's cell (no visual
+            meshes) its collision meshes.
         layer_key (str | None): which sub-layer bundle to use.
 
     Returns:
         list: copied ``Rhino.Geometry.Mesh`` objects at the posed positions.
     """
-    if robot_cell is None:
-        robot_cell = get_or_load_robot_cell()
+    robot_cell = _require_cell(robot_cell, "get_robot_link_meshes_at_state")
     bundle = _get_or_create_bundle(robot_cell, layer_key)
     rmo = bundle["robot_so"]
     # The cached drawing object still holds meshes at whatever pose the LAST
@@ -880,35 +913,14 @@ def get_robot_link_meshes_at_state(state, robot_cell=None, layer_key: Optional[s
     finally:
         sc.doc.Views.RedrawEnabled = was
     meshes = []
-    link_dict = rmo._links_visual_mesh_native_geometry or {}
-    for guids in link_dict.values():
-        for g in guids:
-            m = rs.coercemesh(g)
-            if m is not None:
-                meshes.append(m.DuplicateMesh())
+    guids = _so_mode_guids(rmo, MESH_MODE_VISUAL) or _so_mode_guids(rmo, MESH_MODE_COLLISION)
+    for g in guids:
+        m = rs.coercemesh(g)
+        if m is not None:
+            meshes.append(m.DuplicateMesh())
     if rs.IsLayer(config.LAYER_IK_CACHE):
         rs.LayerVisible(config.LAYER_IK_CACHE, False)
     return meshes
-
-
-def get_robot_link_meshes_at_zero(robot_cell=None, layer_key: Optional[str] = None):
-    """Return a flat list of Rhino meshes for every robot link at the zero pose.
-
-    A thin wrapper over :func:`get_robot_link_meshes_at_state` that poses the robot
-    at the zero configuration and a world-origin base -- the fixed pose the IK
-    base-frame sampling ghost uses (it then slides the candidate base on top as a
-    rigid transform). See that function for the copy and clean-up details.
-
-    Replaces the old ``_bake_robot_meshes_at_zero`` approach, which asked
-    ``rs.ObjectsByLayer`` for the meshes and broke once they were nested under
-    sub-layers.
-    """
-    if robot_cell is None:
-        robot_cell = get_or_load_robot_cell()
-    Frame = import_compas_stack()["Frame"]
-    zero_state = default_cell_state()
-    zero_state.robot_base_frame = Frame.worldXY()
-    return get_robot_link_meshes_at_state(zero_state, robot_cell, layer_key)
 
 
 def end_session() -> None:
@@ -943,71 +955,6 @@ def discard_cache() -> None:
     if rs.IsLayer(config.LAYER_IK_CACHE) and config.LAYER_IK_CACHE not in seen_layers:
         _delete_layer_objects(config.LAYER_IK_CACHE)
     sc.doc.Views.Redraw()
-
-
-# ---------------------------------------------------------------------------
-# * Older single-shot API kept for existing callers
-# ---------------------------------------------------------------------------
-
-
-def show_state(state, mesh_mode: Optional[str] = None, *, robot_model=None) -> None:
-    """Older one-shot draw entry point, now routed through :func:`update_state`.
-
-    The ``robot_model`` argument is honored by re-pointing the cache at the cell
-    whose ``robot_model`` matches it; callers that mix the dual-arm and support
-    previews already swap the underlying cell in PyBullet via ``set_cell_state``,
-    so the right cell is looked up from sticky when needed.
-
-    On entry the cache layer is forced visible (so older callers that skip
-    :func:`begin_session` still see the preview); it is left visible for the
-    caller's own clean-up.
-
-    Args:
-        state: the pose to draw.
-        mesh_mode (str | None): which mesh mode to show.
-        robot_model: optional robot model used to pick the matching cell.
-    """
-    if mesh_mode is None:
-        mesh_mode = get_mesh_mode()
-
-    rcell = None
-    if robot_model is not None:
-        rcell = _resolve_cell_for_robot_model(robot_model)
-    if rcell is None:
-        rcell = get_or_load_robot_cell()
-
-    ensure_layer(config.LAYER_IK_CACHE)
-    rs.LayerVisible(config.LAYER_IK_CACHE, True)
-    update_state(state, robot_cell=rcell, mesh_mode=mesh_mode)
-
-
-def _resolve_cell_for_robot_model(robot_model):
-    """Best-effort lookup of the cell whose ``robot_model`` is ``robot_model``.
-
-    Used only by the older :func:`show_state` path so callers that pass a bare
-    ``robot_model`` still bind the cache to a real cell.
-    """
-    try:
-        rcell = get_or_load_robot_cell()
-        if rcell.robot_model is robot_model:
-            return rcell
-    except Exception:
-        pass
-    # Try each support robot's cell (one per robot now).
-    for support_name in config.SUPPORT_ROBOT_NAMES:
-        try:
-            from core import robot_cell_support
-            scell = robot_cell_support.get_or_load_support_cell(support_name)
-            if scell.robot_model is robot_model:
-                return scell
-        except Exception:
-            pass
-    return None
-
-
-def reset_home() -> None:
-    """Draw the robot at its default cell state (zero configuration, identity base)."""
-    show_state(default_cell_state())
 
 
 def clear_scene() -> None:

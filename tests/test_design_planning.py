@@ -29,6 +29,9 @@ def setup():
     """A one-bar design whose keyframes are reachable, and a store for the mirrors."""
     os.environ["HUSKY_IK_BACKEND"] = "gradient"
     sys.path.insert(0, str(TAMP))
+    # ? tamp reads the backend once, at import: an earlier test may have imported it with the default (ssik).
+    from husky_assembly_tamp.keyframe import config as tamp_config
+    backend, tamp_config.IK_BACKEND = tamp_config.IK_BACKEND, "gradient"
     from dataclasses import replace
     from bar_assembly_core.design import BodySpec
     from bar_assembly_core.design.plan_check import PART_SEATS
@@ -84,6 +87,7 @@ def setup():
     yield built, store, reach, alice_tool0, rebuild
     from core.design_planning import close_mirrors
     close_mirrors(store)
+    tamp_config.IK_BACKEND = backend
 
 
 def test_keyframe_chain_solves_on_the_mirror(setup):

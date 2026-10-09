@@ -120,6 +120,43 @@ def block_instance_xform_mm(object_id) -> np.ndarray:
     return matrix
 
 
+def bar_world_frame_mm(bar_oid):
+    """A bar curve's length and frame, mm: origin at its start, z along the bar (as `joint_pair`'s bar frame).
+
+    Returns:
+        tuple: ``(length_mm, frame_world_mm)``; ``(0.0, identity)`` for a zero-length curve.
+    """
+    from core.transforms import frame_from_axes, orthogonal_to, unit  # noqa: PLC0415
+
+    scale = doc_unit_scale_to_mm()
+    p0 = point_to_array(rs.CurveStartPoint(bar_oid)) * scale
+    p1 = point_to_array(rs.CurveEndPoint(bar_oid)) * scale
+    axis = p1 - p0
+    length_mm = float(np.linalg.norm(axis))
+    if length_mm < 1e-6:
+        return 0.0, np.eye(4, dtype=float)
+    z_axis = axis / length_mm
+    x_axis = orthogonal_to(z_axis)
+    y_axis = unit(np.cross(z_axis, x_axis))
+    return length_mm, frame_from_axes(p0, x_axis, y_axis, z_axis)
+
+
+def coerce_brep(object_id):
+    """A ``Rhino.Geometry.Brep`` of a brep, surface, polysurface or extrusion object; None for anything else.
+
+    ? ``rs.coercebrep`` returns None for closed extrusions (Rhino's native box): those go through ``ToBrep``.
+    """
+    import Rhino  # noqa: PLC0415
+
+    brep = rs.coercebrep(object_id)
+    if brep is not None:
+        return brep
+    geometry = getattr(rs.coercerhinoobject(object_id, True, True), "Geometry", None)
+    if isinstance(geometry, Rhino.Geometry.Extrusion):
+        return geometry.ToBrep(False)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Object-ID list normalisation
 # ---------------------------------------------------------------------------

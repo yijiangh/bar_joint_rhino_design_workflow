@@ -1,8 +1,9 @@
-# Schema 2 export through the shared core
+# Schema 2 export and planning through the shared core
 
-Branch `claude/schema2-core`, 2026-10-08. The plugin writes **schema 2 design folders** through the shared core
-`bar_assembly_core` (submodule `external/bar_assembly_core`), then runs the core's file checks (A) and plan checks (B).
-Spec: `external/bar_assembly_core/doc/design_format.md`. The old compas_fab export still works, behind an option.
+Branch `claude/schema2-core`, 2026-10-08/09. The plugin writes **schema 2 design folders** through the shared core
+`bar_assembly_core` (submodule `external/bar_assembly_core`), runs the core's file checks (A) and plan checks (B), and
+**plans on the core**: design → `scene_at` → `CompasFabMirror` → the existing solvers (tamp, compas_fab). Spec:
+`external/bar_assembly_core/doc/design_format.md`. The old export and the old planning cell stay behind options.
 
 ## What works
 
@@ -14,6 +15,10 @@ Spec: `external/bar_assembly_core/doc/design_format.md`. The old compas_fab expo
 | `RSExportDesign` | `scripts/rs_export_design.py` | builds, writes (`write`), copies `source/`, prints A and B |
 | `RSCheckDesign` | `scripts/rs_check_design.py` | reads a design folder, prints A and B |
 | `RSExportAllBarActions` | asks for the format: `Schema2` (default, same as RSExportDesign) or `Legacy` (old export, for tamp's headless planner) | |
+| Geometry cache | `design_source.geometry_cache(sc.sticky)`: geometry, tools and robot files by content | pytest: two builds share every object; a changed bar gets a new one; no two bodies share one |
+| `RSIKKeyframe`, `RSIKKeyframeAll`, engine **Core** | `scripts/core/design_planning.py` + the commands' engine switch | headless: tamp's `solve_keyframe_chain` solves through the mirror (constructed design; `YH_ik_test.3dm` B3 at its stored base, with collision checks); **not run in Rhino** |
+| Support IK and release checks, engine Core | `design_planning.hold_solve_state`, `release_check` | headless: compas_fab IK reaches Alice's grasp; the release check runs; **not run in Rhino** |
+| Motion planning | `scripts/plan_design.py` (headless CLI) | constructed design: insert, retreat, home solved and written to `solutions/`; transfer fails (`rrt_failed`) |
 
 The schema 2 path needs numpy, scipy and trimesh only: no PyBullet, compas, compas_fab or the tamp submodule.
 `core/config.py` no longer raises when `external/husky_assembly_tamp` is missing; only the IK commands need it.
@@ -43,6 +48,43 @@ The schema 2 path needs numpy, scipy and trimesh only: no PyBullet, compas, comp
 
 `on` is set after the mount and after the support's linear approach, and cleared after the retreats. Unsolved bars
 get `null` joints; a base is kept whenever one was picked.
+
+## Planning on the core
+
+```
+Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometry/Tool objects while unchanged)
+   │
+   ├─ RSIKKeyframe / RSIKKeyframeAll, engine Core
+   │     design_planning.keyframe_movements(design, sc.sticky, bar)
+   │        scene_at(transfer | insert | retreat) + part contacts + robots with unknown state parked
+   │        → mirror_for("robots/cindy").sync(scene) → {M1, M2, M3: start_state, target_ee_frames; M4: home}
+   │     with mirror.lend() as planner: tamp solve_keyframe_chain(planner, ...)   (base sampling as before)
+   │     → keyframes written to user text, as before → next export / IK run reads them
+   │
+   ├─ support flow, engine Core (after the grasp pick, which puts the hold into the design)
+   │     design_planning.hold_solve_state → mirror_for("robots/alice"|"robots/belle"), lent
+   │     robot_cell_support.solve_support_ik(planner, state, base, flange)  → user text, as before
+   │     release_check: scene_at(HR_open), collisions at held and approach joints (after the accept)
+   │
+   └─ scripts/plan_design.py <design folder>   (headless)
+         read → per Cindy movement: scene_at → mirror → tamp motion API → solutions/<action>.json
+```
+
+- The mirrors live in `sc.sticky` (`bar_joint:core_mirrors`), one PyBullet "direct" world per robot. They rebuild
+  their cell only when a `Geometry`, `Tool` or robot model object changes; the geometry cache keeps those objects
+  while the document is unchanged. Measured headless on `YH_ik_test.3dm`: first sync 1.5 s, next command (design
+  rebuilt) 0.04 s.
+- Engine Core needs no RSPBStart, no RSRebuildRobotCell and no stale-cell prompt. It still needs the tamp and
+  compas_fab submodules (the solvers). Both commands ask `Planning engine <Core>/Legacy`; the choice is remembered.
+- Previews of the Core engine draw the mirror's cell on the IK cache sub-layer `Core`, collision meshes only.
+- Workarounds for open decisions, in `design_planning.py`, not in the core:
+  - **#1 contacts**: a tool may touch its whole part; mated halves may touch the partner's bar; ground halves any
+    ground. Without it, `YH_ik_test.3dm` B3 collides with its own tool at every bar-held keyframe (hull overlap).
+  - **#3 unknown robots**: another robot with an unknown base or joints is parked, not placed at the origin.
+  - **#4 hold scene**: a hold is solved with the bars it supports until at their design pose and the held bar hidden
+    (Rhino's legacy rule); the release is checked in the release's own moment (`scene_at(HR_open)`).
+- Robot files are resolved once per session (`package://` → relative copies in the temp folder): compas_fab cannot
+  load the source URDFs from an in-memory design.
 
 ## Choices, and why
 
@@ -78,14 +120,37 @@ get `null` joints; a base is kept whenever one was picked.
 - `writer.library` is still `design_io`; mesh file names follow dict order (review P8).
 - The design folder holds copies of the robot files (~40 MB) on every export.
 - Standalone MoCap halves and males whose partner is on a fake bar have no mate: B5 warnings.
-- The IK, viewer and load-solution commands still use the legacy cell and the old movement ids (`_J_M5_`).
+- The viewer and load-solution commands (`RSShowBarActionPlan`, `RSLoadSolvedBarAction`, GH preview) still use the
+  legacy files and movement ids (`_J_M5_`); they do not read `solutions/` yet.
+
+### Planning: untested or known broken
+
+Nothing of the planning integration has run inside Rhino. Headless, with tamp at `517d692` and the gradient IK
+backend (the ssik sidecar was not available), on a constructed design and on `YH_ik_test.3dm` read with rhino3dm:
+
+- **Untested in Rhino:** the engine prompt; ik_viz drawing the mirror's cell (bodies named by design id, collision
+  meshes only); `_bake_robot_meshes_at_zero` and the ghosts still come from the legacy cell (same robot, its visual
+  meshes); a lent mirror while Rhino's own PyBullet server (RSPBStart) is also running; the ssik backend on the
+  mirror's cell; support base sampling and the support ghosts with a mirror.
+- **Known broken or missing with engine Core:**
+  - "Inspect candidates" after an IK failure highlights no offenders (it maps legacy body names).
+  - Checkpoint 1 of the support flow (partial release check before the accept) is skipped; the core release check
+    runs after the accept instead, report-only.
+  - The hold scene uses Cindy's state at the hold from the design: if her keyframe is unsolved, she is parked.
+  - A bar left out of the design (no tool pair) has no movements: the command says so and stops.
+  - The core mirror names collision pairs by geometry object: two bodies sharing one `Geometry` are reported under
+    one name. The cache never shares; other callers of the core must not either (core issue to fix).
+- **plan_design.py:** the bar transfer (`plan_constrained_dual_arm`, derived start) failed on the constructed design
+  (`rrt_failed`, 52 s although `--transfer-time 10`); support movements are not planned (decision #11); movements
+  without arm motion are `not_planned` (decision #7).
 
 ## Testing in Rhino 8 tomorrow
 
 **Setup** (once):
 
 1. `git fetch && git checkout claude/schema2-core`, then
-   `git submodule update --init external/bar_assembly_core asset/husky_urdf` (tamp is not needed for this).
+   `git submodule update --init external/bar_assembly_core asset/husky_urdf` (tamp is not needed for the export;
+   the IK tests below need `external/husky_assembly_tamp` and `external/compas_fab` as before).
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine: a core loaded from elsewhere would be
    used instead (the export then prints `core.core_lib: WARNING bar_assembly_core is loaded from ...`).
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportDesign` and `RSCheckDesign` can be typed.
@@ -116,4 +181,24 @@ get `null` joints; a base is kept whenever one was picked.
 2. `Notes` names every bar left out, every hold left out, and every bar placed with a tool other than the design's.
 3. Optional: `RSExportAllBarActions` → `Legacy` (needs RSPBStart and the tamp submodule) still writes the old files.
 
-**Send back**: the command history of each run (Notes, A, B), and the time each export took.
+**Test 3: IK, engine Core** (on the study document; no RSPBStart needed).
+
+1. `RSIKKeyframe`, answer `Planning engine <Core>`, pick a bar whose tools are placed. Expected: `core planning`
+   lines, `rebuilt the planning cell for robots/cindy in … s; why: first build`, then the usual base prompts and the
+   chain solve. On accept the keyframes are written as before.
+2. Run it again on another bar: the cell must **not** be rebuilt (no `rebuilt the planning cell` line) unless the
+   geometry changed.
+3. Re-click a held bar for the support flow: after the grasp pick, `rebuilt the planning cell for robots/alice`,
+   then the support solve; after the accept, `release check for held bar …: OK` or the colliding pairs.
+4. `RSIKKeyframeAll`, engine Core, two or three bars: solved/failed colors as before; the support pass re-solves
+   stored holds and prints a release check per hold.
+5. Compare with engine `Legacy` on the same bar (needs RSPBStart): both should solve; differences in collision
+   pairs are the contacts workaround (#1).
+
+**Test 4: motion planning** (outside Rhino, in a Python with the core's `[mirrors]` extra and tamp):
+`HUSKY_IK_BACKEND=gradient python scripts/plan_design.py <design folder> --bars B10`, on a folder written by
+RSExportDesign after Test 3. Expected: `B10_J_insert`, `B10_R_retreat`, `B10_R_home` solved or failed with a
+reason, and `solutions/B10_J.json`, `solutions/B10_R.json`; then `RSCheckDesign` still passes A.
+
+**Send back**: the command history of each run (Notes, A, B, the `core planning` and `rebuilt the planning cell`
+lines), and the time each export and solve took.

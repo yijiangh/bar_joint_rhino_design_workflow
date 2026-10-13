@@ -1875,8 +1875,8 @@ def ik_preview_legend_lines():
     return [
         "IK color preview -- what the bar colors mean:",
         "  gray blue  = bar HAS a solved IK keyframe",
-        "  yellow  = STALE IK: the bar was moved or copied after its solve; "
-        "solve it again (RSIKKeyframe)",
+        "  yellow  = STALE IK: the saved pose no longer reaches the bar's tools "
+        "(moved or copied after the solve); solve it again (RSIKKeyframe)",
         "  pink  = IK attempted but FAILED (shown live during "
         "RSIKKeyframeAll; not persisted)",
         "  default (by-layer)   = no IK solved yet",
@@ -1917,41 +1917,35 @@ def clear_ik_preview():
     return n
 
 
-def find_stale_ik_bars():
-    """The fabricated bars whose keyframe cannot belong to where the bar is now.
+def find_stale_ik_bars(caller="RSScaffolding"):
+    """The fabricated bars whose saved IK no longer reaches its target in the document as it is now.
+
+    The core decides (plan check B15, through ``core.ik_status``): the document
+    is read into a design and each saved pose is compared with the flange poses
+    the placed tools ask for.
 
     Returns:
-        dict: ``{bar_id: reason}``, in sequence order (``core.keyframe_store.stale_ik_reason``).
+        dict | None: ``{bar_id: reason}`` in sequence order; None when the
+        document cannot become a design, so nothing can be said.
     """
-    from core.keyframe_store import stale_ik_reason  # noqa: PLC0415
+    from core.ik_status import document_stale_ik  # noqa: PLC0415 -- needs the core; keep this module import-light
 
+    stale = document_stale_ik(caller)
+    if stale is None:
+        return None
     bar_map = get_bar_seq_map()
     fake_ids = get_fake_bar_ids(bar_map)
-    stale = {}
-    for bar_id, (oid, _seq) in sorted(bar_map.items(), key=lambda item: item[1][1]):
-        if bar_id in fake_ids:
-            continue
-        reason = stale_ik_reason(oid)
-        if reason:
-            stale[bar_id] = reason
-    return stale
+    order = sorted((b for b in stale if b in bar_map and b not in fake_ids), key=lambda b: bar_map[b][1])
+    return {bar_id: stale[bar_id] for bar_id in order}
 
 
-def stale_ik_lines(stale, limit=8):
-    """The lines that report :func:`find_stale_ik_bars`' result; none when it is empty."""
-    if not stale:
-        return []
-    lines = [f"STALE IK on {len(stale)} bar(s): each counts as solved, but its saved robot pose is not at the "
-             "bar any more. Solve them again with RSIKKeyframe (or clear them with RSClearIKKeyframe)."]
-    lines += [f"  {bar_id}: {reason}" for bar_id, reason in list(stale.items())[:limit]]
-    if len(stale) > limit:
-        lines.append(f"  ... and {len(stale) - limit} more: {', '.join(list(stale)[limit:])}")
-    return lines
-
-
-def show_all_ik_preview():
+def show_all_ik_preview(stale=None):
     """Color every solved bar ``COLOR_HAS_IK`` (``COLOR_STALE_IK`` if its keyframe is
     stale); leave unsolved bars by-layer.
+
+    Args:
+        stale: A :func:`find_stale_ik_bars` result the caller already has;
+            None asks for it here.
 
     Reverts all bar colors first (so a stale color from a previous run does not
     linger), then paints the bars that currently carry a solved IK keyframe. Only
@@ -1966,8 +1960,10 @@ def show_all_ik_preview():
         tuple[int, int]: ``(n_has_ik, n_total)`` over the fabricated bars only.
     """
     # Lazy import: keep this module import-light.
-    from core.keyframe_store import has_ik_keyframe, stale_ik_reason
+    from core.keyframe_store import has_ik_keyframe
 
+    if stale is None:
+        stale = find_stale_ik_bars() or {}
     bar_map = get_bar_seq_map()
     fake_ids = get_fake_bar_ids(bar_map)
     n_has_ik = n_total = 0
@@ -1980,7 +1976,7 @@ def show_all_ik_preview():
         if has_ik_keyframe(oid):
             # A stale keyframe still counts as "has IK" (the IK commands skip the
             # bar the same way); the color and find_stale_ik_bars tell them apart.
-            paint_bar(oid, COLOR_STALE_IK if stale_ik_reason(oid) else COLOR_HAS_IK)
+            paint_bar(oid, COLOR_STALE_IK if bar_id in stale else COLOR_HAS_IK)
             n_has_ik += 1
         else:
             reset_bar_color(oid)

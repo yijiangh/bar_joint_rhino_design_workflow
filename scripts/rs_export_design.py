@@ -34,7 +34,8 @@ from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.pat
 from core import design_builder as _design_builder_module  # noqa: E402
 from core import design_source as _design_source_module  # noqa: E402
 from core import rhino_walkable_ground as _walkable_module  # noqa: E402
-from core.rhino_bar_registry import find_stale_ik_bars, repair_on_entry, stale_ik_lines  # noqa: E402
+from core.ik_status import stale_from, stale_ik_lines  # noqa: E402
+from core.rhino_bar_registry import repair_on_entry  # noqa: E402
 from bar_assembly_core.design import DesignError, write  # noqa: E402
 from bar_assembly_core.design.plan_check import check_plan  # noqa: E402
 from rs_check_design import DESIGN_FOLDER_STICKY_KEY, report_lines  # noqa: E402
@@ -98,9 +99,6 @@ def export(command: str = "RSExportDesign") -> None:
         return
     built = time.perf_counter()
     lines = [f"{command}: built in {built - started:.1f} s"]
-    # Bars moved or copied after their solve still export as solved: say so before the checks.
-    stale = find_stale_ik_bars()
-    lines += stale_ik_lines(stale)
     if result.problems:
         lines += [f"Notes ({len(result.problems)}):"] + [f"  {p}" for p in result.problems]
     try:
@@ -117,15 +115,18 @@ def export(command: str = "RSExportDesign") -> None:
         _copy_sources(folder, config)
     with session_log.step("check plan (B)"):
         report = check_plan(written)
+    # The core's verdict on the saved IK (B15), by bar: these bars export as solved, with poses that miss.
+    stale = stale_from(report.unreached)
     n = sum(len(a.movements) for a in written.actions.values())
     solved = sum(1 for a in written.actions.values() if a.type == "bar_jointing" and a.movements[-1].target.joints)
     jointing = sum(1 for a in written.actions.values() if a.type == "bar_jointing")
     lines += [f"Wrote {folder} in {time.perf_counter() - built:.1f} s: {len(written.bodies)} bodies, "
               f"{len(written.mates)} mates, {len(written.actions)} actions, {n} movements; "
               f"{solved}/{jointing} bars with IK", "A (file checks): passed"] + report_lines(report)
+    lines += stale_ik_lines(stale)
     print("\n".join(lines))
-    stale_note = (f"\n\nSTALE IK on {len(stale)} bar(s): moved or copied after the solve, so their robot poses are "
-                  "wrong. Re-run RSIKKeyframe on them." if stale else "")
+    stale_note = (f"\n\nSTALE IK on {len(stale)} bar(s) (plan check B15): their saved robot poses no longer reach "
+                  "the bars' tools. Re-run RSIKKeyframe on them, then export again." if stale else "")
     rs.MessageBox(f"Wrote {folder}\n\n{len(written.actions)} actions ({solved}/{jointing} bars with IK), "
                   f"{len(result.problems)} note(s)\nA passed; B {len(report.errors)} error(s), "
                   f"{len(report.warnings)} warning(s){stale_note}\n\nDetails in the command history.", 0, command)

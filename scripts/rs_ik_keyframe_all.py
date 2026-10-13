@@ -69,6 +69,7 @@ rhino_env.activate()
 import session_log  # noqa: E402
 
 import numpy as np
+import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -95,9 +96,13 @@ from core.rhino_bar_registry import (
     BAR_ID_KEY,
     COLOR_FAILED,
     COLOR_HAS_IK,
+    find_stale_ik_bars,
+    get_bar_seq_map,
+    get_fake_bar_ids,
     paint_bar,
     show_all_ik_preview,
 )
+from core.ik_status import stale_ik_lines
 
 
 # Bound at import so the helpers below work even before main() runs; main()
@@ -108,28 +113,87 @@ rhino_tool_place = _rhino_tool_place_module
 
 
 def _preview_existing_ik():
-    """Color every bar that already has a solved IK keyframe (REQ1).
+    """Color every bar that already has a solved IK keyframe (REQ1); stale ones in their own color.
 
     Reuses the shared :func:`show_all_ik_preview` so the entry preview matches
     RSUpdatePreview's ShowColorsPreview option exactly.
+
+    Returns:
+        dict: ``{bar_id: reason}`` of the bars whose saved IK no longer reaches its
+        target (the core's plan check B15). Their keyframe does not count as solved
+        here: a selected stale bar is solved again without asking. Empty when the
+        document could not be checked (the reason is printed); every keyframe then
+        counts as solved, as before.
     """
-    n_has_ik, _n_total = show_all_ik_preview()
+    stale = find_stale_ik_bars("RSIKKeyframeAll") or {}
+    n_has_ik, _n_total = show_all_ik_preview(stale)
     if n_has_ik:
-        print(f"RSIKKeyframeAll: {n_has_ik} bar(s) already have IK "
-              "(shown in the solved color).")
+        print(f"RSIKKeyframeAll: {n_has_ik - len(stale)} bar(s) already have IK "
+              "(shown in the solved color)"
+              + (f", {len(stale)} more have STALE IK (yellow)." if stale else "."))
+    for line in stale_ik_lines(stale):
+        print(f"RSIKKeyframeAll: {line}")
+    return stale
 
 
-def _select_bars():
-    """Multi-select bars (curve or tube); return ``{bar_id: curve_oid}`` or None."""
-    picked = rs.GetObjects(
-        "Select bars for multi-bar IK (Enter when done)",
-        custom_filter=bar_or_tube_filter,
-        preselect=True,
-        select=False,
-        minimum_count=1,
-    )
-    if not picked:
+class _GetMultiple:
+    """A `GetObject` whose `Get()` is `GetMultiple(1, 0)`, so `session_log.ask` logs a multi-pick like any prompt."""
+
+    def __init__(self, getter):
+        self._getter = getter
+
+    def Get(self):
+        return self._getter.GetMultiple(1, 0)
+
+    def __getattr__(self, name):
+        return getattr(self._getter, name)
+
+
+def _select_bars(stale=()):
+    """Multi-select bars (curve or tube), or take them all with an option.
+
+    The prompt offers two options beside picking (window-select works too):
+
+    - ``AllBars``: every fabricated bar of the document, in assembly order.
+    - ``UnsolvedBars``: those without valid IK -- no keyframe yet, or a stale one.
+
+    Fake bars are never offered by the options (the robot does not assemble them);
+    bars the options include but that cannot be solved (no tool pair, no ground)
+    are reported as skipped later, as for a manual pick.
+
+    Args:
+        stale: Bar ids whose saved IK is stale (``_preview_existing_ik``).
+
+    Returns:
+        dict | None: ``{bar_id: curve_oid}``; None when nothing was selected.
+    """
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("Select bars for multi-bar IK (Enter when done)")
+    go.SetCustomGeometryFilter(bar_or_tube_filter)
+    go.EnablePreSelect(True, True)
+    go.SubObjectSelect = False
+    go.GroupSelect = True
+    go.AddOption("AllBars")
+    go.AddOption("UnsolvedBars")
+    result = session_log.ask(_GetMultiple(go))
+    if result == Rhino.Input.GetResult.Option:
+        which = go.Option().EnglishName
+        bar_map = get_bar_seq_map()
+        fake_ids = get_fake_bar_ids(bar_map)
+        bars = {}
+        for bar_id, (curve, _seq) in sorted(bar_map.items(), key=lambda item: item[1][1]):
+            if bar_id in fake_ids:
+                continue
+            if which == "UnsolvedBars" and bar_id not in stale and ikf.keyframe_store.has_ik_keyframe(curve):
+                continue
+            bars[bar_id] = curve
+        print(f"RSIKKeyframeAll: {which}: {len(bars)} bar(s)"
+              + (f": {', '.join(bars)}." if bars else "."))
+        return bars or None
+    if result != Rhino.Input.GetResult.Object:
         return None
+    picked = [go.Object(i).ObjectId for i in range(go.ObjectCount)]
+    rs.UnselectAllObjects()  # as rs.GetObjects(select=False): the pick is not left selected
     bars = {}
     for pid in picked:
         curve = resolve_picked_to_bar_curve(pid)
@@ -194,7 +258,7 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
         flip=flip, diag_out=diag, soup_cache=soup_cache, verbose=True,
     )
     if base_frame is None:
-        return None, "no assigned/meshable WalkableGround to stand a base on."
+        return None, "no base could be placed: no assigned/meshable WalkableGround, or see the command history."
     ikf._write_assembly_base_frame(curve, base_frame)
 
     # Guide lines for this bar, built on the SAME heading the base just used, so
@@ -442,9 +506,12 @@ def _flip_bars(rwg, placed, flipped, bar_ids, standoff, grounds, soup_cache):
         print(f"RSIKKeyframeAll: {bar_id}: base flipped to the other side of the bar.")
 
 
-def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_run):
+def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_run, stale_ids=()):
     """Build the multiline popup summary string."""
     lines = [f"Multi-bar IK on {len(bars)} selected bar(s):", ""]
+    stale_ids = sorted(set(stale_ids or ()) & set(bars))
+    if stale_ids:
+        lines.append(f"Had STALE IK (treated as unsolved): {len(stale_ids)}  {', '.join(stale_ids)}")
     if solved_run:
         lines.append(f"Newly solved: {len(solved_ids)}"
                      + (f"  {', '.join(solved_ids)}" if solved_ids else ""))
@@ -491,9 +558,14 @@ def main():
     rwg.ensure_ground_and_base("RSIKKeyframeAll")
 
     # REQ1: preview which bars already have IK before the user selects anything.
-    _preview_existing_ik()
+    # A stale keyframe (the bar moved or was copied after its solve) is not a
+    # solution of this bar any more: such bars are treated as unsolved below.
+    stale = _preview_existing_ik()
 
-    bars = _select_bars()
+    def has_valid_ik(bar_id, curve):
+        return bar_id not in stale and ikf.keyframe_store.has_ik_keyframe(curve)
+
+    bars = _select_bars(stale)
     if not bars:
         print("RSIKKeyframeAll: no bars selected.")
         return
@@ -501,9 +573,11 @@ def main():
     # Selected bars that already carry solved IK. Recalculating them IS allowed, but
     # warn first (before the standoff prompt) so an accidental pick of a solved bar
     # is caught up front and good IK is not overwritten by accident.
-    already_selected = sorted(
-        bid for bid, curve in bars.items() if ikf.keyframe_store.has_ik_keyframe(curve)
-    )
+    already_selected = sorted(bid for bid, curve in bars.items() if has_valid_ik(bid, curve))
+    stale_selected = sorted(bid for bid in bars if bid in stale)
+    if stale_selected:
+        print(f"RSIKKeyframeAll: {len(stale_selected)} selected bar(s) have STALE IK and are solved again: "
+              f"{', '.join(stale_selected)}.")
     recalc_solved = False
     if already_selected:
         resp = rs.MessageBox(
@@ -537,7 +611,7 @@ def main():
     already_ids = []
     to_process = []  # (bar_id, curve)
     for bar_id, curve in bars.items():
-        if ikf.keyframe_store.has_ik_keyframe(curve) and not recalc_solved:
+        if has_valid_ik(bar_id, curve) and not recalc_solved:
             already_ids.append(bar_id)
             paint_bar(curve, COLOR_HAS_IK)
         else:
@@ -571,7 +645,7 @@ def main():
         if not placed:
             print("RSIKKeyframeAll: no processable bars (nothing to place).")
             rs.MessageBox(
-                _summary(bars, placed, [], [], already_ids, skipped, solved_run=False),
+                _summary(bars, placed, [], [], already_ids, skipped, solved_run=False, stale_ids=stale),
                 0, "RSIKKeyframeAll",
             )
             return
@@ -621,7 +695,7 @@ def main():
                 print("RSIKKeyframeAll: bases saved on the selected bars; "
                       "skipped IK solve.")
             rs.MessageBox(
-                _summary(bars, placed, [], [], already_ids, skipped, solved_run=False),
+                _summary(bars, placed, [], [], already_ids, skipped, solved_run=False, stale_ids=stale),
                 0, "RSIKKeyframeAll",
             )
             return
@@ -634,7 +708,7 @@ def main():
         if opts is None:
             print("RSIKKeyframeAll: cancelled at collision options (bases still saved).")
             rs.MessageBox(
-                _summary(bars, placed, [], [], already_ids, skipped, solved_run=False),
+                _summary(bars, placed, [], [], already_ids, skipped, solved_run=False, stale_ids=stale),
                 0, "RSIKKeyframeAll",
             )
             return
@@ -667,7 +741,7 @@ def main():
         _clear_base_preview(base_frame_viz)
 
         msg = _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped,
-                       solved_run=True)
+                       solved_run=True, stale_ids=stale)
         support_lines = []
         if support_resolved:
             support_lines.append(f"Support holds re-solved: {len(support_resolved)}"

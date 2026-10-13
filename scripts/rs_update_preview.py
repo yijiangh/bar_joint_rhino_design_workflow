@@ -175,6 +175,14 @@ def _run_update_preview():
     rs.Redraw()
 
 
+def _stale_ik_line(stale):
+    """The popup's line on stale IK; `stale` is None when the document could not be checked."""
+    if stale is None:
+        return "  saved IK NOT checked -- the document cannot become a design (see the command history)"
+    return (f"  {len(stale)} bar(s) with STALE IK (yellow) -- the saved pose no longer reaches the bar's tools; "
+            "re-run RSIKKeyframe")
+
+
 def _show_summary(tool_counts, n_sides, n_tools, unmated, usertext_issues, links):
     """Pop up one report covering every pass, in one format.
 
@@ -194,8 +202,7 @@ def _show_summary(tool_counts, n_sides, n_tools, unmated, usertext_issues, links
         "Needs your attention",
         f"  {n_orphans} orphaned joint/tool(s) -- parent bar is gone",
         f"  {n_bare} bar(s) carrying no joint",
-        f"  {len(links.get('stale_ik', {}))} bar(s) with STALE IK (yellow) -- moved or copied after "
-        "the solve; re-run RSIKKeyframe",
+        _stale_ik_line(links.get("stale_ik")),
         f"  {len(unmated)} joint(s) whose halves no longer mate -- re-run RSJointEdit",
         f"  {len(usertext_issues)} joint user-text issue(s) (stale/copied ids) -- "
         "RSReorderBarID > Relink",

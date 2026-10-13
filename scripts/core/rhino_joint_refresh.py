@@ -556,21 +556,24 @@ def show_colors_preview() -> dict:
 
     Returns:
         dict: the :func:`find_broken_links` result, for the caller to summarise,
-        plus ``"stale_ik"``: ``{bar_id: reason}`` of the bars whose keyframe is stale.
+        plus ``"stale_ik"``: ``{bar_id: reason}`` of the bars whose keyframe is stale
+        (None when the document could not be checked).
     """
     from core.rhino_bar_registry import (  # noqa: PLC0415
         find_stale_ik_bars,
         print_ik_preview_legend,
         show_all_ik_preview,
-        stale_ik_lines,
     )
+    from core.ik_status import stale_ik_lines  # noqa: PLC0415
 
     clear_broken_link_marks()
 
-    n_has_ik, n_total = show_all_ik_preview()
+    # None: the document cannot become a design, so the saved IK was not checked.
+    stale = find_stale_ik_bars("RSUpdatePreview")
+    n_has_ik, n_total = show_all_ik_preview(stale or {})
     print_ik_preview_legend()
-    print(f"  {n_has_ik}/{n_total} bar(s) have a solved IK keyframe.")
-    stale = find_stale_ik_bars()
+    print(f"  {n_has_ik}/{n_total} bar(s) have a solved IK keyframe"
+          + (f", {len(stale)} of them stale." if stale else "."))
     for line in stale_ik_lines(stale):
         print(f"  {line}")
 

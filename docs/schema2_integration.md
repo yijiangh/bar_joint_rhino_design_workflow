@@ -65,6 +65,30 @@ compas, no PyBullet. Every core import needs yourdfpy (in `requirements-rhino.tx
 (`T20/Male`, `T20Deck12/Male`, identity seat), every ground joint with its seat = `M_tool_from_block`⁻¹ (`T20/Ground`:
 180° about z); receivers get no tool in Rhino's flow, so no seat.
 
+## Stale IK: the core decides
+
+A keyframe on a bar is a robot base and joints in world values. Nothing moves them when the bar, a connector or a
+tool is moved afterwards, or when the bar is copied with its user text; the bar still counts as solved.
+
+- **The test** is the core's plan check **B15** (`plan_check.unreached_targets`): where a movement's target gives both
+  joints and link poses, forward kinematics of the joints must land on the link poses (0.1 mm, 1 mrad). The link
+  poses are the flange targets `design_source` reads from the placed tool blocks, so they follow the document; the
+  joints are the saved keyframe.
+- **Back to Rhino**: the core returns `UnreachedTarget(action, movement, bar, link, distance, angle)`;
+  `core/ik_status.py` turns them into `{bar id: reason}`. `PlanReport.unreached` carries the same data for an export.
+- **Where it shows**: RSUpdatePreview paints stale bars yellow and lists them; RSExportDesign prints them with the B15
+  errors and names them in its message box (the design is written as it is: the plan check says it is not valid).
+- **In the plan viewers** (RSShowBarActionPlan, RSShowAssemblyPlan): the stale bars are listed when the viewer opens;
+  at a stale bar's steps the robot is drawn yellow, at its saved pose, and the step line says `STALE IK`.
+  The viewers also colour the drawn bar and joint meshes by sequence (`rhino_bar_registry.sequence_colors`,
+  `ik_viz.update_state(colors=...)`): they hide the document's tubes, which is where those colours used to go.
+- The verdict is computed from the document every time, never saved on the bars.
+- ! It is about reaching, not colliding: a bar added next to a solved one changes the scene, not the target.
+- RSIKKeyframeAll treats a stale bar as unsolved: it is painted yellow at entry, and when selected it is solved
+  again without the overwrite question, which is asked only for bars whose IK is still valid.
+- ! A support robot's hold is not caught: its flange target comes from the saved grasp frame, a world value like
+  the saved joints (`design_source._hold_record`), so the two agree wherever the bar is now.
+
 ## Dataflow
 
 ```

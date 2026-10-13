@@ -88,6 +88,25 @@ def test_ik_backend_defaults_to_gradient_without_ssik(env, monkeypatch, tmp_path
     assert os.environ["HUSKY_IK_BACKEND"] == "ssik"
 
 
+def test_ik_backend_fallback_is_decided_again_once_ssik_is_set_up(env, monkeypatch, tmp_path):
+    """The environment outlives a reload of Rhino's Python engine: our own `gradient` must not stick."""
+    monkeypatch.delenv("HUSKY_IK_BACKEND", raising=False)
+    monkeypatch.delenv(rhino_env._AUTO_BACKEND_MARK, raising=False)
+    venv, artifacts = tmp_path / "venv", tmp_path / "ssik"
+    monkeypatch.setenv("HUSKY_SSIK_VENV_DIR", str(venv))
+    monkeypatch.setenv("HUSKY_SSIK_ARTIFACT_DIR", str(artifacts))
+    rhino_env.activate(force=True)
+    assert os.environ["HUSKY_IK_BACKEND"] == "gradient" and "no Python 3.11 environment" in rhino_env.ik_fallback_reason
+    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    artifacts.mkdir()
+    rhino_env._active = None  # what a reload of the engine does
+    rhino_env.activate(force=True)
+    assert "HUSKY_IK_BACKEND" not in os.environ
+    monkeypatch.delenv(rhino_env._AUTO_BACKEND_MARK, raising=False)
+
+
 def test_submodule_folders_are_put_back_on_the_path_every_time(env, monkeypatch):
     """`core.core_lib` adds them only at its first import; a command after a lost `sys.path` must still find them."""
     rhino_env.activate(force=True)

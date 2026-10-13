@@ -141,13 +141,22 @@ def _warn_foreign_copies(target: str) -> List[str]:
     return foreign
 
 
+#: Set next to a `HUSKY_IK_BACKEND=gradient` that `_default_ik_backend` chose, not the user.
+_AUTO_BACKEND_MARK = "BAR_JOINT_IK_BACKEND_AUTO"
 #: The submodule folders that hold importable packages (`core.core_lib` puts them on `sys.path` at its first import).
 SUBMODULE_PATHS = (os.path.join(REPO_ROOT, "external", "bar_assembly_core"),
                    os.path.join(REPO_ROOT, "external", "compas_fab", "src"))
+#: Why IK runs on the slow `gradient` backend although nobody asked for it ("" when it does not): what is missing.
+ik_fallback_reason = ""
 
 
 def _default_ik_backend() -> None:
     """Use the `gradient` IK backend unless ssik is set up (its venv and its solver modules) or one was chosen."""
+    global ik_fallback_reason
+    # ! The environment outlives a reload of Rhino's Python engine: a `gradient` this function set itself is marked,
+    # ! and decided again, so setting ssik up takes effect without restarting Rhino. A user's own choice is kept.
+    if os.environ.pop(_AUTO_BACKEND_MARK, None) and os.environ.get("HUSKY_IK_BACKEND") == "gradient":
+        os.environ.pop("HUSKY_IK_BACKEND", None)
     if os.environ.get("HUSKY_IK_BACKEND"):
         return
     venv = os.environ.get("HUSKY_SSIK_VENV_DIR") or os.path.join(REPO_ROOT, "external", "ssik_env")
@@ -155,6 +164,10 @@ def _default_ik_backend() -> None:
     artifacts = os.environ.get("HUSKY_SSIK_ARTIFACT_DIR") or os.path.join(REPO_ROOT, "asset", "ssik")
     if not (os.path.isfile(python) and os.path.isdir(artifacts)):
         os.environ["HUSKY_IK_BACKEND"] = "gradient"
+        os.environ[_AUTO_BACKEND_MARK] = "1"
+        ik_fallback_reason = "; ".join(
+            [f"no Python 3.11 environment at {venv}"] * (not os.path.isfile(python))
+            + [f"no solver modules at {artifacts}"] * (not os.path.isdir(artifacts)))
         _say("rhino_env: ssik is not set up (README, 'Analytical IK solver'); IK uses the gradient backend.")
 
 

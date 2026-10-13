@@ -1531,6 +1531,26 @@ def _reach_inputs(urdf, ordered):
     return reach, targets
 
 
+_SLOW_IK_WARNED_KEY = "bar_joint:slow_ik_warned"
+
+
+def warn_slow_ik_backend(command):
+    """Say that IK runs on the slow fallback solver: a line on every run, a message box once per session."""
+    if config.IK_BACKEND == "ssik":
+        return
+    # getattr: a Rhino session started before this attribute existed still holds the old module.
+    why = getattr(rhino_env, "ik_fallback_reason", "") or "HUSKY_IK_BACKEND=gradient is set"
+    print(f"{command}: WARNING: IK runs on the slow 'gradient' solver ({why}). Each failed base takes ~20 s and "
+          "InspectCandidates is not offered. Set up ssik: README, 'Analytical IK solver (ssik)'.")
+    if not sc.sticky.get(_SLOW_IK_WARNED_KEY):
+        sc.sticky[_SLOW_IK_WARNED_KEY] = True
+        rs.MessageBox(
+            "IK is running on the slow fallback solver ('gradient'), not ssik.\n\n"
+            f"Reason: {why}.\n\n"
+            "Expect about 20 s per failed robot base, more failures, and no InspectCandidates option.\n"
+            "Setup: README, section 'Analytical IK solver (ssik)'.", 48, command)
+
+
 @session_log.timed()
 def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                                brep_id, heading_mm, include_self, include_env,
@@ -1939,10 +1959,13 @@ def _ask_chain_failure(allow_inspect: bool, prompt: str = None):
         ``"give_up"``.
     """
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt(
-        prompt
-        or "IK chain failed. Inspect candidates, retry the same base, retry a new base, or give up"
-    )
+    if prompt is None and allow_inspect:
+        prompt = "IK chain failed. Inspect candidates, retry the same base, retry a new base, or give up"
+    elif prompt is None:
+        # Say why the option is missing: without ssik there are no candidate pairs to show.
+        prompt = ("IK chain failed (InspectCandidates needs the ssik solver, not set up here). "
+                  "Retry the same base, retry a new base, or give up")
+    go.SetCommandPrompt(prompt)
     inspect_idx = go.AddOption("InspectCandidates") if allow_inspect else None
     retry_same_idx = go.AddOption("RetrySameBase")
     retry_new_idx = go.AddOption("RetryNewBase")
@@ -2732,6 +2755,7 @@ def _main(stack, after):
         None.
     """
     _reload_runtime_modules()
+    warn_slow_ik_backend("RSIKKeyframe")
     repair_on_entry(float(config.BAR_RADIUS), "RSIKKeyframe")
 
     rs.UnselectAllObjects()

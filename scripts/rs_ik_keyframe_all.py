@@ -486,6 +486,7 @@ def main():
     base_guide_viz = importlib.reload(_base_guide_viz_module)
     rhino_tool_place = importlib.reload(_rhino_tool_place_module)
 
+    ikf.warn_slow_ik_backend("RSIKKeyframeAll")
     ikf.repair_on_entry(float(ikf.config.BAR_RADIUS), "RSIKKeyframeAll")
 
     # REQ1: preview which bars already have IK before the user selects anything.

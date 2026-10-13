@@ -169,6 +169,10 @@ A third submodule, [husky_assembly_tamp](https://github.com/yijiangh/husky_assem
 
 **Until both exist, the Rhino commands use the `gradient` backend automatically** (`scripts/rhino_env.py` says so once per session). The built solver modules (`left_ur_arm_ik.py`, `right_ur_arm_ik.py`) are not in the tamp commit this repo pins: they are committed on tamp branches such as `yh/ssik-speedup`, at the tamp repo's own `asset/ssik`. Copy them to `<this repo>/asset/ssik`, or point `HUSKY_SSIK_ARTIFACT_DIR` at them.
 
+Or build them from this repo's own calibrated URDF (a few seconds per arm; install `"ssik[urdf]"` instead of `ssik` below, and see the sidecar README, step 2, for the two `ssik build` commands). `asset/ssik/` is machine-local until someone commits it.
+
+Without ssik, `RSIKKeyframe` and `RSIKKeyframeAll` say so in a message box once per session and on every run in the command history: the `gradient` fallback takes about 20 s per failed robot base and offers no `InspectCandidates`. Either backend skips a base whose arms cannot reach the flange targets by distance alone (`scripts/core/reach_check.py`) without calling the solver.
+
 You do **not** need Python 3.11 to be your system/default interpreter — your everyday `python` can stay 3.8–3.10. The easiest way is [uv](https://docs.astral.sh/uv/), a standalone tool (not run "through" your Python). Install it once (needs no Python):
 
 - **Windows** (PowerShell): `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`

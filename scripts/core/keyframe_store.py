@@ -57,6 +57,45 @@ def has_ik_keyframe(bar_oid) -> bool:
     return read_assembly_keyframe(bar_oid) is not None
 
 
+#: Farthest a solved base can stand from its bar, measured in the base's ground plane: the arm's reach plus the
+#: arm mount's offset from the base origin, the tool and the joint (generous: solved bars measure under 1 m).
+STALE_BASE_DISTANCE_MM = config.ARM_REACH_RADIUS_MM + 650.0
+
+
+def base_to_bar_distance_mm(base_frame_world_mm, bar_start_mm, bar_end_mm) -> float:
+    """How far the bar is from the base origin, in the base's ground plane (its xy): mm to the nearest point of the
+    bar's segment. Rhino-free."""
+    base = np.asarray(base_frame_world_mm, dtype=float)
+    a, b = ((base[:3, :3].T @ (np.asarray(p, dtype=float) - base[:3, 3]))[:2] for p in (bar_start_mm, bar_end_mm))
+    along = b - a
+    length_sq = float(along @ along)
+    t = 0.0 if length_sq <= 1e-12 else min(1.0, max(0.0, float(-a @ along) / length_sq))
+    return float(np.linalg.norm(a + t * along))
+
+
+def stale_ik_reason(bar_oid) -> Optional[str]:
+    """Why the bar's assembly keyframe cannot belong to where the bar is now, or None (also None without one).
+
+    A bar moved, rotated or copied after its solve keeps its keyframe: the base frame and the joints are world
+    values in user text, and nothing moves them along. The test is the base standing out of reach of the bar.
+
+    - ? It catches large moves only (metres, as after copying a module). A bar nudged within reach passes; the
+      plan check's B14 at export measures every keyframe exactly.
+    """
+    keyframe = read_assembly_keyframe(bar_oid)
+    if keyframe is None:
+        return None
+    from core.rhino_helpers import curve_endpoints, doc_unit_scale_to_mm  # noqa: PLC0415
+
+    scale = doc_unit_scale_to_mm()
+    start, end = (p * scale for p in curve_endpoints(bar_oid))
+    distance = base_to_bar_distance_mm(keyframe["base_frame_world_mm"], start, end)
+    if distance <= STALE_BASE_DISTANCE_MM:
+        return None
+    return (f"the saved robot base stands {distance / 1000.0:.1f} m from the bar (the arms reach about "
+            f"{STALE_BASE_DISTANCE_MM / 1000.0:.1f} m): the bar was moved or copied after its IK was solved")
+
+
 def load_assembly_payload(bar_oid) -> dict:
     """The assembled keyframe as the flat left/right payload the support flow anchors to.
 

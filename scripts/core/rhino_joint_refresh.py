@@ -555,11 +555,14 @@ def show_colors_preview() -> dict:
     broken beats IK, since a bar with no joint is the more urgent problem.
 
     Returns:
-        dict: the :func:`find_broken_links` result, for the caller to summarise.
+        dict: the :func:`find_broken_links` result, for the caller to summarise,
+        plus ``"stale_ik"``: ``{bar_id: reason}`` of the bars whose keyframe is stale.
     """
     from core.rhino_bar_registry import (  # noqa: PLC0415
+        find_stale_ik_bars,
         print_ik_preview_legend,
         show_all_ik_preview,
+        stale_ik_lines,
     )
 
     clear_broken_link_marks()
@@ -567,8 +570,12 @@ def show_colors_preview() -> dict:
     n_has_ik, n_total = show_all_ik_preview()
     print_ik_preview_legend()
     print(f"  {n_has_ik}/{n_total} bar(s) have a solved IK keyframe.")
+    stale = find_stale_ik_bars()
+    for line in stale_ik_lines(stale):
+        print(f"  {line}")
 
     links = find_broken_links()
+    links["stale_ik"] = stale
     if mark_broken_links(links):
         print_broken_links(links)
     else:

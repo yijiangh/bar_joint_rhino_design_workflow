@@ -95,6 +95,7 @@ carry baked colours.
 | Colour | RGB | Meaning | Defined at |
 | --- | --- | --- | --- |
 | grey-blue | `75, 120, 150` | bar has a solved IK keyframe | [rhino_bar_registry.py:1670](scripts/core/rhino_bar_registry.py#L1670) |
+| yellow | `225, 185, 40` | **stale IK**: the bar has a keyframe, but its saved robot base stands out of reach of the bar — it was moved or copied after the solve. Solve it again with RSIKKeyframe. Listed by RSUpdatePreview and RSExportDesign | `COLOR_STALE_IK` in [rhino_bar_registry.py](scripts/core/rhino_bar_registry.py) |
 | pink | `230, 115, 150` | IK attempted at the placed base and failed — and, by design, also the fake-bar tint | [rhino_bar_registry.py:1671](scripts/core/rhino_bar_registry.py#L1671) |
 | pink **(transient)** | `230, 115, 150` | RSIKKeyframe **rejected the bar you picked** — painted on its tool-bearing joint blocks (or on the bar, if it has none), cleared on the next pick and on exit | [rs_ik_keyframe.py:406](scripts/rs_ik_keyframe.py#L406) |
 | red **(inline)** | `255, 40, 40` | collision highlight | [rs_ik_keyframe.py:1849](scripts/rs_ik_keyframe.py#L1849) |

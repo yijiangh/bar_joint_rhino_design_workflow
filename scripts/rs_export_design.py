@@ -33,7 +33,7 @@ from core import config as _config_module  # noqa: E402
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
 from core import design_builder as _design_builder_module  # noqa: E402
 from core import design_source as _design_source_module  # noqa: E402
-from core.rhino_bar_registry import repair_on_entry  # noqa: E402
+from core.rhino_bar_registry import find_stale_ik_bars, repair_on_entry, stale_ik_lines  # noqa: E402
 from bar_assembly_core.design import DesignError, write  # noqa: E402
 from bar_assembly_core.design.plan_check import check_plan  # noqa: E402
 from rs_check_design import DESIGN_FOLDER_STICKY_KEY, report_lines  # noqa: E402
@@ -96,6 +96,9 @@ def export(command: str = "RSExportDesign") -> None:
         return
     built = time.perf_counter()
     lines = [f"{command}: built in {built - started:.1f} s"]
+    # Bars moved or copied after their solve still export as solved: say so before the checks.
+    stale = find_stale_ik_bars()
+    lines += stale_ik_lines(stale)
     if result.problems:
         lines += [f"Notes ({len(result.problems)}):"] + [f"  {p}" for p in result.problems]
     try:
@@ -119,9 +122,11 @@ def export(command: str = "RSExportDesign") -> None:
               f"{len(written.mates)} mates, {len(written.actions)} actions, {n} movements; "
               f"{solved}/{jointing} bars with IK", "A (file checks): passed"] + report_lines(report)
     print("\n".join(lines))
+    stale_note = (f"\n\nSTALE IK on {len(stale)} bar(s): moved or copied after the solve, so their robot poses are "
+                  "wrong. Re-run RSIKKeyframe on them." if stale else "")
     rs.MessageBox(f"Wrote {folder}\n\n{len(written.actions)} actions ({solved}/{jointing} bars with IK), "
                   f"{len(result.problems)} note(s)\nA passed; B {len(report.errors)} error(s), "
-                  f"{len(report.warnings)} warning(s)\n\nDetails in the command history.", 0, command)
+                  f"{len(report.warnings)} warning(s){stale_note}\n\nDetails in the command history.", 0, command)
 
 
 if __name__ == "__main__":

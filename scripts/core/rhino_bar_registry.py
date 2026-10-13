@@ -1867,6 +1867,7 @@ def restore_object_colors(token):
 # `show_all_ik_preview` cannot reconstruct it.
 COLOR_HAS_IK = (75, 120, 150)    # bar has a solved IK keyframe
 COLOR_FAILED = (230, 115, 150)   # IK attempted at the placed base but failed
+COLOR_STALE_IK = (225, 185, 40)  # has a keyframe, but the bar is no longer where it was solved
 
 
 def ik_preview_legend_lines():
@@ -1874,6 +1875,8 @@ def ik_preview_legend_lines():
     return [
         "IK color preview -- what the bar colors mean:",
         "  gray blue  = bar HAS a solved IK keyframe",
+        "  yellow  = STALE IK: the bar was moved or copied after its solve; "
+        "solve it again (RSIKKeyframe)",
         "  pink  = IK attempted but FAILED (shown live during "
         "RSIKKeyframeAll; not persisted)",
         "  default (by-layer)   = no IK solved yet",
@@ -1914,8 +1917,41 @@ def clear_ik_preview():
     return n
 
 
+def find_stale_ik_bars():
+    """The fabricated bars whose keyframe cannot belong to where the bar is now.
+
+    Returns:
+        dict: ``{bar_id: reason}``, in sequence order (``core.keyframe_store.stale_ik_reason``).
+    """
+    from core.keyframe_store import stale_ik_reason  # noqa: PLC0415
+
+    bar_map = get_bar_seq_map()
+    fake_ids = get_fake_bar_ids(bar_map)
+    stale = {}
+    for bar_id, (oid, _seq) in sorted(bar_map.items(), key=lambda item: item[1][1]):
+        if bar_id in fake_ids:
+            continue
+        reason = stale_ik_reason(oid)
+        if reason:
+            stale[bar_id] = reason
+    return stale
+
+
+def stale_ik_lines(stale, limit=8):
+    """The lines that report :func:`find_stale_ik_bars`' result; none when it is empty."""
+    if not stale:
+        return []
+    lines = [f"STALE IK on {len(stale)} bar(s): each counts as solved, but its saved robot pose is not at the "
+             "bar any more. Solve them again with RSIKKeyframe (or clear them with RSClearIKKeyframe)."]
+    lines += [f"  {bar_id}: {reason}" for bar_id, reason in list(stale.items())[:limit]]
+    if len(stale) > limit:
+        lines.append(f"  ... and {len(stale) - limit} more: {', '.join(list(stale)[limit:])}")
+    return lines
+
+
 def show_all_ik_preview():
-    """Color every solved bar ``COLOR_HAS_IK``; leave unsolved bars by-layer.
+    """Color every solved bar ``COLOR_HAS_IK`` (``COLOR_STALE_IK`` if its keyframe is
+    stale); leave unsolved bars by-layer.
 
     Reverts all bar colors first (so a stale color from a previous run does not
     linger), then paints the bars that currently carry a solved IK keyframe. Only
@@ -1930,7 +1966,7 @@ def show_all_ik_preview():
         tuple[int, int]: ``(n_has_ik, n_total)`` over the fabricated bars only.
     """
     # Lazy import: keep this module import-light.
-    from core.keyframe_store import has_ik_keyframe
+    from core.keyframe_store import has_ik_keyframe, stale_ik_reason
 
     bar_map = get_bar_seq_map()
     fake_ids = get_fake_bar_ids(bar_map)
@@ -1942,7 +1978,9 @@ def show_all_ik_preview():
             continue
         n_total += 1
         if has_ik_keyframe(oid):
-            paint_bar(oid, COLOR_HAS_IK)
+            # A stale keyframe still counts as "has IK" (the IK commands skip the
+            # bar the same way); the color and find_stale_ik_bars tell them apart.
+            paint_bar(oid, COLOR_STALE_IK if stale_ik_reason(oid) else COLOR_HAS_IK)
             n_has_ik += 1
         else:
             reset_bar_color(oid)

@@ -192,6 +192,8 @@ def _show_summary(tool_counts, n_sides, n_tools, unmated, usertext_issues, links
         "Needs your attention",
         f"  {n_orphans} orphaned joint/tool(s) -- parent bar is gone",
         f"  {n_bare} bar(s) carrying no joint",
+        f"  {len(links.get('stale_ik', {}))} bar(s) with STALE IK (yellow) -- moved or copied after "
+        "the solve; re-run RSIKKeyframe",
         f"  {len(unmated)} joint(s) whose halves no longer mate -- re-run RSJointEdit",
         f"  {len(usertext_issues)} joint user-text issue(s) (stale/copied ids) -- "
         "RSReorderBarID > Relink",

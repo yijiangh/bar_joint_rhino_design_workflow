@@ -488,6 +488,7 @@ def main():
 
     ikf.warn_slow_ik_backend("RSIKKeyframeAll")
     ikf.repair_on_entry(float(ikf.config.BAR_RADIUS), "RSIKKeyframeAll")
+    rwg.ensure_ground_and_base("RSIKKeyframeAll")
 
     # REQ1: preview which bars already have IK before the user selects anything.
     _preview_existing_ik()

@@ -414,7 +414,7 @@ class PlanSession:
         ground_ids = walkable_ground.get_bar_ground_ids(self.active_bar_oid)
         if not ground_ids:
             print(f"{self.command}: bar {self.active_bar_id} has no assigned WalkableGround "
-                  "(run RSAssignAndShowWalkableGround or RSRebuildRobotCell).")
+                  "(run RSAssignAndShowWalkableGround, or RSUpdatePreview to assign the nearest).")
             return
         all_grounds = walkable_ground.get_all_walkable_grounds()
         with suspend_redraw():

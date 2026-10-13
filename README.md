@@ -54,7 +54,7 @@ Rhino all the way to a real robot:
 
 | Artifact | Produced by | Consumed by |
 |---|---|---|
-| `<design>/design.json`, `actions/`, `meshes/`, `robots/` | 1 · `RSExportDesign` (also `RSExportAllBarActions`) | 2, 3, 1 (`RSCheckDesign`) |
+| `<design>/design.json`, `actions/`, `meshes/`, `robots/` | 1 · `RSExportDesign` | 2, 3, 1 (`RSCheckDesign`) |
 | `<design>/solutions/<action>.json` (start/end joints, trajectories) | 2 · `scripts/plan_design.py` | 3 (execution), 1 (viewers, `RSLoadSolvedBarAction`) |
 
 Every compas_fab cell -- in Rhino, in the planner and on the robot -- is built
@@ -185,7 +185,7 @@ uv venv --python 3.11 external/ssik_env
 uv pip install --python external/ssik_env ssik
 ```
 
-That's the whole setup. Run `RSIKKeyframe` -- the sidecar spawns on the first solve and is shut down by `RSPBStop`.
+That's the whole setup. Run `RSIKKeyframe` -- the sidecar spawns on the first solve and is shut down by `RSResetPlanning`.
 
 There is also a pure-PyBullet `gradient` backend that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. Select it with the `HUSKY_IK_BACKEND=gradient` environment variable (default is `ssik` when it is set up, else `gradient`; see `husky_assembly_tamp.keyframe.config` and `scripts/rhino_env.py`). To regenerate the solver modules after a URDF change, see [external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md](external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md).
 
@@ -473,7 +473,8 @@ scripts/
   rs_export_design.py                   # Document -> schema 2 design folder (+ file and plan checks)
   rs_check_design.py                    # File and plan checks of a design folder
   plan_design.py                        # Headless: plan a design folder's movements, write solutions/
-  rs_rebuild_robot_cell.py              # Walkable-ground passes + rebuild the core's cells (RSPBStart too)
+  rs_reset_planning.py                  # Close the planning worlds and caches, stop the ssik sidecar
+  rs_show_planning_world.py             # Debugging: the assembly robot's planning world in PyBullet's window
   rs_read_mocap_bar.py
   rs_align_model_three_bars.py
 

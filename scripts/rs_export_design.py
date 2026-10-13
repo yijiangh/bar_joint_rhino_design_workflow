@@ -5,7 +5,7 @@
 The design comes from `core.design_source.RhinoDesignSource` (bars, halves, ground, obstacles, robots, tools, mates,
 and the actions built from each bar's keyframes) and is written by the core's `write`. Bars without IK are exported
 with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Needs no PyBullet,
-compas_fab or tamp. RSExportAllBarActions runs this too (format Schema2).
+compas_fab or tamp. It is the only export command.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from core import config as _config_module  # noqa: E402
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
 from core import design_builder as _design_builder_module  # noqa: E402
 from core import design_source as _design_source_module  # noqa: E402
+from core import rhino_walkable_ground as _walkable_module  # noqa: E402
 from core.rhino_bar_registry import find_stale_ik_bars, repair_on_entry, stale_ik_lines  # noqa: E402
 from bar_assembly_core.design import DesignError, write  # noqa: E402
 from bar_assembly_core.design.plan_check import check_plan  # noqa: E402
@@ -80,6 +81,7 @@ def export(command: str = "RSExportDesign") -> None:
     importlib.reload(_design_builder_module)
     design_source = importlib.reload(_design_source_module)
     repair_on_entry(float(config.BAR_RADIUS), command)
+    importlib.reload(_walkable_module).ensure_ground_and_base(command)
 
     folder = _pick_folder(command)
     if not folder:

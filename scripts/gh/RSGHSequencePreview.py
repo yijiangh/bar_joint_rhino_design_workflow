@@ -6,7 +6,7 @@ One slider frame = one step of the global assembly timeline -- the same list
 RSShowAssemblyPlan walks (88 steps in the current study file): per bar
 approach / assembled / (hold) / retreat / home, plus the support robots'
 release steps.  All robots render by forward kinematics from the keyframes
-saved on the bar curves in THIS document; no PyBullet, no RSPBStart.
+saved on the bar curves in THIS document; no PyBullet.
 
 Setup and troubleshooting live in docs/grasshopper_animation.md -- this
 docstring is deliberately short: the paste-time parameter sync reads the whole

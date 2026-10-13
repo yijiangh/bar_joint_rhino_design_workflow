@@ -52,6 +52,7 @@ rhino_env.activate()
 import session_log  # noqa: E402
 
 from core import config
+from core import rhino_walkable_ground
 from core.rhino_bar_registry import repair_on_entry, update_all_previews
 from core.rhino_joint_refresh import (
     refresh_stale_joint_blocks,
@@ -74,6 +75,8 @@ def _run_update_preview():
     # tubes. Without this pass, copy-pasting a bar+tube to a new spot
     # leaves the duplicate tube on the layer forever.
     repair_on_entry(float(config.BAR_RADIUS), caller="RSUpdatePreview")
+    # Before the tool-side pass below: it derives each bar's sides from its WalkableGround.
+    rhino_walkable_ground.ensure_ground_and_base("RSUpdatePreview")
     # repair_on_entry already invokes update_all_previews internally; the
     # second verbose pass below is purely diagnostic so the user sees the
     # per-bar reused/regenerated/created tally.
@@ -158,8 +161,7 @@ def _run_update_preview():
     if usertext_issues:
         print(
             f"RSUpdatePreview: {len(usertext_issues)} joint user-text issue(s) -- "
-            "run RSReorderBarID -> Relink (review its plan before applying), then "
-            "RSRebuildRobotCell."
+            "run RSReorderBarID -> Relink (review its plan before applying)."
         )
 
     # Paint the diagnostic overlay and count what could NOT be repaired

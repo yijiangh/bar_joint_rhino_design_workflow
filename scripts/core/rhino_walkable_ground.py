@@ -11,7 +11,7 @@ needs ``rhinoscriptsyntax`` / ``Rhino``:
 - the distance heuristic that auto-associates a bar with its nearest ground(s);
 - read/write the bar's associated ground-id list (comma-separated user-text).
 
-Ids and the association list are read back by ``rs_export_all_bar_actions`` at
+Ids and the association list are read back by ``core.design_source`` at
 export time and by ``rs_assign_and_show_walkable_ground`` (the interactive editor
 + base-placement preview).
 """
@@ -295,7 +295,7 @@ def set_bar_ground_ids(bar_oid, ground_ids: List[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Batch auto-assign (shared by RSRebuildRobotCell + RSExportAllBarActions)
+# Batch auto-assign (run by `ensure_ground_and_base`, on entry to the IK, preview and export commands)
 # ---------------------------------------------------------------------------
 
 
@@ -306,9 +306,8 @@ def auto_assign_walkable_ground_ids_all_bars(grounds: Dict[str, object] = None):
     Non-destructive: a bar that already carries an association (from a previous
     auto-assign or from RSAssignAndShowWalkableGround) is left untouched, so manual
     picks always survive. Only bars with an empty association get the nearest
-    ground(s) by distance. This is called both by RSRebuildRobotCell (so a rebuild
-    fills them in) and by RSExportAllBarActions (so the export is self-sufficient
-    even if a rebuild was skipped).
+    ground(s) by distance. `ensure_ground_and_base` runs it on entry to every
+    command that needs the association.
 
     Args:
         grounds (dict[str, object] | None): ``{ground_id: oid}`` to assign from;
@@ -348,7 +347,7 @@ def auto_assign_walkable_ground_ids_all_bars(grounds: Dict[str, object] = None):
 # These wrappers gather its Rhino-side inputs for one bar -- the assigned ground
 # soups, the bar center, and the average male-joint insertion direction -- so
 # BOTH RSAssignAndShowWalkableGround (the interactive preview) and
-# RSRebuildRobotCell (the batch populate) produce the exact same base frame.
+# `ensure_ground_and_base` (the batch populate) produce the exact same base frame.
 
 
 def _bar_center_mm(bar_oid):
@@ -881,7 +880,7 @@ def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
     (RSIKKeyframe / RSAssignAndShowWalkableGround) or one the IK solve wrote -- are
     KEPT as-is: a human-chosen base always takes priority over the auto seed. This
     mirrors the non-destructive WalkableGround auto-assign. Called by
-    RSRebuildRobotCell.
+    `ensure_ground_and_base`.
 
     Args:
         grounds (dict | None): ``{ground_id: oid}``; scanned when ``None``.
@@ -914,37 +913,26 @@ def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
 
 
 # ---------------------------------------------------------------------------
-# Refresh summary (shared by RSRebuildRobotCell + RSPBStart)
+# Ground and base on entry (RSIKKeyframe, RSIKKeyframeAll, RSUpdatePreview, RSExportDesign)
 # ---------------------------------------------------------------------------
 
 
 @session_log.timed()
-def assign_and_seed_summary():
-    """Run the WalkableGround auto-assign + seed-base passes; return their summary lines.
+def ensure_ground_and_base(command: str) -> None:
+    """Give every bar that lacks them a WalkableGround and a seed base; say so only when something was added.
 
-    Both are NON-DESTRUCTIVE: un-associated bars are linked to their nearest
-    ground, then a base pose is seeded on any bar that still lacks one
-    (hand-picked / IK-solved bases are kept).
+    Both passes are non-destructive. The commands that read the association call this
+    on entry, so a bar created since the last command never reaches them without a ground: without one RSIKKeyframe
+    draws no base guide lines and the tools' left / right sides are not set from the robot's approach.
 
-    Returns:
-        tuple[list[str], str]: ``(popup_lines, console_part)``, neither prefixed
-        with a command name.
+    Args:
+        command: The command name for the message.
     """
-    n_grounds, n_assigned, n_kept, n_noground = auto_assign_walkable_ground_ids_all_bars()
-    n_base_pop, n_base_kept, n_base_fail = auto_populate_base_frames_all_bars()
-    if n_grounds == 0:
-        ground_line = "WalkableGround: none on layer (skipped auto-assign)"
-    else:
-        ground_line = (
-            f"WalkableGround: {n_grounds} surface(s); "
-            f"{n_assigned} bar(s) auto-assigned, {n_kept} kept, {n_noground} still none"
-        )
-    base_line = (
-        f"Base pose: {n_base_pop} bar(s) auto-populated, {n_base_kept} kept, "
-        f"{n_base_fail} skipped (no ground)"
-    )
-    console = (
-        f"WalkableGround {n_grounds} surf / {n_assigned} assigned / {n_kept} kept / {n_noground} none; "
-        f"Base pose {n_base_pop} populated / {n_base_kept} kept / {n_base_fail} skipped"
-    )
-    return [ground_line, base_line], console
+    n_grounds, n_assigned, _kept, n_noground = auto_assign_walkable_ground_ids_all_bars()
+    n_base, _base_kept, _base_failed = auto_populate_base_frames_all_bars()
+    if n_assigned or n_base:
+        print(f"{command}: WalkableGround assigned to {n_assigned} bar(s), seed base set on {n_base} bar(s) "
+              "(RSAssignAndShowWalkableGround shows or changes one bar's).")
+    if n_noground and n_grounds == 0:
+        print(f"{command}: no WalkableGround surface in the document: {n_noground} bar(s) have none, so no base "
+              "guide lines and no automatic tool sides.")

@@ -51,6 +51,10 @@ _COMMAND_PREFIX = "RS"
 # Commands without a toolbar button: they get their aliases all the same.
 _EXTRA_COMMANDS = [("RSShowLog", '! _-ScriptEditor _R "rs_show_log.py"')]
 
+# Commands that no longer exist: their aliases (full and short) are deleted, or they would run a missing script.
+_REMOVED_COMMANDS = ["RSRebuildRobotCell", "RSPBStart", "RSPBStartGUI", "RSPBStop", "RSExportRobotCell",
+                     "RSExportBarAction", "RSExportAllBarActions"]
+
 
 def _macro_entries(rui_path: str):
     """Yield ``(command_name, macro_script)`` for every macro in the .rui.
@@ -148,6 +152,15 @@ def main() -> None:
             else:
                 failed += 1
                 print(f"  [alias] FAILED to register '{alias_name}'.")
+
+    removed = 0
+    for name in _REMOVED_COMMANDS:
+        for alias_name in (name, _short_name(name)):
+            # Only an alias that still points at one of our scripts: never a user's own alias of that name.
+            if alias_name and rs.IsAlias(alias_name) and "_-ScriptEditor _R \"rs_" in (rs.AliasMacro(alias_name) or ""):
+                removed += bool(rs.DeleteAlias(alias_name))
+    if removed:
+        print(f"RSRegisterAliases: deleted {removed} alias(es) of removed commands.")
 
     print(
         f"RSRegisterAliases: {added} added, {replaced} replaced, {failed} failed."

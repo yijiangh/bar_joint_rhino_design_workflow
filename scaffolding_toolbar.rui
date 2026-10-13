@@ -46,17 +46,13 @@
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000018</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000019" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000019</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002b</right_macro_id>
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002b</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000023" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000023</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001e" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001e</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000002a" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002a</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000052" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000052</left_macro_id>
@@ -124,13 +120,6 @@
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000022" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000022</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001b" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001b</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001d" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001d</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001f</right_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-0000000000a0" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-0000000000a0</left_macro_id>
@@ -282,15 +271,6 @@
       </tooltip>
       <script>! _-ScriptEditor _R "rs_remove_bar.py"</script>
     </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001b">
-      <text>
-        <locale_1033>RSExportRobotCell</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Save the loaded RobotCell to &lt;root&gt;/RobotCell.json (compas json_dump)</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_export_robotcell.py"</script>
-    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000050">
       <text>
         <locale_1033>RSAssignAndShowWalkableGround</locale_1033>
@@ -317,24 +297,6 @@
         <locale_1033>Type a joint id like J40-53_female (case-insensitive) to select and zoom to that placed joint block. Drop the suffix (J40-53) to select both halves; ground ids like G4-floor-0 and pasted PyBullet body keys like joint_J25-26_male work too. Comma-separate ids to select several; the prompt loops so you can jump between joints. Read-only.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_select_joint.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001d">
-      <text>
-        <locale_1033>RSExportBarAction</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Left-click: pick a bar; save its assembly cycle (M0-M4) to &lt;root&gt;/BarActions/&lt;bar_id&gt;.json. Right-click: export EVERY bar (IK optional) + RobotCell.json + WalkableGround.json (for the headless base+IK solver).</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_export_bar_action.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001f">
-      <text>
-        <locale_1033>RSExportAllBarActions</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Export BarAssemblyAction JSON for EVERY bar (IK optional), plus RobotCell.json + WalkableGround.json, to &lt;root&gt;. Bars without IK are solved later by the headless base+IK sampler.</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_export_all_bar_actions.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000040">
       <text>
@@ -473,12 +435,12 @@
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000d">
       <text>
-        <locale_1033>RSPBStop</locale_1033>
+        <locale_1033>RSResetPlanning</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Disconnect the shared PyBullet client</locale_1033>
+        <locale_1033>Close every planning world, forget the cached geometry and previews, and stop the ssik sidecar. Only needed when something looks stuck: the IK commands rebuild what they need.</locale_1033>
       </tooltip>
-      <script>! _-ScriptEditor _R "rs_pb_stop.py"</script>
+      <script>! _-ScriptEditor _R "rs_reset_planning.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000000f">
       <text>
@@ -507,32 +469,14 @@
       </tooltip>
       <script>! _-ScriptEditor _R "rs_inspect_robotic_tool.py"</script>
     </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000019">
-      <text>
-        <locale_1033>RSPBStart</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>Left-click: start the shared PyBullet client in Direct (headless) mode. Right-click: start it in GUI mode.</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_pb_start.py"</script>
-    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000002b">
       <text>
-        <locale_1033>RSPBStartGUI</locale_1033>
+        <locale_1033>RSShowPlanningWorld</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Start the shared PyBullet client for IK/FK workflows in GUI mode</locale_1033>
+        <locale_1033>Debugging: open the assembly robot's planning world (what IK checks collisions against) in PyBullet's window. RSResetPlanning closes it.</locale_1033>
       </tooltip>
-      <script>! _-ScriptEditor _R "rs_pb_start_gui.py"</script>
-    </macro_item>
-    <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000002a">
-      <text>
-        <locale_1033>RSRebuildRobotCell</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>(Re)build the static assembly collision cell (bars + joints + environment obstacles + arm ToolModels). Run after adding/moving/resizing geometry.</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_rebuild_robot_cell.py"</script>
+      <script>! _-ScriptEditor _R "rs_show_planning_world.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-00000000001e">
       <text>

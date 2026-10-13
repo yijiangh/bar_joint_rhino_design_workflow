@@ -16,7 +16,7 @@ What is deliberately NOT purged:
     sibling libraries hold references to the older class objects via the
     compas plugin registry. To pick up a new compas_fab submodule SHA, use
     ScriptEditor -> Tools -> Reload Python 3 (CPython) Engine instead.
-  * PyBullet state. Pair with RSPBStop + RSPBStart if you need to reset
+  * PyBullet state. Run RSResetPlanning if you need to reset
     the live PyBullet client.
 """
 

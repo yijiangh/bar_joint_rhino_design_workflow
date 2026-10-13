@@ -36,7 +36,7 @@ into a schema 2 design (``core.design_source``), each keyframe's scene comes fro
 ``Design.scene_at`` and is synced into the robot's ``CompasFabMirror``, whose
 planner the tamp solvers borrow. Previews draw the same scene posed by the
 solver's states (``design_planning.state_scene``, drawn by ``core.ik_viz``). No PyBullet session
-(RSPBStart) is needed: the mirrors own their PyBullet worlds.
+is needed: the mirrors own their PyBullet worlds.
 
 Right after the base point + heading are chosen (step 2), the command offers an
 off-ramp: continue the in-Rhino solve as normal, or just save the base frame on
@@ -2757,6 +2757,7 @@ def _main(stack, after):
     _reload_runtime_modules()
     warn_slow_ik_backend("RSIKKeyframe")
     repair_on_entry(float(config.BAR_RADIUS), "RSIKKeyframe")
+    rhino_walkable_ground.ensure_ground_and_base("RSIKKeyframe")
 
     rs.UnselectAllObjects()
     picked = _pick_bar_and_detect_flow()

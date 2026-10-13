@@ -116,7 +116,7 @@ def _compute_default_base_frame_mm(bar_id, bar_oid, grounds_map):
     ``rhino_walkable_ground.default_base_frame_for_bar`` (stand a standoff behind
     the bar, face the average male-joint insertion direction, on the bar's assigned
     ground). Using the shared helper keeps this preview identical to what
-    RSRebuildRobotCell writes onto the bar.
+    `ensure_ground_and_base` writes onto the bar.
 
     Args:
         bar_id (str): the bar id (also used to find its male joints).

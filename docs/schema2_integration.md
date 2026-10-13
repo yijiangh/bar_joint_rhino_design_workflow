@@ -26,12 +26,11 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 | Keyframe records → actions | `core/design_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, the `parts` catalogue | pytest: an unsolved three-bar design with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the design on every command | |
 | `RSExportDesign`, `RSCheckDesign` | `rs_export_design.py`, `rs_check_design.py` | builds, writes, copies `source/`, prints A and B |
-| `RSExportAllBarActions`, `RSExportBarAction`, `RSExportRobotCell` | run `RSExportDesign` (the old single-bar and cell exports have no schema 2 counterpart) | |
 | `RSIKKeyframe`, `RSIKKeyframeAll` | `core/design_planning.py` (`keyframe_movements`, `hold_solve_state`, `release_check`, `state_scene`), `core/support_ik.py`; previews by `core/ik_viz.py` | headless: tamp's `solve_keyframe_chain` and compas_fab support IK solve through the mirrors; **not run in Rhino** |
 | `RSShowBarActionPlan`, `RSShowAssemblyPlan` | `core/plan_steps.py` (poses → design moments), each step's scene drawn by `core/ik_viz.py`; CheckCollision and the jog dialog on the mirrors (`design_planning.scene_collisions`) | steps tested headless; **not run in Rhino** |
 | Motion viewer (`RSShowBarActionPlan` right-click), `RSLoadSolvedBarAction(All)` | read `<design>/solutions/` (`plan_steps.trajectory_frames`, `solved_keyframes`); RSLoadSolvedBarAction also says `SOLUTION STALE` for actions the open document changed since planning (`design_hashes` of the document's design vs `solved_against`) | tested headless; **not run in Rhino** |
 | Grasshopper preview + warm-up | `core/gh_seq_preview.py`, `core/gh_warmup.py`: the timeline of the document's design drawn by `ik_viz`, no compas, no PyBullet | **not run in Grasshopper** |
-| `RSRebuildRobotCell`, `RSPBStart(GUI)`, `RSPBStop` | walkable-ground auto-assign + seed bases, then rebuild / close the core's mirrors and read the robots' meshes; GUI opens Cindy's mirror in PyBullet's window | **not run in Rhino** |
+| `RSResetPlanning`, `RSShowPlanningWorld` | close the core's mirrors and caches and stop the ssik sidecar; open Cindy's mirror in PyBullet's window. The walkable-ground auto-assign and base seeding run on entry to the IK, preview and export commands (`ensure_ground_and_base`) | |
 | Motion planning | `scripts/plan_design.py` (headless CLI): the last waypoint snapped to the design's target joints; movements no arm moves in written `still` | constructed design: insert, retreat, home solved, the ungrasp still, written to `solutions/`; transfer fails (`rrt_failed`) |
 
 The export needs numpy, scipy and trimesh only; planning adds compas, compas_robots, compas_fab (submodule), PyBullet,
@@ -122,8 +121,6 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 | --- | --- |
 | No legacy engine or export behind options | The goal: the core is the only design → compas_fab interface. tamp's `headless_bar_action_planner.py` read the old export; `plan_design.py` replaces it for motion planning |
 | Previews draw the scene posed by the mirror's states (`state_scene`), not a compas_fab cell | Drawing needs no compas: the core's parts carry the visual meshes; the state only gives the robot's base and joints and what it holds |
-| `RSPBStart` / `RSRebuildRobotCell` / `RSPBStop` kept, as core refreshes | The toolbar keeps working without a `.rui` change; no command needs them any more |
-| `RSExportBarAction` / `RSExportRobotCell` run `RSExportDesign` | Same reason; schema 2 has no single-bar or cell-only file |
 | The viewers keep their poses (approach … release) | The Grasshopper timeline and its docs are built on them; `plan_steps` maps each to a design moment |
 | `design_source` reads user text and Rhino objects itself | Reused: `get_bar_seq_map`, `collect_hold_inputs`, `derive_hold_plan`, `build_action_schedule`, `find_tool_for_joint`, `block_instance_xform_mm`, `bar_world_frame_mm`, `coerce_brep`, the registries |
 | OBJ files parsed in `design_source.read_obj`, not with the core's `read_mesh` | trimesh needs PIL for OBJ files with texture coordinates (the Robotiq mesh fails without it) |
@@ -171,8 +168,6 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 - The design folder holds copies of the robot files (~40 MB) on every export.
 - The core mirror names collision pairs by geometry object: two bodies sharing one `Geometry` are reported under one
   name. The geometry cache never shares; other callers of the core must not either.
-- The toolbar still lists RSPBStart / RSPBStop / RSRebuildRobotCell / RSExportBarAction / RSExportRobotCell; they
-  work, but could be removed or renamed.
 - `tests/captures/` (365 MB of legacy capture JSONs) and the `external/rs_data_structure` submodule are unused by the
   plugin (the core's optional `legacy/` converter still needs `rs_data_structure`).
 
@@ -216,7 +211,7 @@ solutions list `B10_R_ungrasp` as `solved` with no trajectory (still); each plan
 target joints. Move a tool block of B10 in Rhino and load again: `SOLUTION STALE: B10_J …` (the document changed since
 planning).
 
-**Test 5: session commands**: `RSRebuildRobotCell` (walkable-ground and base summary, planning cells built),
-`RSPBStartGUI` (Cindy's planning world in PyBullet's window), `RSPBStop`.
+**Test 5: session commands**: `RSShowPlanningWorld` (Cindy's planning world in PyBullet's window),
+`RSResetPlanning`.
 
 **Send back**: the command history of each run, and the time each export, solve and first draw took.

@@ -7,6 +7,7 @@ from core.geometry import (
     closest_params_infinite_lines,
     distance_infinite_lines,
     points_on_line_at_distance,
+    snap_translation,
 )
 
 
@@ -334,3 +335,43 @@ class TestPointsOnLineAtDistance:
             )
             == []
         )
+
+
+class TestSnapTranslation:
+    TARGET = 36.0
+
+    def _distance_after(self, le_s, le_d, ln_s, ln_d, move):
+        return abs(distance_infinite_lines(le_s, le_d, ln_s + move, ln_d))
+
+    def test_skew_lines_move_to_target(self):
+        le_s, le_d = np.zeros(3), np.array([1000.0, 0.0, 0.0])
+        ln_s, ln_d = np.array([0.0, 0.0, 100.0]), np.array([0.0, 1000.0, 0.0])
+        move = snap_translation(le_s, le_d, ln_s, ln_d, self.TARGET)
+        assert np.allclose(move, [0.0, 0.0, self.TARGET - 100.0])
+
+    def test_crossing_lines_are_snapped_not_rejected(self):
+        # A new bar drawn starting on the existing bar: the infinite lines meet.
+        le_s, le_d = np.zeros(3), np.array([1000.0, 0.0, 0.0])
+        ln_s, ln_d = np.array([500.0, 0.0, 0.0]), np.array([0.0, 300.0, 800.0])
+        move = snap_translation(le_s, le_d, ln_s, ln_d, self.TARGET)
+        assert np.isclose(np.linalg.norm(move), self.TARGET)
+        assert np.isclose(self._distance_after(le_s, le_d, ln_s, ln_d, move), self.TARGET)
+        assert move[2] > 0.0  # deterministic side: towards +Z
+
+    def test_crossing_lines_in_horizontal_plane_move_up(self):
+        le_s, le_d = np.zeros(3), np.array([1000.0, 0.0, 0.0])
+        ln_s, ln_d = np.array([500.0, -500.0, 0.0]), np.array([0.0, 1000.0, 0.0])
+        move = snap_translation(le_s, le_d, ln_s, ln_d, self.TARGET)
+        assert np.allclose(move, [0.0, 0.0, self.TARGET])
+
+    def test_parallel_offset_lines(self):
+        le_s, le_d = np.zeros(3), np.array([1000.0, 0.0, 0.0])
+        ln_s, ln_d = np.array([0.0, 100.0, 0.0]), np.array([500.0, 0.0, 0.0])
+        move = snap_translation(le_s, le_d, ln_s, ln_d, self.TARGET)
+        assert np.allclose(move, [0.0, self.TARGET - 100.0, 0.0])
+
+    def test_collinear_lines_raise(self):
+        le_s, le_d = np.zeros(3), np.array([1000.0, 0.0, 0.0])
+        ln_s, ln_d = np.array([2000.0, 0.0, 0.0]), np.array([500.0, 0.0, 0.0])
+        with pytest.raises(ValueError, match="collinear"):
+            snap_translation(le_s, le_d, ln_s, ln_d, self.TARGET)

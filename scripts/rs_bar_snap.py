@@ -20,7 +20,6 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
-import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -86,30 +85,19 @@ def main():
 
         le_start, le_end = curve_endpoints(le_id)
         ln_start, ln_end = curve_endpoints(ln_id)
-        le_direction = le_end - le_start
-        ln_direction = ln_end - ln_start
         target_distance = float(pair.contact_distance_mm)
 
-        t_e, t_n = geometry.closest_params_infinite_lines(
-            le_start,
-            le_direction,
-            ln_start,
-            ln_direction,
-        )
-        p_e = le_start + t_e * le_direction
-        p_n = ln_start + t_n * ln_direction
-
-        segment = p_e - p_n
-        current_distance = np.linalg.norm(segment)
-        if current_distance <= 1e-9:
-            rs.MessageBox(
-                "Error: the selected bars are coincident, so no unique contact normal exists."
+        try:
+            translation = geometry.snap_translation(
+                le_start,
+                le_end - le_start,
+                ln_start,
+                ln_end - ln_start,
+                target_distance,
             )
+        except ValueError as exc:
+            rs.MessageBox(f"Error: {exc}")
             return
-
-        translation = (segment / current_distance) * (
-            current_distance - target_distance
-        )
 
         line_id = rs.MoveObject(ln_id, translation.tolist())
         if line_id is None:

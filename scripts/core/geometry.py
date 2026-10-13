@@ -219,6 +219,50 @@ def are_lines_parallel(
     return float(cross_norm / (norm_i * norm_j)) < tol
 
 
+def snap_translation(
+    le_start: Iterable[float],
+    le_direction: Iterable[float],
+    ln_start: Iterable[float],
+    ln_direction: Iterable[float],
+    target_distance: float,
+    *,
+    tol: float = 1e-6,
+) -> np.ndarray:
+    """Translation that puts line Ln at *target_distance* from line Le (RSBarSnap).
+
+    Ln is moved along the common normal of the two infinite lines.  When the
+    lines intersect (distance ~0, e.g. a new bar drawn starting on or crossing
+    the existing one) the closest-point segment has no direction, so the
+    normal is taken from ``cross(Le, Ln)`` instead, oriented so Ln moves
+    towards +Z (or +X/+Y when the normal is horizontal) -- a deterministic
+    pick between the two equally valid sides.
+
+    Raises ``ValueError`` only when the lines are collinear, where no unique
+    contact normal exists.
+    """
+
+    le_start = _as_vector(le_start)
+    le_direction = _as_vector(le_direction)
+    ln_start = _as_vector(ln_start)
+    ln_direction = _as_vector(ln_direction)
+
+    t_e, t_n = closest_params_infinite_lines(le_start, le_direction, ln_start, ln_direction)
+    segment = (le_start + t_e * le_direction) - (ln_start + t_n * ln_direction)
+    current_distance = float(np.linalg.norm(segment))
+    if current_distance > tol:
+        return (segment / current_distance) * (current_distance - float(target_distance))
+
+    if are_lines_parallel(le_direction, ln_direction):
+        raise ValueError("The bars are collinear, so no unique contact normal exists.")
+    normal = _unit(np.cross(le_direction, ln_direction))
+    for component in normal[::-1]:  # prefer +Z, then +Y, then +X
+        if abs(component) > tol:
+            if component < 0:
+                normal = -normal
+            break
+    return normal * float(target_distance)
+
+
 def points_on_line_at_distance(
     centre: Iterable[float],
     distance: float,

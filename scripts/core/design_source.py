@@ -182,7 +182,10 @@ def robot_files(cache: dict, name: str, urdf: Path, srdf: Path) -> Tuple[Path, P
 def _git(*args: str) -> Optional[str]:
     """Run git in this repository; None if git is missing or fails (Rhino on Windows may have no git on PATH)."""
     try:
-        result = subprocess.run(["git", *args], cwd=config.REPO_ROOT, capture_output=True, text=True, timeout=5)
+        # ! No console window and no stdin: Rhino has no console, so Windows makes one for every git call without
+        # ! these (0.5 s each, about 5 s for the first of a command; measured, `_dev_git_diag.py`).
+        result = subprocess.run(["git", *args], cwd=config.REPO_ROOT, capture_output=True, text=True, timeout=5,
+                                stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
@@ -200,14 +203,16 @@ def producer(command: str) -> Producer:
 class RhinoDesignSource:
     """Builds a `Design` from the active Rhino document. Make a new one per command."""
 
-    def __init__(self, command: str, cache: Optional[dict] = None):
+    def __init__(self, command: str, cache: Optional[dict] = None, fresh_versions: bool = False):
         """Remember the command name for `producer` and messages.
 
         Args:
             command: The Rhino command, for `producer`.
             cache: A `geometry_cache`, kept between commands; a fresh one if None.
+            fresh_versions: Ask git for the commits now (an export, which writes them); else once per `cache`.
         """
         self.command = command
+        self.fresh_versions = fresh_versions
         self.cache = cache if cache is not None else geometry_cache({})
         self.problems: List[str] = []
         self.bodies: Dict[str, BodySpec] = {}
@@ -262,17 +267,36 @@ class RhinoDesignSource:
                         for e in build_action_schedule(order, hold_plan, config.ASSEMBLY_ROBOT_NAME)]
 
         from core.joint_pair import load_joint_registry
+        writer, made_by = self._versions()
         with session_log.step("parts catalogue"):
             parts = parts_catalogue(load_joint_registry())
-        design = Design(folder=None, writer=writer_info(), robots=robots, tools=tools, bodies=dict(self.bodies),
-                        schedule=(), actions={}, mates=frozenset(mates), producer=producer(self.command),
-                        parts=parts)
+        design = Design(folder=None, writer=writer, robots=robots, tools=tools, bodies=dict(self.bodies),
+                        schedule=(), actions={}, mates=frozenset(mates), producer=made_by, parts=parts)
         with session_log.step("build_actions"):
             result: BuildResult = build_actions(
                 design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
                 retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,
                 support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0)
         return SourceResult(result.design, self.problems + result.problems, dict(self.objects))
+
+    def _versions(self):
+        """The design's `writer` and `producer`: the core's and this repository's commit, from git.
+
+        - ! Four git processes, about 3 s in Rhino on Windows (0.1 s in a terminal): asked once per cache, so once
+          per Rhino session, and again by every export (`fresh_versions`), the only reader that writes them.
+        - ? A commit made while Rhino stays open shows in the next export, not in the planning and viewing designs
+          before it; their hashes do not cover `writer` or `producer`.
+        """
+        import dataclasses
+
+        if self.fresh_versions or "versions" not in self.cache:
+            with session_log.step("writer_info (git)"):
+                writer = writer_info()
+            with session_log.step("producer (git)"):
+                made_by = producer(self.command)
+            self.cache["versions"] = (writer, made_by)
+        writer, made_by = self.cache["versions"]
+        return writer, dataclasses.replace(made_by, command=self.command)
 
     # * Bodies
 

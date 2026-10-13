@@ -873,6 +873,46 @@ def _normalize_color_flags(color_flags):
     return {name: bool(color_flags.get(name, True)) for name in SEQ_COLOR_CLASSES}
 
 
+def sequence_colors(active_bar_id, bar_map=None, highlight_supports=True):
+    """The sequence colour of every bar at one active step, as data: ``{bar_id: (r, g, b)}``.
+
+    The same rules and precedence as :func:`show_sequence_colors` paints with
+    (built / unstable / active / unbuilt, then fake, then the active bar's
+    supports), for callers that colour something other than the document's own
+    bars: the plan viewers hide the tube previews and draw the design's meshes
+    instead, so they colour those.
+
+    - ! Keep the two in step: a rule changed there changes here.
+
+    Returns:
+        dict: Empty when *active_bar_id* is not a registered bar.
+    """
+    if bar_map is None:
+        bar_map = get_bar_seq_map()
+    if active_bar_id not in bar_map:
+        return {}
+    active_oid, active_seq = bar_map[active_bar_id]
+    unstable_ids = get_unstable_bars(active_bar_id, bar_map)
+    support_ids = set()
+    if highlight_supports:
+        support_ids = {b for b in get_supported_until(active_oid) if b in bar_map and b != active_bar_id}
+    fake_ids = get_fake_bar_ids(bar_map)
+    colors = {}
+    for bar_id, (_oid, seq) in bar_map.items():
+        if seq < active_seq:
+            color = SEQ_COLOR_UNSTABLE if bar_id in unstable_ids else SEQ_COLOR_BUILT
+        elif seq == active_seq:
+            color = SEQ_COLOR_ACTIVE
+        else:
+            color = SEQ_COLOR_UNBUILT
+        if bar_id in fake_ids and bar_id != active_bar_id:
+            color = SEQ_COLOR_FAKE
+        if bar_id in support_ids:
+            color = SEQ_COLOR_SUPPORT_PICK
+        colors[bar_id] = color
+    return colors
+
+
 def show_sequence_colors(active_bar_id, show_unbuilt=True, bar_map=None,
                          highlight_supports=True, color_flags=None,
                          show_fake=True, tint_curves_only=False,

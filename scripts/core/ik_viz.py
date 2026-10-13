@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import rhinoscriptsyntax as rs
@@ -444,16 +444,17 @@ def begin_session(
         # Default: the user-modeled document layers that overlap the preview
         # (tubes / joints / tool blocks). Bar centerlines stay visible so the
         # user can still pick them.
-        hide_doc_layers = (
-            config.LAYER_BAR_TUBE_PREVIEWS,
-            *jnc.JOINT_LAYERS,
-            config.LAYER_TOOL_INSTANCES,
-        )
+        hide_doc_layers = replaced_doc_layers()
         if not hide_tool_instances:
             hide_doc_layers = tuple(
                 ln for ln in hide_doc_layers if ln != config.LAYER_TOOL_INSTANCES
             )
     _hide_doc_layers(hide_doc_layers)
+
+
+def replaced_doc_layers() -> tuple:
+    """The document layers a preview hides by default: what it draws itself (tubes, joint and tool blocks)."""
+    return (config.LAYER_BAR_TUBE_PREVIEWS, *jnc.JOINT_LAYERS, config.LAYER_TOOL_INSTANCES)
 
 
 def _hide_doc_layers(layer_names: Iterable[str]) -> None:
@@ -489,6 +490,7 @@ def update_state(
     mesh_mode: Optional[str] = None,
     layer_key: Optional[str] = None,
     hide_bodies: bool = False,
+    colors=None,
 ) -> None:
     """Draw a scene on one preview layer: bake new parts, move the others, hide what the scene does not show.
 
@@ -500,6 +502,10 @@ def update_state(
         layer_key (str | None): which preview's sub-layer to draw on; the other previews are hidden.
         hide_bodies (bool): draw the robots and tools only (the document's own
             geometry shows the bars, e.g. in the Grasshopper preview).
+        colors (Mapping[str, tuple] | None): id -> (r, g, b). A part takes the colour of its own id
+            ("bars/B3", "joints/J1-3_male") or else of the robot it belongs to ("robots/cindy": its links
+            and mounted tools); every other part is drawn in its layer's colour. None: no part is coloured,
+            and parts an earlier call coloured go back to the layer's.
     """
     from core.design_display import drawn_parts
 
@@ -507,6 +513,13 @@ def update_state(
     parts = entry["parts"]
     scale = _doc_units_per_metre()
     wanted = drawn_parts(scene, (robot_id,) if robot_id else (), hide_bodies=hide_bodies)
+    # ! Never a second copy of what the document already shows in the same place: two coplanar surfaces
+    #   flicker as the view moves (z-fighting). The walkable ground stays the document's (it is picked on and
+    #   highlighted); the obstacles too, unless the caller hid their layer for the session.
+    for prefix, layer in (("ground/", config.LAYER_WALKABLE_GROUND), ("obstacles/", config.LAYER_ENVIRONMENT)):
+        if rs.IsLayer(layer) and rs.LayerVisible(layer):
+            for part_id in [p for p in wanted if p.startswith(prefix)]:
+                wanted[part_id] = wanted[part_id]._replace(pose=None)
 
     # A layer hidden by `robot_meshes`' callers, `end_session` or another preview is shown again.
     if rs.IsLayer(config.LAYER_IK_CACHE) and not rs.LayerVisible(config.LAYER_IK_CACHE):
@@ -561,10 +574,47 @@ def update_state(
             rs.HideObjects(hide)
         if show:
             rs.ShowObjects(show)
+        colors = colors or {}
+        for part_id, part in parts.items():
+            wanted_color = colors.get(part_id) or colors.get(part.get("owner"))
+            part["color"] = tuple(wanted_color) if wanted_color else None
+        _apply_colors(parts)
         _show_mode(entry, _check_mode(mesh_mode) if mesh_mode else entry["mode"])
     finally:
         sc.doc.Views.RedrawEnabled = was
     sc.doc.Views.Redraw()
+
+
+def _apply_colors(parts: dict, force: bool = False) -> None:
+    """Give the parts their remembered colour (`part["color"]`; None: the layer's), one Rhino call per colour.
+
+    Args:
+        force: Paint every coloured part again, not only those whose colour changed since it was last applied
+            (a caller's own highlight, reverted to by-layer, took the colour off without this module knowing).
+    """
+    by_color: Dict[Optional[tuple], list] = {}
+    for part in parts.values():
+        color = part.get("color")
+        if (color is None and force) or (not force and part.get("applied") == color):
+            continue
+        by_color.setdefault(color, []).extend(_guids(part))
+        part["applied"] = color
+    if not by_color:
+        return
+    with session_log.step("color parts"):
+        for color, guids in by_color.items():
+            guids = [g for g in guids if rs.IsObject(g)]
+            if not guids:
+                continue
+            if color is None:
+                rs.ObjectColorSource(guids, 0)  # by layer
+            else:
+                rs.ObjectColor(guids, color)  # also sets the colour source to "by object"
+
+
+def restore_colors(layer_key: Optional[str]) -> None:
+    """Paint the coloured parts of a preview again, after a caller's own highlight was reverted to by-layer."""
+    _apply_colors(_entry(layer_key)["parts"], force=True)
 
 
 def set_layer_visible(layer_key: Optional[str], visible: bool) -> None:

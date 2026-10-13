@@ -65,6 +65,17 @@ compas, no PyBullet. Every core import needs yourdfpy (in `requirements-rhino.tx
 (`T20/Male`, `T20Deck12/Male`, identity seat), every ground joint with its seat = `M_tool_from_block`⁻¹ (`T20/Ground`:
 180° about z); receivers get no tool in Rhino's flow, so no seat.
 
+## The plan viewers show the core's state
+
+RSShowBarActionPlan and RSShowAssemblyPlan draw every body of the design from the core: bars, joints, tools,
+robots, and the planner's ground and obstacle meshes. Every document layer the preview stands in for is hidden
+for the session (tube previews, joint and tool blocks, Walkable Ground, Environment Obstacles) and restored on
+exit. The active bar's walkable ground is drawn light grey, any other ground dark grey.
+
+- Other previews (RSIKKeyframe) keep the document's ground and obstacles on screen: the base is picked on the
+  document's ground. `ik_viz.update_state` then leaves its own copies of them out, so nothing is drawn twice
+  (two coplanar surfaces flicker).
+
 ## Stale IK: the core decides
 
 A keyframe on a bar is a robot base and joints in world values. Nothing moves them when the bar, a connector or a

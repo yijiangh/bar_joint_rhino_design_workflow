@@ -54,6 +54,7 @@ from core import design_builder as _design_builder_module
 from core import design_display as _design_display_module
 from core import design_planning as _design_planning_module
 from core import design_source as _design_source_module
+from core import ik_status
 from core import ik_viz as _ik_viz_module
 from core import plan_steps as _plan_steps_module
 from core import rhino_walkable_ground as _walkable_ground_module
@@ -64,9 +65,11 @@ from core.rhino_bar_pick import (
 )
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
+    COLOR_STALE_IK,
     clear_build_stage,
     get_bar_seq_map,
     reset_sequence_colors,
+    sequence_colors,
     set_build_stage,
     show_sequence_colors,
 )
@@ -75,11 +78,10 @@ from rs_check_design import DESIGN_FOLDER_STICKY_KEY  # the last design folder, 
 from bar_assembly_core.urdf import UR_JOINT_NAMES, load_urdf  # after core_lib: it puts the core on sys.path
 
 
-# Temporary color painted on the active bar's assigned WalkableGround brep(s) so
-# the user can see which ground surface the robot base is allowed to stand on.
-# Reverted to ByLayer on bar switch / session cleanup (green, distinct from the
-# blue bar-selection color and the red collision highlight).
-WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
+# The drawn walkable grounds: the one(s) the active bar stands on light, every other one dark. Greys on purpose:
+# the bars carry the sequence colours, and a green floor read as part of the built (green) structure.
+WALKABLE_GROUND_ACTIVE_COLOR = (215, 215, 215)
+WALKABLE_GROUND_OTHER_COLOR = (95, 95, 95)
 COLLISION_COLOR = (255, 40, 40)
 #: ik_viz sub-layer the viewers draw their scenes on (every robot, every body).
 IK_LAYER_KEY_ASSEMBLY = "Assembly"
@@ -217,7 +219,17 @@ class PlanSession:
         self._session_started = False
         self._seq_colored_for = None
         self._highlight_oids = []
-        self._wg_highlight_oids = []
+        #: Drawn ground id -> colour: the active bar's walkable ground (`_show_walkable_grounds`).
+        self._ground_colors = {}
+        #: Part or robot id -> colour of the drawn meshes at the shown step (`_part_colors`).
+        self._colors = {}
+        #: Bar id -> why its saved IK no longer fits the document (the core's plan check B15): these bars' robot
+        #: poses are drawn where they were solved, not at the bar.
+        self.stale = ik_status.stale_ik_bars(design)
+        for line in ik_status.stale_ik_lines(self.stale):
+            print(f"{command}: {line}")
+        if self.stale:
+            print(f"{command}: their robot is drawn yellow, at its saved (wrong) pose.")
 
     @property
     def view(self):
@@ -293,18 +305,42 @@ class PlanSession:
             self._seq_colored_for = wanted
         with session_log.step("make scene"):
             scene = view.make_scene()
+        self._colors = self._part_colors(host)
         self.draw(scene)
-        print(f"{self.command}: {view.label} ({self.index + 1}/{len(self.views)})")
+        stale = "  ** STALE IK: the robot's saved pose is not at this bar **" if host in self.stale else ""
+        print(f"{self.command}: {view.label} ({self.index + 1}/{len(self.views)}){stale}")
+
+    def _part_colors(self, host):
+        """Colours of the drawn meshes at this step: the bars and their joints by sequence, a stale pose's robot.
+
+        The viewer hides the document's tube previews and joint blocks and draws the design's meshes instead, so
+        the sequence colours `show_sequence_colors` paints on the document never show: the same colours go onto
+        the drawn meshes here.
+        """
+        by_bar = {f"bars/{bar}": color for bar, color in sequence_colors(host).items()}
+        colors = dict(by_bar)
+        for body_id, body in self.design.bodies.items():
+            if body.mount in by_bar:
+                colors[body_id] = by_bar[body.mount]
+        if host in self.stale:
+            colors[self.robot_id] = COLOR_STALE_IK
+        colors.update(self._ground_colors)
+        return colors
 
     def draw(self, scene):
-        """Draw a scene; it becomes the scene collision checks look at."""
+        """Draw a scene in the current step's colours; it becomes the scene collision checks look at."""
         rs.EnableRedraw(False)
         try:
             if not self._session_started:
-                ik_viz.begin_session(active_mesh_mode=self.mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY)
+                # * The viewers show the core's state: every body of the design is drawn from it (the planner's
+                #   ground and obstacle meshes too; CheckCollision paints the drawn meshes), and every document
+                #   layer it stands in for is hidden for the session.
+                ik_viz.begin_session(active_mesh_mode=self.mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY,
+                                     hide_doc_layers=(*ik_viz.replaced_doc_layers(), config.LAYER_ENVIRONMENT,
+                                                      config.LAYER_WALKABLE_GROUND))
                 self._session_started = True
             ik_viz.update_state(scene, robot_id=self.robot_id, layer_key=IK_LAYER_KEY_ASSEMBLY,
-                                mesh_mode=self.mesh_mode)
+                                mesh_mode=self.mesh_mode, colors=self._colors)
         finally:
             with session_log.step("viewport redraw"):
                 rs.EnableRedraw(True)
@@ -401,46 +437,49 @@ class PlanSession:
                     rs.ObjectColorSource(oid, 0)  # ByLayer
                 except Exception:  # noqa: BLE001
                     continue
+            # The red went onto meshes that may carry a sequence colour: give those back.
+            ik_viz.restore_colors(IK_LAYER_KEY_ASSEMBLY)
         self._highlight_oids = []
 
     # ---- walkable-ground highlight -------------------------------------
 
     @session_log.timed("highlight walkable ground")
     def _show_walkable_grounds(self):
-        """Temporarily color the active bar's assigned WalkableGround brep(s) green and name them."""
-        self._revert_walkable_grounds()
+        """Colour the drawn grounds: the active bar's assigned WalkableGround light grey, the others dark; name it.
+
+        The ground on screen is the design's (`ground/<id>`, the mesh the planner uses): the document's own
+        ground layer is hidden for the session, like every layer the preview replaces.
+        """
+        self._ground_colors = {body_id: WALKABLE_GROUND_OTHER_COLOR for body_id in self.design.bodies
+                               if body_id.startswith("ground/")}
         if self.active_bar_oid is None:
+            self._recolor()
             return
         ground_ids = walkable_ground.get_bar_ground_ids(self.active_bar_oid)
         if not ground_ids:
             print(f"{self.command}: bar {self.active_bar_id} has no assigned WalkableGround "
                   "(run RSAssignAndShowWalkableGround, or RSUpdatePreview to assign the nearest).")
-            return
-        all_grounds = walkable_ground.get_all_walkable_grounds()
-        with suspend_redraw():
-            for gid in ground_ids:
-                oid = all_grounds.get(gid)
-                if oid is None:
-                    print(f"{self.command}: bar {self.active_bar_id} references WalkableGround '{gid}' but no "
-                          "such brep is in the document.")
-                    continue
-                try:
-                    rs.ObjectColor(oid, WALKABLE_GROUND_HIGHLIGHT_COLOR)
-                except Exception:  # noqa: BLE001
-                    continue
-                self._wg_highlight_oids.append(oid)
-        print(f"{self.command}: bar {self.active_bar_id} stands on {ground_ids} (highlighted green).")
+        for gid in ground_ids:
+            if f"ground/{gid}" not in self.design.bodies:
+                print(f"{self.command}: bar {self.active_bar_id} references WalkableGround '{gid}' but the design "
+                      "has no such ground (no such brep in the document).")
+                continue
+            self._ground_colors[f"ground/{gid}"] = WALKABLE_GROUND_ACTIVE_COLOR
+        if ground_ids:
+            print(f"{self.command}: bar {self.active_bar_id} stands on {ground_ids} (light grey; any other ground "
+                  "is dark grey).")
+        self._recolor()
 
     def _revert_walkable_grounds(self):
-        if not self._wg_highlight_oids:
+        self._ground_colors = {}
+
+    def _recolor(self):
+        """Apply the current step's colours to what is already drawn (nothing moves)."""
+        if self.scene is None or not self._session_started or self.view is None:
             return
-        with suspend_redraw():
-            for oid in self._wg_highlight_oids:
-                try:
-                    rs.ObjectColorSource(oid, 0)
-                except Exception:  # noqa: BLE001
-                    continue
-        self._wg_highlight_oids = []
+        self._colors = self._part_colors(self.view.bar_id)
+        ik_viz.update_state(self.scene, robot_id=self.robot_id, layer_key=IK_LAYER_KEY_ASSEMBLY,
+                            mesh_mode=self.mesh_mode, colors=self._colors)
 
     @session_log.timed("viewer cleanup")
     def cleanup(self):

@@ -227,3 +227,50 @@ def test_robot_meshes_are_copies_at_the_robot(canvas):
                 if g.visual or g.collision]
     assert len(meshes) == len(expected) and not canvas.objects
     assert all(np.allclose(m.points, e, atol=1e-6) for m, e in zip(meshes, expected))
+
+
+def test_update_state_colours_parts_by_id_and_by_robot(canvas):
+    """A part takes its own id's colour, else its robot's; without one it goes back to its layer's."""
+    ik_viz = canvas.ik_viz
+    rs = sys.modules["rhinoscriptsyntax"]
+    calls = []
+
+    def object_color(guids, color):
+        calls.append(("color", tuple(color), len(guids)))
+        for guid in guids:
+            canvas.objects[guid]["color"] = tuple(color)
+
+    def object_color_source(guids, source):
+        guids = guids if isinstance(guids, list) else [guids]
+        calls.append(("source", source, len(guids)))
+        for guid in guids:
+            canvas.objects[guid].pop("color", None)
+
+    rs.ObjectColor, rs.ObjectColorSource, rs.IsObject = object_color, object_color_source, lambda g: g in canvas.objects
+    design = canvas.design
+    from bar_assembly_core.geometry import Pose
+    from core import design_display
+
+    scene = design.scene_at(_movement(design, "B1_J_insert"))
+    robot, bar = "robots/cindy", "bars/B1"
+    design_display.place(scene, robot, Pose((1.0, 0.5, 0.0)), {"left_ur_arm_elbow_joint": 0.4})
+    green, yellow = (60, 179, 60), (225, 185, 40)
+
+    ik_viz.update_state(scene, robot_id=robot, layer_key="Assembly", colors={bar: green, robot: yellow})
+    assert all(o["color"] == green for o in canvas.named(bar))
+    robot_objects = [o for o in canvas.objects.values() if o["name"].startswith(robot + "/")]
+    assert robot_objects and all(o["color"] == yellow for o in robot_objects)
+    assert canvas.named("ground/WG0") and all("color" not in o for o in canvas.named("ground/WG0"))
+
+    # Unchanged colours are not painted again; a caller's highlight is undone by `restore_colors`.
+    calls.clear()
+    ik_viz.update_state(scene, robot_id=robot, layer_key="Assembly", colors={bar: green, robot: yellow})
+    assert calls == []
+    for guid, obj in canvas.objects.items():
+        obj.pop("color", None)
+    ik_viz.restore_colors("Assembly")
+    assert all(o["color"] == green for o in canvas.named(bar))
+
+    # No colours: every part goes back to its layer's.
+    ik_viz.update_state(scene, robot_id=robot, layer_key="Assembly")
+    assert all("color" not in o for o in canvas.objects.values())

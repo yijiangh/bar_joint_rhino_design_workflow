@@ -100,7 +100,9 @@ def canvas(source):  # noqa: F811
         else canvas.layers.__setitem__(path, bool(visible))
     rs.LayerChildren = lambda path: [p for p in canvas.layers if p.rsplit("::", 1)[0] == path and p != path]
     rs.ObjectsByLayer = lambda path: [g for g, o in canvas.objects.items() if o["layer"] == path]
-    rs.DeleteObjects = lambda guids: [canvas.objects.pop(g) for g in guids]
+    # ik_viz deletes through RhinoCommon (hidden objects too): FindId, then Delete(obj, quiet, ignoreModes).
+    sc.doc.Objects.FindId = lambda guid: guid if guid in canvas.objects else None
+    sc.doc.Objects.Delete = lambda guid, _quiet, _ignore_modes: canvas.objects.pop(guid, None) is not None
     rs.HideObjects = lambda guids: [canvas.objects[g].__setitem__("visible", False) for g in guids]
     rs.ShowObjects = lambda guids: [canvas.objects[g].__setitem__("visible", True) for g in guids]
 

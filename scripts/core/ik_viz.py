@@ -149,22 +149,30 @@ def _delete_layer_objects(layer_name: str, recursive: bool = True) -> int:
         oids = rs.ObjectsByLayer(lname) or []
         if oids:
             all_oids.extend(oids)
-    if not all_oids:
-        return 0
-    _delete(all_oids)
-    return len(all_oids)
+    return _delete(all_oids)
 
 
-def _delete(guids) -> None:
-    """Delete Rhino objects without redrawing in between."""
+def _delete(guids) -> int:
+    """Delete Rhino objects without redrawing in between, hidden and locked ones too; returns how many went.
+
+    - ! Not `rs.DeleteObjects`: it deletes objects in normal mode only and skips the rest without a word, and the
+      parts a scene does not show are hidden (`update_state`). Hidden previews were never deleted: a document
+      saved after a few sessions carried tens of thousands of them, each "purged" again on every start.
+    """
     if not guids:
-        return
+        return 0
+    deleted = 0
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        rs.DeleteObjects(list(guids))
+        for guid in guids:
+            obj = sc.doc.Objects.FindId(guid)
+            # quiet, and ignoreModes: hidden and locked objects are deleted as well.
+            if obj is not None and sc.doc.Objects.Delete(obj, True, True):
+                deleted += 1
     finally:
         sc.doc.Views.RedrawEnabled = was
+    return deleted
 
 
 def _cache() -> dict:

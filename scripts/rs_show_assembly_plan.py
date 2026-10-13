@@ -69,8 +69,15 @@ def _show(session, idx, bar_map):
     if bar_id != session.active_bar_id:
         session.active_bar_id = bar_id
         session.active_bar_oid = bar_map.get(bar_id, (None,))[0]
-        viewer.draw_base_frames(session.design, [bar_id])  # replaces the previous bar's marker
-        session._show_walkable_grounds()
+        # ! No redraw in here: the marker and the highlight each end with a full redraw (two for the highlight),
+        # about 0.5 s apiece with the robots on screen, and `refresh` below redraws anyway.
+        rs.EnableRedraw(False)
+        try:
+            viewer.draw_base_frames(session.design, [bar_id])  # replaces the previous bar's marker
+            session._show_walkable_grounds()
+        finally:
+            with session_log.step("viewport redraw"):
+                rs.EnableRedraw(True)
     session.refresh()
 
 

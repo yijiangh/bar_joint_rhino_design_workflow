@@ -1623,6 +1623,43 @@ def _enforce_centerline_layer(caller):
         if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE
     ]
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
+    _return_bars_to_centerline_layer(caller)
+
+
+def _return_bars_to_centerline_layer(caller):
+    """Move registered bars that sit on another layer back onto the centerline layer.
+
+    Registering a bar writes its user text AND moves the curve here
+    (``ensure_bar_id``).  Rhino's Undo takes back the layer move but not always
+    the user text, and a bar can be dragged to another layer by hand: either way
+    the curve is still a registered bar (it has an id, a tube, joints) that the
+    layer-based code no longer finds, and every command reports a
+    centerline/tube count mismatch from then on.
+    """
+    # One enumeration, as bar_curve_ids: this runs before every command.
+    layer_index = sc.doc.Layers.FindByFullPath(BAR_CENTERLINE_LAYER, -1)
+    if layer_index < 0:
+        return 0
+    settings = Rhino.DocObjects.ObjectEnumeratorSettings()
+    settings.ObjectTypeFilter = Rhino.DocObjects.ObjectType.Curve
+    settings.NormalObjects = settings.LockedObjects = settings.HiddenObjects = True
+    settings.IncludeLights = settings.IncludeGrips = settings.ReferenceObjects = False
+    astray = [
+        obj.Id
+        for obj in sc.doc.Objects.GetObjectList(settings)
+        if obj.Attributes.GetUserString(BAR_TYPE_KEY) == BAR_TYPE_VALUE
+        and obj.Attributes.LayerIndex != layer_index
+    ]
+    moved = []
+    for oid in astray:
+        rs.ObjectLayer(oid, BAR_CENTERLINE_LAYER)
+        moved.append(rs.GetUserText(oid, BAR_ID_KEY) or "?")
+    if moved:
+        print(
+            f"{caller} (startup): moved {len(moved)} registered bar(s) back onto "
+            f"'{BAR_CENTERLINE_LAYER}': {', '.join(moved)}."
+        )
+    return len(moved)
 
 
 def _enforce_joint_layer(caller, layer):

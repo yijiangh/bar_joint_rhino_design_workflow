@@ -64,6 +64,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
@@ -289,7 +291,7 @@ def _interactive_click_loop(session: _JointSession):
             go.SetCustomGeometryFilter(_joint_preview_filter)
             go.AddOption("Accept")
 
-            result = go.Get()
+            result = session_log.ask(go)
 
             if result == Rhino.Input.GetResult.Cancel:
                 return None
@@ -334,7 +336,7 @@ def _pick_tool_bearing_joint():
     go.SetCommandPrompt("Select the male or ground joint block to put a tool on")
     go.EnablePreSelect(False, False)
     go.SetCustomGeometryFilter(_tool_bearing_joint_filter)
-    if go.Get() != Rhino.Input.GetResult.Object:
+    if session_log.ask(go) != Rhino.Input.GetResult.Object:
         return None
     block_id = go.Object(0).ObjectId
     joint_id = rs.GetUserText(block_id, jnc.UT_JOINT_ID)
@@ -389,7 +391,7 @@ def _run_tool_only():
         go.SetCommandPromptDefault("Accept")
         go.AcceptNothing(True)
 
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return
         if result == Rhino.Input.GetResult.Option:
@@ -497,7 +499,7 @@ def _single_sided_preview_loop(session):
             go.AddOption("Accept")
             go.AddOption("Flip" if is_ground else "Rotate")
 
-            result = go.Get()
+            result = session_log.ask(go)
             if result == Rhino.Input.GetResult.Cancel:
                 return False
             if result == Rhino.Input.GetResult.Nothing:
@@ -668,7 +670,7 @@ def _ask_place_mode():
     go.SetCommandPromptDefault("JointPairAndTool")
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return "pair"
         if result == Rhino.Input.GetResult.Option:
@@ -701,7 +703,7 @@ def _ask_receiver(pair):
     go.SetCommandPromptDefault(choices[0])
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return pair
         if result == Rhino.Input.GetResult.Option and go.OptionIndex() in indices:
@@ -806,4 +808,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

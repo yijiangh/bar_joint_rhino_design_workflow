@@ -13,6 +13,7 @@ import contextlib
 import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
+import session_log
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +346,7 @@ def ask_option(prompt, options, default=None):
         go.SetCommandPromptDefault(default)
     go.AcceptNothing(default is not None)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return default
         if result == Rhino.Input.GetResult.Option:
@@ -370,11 +371,12 @@ def suspend_redraw():
         yield
     finally:
         redraw_is_enabled = True
-        if redraw_supported:
-            redraw_is_enabled = True if previous_state is None else bool(previous_state)
-            rs.EnableRedraw(redraw_is_enabled)
-        if redraw_is_enabled and hasattr(rs, "Redraw"):
-            rs.Redraw()
+        with session_log.step("viewport redraw"):
+            if redraw_supported:
+                redraw_is_enabled = True if previous_state is None else bool(previous_state)
+                rs.EnableRedraw(redraw_is_enabled)
+            if redraw_is_enabled and hasattr(rs, "Redraw"):
+                rs.Redraw()
 
 
 # ---------------------------------------------------------------------------

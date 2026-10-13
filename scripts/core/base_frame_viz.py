@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 import rhinoscriptsyntax as rs
+import session_log
 
 from core import config
 from core.rhino_helpers import doc_unit_scale_to_mm
@@ -147,6 +148,7 @@ def draw_base_frames(frames_by_bar: dict, circle_radius_mm=None) -> None:
         try:
             draw_base_frame(bar_id, base_mm, circle_radius_mm=circle_radius_mm)
         except Exception as exc:  # one bad frame must not abort the rest
+            session_log.caught(exc)
             print(f"core.base_frame_viz.draw_base_frames: bar '{bar_id}' skipped ({exc}).")
 
 

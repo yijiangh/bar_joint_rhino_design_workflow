@@ -32,6 +32,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
@@ -194,6 +196,7 @@ def main():
             try:
                 block_world = block_instance_xform(obj_id)
             except Exception as exc:
+                session_log.caught(exc)
                 errors.append(
                     f"Joint {joint_id} on {bid}: could not read transform ({exc})"
                 )
@@ -307,4 +310,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

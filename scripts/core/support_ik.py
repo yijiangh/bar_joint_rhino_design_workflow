@@ -8,6 +8,7 @@ builds a cell. The arm group is `config.SUPPORT_GROUP`. Frames come in as 4x4 wo
 
 from __future__ import annotations
 
+import session_log
 import numpy as np
 
 from core import config
@@ -36,6 +37,7 @@ def _target(tool0_world_mm, tolerance_position, tolerance_orientation):
                                tolerance_orientation=tolerance_orientation)
 
 
+@session_log.timed()
 def solve_support_ik(planner, template_state, base_frame_world_mm, tool0_world_mm, *, check_collision: bool = True,
                      max_results: int = None, max_descend_iterations: int = None, tolerance_position: float = None,
                      tolerance_orientation: float = None, verbose_pairs: bool = False):
@@ -63,6 +65,7 @@ def solve_support_ik(planner, template_state, base_frame_world_mm, tool0_world_m
         cfg = planner.inverse_kinematics(_target(tool0_world_mm, tol_p, tol_o), state, group=config.SUPPORT_GROUP,
                                          options=options)
     except Exception as exc:  # noqa: BLE001 -- compas_fab raises several kinds; all mean no solution
+        session_log.caught(exc)
         print(f"IK failed for group '{config.SUPPORT_GROUP}': {exc}")
         return None
     if cfg is None:
@@ -110,6 +113,7 @@ def enumerate_support_ik_candidates(planner, template_state, base_frame_world_mm
                                                    group=config.SUPPORT_GROUP, options=options):
             configurations.append(cfg)
     except Exception as exc:  # noqa: BLE001 -- nothing reachable, or a backend failure: the empty list says so
+        session_log.caught(exc)
         print(f"core.support_ik.enumerate_support_ik_candidates: {type(exc).__name__}: {exc}")
 
     cell = planner.client.robot_cell
@@ -127,6 +131,7 @@ def enumerate_support_ik_candidates(planner, template_state, base_frame_world_mm
             if not pairs:
                 summary = str(exc).splitlines()[0] if str(exc) else "collision"
         except Exception as exc:  # noqa: BLE001 -- a non-collision failure (state mismatch): still show it
+            session_log.caught(exc)
             in_collision = True
             summary = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
         candidates.append({"index": index, "state": trial, "in_collision": in_collision, "summary": summary,

@@ -33,6 +33,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config
 from core import rhino_bar_registry as _rhino_bar_registry_module
 from core import rhino_joint_refresh as _rhino_joint_refresh_module
@@ -57,4 +59,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

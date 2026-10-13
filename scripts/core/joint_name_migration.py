@@ -21,6 +21,7 @@ changes nothing.  Removable once every lab file has been re-saved.
 
 from __future__ import annotations
 
+import session_log
 from core import joint_name_conventions as jnc
 
 #: User text the old ground placement wrote and nothing reads any more: the
@@ -115,6 +116,7 @@ def _migrate_doc_pair_settings(get_doc_string, set_doc_string, keys):
     return n
 
 
+@session_log.timed()
 def migrate_legacy_joint_names(caller: str = "RSScaffolding") -> int:
     """Rewrite every legacy joint name in the active document.  Returns the count.
 

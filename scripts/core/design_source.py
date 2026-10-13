@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import session_log
 
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
@@ -215,6 +216,7 @@ class RhinoDesignSource:
         self.ground_oids: Dict[str, object] = {}
         self.tool_names: Dict[str, str] = {}
 
+    @session_log.timed("design_source.build")
     def build(self) -> SourceResult:
         """Read the document and build the design with its actions.
 
@@ -243,28 +245,33 @@ class RhinoDesignSource:
         robots, tools = self._robots_and_tools()
         mates = self._mates(halves, grounds)
 
-        bar_seq, supported = collect_hold_inputs(bars)
-        try:
-            hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
-        except RuntimeError as exc:
-            self.problems.append(f"hold plan: {exc}; no holds exported")
-            hold_plan = {}
+        with session_log.step("hold plan"):
+            bar_seq, supported = collect_hold_inputs(bars)
+            try:
+                hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+            except RuntimeError as exc:
+                self.problems.append(f"hold plan: {exc}; no holds exported")
+                hold_plan = {}
         records = {f"bars/{b}": r for b in order if f"bars/{b}" in self.bodies
                    for r in [self._bar_record(rs, b, bars[b][0], halves)] if r}
         holds = {f"bars/{b}": h for b in hold_plan if f"bars/{b}" in self.bodies
                  for h in [self._hold_record(rs, b, bars[b][0], hold_plan[b], robots, supported)] if h}
         kinds = {"jointing": "J", "release": "R", "holding": "H", "holding_release": "HR"}
-        schedule = [(kinds[e["kind"]], f"bars/{e['bar_id']}")
-                    for e in build_action_schedule(order, hold_plan, config.ASSEMBLY_ROBOT_NAME)]
+        with session_log.step("action schedule"):
+            schedule = [(kinds[e["kind"]], f"bars/{e['bar_id']}")
+                        for e in build_action_schedule(order, hold_plan, config.ASSEMBLY_ROBOT_NAME)]
 
         from core.joint_pair import load_joint_registry
+        with session_log.step("parts catalogue"):
+            parts = parts_catalogue(load_joint_registry())
         design = Design(folder=None, writer=writer_info(), robots=robots, tools=tools, bodies=dict(self.bodies),
                         schedule=(), actions={}, mates=frozenset(mates), producer=producer(self.command),
-                        parts=parts_catalogue(load_joint_registry()))
-        result: BuildResult = build_actions(
-            design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
-            retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,
-            support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0)
+                        parts=parts)
+        with session_log.step("build_actions"):
+            result: BuildResult = build_actions(
+                design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
+                retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,
+                support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0)
         return SourceResult(result.design, self.problems + result.problems, dict(self.objects))
 
     # * Bodies
@@ -279,6 +286,7 @@ class RhinoDesignSource:
         if oid is not None:
             self.objects[body.id] = oid
 
+    @session_log.timed()
     def _check_duplicate_bars(self, rs) -> None:
         """Two bar curves with one `bar_id` (copy/paste) are a duplicate."""
         from core.rhino_bar_registry import BAR_ID_KEY, BAR_TYPE_KEY, BAR_TYPE_VALUE
@@ -289,6 +297,7 @@ class RhinoDesignSource:
                 seen[bar] = seen.get(bar, 0) + 1
         self.duplicates += [f"duplicate bar id {bar} on {n} curves" for bar, n in sorted(seen.items()) if n > 1]
 
+    @session_log.timed()
     def _read_bars(self, bars) -> None:
         """Every real bar as a cylinder at its midpoint frame."""
         import rhinoscriptsyntax as rs
@@ -320,6 +329,7 @@ class RhinoDesignSource:
         mesh = cached(self.cache, ("obj", path, scale, digest), lambda: read_obj(path, scale))
         return cached(self.cache, (owner, "obj", path, scale, digest), lambda: Geometry((mesh,), (mesh,)))
 
+    @session_log.timed()
     def _read_halves(self, rs, bars, fake) -> Dict[str, Tuple[str, str, str]]:
         """Every joint block on a real bar, with part, mount and markers.
 
@@ -400,6 +410,7 @@ class RhinoDesignSource:
             return Geometry((trimesh,), (trimesh,))
         return cached(self.cache, (owner, "rhino", digest), make)
 
+    @session_log.timed()
     def _read_ground(self, rs) -> Dict[str, object]:
         """Every walkable ground brep with an id, as a world-frame mesh. Returns ground id -> Rhino object id."""
         out = {}
@@ -417,6 +428,7 @@ class RhinoDesignSource:
             out[f"ground/{gid}"] = oid
         return out
 
+    @session_log.timed()
     def _read_obstacles(self, rs) -> None:
         """Every mesh or brep on the environment layer, as a world-frame mesh."""
         layer = config.LAYER_ENVIRONMENT
@@ -456,6 +468,7 @@ class RhinoDesignSource:
                 chosen[side] = registry[counts.most_common(1)[0][0]]
         return chosen
 
+    @session_log.timed()
     def _robots_and_tools(self) -> Tuple[Dict[str, RobotSpec], Dict[str, Tool]]:
         """Cindy with her tool pair (`_assembly_tools`), Alice and Belle with the Robotiq gripper."""
         robots, tools = {}, {}
@@ -500,6 +513,7 @@ class RhinoDesignSource:
                kind, tuple(touch))
         return cached(self.cache, key, lambda: Tool(tool_id, geometry, tcp, kind, tuple(touch)))
 
+    @session_log.timed()
     def _mates(self, halves, grounds) -> List[Tuple[str, str]]:
         """Male with receiver by joint id; each ground half with the nearest walkable ground."""
         import Rhino
@@ -531,6 +545,7 @@ class RhinoDesignSource:
 
     # * Keyframe records
 
+    @session_log.timed()
     def _bar_record(self, rs, bar: str, oid, halves) -> Optional[BarRecord]:
         """Cindy's record of one bar: placed tools, the halves they are on, keyframes. None if a tool is missing."""
         from core.rhino_helpers import block_instance_xform_mm
@@ -622,6 +637,7 @@ class RhinoDesignSource:
             return (0.0, 0.0, -1.0)
         return unit(-np.mean(normals, axis=0))
 
+    @session_log.timed()
     def _hold_record(self, rs, bar: str, oid, entry, robots, supported) -> Optional[HoldRecord]:
         """A support robot's record of one hold, from the held bar's support keys. None without a grasp frame."""
         rid = robot_id(entry["robot_name"])

@@ -24,6 +24,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config  # noqa: F401  (puts the tamp submodule on sys.path)
 import rs_rebuild_robot_cell
 
@@ -34,9 +36,10 @@ def main() -> None:
         from husky_assembly_tamp.keyframe import ssik_client
         ssik_client.shutdown()
     except Exception as exc:  # noqa: BLE001 -- nothing to stop, or tamp missing
+        session_log.caught(exc)
         print(f"RSPBStop: ssik sidecar not stopped ({exc}).")
     print("RSPBStop: closed the planning worlds and dropped the cached cells.")
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

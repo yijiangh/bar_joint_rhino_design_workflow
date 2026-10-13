@@ -39,6 +39,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 # Every name below -- the "_female" suffix of an object name, the "joint_"
 # prefix of a pasted PyBullet key, the layer a block's role is read from --
 # comes from core.joint_name_conventions (pure Python, so this read-only command
@@ -199,4 +201,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

@@ -27,6 +27,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config as _config_module  # noqa: E402
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
 from core import design_builder as _design_builder_module  # noqa: E402
@@ -96,7 +98,8 @@ def export(command: str = "RSExportDesign") -> None:
     if result.problems:
         lines += [f"Notes ({len(result.problems)}):"] + [f"  {p}" for p in result.problems]
     try:
-        written = write(result.design, folder, overwrite=True, package_dirs=[config.HUSKY_PKG_PATH])
+        with session_log.step("write design folder", folder):
+            written = write(result.design, folder, overwrite=True, package_dirs=[config.HUSKY_PKG_PATH])
     except DesignError as exc:
         lines += [f"A (file checks): FAILED, nothing usable written; {len(exc.problems)} problem(s)"]
         lines += [f"  {p}" for p in exc.problems]
@@ -104,8 +107,10 @@ def export(command: str = "RSExportDesign") -> None:
         rs.MessageBox(f"A (file checks) failed: {len(exc.problems)} problem(s).\n\nDetails in the command history.",
                       0, command)
         return
-    _copy_sources(folder, config)
-    report = check_plan(written)
+    with session_log.step("copy sources"):
+        _copy_sources(folder, config)
+    with session_log.step("check plan (B)"):
+        report = check_plan(written)
     n = sum(len(a.movements) for a in written.actions.values())
     solved = sum(1 for a in written.actions.values() if a.type == "bar_jointing" and a.movements[-1].target.joints)
     jointing = sum(1 for a in written.actions.values() if a.type == "bar_jointing")
@@ -119,4 +124,4 @@ def export(command: str = "RSExportDesign") -> None:
 
 
 if __name__ == "__main__":
-    export()
+    session_log.run(__file__, export)

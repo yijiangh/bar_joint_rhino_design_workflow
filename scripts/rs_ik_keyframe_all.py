@@ -66,6 +66,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
@@ -158,6 +160,7 @@ def _grabbed_joint_center_mm(left, right):
     return 0.5 * (a_mm + b_mm)
 
 
+@session_log.timed()
 def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
                 soup_cache=None):
     """Place + persist a base on one bar. Return ``(ctx, None)`` on success or
@@ -202,6 +205,7 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
             soups, joint_a_mm, joint_b_mm, diag["heading"]
         )
     except Exception as exc:  # noqa: BLE001 -- guides are an aid, never a blocker
+        session_log.caught(exc)
         print(f"RSIKKeyframeAll: {bar_id}: guide lines unavailable ({exc}).")
         diag["guides"] = None
     # base +Z is the ground normal at the placed base -- what the L/R tool-side
@@ -210,6 +214,7 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
     return (bar_id, curve, base_frame, left[1], right[1], diag), None
 
 
+@session_log.timed()
 def _solve_one(design, ctx, include_self, include_env):
     """Solve one bar's chain on Cindy's mirror, from the design's scenes, at its placed base. True on success."""
     bar_id, curve, base_frame = ctx[0], ctx[1], ctx[2]
@@ -224,6 +229,7 @@ def _solve_one(design, ctx, include_self, include_env):
                 viz=None,
             )
     except Exception as exc:  # noqa: BLE001 -- one bar must not stop the batch
+        session_log.caught(exc)
         print(f"RSIKKeyframeAll: {bar_id}: could not solve ({type(exc).__name__}: {exc}).")
         return False
     if solved is None:
@@ -233,6 +239,7 @@ def _solve_one(design, ctx, include_self, include_env):
     return True
 
 
+@session_log.timed()
 def _support_resolve_pass(include_self, include_env):
     """Re-solve every hold whose grasp and base picks are stored, then check every release.
 
@@ -297,6 +304,7 @@ def _support_resolve_pass(include_self, include_env):
             store.write_bar_support_keyframe(oid, robot_name, base_mm, grasp_mm, approach_cfg, held_cfg)
             resolved.append(bar_id)
         except Exception as exc:  # noqa: BLE001 -- one hold must not stop the pass
+            session_log.caught(exc)
             failed.append((bar_id, f"{type(exc).__name__}: {exc}"))
             print(f"RSIKKeyframeAll: {bar_id}: support re-solve FAILED ({exc}).")
     # * Every release in its own moment, now that the holds are solved.
@@ -342,6 +350,7 @@ def _apply_tool_sides(placed, verbose=True):
                 bar_id, diag["heading"], diag["ground_normal"], verbose=verbose,
             )
         except Exception as exc:  # noqa: BLE001 -- never block the batch on this
+            session_log.caught(exc)
             print(f"RSIKKeyframeAll: {bar_id}: tool-side check skipped ({exc}).")
             continue
         if not changed:
@@ -379,6 +388,7 @@ def _clear_base_preview(base_frame_viz):
         base_frame_viz.clear_base_frames()
         sc.doc.Views.Redraw()
     except Exception as exc:  # noqa: BLE001
+        session_log.caught(exc)
         print(f"RSIKKeyframeAll: failed to clear the base preview ({exc}); continuing.")
 
 
@@ -678,4 +688,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

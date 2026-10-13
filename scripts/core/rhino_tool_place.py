@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 
+import session_log
 import numpy as np
 
 from core import config
@@ -278,6 +279,7 @@ def place_tool_at_block_instance(
     return tool_oid
 
 
+@session_log.timed()
 def replace_all_tool_instances(pair: dict) -> dict:
     """Re-place EVERY placed tool instance with the side-matching tool from *pair*.
 
@@ -699,6 +701,7 @@ def find_detached_tools() -> list:
     return detached
 
 
+@session_log.timed()
 def resync_tools_to_joints(verbose: bool = False) -> int:
     """Snap any tool that has drifted away from its joint back onto it.
 
@@ -807,6 +810,7 @@ def _restore_side_tool(block_id, joint_id, active, default_tool):
     return default_tool
 
 
+@session_log.timed()
 def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
     """Re-place the active-pair tool on any joint block that lost its tool.
 
@@ -1037,6 +1041,7 @@ def assign_tool_sides_from_heading(bar_id, heading_mm, ground_normal,
     return n_fixed
 
 
+@session_log.timed()
 def enforce_bar_tool_sides(verbose: bool = False) -> int:
     """Give each bar the L/R tool layout its robot approach implies.
 
@@ -1104,6 +1109,7 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
                 bar_id, diag["heading"], ground_normal, verbose=verbose
             )
     except Exception as exc:  # noqa: BLE001 -- never let this block the repair pass
+        session_log.caught(exc)
         print(f"  [tool] heading-based side check skipped ({exc}); "
               "falling back to the same-side repair.")
 

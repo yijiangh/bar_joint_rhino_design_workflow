@@ -20,6 +20,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config
 from core.rhino_bar_registry import (
     ensure_bar_id,
@@ -47,4 +49,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

@@ -63,6 +63,7 @@ from collections import defaultdict
 
 import numpy as np
 import rhinoscriptsyntax as rs
+import session_log
 
 from core import config
 from core import joint_name_conventions as jnc
@@ -204,6 +205,7 @@ def _female_male_edit(oid, subtype, segs):
     try:
         frame, _block_name = block_instance_frame(oid)
     except Exception as exc:  # not a block instance / exploded
+        session_log.caught(exc)
         return _degenerate_edit(oid, subtype, f"frame read failed ({exc})")
 
     origin = frame[:3, 3]
@@ -258,6 +260,7 @@ def _single_edit_raw(oid, segs, subtype):
         frame, block_name = block_instance_frame(oid)
         type_ = jnc.block_type(block_name)
     except Exception as exc:
+        session_log.caught(exc)
         return _degenerate_edit(oid, subtype, f"frame/name read failed ({exc})")
 
     origin = frame[:3, 3]
@@ -346,6 +349,7 @@ def _tool_edit(oid, targets, tools_reg):
     try:
         frame, _block_name = block_instance_frame(oid)
     except Exception as exc:
+        session_log.caught(exc)
         return _degenerate_edit(oid, None, f"frame read failed ({exc})")
 
     tool_name = rs.GetUserText(oid, jnc.UT_TOOL_NAME) or ""

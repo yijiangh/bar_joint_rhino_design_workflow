@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 import rhinoscriptsyntax as rs
+import session_log
 
 from core import config
 from core import joint_name_conventions as jnc
@@ -94,6 +95,7 @@ def _joint_block_instances():
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed()
 def refresh_stale_joint_blocks(verbose: bool = False) -> int:
     """Reload every joint block whose asset .3dm changed since it was imported.
 
@@ -161,6 +163,7 @@ def refresh_stale_joint_blocks(verbose: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed()
 def report_unmated_joints(verbose: bool = False) -> list:
     """List placed receiver/male pairs whose halves no longer mate.  Read-only.
 
@@ -307,6 +310,7 @@ def report_joint_usertext_issues(verbose: bool = False) -> list:
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed()
 def find_broken_links() -> dict:
     """Report model links that no longer resolve.  Read-only.
 
@@ -538,6 +542,7 @@ def print_broken_links(links: dict, cap: int = 20) -> None:
         print(f"  [bare bar] ... and {len(bare_bars) - cap} more")
 
 
+@session_log.timed()
 def show_colors_preview() -> dict:
     """Paint every diagnostic overlay at once: IK status + broken links.
 

@@ -42,6 +42,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 # The per-bar viewer owns the rendering session; this command only sequences it
 # (as rs_ik_keyframe_all reuses rs_ik_keyframe).
 import rs_show_bar_action_plan as viewer
@@ -134,7 +136,7 @@ def main() -> None:
         _show(session, 0, bar_map)
         while True:
             go = _build_prompt(session)
-            result = go.Get()
+            result = session_log.ask(go)
             if result == Rhino.Input.GetResult.Cancel:
                 break
             if result == Rhino.Input.GetResult.Nothing:
@@ -175,8 +177,9 @@ def main() -> None:
                     session.toggle_unbuilt()
     finally:
         session.cleanup()
-        viewer.base_frame_viz.clear_base_frames()
+        with session_log.step("clear base frame markers"):
+            viewer.base_frame_viz.clear_base_frames()
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

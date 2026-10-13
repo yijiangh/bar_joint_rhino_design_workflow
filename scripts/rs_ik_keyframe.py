@@ -59,6 +59,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
@@ -666,6 +668,7 @@ def _reach_sphere_meshes(rcell):
     try:
         return reach_viz.reach_sphere_meshes(rcell.robot_model)
     except Exception as exc:  # noqa: BLE001 -- preview must not break the pick
+        session_log.caught(exc)
         print(f"RSIKKeyframe: reach spheres unavailable ({exc}).")
         return []
 
@@ -726,6 +729,7 @@ def _draw_base_guides_for_bar(bar_oid, bar_id, joint_a_mm, joint_b_mm,
         diag["ground_normal"] = ground_normal
         return diag
     except Exception as exc:  # noqa: BLE001 -- guides are an aid, never a blocker
+        session_log.caught(exc)
         print(f"RSIKKeyframe: base guide lines unavailable ({exc}).")
         return None
 
@@ -947,6 +951,7 @@ def _gather_reach_clip_curves(plane, walkable_brep=None):
     return {"plane": plane, "boundary": boundary, "obstacles": obstacles}
 
 
+@session_log.timed()
 def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
     """Pick base origin + heading on the walkable brep, with the dual-arm
     robot's mesh tracking the cursor. Returns
@@ -975,6 +980,7 @@ def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
                 )
                 conduit.set_reach_outline(curve, overlaps)
             except Exception as exc:  # noqa: BLE001 -- preview must not break the pick
+                session_log.caught(exc)
                 print(f"RSIKKeyframe: reach outline failed ({exc}).")
 
         # Phase A: base origin on brep.
@@ -1001,7 +1007,7 @@ def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
         picker_a = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_a)
         picker_a.SetCommandPrompt("Pick base origin on WalkableGround brep")
         picker_a.Constrain(brep, -1, -1, False)
-        if picker_a.Get() != Rhino.Input.GetResult.Point:
+        if session_log.ask(picker_a) != Rhino.Input.GetResult.Point:
             return None, None, None, None
         picked_doc = picker_a.Point()
         close_pt, normal = _closest_point_on_brep(brep, picked_doc)
@@ -1033,7 +1039,7 @@ def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
         picker_b = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_b)
         picker_b.SetCommandPrompt("Pick heading point (defines base +X)")
         picker_b.SetBasePoint(close_pt, True)
-        if picker_b.Get() != Rhino.Input.GetResult.Point:
+        if session_log.ask(picker_b) != Rhino.Input.GetResult.Point:
             return None, None, None, None
         heading_doc = picker_b.Point()
 
@@ -1075,7 +1081,7 @@ def _ask_collision_options(env_count: int = 0):
     go.AddOptionToggle("MeshMode", opt_mesh)
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Option:
             continue
         if result == Rhino.Input.GetResult.Nothing:
@@ -1109,7 +1115,7 @@ def _ask_accept(prompt="Accept this IK keyframe and save it on the bar", allow_a
     go.SetCommandPromptDefault("RetrySameBase")
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return "retry_same_base"
         if result == Rhino.Input.GetResult.Option:
@@ -1148,6 +1154,7 @@ def _draw_state(view, state, layer_key, mesh_mode):
                         layer_key=layer_key, mesh_mode=mesh_mode)
 
 
+@session_log.timed()
 def _core_design(command):
     """The document as a schema 2 design, with the session's geometry cache; prints what was left out."""
     result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
@@ -1170,6 +1177,7 @@ def _core_release_report(command, bar_id, held_bars=None):
         if failures:
             rs.MessageBox("Release-time check flagged problems:\n\n" + "\n".join(failures), 0, command)
     except Exception as exc:  # noqa: BLE001 -- report-only: never lose an accepted keyframe to this
+        session_log.caught(exc)
         print(f"{command}: release check skipped ({exc}).")
 
 
@@ -1244,7 +1252,7 @@ def _ask_accept_with_pose_preview(
         give_up_idx = go.AddOption("GiveUp")
         go.AcceptNothing(True)
 
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             # Enter cycles to the next keyframe (RSShowIK parity).
             _advance()
@@ -1287,7 +1295,7 @@ def _ask_reuse_saved_base():
     flip_idx = go.AddOption("Flip")
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return "reuse"
         if result == Rhino.Input.GetResult.Option:
@@ -1332,7 +1340,7 @@ def _ask_save_base_or_continue():
     go.SetCommandPromptDefault("Continue")
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return "continue"
         if result == Rhino.Input.GetResult.Option:
@@ -1502,6 +1510,7 @@ def _snap_to_brep(brep, origin_mm):
     return _point_to_mm(close_pt), np.array([normal.X, normal.Y, normal.Z], dtype=float)
 
 
+@session_log.timed()
 def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                                brep_id, heading_mm, include_self, include_env,
                                viz=None):
@@ -1580,16 +1589,17 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
             )
             if viz is not None:
                 viz.set_ghost_xform(np_mm_to_xform(base_frame))
-            solved = ik_keyframe.solve_keyframe_chain(
-                planner,
-                ordered,
-                base_frame,
-                check_collision=check_collision,
-                verbose_pairs=check_collision,
-                # The ssik backend orders cold candidate pairs by distance to
-                # home; the solver takes it as an explicit argument now.
-                home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12,
-            )
+            with session_log.step("solve_keyframe_chain", label):
+                solved = ik_keyframe.solve_keyframe_chain(
+                    planner,
+                    ordered,
+                    base_frame,
+                    check_collision=check_collision,
+                    verbose_pairs=check_collision,
+                    # The ssik backend orders cold candidate pairs by distance to
+                    # home; the solver takes it as an explicit argument now.
+                    home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12,
+                )
             if viz is not None and idx > 0:
                 sample_origin_doc, sample_x_doc, _z = _frame_mm_to_doc_marker(base_frame)
                 viz.add_tried(sample_origin_doc, sample_x_doc, success=solved is not None)
@@ -1802,6 +1812,7 @@ def _resolve_seed_base_frame(
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- preview must not break the prompt
+                    session_log.caught(exc)
                     print(f"RSIKKeyframe: reach preview failed ({exc}).")
                 answer = _ask_reuse_saved_base()
 
@@ -1897,7 +1908,7 @@ def _ask_chain_failure(allow_inspect: bool, prompt: str = None):
     give_up_idx = go.AddOption("GiveUp")
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return "give_up"
         if result == Rhino.Input.GetResult.Option:
@@ -2011,7 +2022,7 @@ def _cycle_ssik_candidates(role, candidates):
             prev_idx = go.AddOption("Prev")
             done_idx = go.AddOption("Done")
             go.AcceptNothing(True)
-            result = go.Get()
+            result = session_log.ask(go)
             if result == Rhino.Input.GetResult.Nothing:
                 idx = (idx + 1) % len(candidates)
                 highlighted = _show(idx)
@@ -2182,7 +2193,7 @@ def _cycle_support_candidates(sr_view, label, candidates):
             prev_idx = go.AddOption("Prev")
             done_idx = go.AddOption("Done")
             go.AcceptNothing(True)
-            result = go.Get()
+            result = session_log.ask(go)
             if result == Rhino.Input.GetResult.Nothing:
                 idx = (idx + 1) % len(candidates)
                 highlighted = _show(idx)
@@ -2280,6 +2291,7 @@ def _inspect_support_candidates(sr_planner, sr_view, template_state, base_frame_
         sc.doc.Views.Redraw()
 
 
+@session_log.timed()
 def _solve_support_pair_with_sampling(
     sr_planner,
     template_state,
@@ -2375,6 +2387,7 @@ def _solve_support_pair_with_sampling(
                 try:
                     found = check(base_frame, held_state, approach_state)
                 except Exception as exc:  # noqa: BLE001 -- a failed check must not stop the sampling
+                    session_log.caught(exc)
                     found = [f"release check failed ({type(exc).__name__}: {exc})"]
                 solved = not found
             # Marker for every sampled base (idx 0 is the seed, already marked
@@ -2407,6 +2420,7 @@ def _solve_support_pair_with_sampling(
     return None, None, None
 
 
+@session_log.timed()
 def _run_support_flow(bar_id: str, bar_oid, stack, after):
     """The support-robot half of the button: hold keyframe for one held bar.
 
@@ -2482,6 +2496,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
             built = design.scene_at(design_planning.movement(design, f"bars/{bar_id}", "R", "R_ungrasp"))
             _show_context(built, robot_id, SUPPORT_SOLVE_LAYER_KEY, ik_viz.get_mesh_mode())
         except Exception as exc:  # noqa: BLE001 -- context viz must not block the pick
+            session_log.caught(exc)
             print(f"RSIKKeyframe(support): context preview failed ({exc}); proceeding without.")
 
         # * ---- 4. Grasp pick (persisted immediately).
@@ -2642,6 +2657,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
             _show_objects(extra_hidden_tools)
             reset_sequence_colors()
         except Exception as exc:  # noqa: BLE001
+            session_log.caught(exc)
             print(f"RSIKKeyframe(support): failed to restore the canvas ({exc}); continuing.")
         sc.doc.Views.Redraw()
 
@@ -2721,6 +2737,7 @@ def _main(stack, after):
                 print(f"RSIKKeyframe: {n_sides} tool(s) re-placed to match the "
                       "robot's approach side.")
         except Exception as exc:  # noqa: BLE001 -- never block the solve on this
+            session_log.caught(exc)
             print(f"RSIKKeyframe: tool-side check skipped ({exc}).")
 
     extra_hidden_tools, tool0_left_final, tool0_right_final = _collect_target_context(
@@ -2742,6 +2759,7 @@ def _main(stack, after):
         rcell = mirror.cell
         neutral_seed_state = movements["M3"].start_state.copy()
     except Exception as exc:  # noqa: BLE001 -- also pybullet / compas_fab / file errors: restore the canvas
+        session_log.caught(exc)
         rs.MessageBox(f"Cannot build the movements of {target_bar_id}: {type(exc).__name__}: {exc}", 0,
                       "RSIKKeyframe")
         _show_objects(extra_hidden_tools)
@@ -2767,6 +2785,7 @@ def _main(stack, after):
         try:
             _show_context(scene, robot_id, _PREVIEW["layer"], mesh_mode)
         except Exception as exc:  # noqa: BLE001 -- context viz must not block the solve
+            session_log.caught(exc)
             print(f"RSIKKeyframe: context preview skipped ({exc}).")
 
         seed_base_frame = None
@@ -3027,14 +3046,16 @@ def _main(stack, after):
             base_guide_viz.clear_base_guides()
             sc.doc.Views.Redraw()
         except Exception as exc:  # noqa: BLE001
+            session_log.caught(exc)
             print(f"RSIKKeyframe: failed to clear base guide lines ({exc}); continuing.")
         # Restore canvas exactly like RSSequenceEdit exit path.
         try:
             _show_objects(extra_hidden_tools)
             reset_sequence_colors()
         except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome
+            session_log.caught(exc)
             print(f"RSIKKeyframe: failed to restore sequence colors ({exc}); continuing.")
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

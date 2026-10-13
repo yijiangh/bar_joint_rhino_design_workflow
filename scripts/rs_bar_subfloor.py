@@ -36,6 +36,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
@@ -180,6 +182,7 @@ def _solve(le1_id, le2_id, ce1, ce2, target_distance):
             nn_init_hint=ce2 - ce1,
         )
     except Exception as exc:
+        session_log.caught(exc)
         print(f"RSBarSubfloor solver error: {exc}")
         return [], None
     return report.get("solutions", []), report
@@ -288,7 +291,7 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
             slide2_idx = go.AddOption("SlidePointOnRight")
             go.AddOptionDouble("Length", length_value)
 
-            result = go.Get()
+            result = session_log.ask(go)
 
             if result == Rhino.Input.GetResult.Cancel:
                 return None, brace_length
@@ -430,7 +433,7 @@ def _pick_le1_with_dual_pair_and_length(
             swap_opt_index = go.AddOption("SwapLeftRight")
         go.AddOptionDouble(length_option_name, length_value)
 
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Cancel:
             return None, None, None, None
 
@@ -569,4 +572,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

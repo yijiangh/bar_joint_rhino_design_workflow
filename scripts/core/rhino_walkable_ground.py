@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
+import session_log
 
 from compas.datastructures import Mesh
 
@@ -298,6 +299,7 @@ def set_bar_ground_ids(bar_oid, ground_ids: List[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed()
 def auto_assign_walkable_ground_ids_all_bars(grounds: Dict[str, object] = None):
     """Auto-link every un-associated bar to its nearest WalkableGround(s).
 
@@ -866,6 +868,7 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
     return frame
 
 
+@session_log.timed()
 def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
                                        overwrite: bool = False):
     """Write a heuristic seed base frame on bars that lack one (non-destructive).
@@ -915,6 +918,7 @@ def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed()
 def assign_and_seed_summary():
     """Run the WalkableGround auto-assign + seed-base passes; return their summary lines.
 

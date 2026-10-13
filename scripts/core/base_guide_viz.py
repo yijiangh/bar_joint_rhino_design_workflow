@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 import rhinoscriptsyntax as rs
+import session_log
 
 from core import config
 from core.rhino_helpers import doc_unit_scale_to_mm
@@ -130,6 +131,7 @@ def draw_base_guides(guides_by_bar: dict) -> None:
         try:
             draw_base_guide(bar_id, guides)
         except Exception as exc:  # one bad guide must not abort the rest
+            session_log.caught(exc)
             print(f"core.base_guide_viz.draw_base_guides: bar '{bar_id}' skipped ({exc}).")
 
 

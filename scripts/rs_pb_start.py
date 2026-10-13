@@ -25,6 +25,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import rs_rebuild_robot_cell
 
 
@@ -33,4 +35,4 @@ def main(use_gui: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    main(use_gui=False)
+    session_log.run(__file__, main, use_gui=False)

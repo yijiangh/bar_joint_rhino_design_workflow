@@ -26,6 +26,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 
 def main(command: str = "RSExportAllBarActions") -> None:
     import rs_export_design
@@ -33,4 +35,4 @@ def main(command: str = "RSExportAllBarActions") -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

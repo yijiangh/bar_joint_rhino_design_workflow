@@ -31,6 +31,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config
 from core import joint_name_conventions as jnc
 from core.rhino_bar_registry import (
@@ -173,4 +175,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

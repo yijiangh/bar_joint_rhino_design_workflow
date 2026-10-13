@@ -5,9 +5,18 @@ Run in Rhino 8 with:
     _-ScriptEditor _R "C:\\path\\to\\bake_frame.py"
 """
 
+import os
+import sys
+
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import session_log  # noqa: E402
 
 
 _DEFAULT_AXIS_LENGTH_MM = 5.0
@@ -60,7 +69,7 @@ def _get_frame_name():
     get_string.SetCommandPrompt("Frame name")
     get_string.AcceptNothing(True)
     get_string.SetDefaultString("")
-    result = get_string.Get()
+    result = session_log.ask(get_string)
     if result == Rhino.Input.GetResult.Cancel:
         return None
     if result == Rhino.Input.GetResult.Nothing:
@@ -185,4 +194,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

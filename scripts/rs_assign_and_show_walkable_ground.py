@@ -53,6 +53,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import base_frame_viz as _base_frame_viz_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
@@ -158,6 +160,7 @@ def _prepare_ghost_meshes():
         scene = design_display.robot_scene(result.design, robot_id, home)
         return ik_viz.robot_meshes(scene.robots[robot_id]) or None
     except Exception as exc:  # noqa: BLE001 -- the ghost is an aid, never a blocker
+        session_log.caught(exc)
         print(f"{CMD}: ghost robot unavailable ({type(exc).__name__}: {exc}); showing base frame only.")
         return None
 
@@ -375,4 +378,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

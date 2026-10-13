@@ -18,3 +18,6 @@ AGENTS.md
 tasks/subagent_onboarding_plan.md
 
 external/ssik_env/
+
+# Session logs written by scripts/session_log.py
+logs/

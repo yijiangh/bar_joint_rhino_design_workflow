@@ -16,6 +16,7 @@ import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
+import session_log
 
 from core import config
 from core import joint_name_conventions as jnc
@@ -314,6 +315,7 @@ def get_bar_seq_map():
     return result
 
 
+@session_log.timed()
 def repair_bar_sequences():
     """Resolve duplicate and missing sequence numbers across all registered bars.
 
@@ -1171,6 +1173,7 @@ def clear_build_stage():
     set_doc_string(BUILD_STAGE_KEY, "")
 
 
+@session_log.timed()
 def apply_build_stage_visibility(caller=None, verbose=True):
     """Hide every bar, joint and tool later than the saved build stage.
 
@@ -1490,6 +1493,7 @@ def ensure_bar_preview(curve_id, bar_radius, color=None, bar_id=None,
     return baked_ids, status
 
 
+@session_log.timed()
 def update_all_previews(bar_radius, color=None, verbose=False):
     """Ensure every registered bar has an up-to-date tube preview.
 
@@ -1645,6 +1649,7 @@ def _enforce_tool_layer(caller, layer):
     _move_to_default_layer(strays, source_layer=layer, caller=caller)
 
 
+@session_log.timed()
 def enforce_managed_layers(caller="RSScaffolding"):
     """Make sure every managed layer exists, is visible, and contains only
     objects we recognize.  Strays go to ``config.DEFAULT_LAYER`` (also made
@@ -1669,6 +1674,7 @@ def enforce_managed_layers(caller="RSScaffolding"):
     _enforce_tool_layer(caller, config.LAYER_TOOL_INSTANCES)
 
 
+@session_log.timed()
 def repair_on_entry(bar_radius, caller="RSScaffolding"):
     """Standard startup repair for bar-registry-aware entry-point scripts.
 

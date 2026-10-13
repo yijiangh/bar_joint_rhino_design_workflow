@@ -39,6 +39,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
@@ -142,6 +144,7 @@ def base_frame_mm(pose):
     return matrix
 
 
+@session_log.timed("draw base frame marker")
 def draw_base_frames(design, bar_ids):
     """Bake a base-frame marker (axis triad + footprint) for every bar with a base in the design."""
     frames = {}
@@ -231,7 +234,8 @@ class PlanSession:
     def set_active_bar(self, bar_id, bar_oid, index=0):
         """Show one bar's keyframe steps (its oid is used for the sequence colors and its walkable grounds)."""
         self.active_bar_id, self.active_bar_oid = bar_id, bar_oid
-        steps = plan_steps.bar_steps(self.design, f"bars/{bar_id}")
+        with session_log.step("plan steps of the bar", bar_id):
+            steps = plan_steps.bar_steps(self.design, f"bars/{bar_id}")
         if not steps:
             print(f"{self.command}: bar {bar_id} has no step in the design (not assembled, or no solved keyframe "
                   "and no release after it).")
@@ -284,9 +288,12 @@ class PlanSession:
         host = view.bar_id
         wanted = (host, self.show_unbuilt)
         if self._seq_colored_for != wanted:
-            show_sequence_colors(host, self.show_unbuilt)
+            with session_log.step("color bars by sequence"):
+                show_sequence_colors(host, self.show_unbuilt)
             self._seq_colored_for = wanted
-        self.draw(view.make_scene())
+        with session_log.step("make scene"):
+            scene = view.make_scene()
+        self.draw(scene)
         print(f"{self.command}: {view.label} ({self.index + 1}/{len(self.views)})")
 
     def draw(self, scene):
@@ -299,11 +306,13 @@ class PlanSession:
             ik_viz.update_state(scene, robot_id=self.robot_id, layer_key=IK_LAYER_KEY_ASSEMBLY,
                                 mesh_mode=self.mesh_mode)
         finally:
-            rs.EnableRedraw(True)
+            with session_log.step("viewport redraw"):
+                rs.EnableRedraw(True)
         self.scene = scene
 
     # ---- collision diagnostic ------------------------------------------
 
+    @session_log.timed("check collision")
     def check_collision(self, verbose=True):
         """Check the shown scene on every placed robot's mirror; red-highlight the offenders. Returns the count."""
         if self.scene is None or self.view is None:
@@ -313,6 +322,7 @@ class PlanSession:
         try:
             pairs = design_planning.scene_collisions(self.design, sc.sticky, self.scene)
         except Exception as exc:  # noqa: BLE001 -- a diagnostic must never end the viewer
+            session_log.caught(exc)
             print(f"{self.command}: collision check failed ({type(exc).__name__}: {exc}).")
             return 0
         self._highlight_pairs(pairs, verbose)
@@ -365,6 +375,7 @@ class PlanSession:
         try:
             mirror = design_planning.sync_seeded(sc.sticky, self.scene.copy(), self.robot_id)
         except Exception as exc:  # noqa: BLE001 -- jog still draws without the check
+            session_log.caught(exc)
             print(f"{self.command}: collision checks unavailable while jogging ({exc}).")
             mirror = None
         _run_collision_jog_dialog(self, mirror, joint_specs)
@@ -380,6 +391,7 @@ class PlanSession:
                     continue
                 self._highlight_oids.append(oid)
 
+    @session_log.timed("revert collision highlight")
     def _revert_highlight(self):
         if not self._highlight_oids:
             return
@@ -393,6 +405,7 @@ class PlanSession:
 
     # ---- walkable-ground highlight -------------------------------------
 
+    @session_log.timed("highlight walkable ground")
     def _show_walkable_grounds(self):
         """Temporarily color the active bar's assigned WalkableGround brep(s) green and name them."""
         self._revert_walkable_grounds()
@@ -429,6 +442,7 @@ class PlanSession:
                     continue
         self._wg_highlight_oids = []
 
+    @session_log.timed("viewer cleanup")
     def cleanup(self):
         self._revert_highlight()
         self._revert_walkable_grounds()
@@ -436,8 +450,10 @@ class PlanSession:
             ik_viz.end_session()
             self._session_started = False
         try:
-            reset_sequence_colors()
+            with session_log.step("reset sequence colors"):
+                reset_sequence_colors()
         except Exception as exc:  # noqa: BLE001 -- never let cleanup mask the real outcome
+            session_log.caught(exc)
             print(f"{self.command}: failed to restore sequence colors ({exc}); continuing.")
 
 
@@ -517,6 +533,7 @@ def _run_collision_jog_dialog(session, mirror, joint_specs):
                 session.draw(scene)
                 n = check()
             except Exception as exc:  # noqa: BLE001
+                session_log.caught(exc)
                 status_label.Text = f"jog failed: {exc}"
                 return
             finally:
@@ -563,6 +580,7 @@ def _run_collision_jog_dialog(session, mirror, joint_specs):
             pair_count_label.Text = count_text(check(verbose=True))
             status_label.Text = "verbose check complete -- see the Rhino command history"
         except Exception as exc:  # noqa: BLE001
+            session_log.caught(exc)
             status_label.Text = f"verbose check failed: {exc}"
 
     def on_close(_sender, _args):
@@ -578,6 +596,7 @@ def _run_collision_jog_dialog(session, mirror, joint_specs):
     try:
         pair_count_label.Text = count_text(check())
     except Exception as exc:  # noqa: BLE001
+        session_log.caught(exc)
         pair_count_label.Text = f"initial check failed: {exc}"
     try:
         parent = Rhino.UI.RhinoEtoApp.MainWindow
@@ -670,7 +689,7 @@ def main() -> None:
         session.set_active_bar(initial_bar_id, initial_oid)
         while True:
             go = _build_get_option(session)
-            result = go.Get()
+            result = session_log.ask(go)
             if result == Rhino.Input.GetResult.Cancel:
                 break
             if result == Rhino.Input.GetResult.Object:
@@ -705,7 +724,8 @@ def main() -> None:
                     _step_bar(session, seq_map, -1)
     finally:
         session.cleanup()
-        base_frame_viz.clear_base_frames()
+        with session_log.step("clear base frame markers"):
+            base_frame_viz.clear_base_frames()
 
 
 def _run_motion_command_loop(session):
@@ -720,7 +740,7 @@ def _run_motion_command_loop(session):
         go.AddOption("Prev")
         go.AddOption("Jump")
         go.AddOption("Close")
-        res = go.Get()
+        res = session_log.ask(go)
         if res == Rhino.Input.GetResult.Cancel:
             break
         if res == Rhino.Input.GetResult.Nothing:
@@ -738,7 +758,7 @@ def _run_motion_command_loop(session):
                 gi.SetLowerLimit(1, False)
                 gi.SetUpperLimit(n, False)
                 gi.SetDefaultInteger(session.index + 1)
-                if gi.Get() == Rhino.Input.GetResult.Number:
+                if session_log.ask(gi) == Rhino.Input.GetResult.Number:
                     session.step(gi.Number() - 1 - session.index)
             elif name == "Close":
                 break
@@ -762,6 +782,7 @@ def main_motion(folder=None, bar=None) -> None:
         design = read(folder)
         solutions = read_solutions(design)
     except Exception as exc:  # noqa: BLE001 -- a broken folder is reported, not raised
+        session_log.caught(exc)
         rs.MessageBox(f"Cannot read the design folder:\n{exc}", 0, "RSShowBarActionPlan")
         return
     stale = sorted(a for a, s in solutions.items() if is_stale(design, s))
@@ -798,4 +819,4 @@ def main_motion(folder=None, bar=None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

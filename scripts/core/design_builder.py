@@ -6,6 +6,7 @@ Procedure per action (`doc/schema2_integration.md`):
 
 - J (Cindy): load, mount, grasp, transfer, insert (one movement that drives `tighten`; the bar is built at its end);
 - R (Cindy), form B: ungrasp (drives `loosen`: the untighten folded in, the bar stays built), linear retreat, home;
+  then she drives away (absent until her next J);
 - H (support robot): free approach, open, linear onto the bar, close (it now holds the built bar too);
 - HR: open, linear retreat, leave (free, planned live); then the robot drives away.
 
@@ -202,7 +203,7 @@ class Builder:
                   target=Target(joints=joints(r.assembled), links=dict(r.tool0), built=self.state.built | {r.bar}))
 
     def release(self, r: BarRecord) -> None:
-        """Ungrasp (form B, backing the jointing screw off), careful retreat, home."""
+        """Ungrasp (form B, backing the jointing screw off), careful retreat, home; then the robot drives away."""
         p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
         self.emit(f"{p}_R_ungrasp", "Ungrasp (form B)", ends_on="tools",
                   drives={r.tools[a]: "loosen" for a in arms},
@@ -214,6 +215,11 @@ class Builder:
                                 on={r.tools[a]: None for a in arms}))
         self.emit(f"{p}_R_home", "Home", arms=arms, path="free", controller="position",
                   target=Target(joints={r.robot: r.home} if r.home else {}))
+        # * Cindy drives away to load her next bar: absent until her next jointing arrives. Left standing here, she
+        #   would be an obstacle in the support robots' hold releases, where she no longer is.
+        robots = dict(self.state.robots)
+        robots[r.robot] = None
+        self.set(robots=robots)
 
     # * Support robot: hold (grasps a built bar Cindy still holds) and release.
 

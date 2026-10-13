@@ -20,6 +20,7 @@ robots' and tools' geometry is unchanged, so a second click only re-poses.
 from __future__ import annotations
 
 import scriptcontext as sc
+import session_log
 
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
@@ -67,6 +68,7 @@ def run(ghenv, run=False):
             ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
             notes.append(f"{', '.join(sorted(design.robots))}: loaded + tools + meshes baked")
         except Exception as exc:  # noqa: BLE001 -- report, never raise into Grasshopper
+            session_log.caught(exc)
             notes.append(f"FAILED ({exc})")
 
     info = " | ".join(notes)

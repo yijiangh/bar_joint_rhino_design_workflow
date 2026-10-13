@@ -44,6 +44,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config as _config_module
 from core import ik_viz as _ik_viz_module
 from core import robotic_tool as _robotic_tool_module
@@ -207,4 +209,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

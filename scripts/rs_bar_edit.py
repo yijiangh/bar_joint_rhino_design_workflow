@@ -56,6 +56,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
@@ -363,7 +365,7 @@ def _ask_mode():
     go.SetCommandPromptDefault("BarLength")
     go.AcceptNothing(True)
     while True:
-        res = go.Get()
+        res = session_log.ask(go)
         if res == Rhino.Input.GetResult.Nothing:
             return "length"
         if res == Rhino.Input.GetResult.Option:
@@ -388,7 +390,7 @@ def _pick_bar_curve(prompt):
     go.AcceptNothing(True)
     go.EnablePreSelect(False, True)
     go.SetCustomGeometryFilter(bar_or_tube_filter)
-    if go.Get() != Rhino.Input.GetResult.Object:
+    if session_log.ask(go) != Rhino.Input.GetResult.Object:
         return None
     picked_id = go.Object(0).ObjectId
     rs.UnselectObject(picked_id)
@@ -480,7 +482,7 @@ def _run_fake_bar():
         del_idx = go.AddOption("Delete")
         exit_idx = go.AddOption("Exit")
 
-        res = go.Get()
+        res = session_log.ask(go)
         if res != Rhino.Input.GetResult.Option:
             return  # Enter or Esc
         opt = go.Option()
@@ -518,7 +520,7 @@ def _run_bar_length():
             refresh_idx = go.AddOption("Refresh")
             exit_idx = go.AddOption("Exit")
 
-            res = go.Get()
+            res = session_log.ask(go)
             if res == Rhino.Input.GetResult.Cancel:
                 break
             if res == Rhino.Input.GetResult.Nothing:
@@ -594,4 +596,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

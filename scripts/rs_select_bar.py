@@ -41,6 +41,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import rs_bar_edit as _bar_edit_module
 from core import joint_name_conventions as jnc
 from core import rhino_bar_registry as _registry_module
@@ -199,7 +201,7 @@ def _ask_mode():
     go.SetCommandPromptDefault("SelectByName")
     go.AcceptNothing(True)
     while True:
-        res = go.Get()
+        res = session_log.ask(go)
         if res == Rhino.Input.GetResult.Nothing:
             return "name"
         if res == Rhino.Input.GetResult.Option:
@@ -291,4 +293,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Dict, List, Mapping, Optional, Tuple
 
+import session_log
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
 from bar_assembly_core.design import Design
 from bar_assembly_core.design.hold import hold_scenes
@@ -80,7 +81,8 @@ def mirror_for(store: dict, robot_id: str, log=print) -> CompasFabMirror:
     mirror = mirrors.get(robot_id)
     if mirror is None or not mirror.connected:
         _allow_pybullet_without_stdout()
-        mirror = mirrors[robot_id] = CompasFabMirror(robot_id, log=log)
+        with session_log.step("create planning world", robot_id):
+            mirror = mirrors[robot_id] = CompasFabMirror(robot_id, log=log)
     return mirror
 
 
@@ -119,7 +121,8 @@ def sync_seeded(store: dict, scene: Scene, robot_id: str, joints: Optional[Mappi
     """
     seeded(scene, robot_id, joints, base)
     mirror = mirror_for(store, robot_id, log)
-    mirror.sync(scene)
+    with session_log.step("sync scene into planning world", robot_id):
+        mirror.sync(scene)
     if mirror.parked and report_parked:
         log(f"core planning: {', '.join(mirror.parked)} parked{' for ' + why if why else ''} "
             "(base or joints not solved yet)")
@@ -128,6 +131,7 @@ def sync_seeded(store: dict, scene: Scene, robot_id: str, joints: Optional[Mappi
 
 # --- --- --- --- --- CINDY: KEYFRAME CHAIN --- --- --- --- ---
 
+@session_log.timed()
 def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tuple[CompasFabMirror, Dict[str, object]]:
     """Cindy's keyframe chain of one bar, as tamp's `solve_keyframe_chain` takes it, from the design's scenes.
 
@@ -157,6 +161,7 @@ def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tupl
 
 # --- --- --- --- --- SUPPORT ROBOTS: HOLD AND RELEASE --- --- --- --- ---
 
+@session_log.timed()
 def hold_solve_state(design: Design, store: dict, bar: str, log=print):
     """A support robot's mirror and template state for solving one hold (`support_ik.solve_support_ik`).
 
@@ -182,6 +187,7 @@ def hold_scene(design: Design, bar: str, which: int = 0) -> Scene:
     return hold_scenes(design, f"{short(bar)}_H")[which]
 
 
+@session_log.timed()
 def hold_release_collisions(design: Design, store: dict, bar: str, base: Pose, held: Mapping[str, float],
                             approach: Optional[Mapping[str, float]] = None, log=print) -> List[str]:
     """Check a hold candidate in the second of its scenes (the start of its release): at its held and approach joints.
@@ -210,6 +216,7 @@ def hold_release_collisions(design: Design, store: dict, bar: str, base: Pose, h
     return found
 
 
+@session_log.timed()
 def release_check(design: Design, store: dict, bar: str, log=print) -> str:
     """Check a hold's release in its own scene: the support robot at its held and approach joints.
 
@@ -234,6 +241,7 @@ def release_check(design: Design, store: dict, bar: str, log=print) -> str:
     return ("OK" if not found else "collides: " + "; ".join(found)) + note
 
 
+@session_log.timed()
 def scene_collisions(design: Design, store: dict, scene: Scene, log=print) -> List[Tuple[str, str]]:
     """What collides in a scene, checked on the mirror of every robot placed in it (present, base and joints known).
 

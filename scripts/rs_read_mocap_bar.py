@@ -43,6 +43,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from optitrack.NatNetClient import NatNetClient  # noqa: E402
 
 
@@ -196,7 +198,7 @@ def _prompt_settings():
         go.AddOptionToggle("Multicast", opt_multicast)
         go.AcceptNothing(True)
 
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Cancel:
             return None
         if result == Rhino.Input.GetResult.Nothing:
@@ -492,4 +494,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

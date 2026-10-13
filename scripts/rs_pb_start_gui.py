@@ -21,8 +21,10 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from rs_pb_start import main
 
 
 if __name__ == "__main__":
-    main(use_gui=True)
+    session_log.run(__file__, main, use_gui=True)

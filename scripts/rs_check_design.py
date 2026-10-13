@@ -22,6 +22,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
 from bar_assembly_core.design import DesignError, read  # noqa: E402
 from bar_assembly_core.design.plan_check import check_plan  # noqa: E402
@@ -79,4 +81,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

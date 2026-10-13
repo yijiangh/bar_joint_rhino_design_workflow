@@ -21,6 +21,7 @@ is ever baked into the document.
 
 from __future__ import annotations
 
+import session_log
 import numpy as np
 
 from core import config
@@ -125,6 +126,7 @@ def arm_mount_frames_mm(robot_model) -> dict:
         try:
             matrix = _chain_to_link(robot_model, link_name)
         except Exception as exc:  # noqa: BLE001 -- a preview must never break a pick
+            session_log.caught(exc)
             print(f"core.reach_viz: could not locate '{link_name}' ({exc}).")
             matrix = None
         if matrix is None:

@@ -8,6 +8,7 @@ the male (Ln), and we always pick the canonical variant
 with ``RSJointEdit``.
 """
 
+import session_log
 from core.joint_placement import (
     compute_variant_with_recovery,
     place_joint_blocks,
@@ -16,6 +17,7 @@ from core.rhino_bar_registry import ensure_bar_id
 from core.rhino_helpers import curve_endpoints
 
 
+@session_log.timed()
 def auto_place_joint_pair(le_curve_id, ln_curve_id, pair):
     """Place the canonical (variant 0) joint pair between two bars.
 

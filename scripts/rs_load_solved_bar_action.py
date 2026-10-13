@@ -36,6 +36,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config as _config_module
 from core import keyframe_store as _keyframe_store_module
 from core.rhino_bar_pick import pick_bar
@@ -75,6 +77,7 @@ def load_and_view(batch: bool) -> None:
         design = read(folder)
         solutions = read_solutions(design)
     except Exception as exc:  # noqa: BLE001 -- a broken folder is reported, not raised
+        session_log.caught(exc)
         rs.MessageBox(f"Cannot read the design folder:\n{exc}", 0, "RSLoadSolvedBarAction")
         return
     if not solutions:
@@ -89,6 +92,7 @@ def load_and_view(batch: bool) -> None:
         changed = set(viewer.plan_steps.changed_since_planning(
             viewer.design_from_document("RSLoadSolvedBarAction"), solutions, [config.HUSKY_PKG_PATH]))
     except Exception as exc:  # noqa: BLE001 -- a note, never a blocker
+        session_log.caught(exc)
         print(f"RSLoadSolvedBarAction: could not compare with the document ({type(exc).__name__}: {exc}).")
         changed = set()
     if batch:
@@ -151,4 +155,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

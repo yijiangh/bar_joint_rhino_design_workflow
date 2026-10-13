@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 
+import session_log
+
 
 # Marker embedded in an InstanceDefinition's Description so a later run can tell
 # whether the source asset file has changed since the block was imported.  See
@@ -118,6 +120,7 @@ def _read_asset_geometry(asset_path: str, layer_name: str | None):
     try:
         file3dm = Rhino.FileIO.File3dm.Read(asset_path)
     except Exception as exc:  # noqa: BLE001 - any read failure falls back
+        session_log.caught(exc)
         print(f"  [import_block] File3dm path raised: {exc!r}")
         return None
     if file3dm is None:
@@ -267,6 +270,7 @@ def import_block_definition_from_3dm(
                 return True
             print(f"  [import_block] InstanceDefinitions.Add returned {idef_index}")
         except Exception as exc:  # noqa: BLE001 - fall through to _-Insert
+            session_log.caught(exc)
             print(f"  [import_block] InstanceDefinitions.Add raised: {exc!r}")
 
     # ---- Attempt 2: _-Insert command -----------------------------------
@@ -319,6 +323,7 @@ def _write_asset_stamp(block_name: str, asset_path: str) -> None:
                 instance_def, block_name, description, True
             )
         except Exception as exc:  # noqa: BLE001 - cosmetic bookkeeping only
+            session_log.caught(exc)
             print(f"  [import_block] could not stamp '{block_name}': {exc!r}")
         return
 

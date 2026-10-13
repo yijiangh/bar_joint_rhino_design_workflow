@@ -55,6 +55,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
@@ -331,7 +333,7 @@ class _SequenceSession:
         )
         go2.EnablePreSelect(False, False)
         go2.SetCustomGeometryFilter(_bar_or_tube_filter)
-        result2 = go2.Get()
+        result2 = session_log.ask(go2)
         if result2 != Rhino.Input.GetResult.Object:
             return
         picked_id = go2.Object(0).ObjectId
@@ -408,7 +410,7 @@ class _SequenceSession:
             go.SetCustomGeometryFilter(
                 _make_bar_or_tube_filter(exclude_bar_ids=[self.active_bar_id])
             )
-            result = go.Get()
+            result = session_log.ask(go)
 
             if result == Rhino.Input.GetResult.Cancel:
                 print("RSSequenceEdit: cancelled, supports unchanged.")
@@ -596,7 +598,7 @@ def main():
             # Create a fresh GetObject each iteration so a previous pick doesn't
             # re-trigger via pre-selection (which would cause an infinite loop).
             go = _build_get_option(session, last_action)
-            result = go.Get()
+            result = session_log.ask(go)
 
             if result == Rhino.Input.GetResult.Cancel:
                 break
@@ -661,4 +663,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

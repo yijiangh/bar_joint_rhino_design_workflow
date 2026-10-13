@@ -37,6 +37,7 @@ import numpy as np
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 import Rhino  # noqa: F401  (kept so other scripts can import Rhino through this file)
+import session_log
 
 from core import config
 from core import joint_name_conventions as jnc
@@ -204,9 +205,10 @@ def _flush_cache_layer_once() -> None:
     # old layer name we still clear so older documents tidy themselves up on first run.
     ensure_layer(config.LAYER_IK_CACHE)
     total = 0
-    for lname in (config.LAYER_IK_CACHE, getattr(config, "SUPPORT_PREVIEW_LAYER", None), "IKPineapplePreview"):
-        if lname:
-            total += _delete_layer_objects(lname)
+    with session_log.step("purge old preview objects"):
+        for lname in (config.LAYER_IK_CACHE, getattr(config, "SUPPORT_PREVIEW_LAYER", None), "IKPineapplePreview"):
+            if lname:
+                total += _delete_layer_objects(lname)
     if total:
         print(f"ik_viz: purged {total} orphan preview object(s) before initial bake.")
     sc.sticky[_STICKY_CACHE_INITIALIZED] = True
@@ -293,7 +295,8 @@ def _bake(part_id: str, geometry, layer: str, scale: float) -> dict:
         attributes = Rhino.DocObjects.ObjectAttributes()
         attributes.LayerIndex = sc.doc.Layers.FindByFullPath(_mode_layer(layer, mode), -1)
         attributes.Name = part_id
-        baked[mode].append(sc.doc.Objects.AddMesh(mesh, attributes))
+        with session_log.step("add mesh to document"):
+            baked[mode].append(sc.doc.Objects.AddMesh(mesh, attributes))
     return baked
 
 
@@ -316,6 +319,7 @@ def _show_mode(entry: dict, mesh_mode: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed("ik_viz.begin_session")
 def begin_session(
     mesh_mode: Optional[str] = None,
     hide_tool_instances: bool = True,  # back-compat shim; use hide_doc_layers
@@ -396,6 +400,7 @@ def _restore_hidden_doc_layers() -> None:
             rs.LayerVisible(ln, True)
 
 
+@session_log.timed("ik_viz.update_state")
 def update_state(
     scene,
     *,
@@ -463,7 +468,8 @@ def update_state(
                 guids = _guids(part)
                 if guids:
                     # ? Keep the ids Rhino returns (the same ones, unless it replaced an object).
-                    moved = list(rs.TransformObjects(guids, numpy_to_xform(delta)) or guids)
+                    with session_log.step("move part"):
+                        moved = list(rs.TransformObjects(guids, numpy_to_xform(delta)) or guids)
                     count = len(part[MESH_MODE_VISUAL])
                     part[MESH_MODE_VISUAL], part[MESH_MODE_COLLISION] = moved[:count], moved[count:]
                 part["xform"] = target
@@ -556,6 +562,7 @@ def robot_meshes(robot, mesh_mode: str = MESH_MODE_VISUAL) -> List:
     return meshes
 
 
+@session_log.timed("ik_viz.end_session")
 def end_session() -> None:
     """End the preview session: hide the cache layer and restore the doc layers.
 
@@ -568,6 +575,7 @@ def end_session() -> None:
     _restore_hidden_doc_layers()
 
 
+@session_log.timed("ik_viz.discard_cache")
 def discard_cache() -> None:
     """Hard reset: delete every object on the cache layer (and its sub-layers) and drop the cached parts and meshes.
 

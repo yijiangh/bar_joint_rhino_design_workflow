@@ -24,6 +24,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
@@ -159,6 +161,7 @@ def _refresh_runtime_modules():
 # ---------------------------------------------------------------------------
 
 
+@session_log.timed("solve brace candidates")
 def _solve(le1_id, le2_id, ce1, ce2, target_distance):
     """Run the S2-T1 solver. Returns (solutions, report) or ([], None) on error."""
     le1_start, le1_end = curve_endpoints(le1_id)
@@ -178,11 +181,13 @@ def _solve(le1_id, le2_id, ce1, ce2, target_distance):
             nn_init_hint=ce2 - ce1,
         )
     except Exception as exc:
+        session_log.caught(exc)
         print(f"RSBarBrace solver error: {exc}")
         return [], None
     return report.get("solutions", []), report
 
 
+@session_log.timed("create candidate previews")
 def _create_previews(solutions, ce1, ce2, brace_length):
     """Create preview tubes + dots for all solutions. Returns list of preview dicts."""
     preview_items = []
@@ -220,6 +225,7 @@ def _create_previews(solutions, ce1, ce2, brace_length):
     return preview_items
 
 
+@session_log.timed("delete candidate previews")
 def _cleanup_previews(preview_items):
     with suspend_redraw():
         for item in preview_items:
@@ -297,7 +303,7 @@ def _interactive_loop(le1_id, le2_id, ce1, ce2, target_distance, brace_length):
             slide2_idx = go.AddOption("SlidePointOn2")
             go.AddOptionDouble("Length", length_value)
 
-            result = go.Get()
+            result = session_log.ask(go)
 
             if result == Rhino.Input.GetResult.Cancel:
                 return None, brace_length
@@ -428,7 +434,7 @@ def _pick_le1_with_pair_and_length(
         )
         go.AddOptionDouble(length_option_name, length_value)
 
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Cancel:
             return None, None, None
 
@@ -502,7 +508,7 @@ def main():
         print(f"RSBarBrace: final brace length {float(brace_length):.2f} mm")
 
         # Bake the chosen solution as a plain bar (default color).
-        with suspend_redraw():
+        with session_log.step("bake the chosen brace"), suspend_redraw():
             midpoint = 0.5 * (solution["p1"] + solution["p2"])
             line_id = add_centered_line(midpoint, solution["nn"], brace_length)
             _place_axis_line(line_id, label="RSBarBrace_Ln")
@@ -527,8 +533,9 @@ def main():
         reset_bar_color(le1_id)
         reset_bar_color(le2_id)
         reset_bar_color(line_id)
-        sc.doc.Views.Redraw()
+        with session_log.step("viewport redraw"):
+            sc.doc.Views.Redraw()
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

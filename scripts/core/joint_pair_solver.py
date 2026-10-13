@@ -12,6 +12,7 @@ import math
 from typing import Iterable
 
 import numpy as np
+import session_log
 from scipy.optimize import minimize
 
 from core.geometry import closest_params_infinite_lines
@@ -84,6 +85,7 @@ def _random_seeds(
     return seeds
 
 
+@session_log.timed()
 def optimize_pair_placement(
     le_start: Iterable[float],
     le_end: Iterable[float],

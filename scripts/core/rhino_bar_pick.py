@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import Rhino
 import rhinoscriptsyntax as rs
+import session_log
 
 from core.joint_pair import (
     JointPairDef,
@@ -245,7 +246,7 @@ def pick_bar(prompt: str):
     go.SetCommandPrompt(prompt)
     go.EnablePreSelect(True, True)
     go.SetCustomGeometryFilter(bar_or_tube_filter)
-    result = go.Get()
+    result = session_log.ask(go)
     if result != Rhino.Input.GetResult.Object:
         return None
     picked_id = go.Object(0).ObjectId
@@ -271,7 +272,7 @@ def pick_point_on_bar(bar_id, prompt: str):
     gp.SetCommandPrompt(prompt)
     gp.Constrain(curve, False)
     gp.PermitObjectSnap(True)
-    if gp.Get() != Rhino.Input.GetResult.Point:
+    if session_log.ask(gp) != Rhino.Input.GetResult.Point:
         return None
     pt = gp.Point()
     return np.array([pt.X, pt.Y, pt.Z], dtype=float)
@@ -307,7 +308,7 @@ def pick_bar_with_pair_option(
         go.SetCustomGeometryFilter(bar_or_tube_filter)
         list_opt_index = go.AddOptionList("Pair", names, selected_index)
 
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Cancel:
             return None, None
 

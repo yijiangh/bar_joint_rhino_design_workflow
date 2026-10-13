@@ -53,6 +53,8 @@ import rhino_env  # noqa: E402  (the commands' packages, for the code Claude Cod
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 
 # ---- Session-wide storage keys inside `sc.sticky`. Same names as the official
 # ---- Grasshopper bridge component, so if both ever run in the same interpreter
@@ -180,6 +182,7 @@ class _ExecHandler(BaseHTTPRequestHandler):
             body = json.loads(raw)
             code = body.get("code", "")
         except Exception as exc:
+            session_log.caught(exc)
             self._send(400, {"error": "bad request: " + repr(exc)})
             return
         # ? The request body also carries a `timeout` field; like the official
@@ -276,4 +279,4 @@ def stop() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

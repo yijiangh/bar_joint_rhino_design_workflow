@@ -57,6 +57,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config
 from core import joint_name_conventions as jnc
 from core import joint_relink
@@ -222,7 +224,7 @@ def _choose_operation():
     relink_idx = go.AddOption("RelinkJointsAndTools")
     go.AcceptNothing(False)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Option:
             chosen = go.OptionIndex()
             if chosen == renumber_idx:
@@ -240,7 +242,7 @@ def _confirm_apply(prompt="Apply?"):
     cancel_idx = go.AddOption("Cancel")
     go.AcceptNothing(False)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Option:
             chosen = go.OptionIndex()
             if chosen == apply_idx:
@@ -470,4 +472,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

@@ -22,6 +22,7 @@ import math
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
+import session_log
 
 from core import config
 from core import dynamic_preview
@@ -361,7 +362,7 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
         picker_a = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_a)
         picker_a.SetCommandPrompt("Pick grasp center on bar centerline")
         picker_a.Constrain(bar_curve, False)
-        if picker_a.Get() != Rhino.Input.GetResult.Point:
+        if session_log.ask(picker_a) != Rhino.Input.GetResult.Point:
             return None, None
         grasp_center_doc = picker_a.Point()
         ok, t = bar_curve.ClosestPoint(grasp_center_doc)
@@ -396,7 +397,7 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
         picker_b.DrawLineFromPoint(grasp_center_doc, True)
         picker_b.Constrain(heading_plane, False)
         picker_b.PermitObjectSnap(False)
-        if picker_b.Get() != Rhino.Input.GetResult.Point:
+        if session_log.ask(picker_b) != Rhino.Input.GetResult.Point:
             return None, None
         heading_doc = _heading_for_gripper_z(
             picker_b.Point(), grasp_center_doc, bar_tangent_doc, phi
@@ -447,7 +448,7 @@ def pick_base_frame_on_walkable(brep_id, robot_name: str, robot_meshes,
             f"Pick {robot_name}'s base origin on WalkableGround brep"
         )
         picker_a.Constrain(brep, -1, -1, False)
-        if picker_a.Get() != Rhino.Input.GetResult.Point:
+        if session_log.ask(picker_a) != Rhino.Input.GetResult.Point:
             return None, None, None, None
         picked_doc = picker_a.Point()
         close_pt, normal = closest_point_on_brep(brep, picked_doc)
@@ -466,7 +467,7 @@ def pick_base_frame_on_walkable(brep_id, robot_name: str, robot_meshes,
         picker_b = dynamic_preview.TrackingGetPoint(conduit, _xform_phase_b)
         picker_b.SetCommandPrompt("Pick heading point (defines base +X)")
         picker_b.SetBasePoint(close_pt, True)
-        if picker_b.Get() != Rhino.Input.GetResult.Point:
+        if session_log.ask(picker_b) != Rhino.Input.GetResult.Point:
             return None, None, None, None
         heading_doc = picker_b.Point()
 

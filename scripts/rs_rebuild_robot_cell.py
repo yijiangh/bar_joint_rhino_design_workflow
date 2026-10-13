@@ -42,6 +42,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 from core import config as _config_module
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
 from core import design_builder as _design_builder_module
@@ -85,6 +87,7 @@ def refresh(command: str = "RSRebuildRobotCell", gui: bool = False) -> None:
     try:
         result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
     except Exception as exc:  # noqa: BLE001 -- surface any build error to the user
+        session_log.caught(exc)
         rs.MessageBox(f"{command}: the document cannot become a design:\n{type(exc).__name__}: {exc}", 0, command)
         return
     design = result.design
@@ -96,14 +99,17 @@ def refresh(command: str = "RSRebuildRobotCell", gui: bool = False) -> None:
     if movement is not None:
         for robot_id in sorted(design.robots):
             try:
-                scene = design.scene_at(movement)
-                if gui and robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
-                    design_planning.mirror_for(sc.sticky, robot_id).set_gui(True)
-                design_planning.sync_seeded(sc.sticky, scene, robot_id, report_parked=False)
-                # The meshes the previews draw (read once per file, kept by the core).
-                scene.robots[robot_id].model.link_geometry
-                built.append(robot_id)
+                with session_log.step("build planning cell", robot_id):
+                    scene = design.scene_at(movement)
+                    if gui and robot_id == design_source.robot_id(config.ASSEMBLY_ROBOT_NAME):
+                        design_planning.mirror_for(sc.sticky, robot_id).set_gui(True)
+                    design_planning.sync_seeded(sc.sticky, scene, robot_id, report_parked=False)
+                    # The meshes the previews draw (read once per file, kept by the core).
+                    with session_log.step("read robot meshes"):
+                        scene.robots[robot_id].model.link_geometry
+                    built.append(robot_id)
             except Exception as exc:  # noqa: BLE001 -- one robot must not stop the others
+                session_log.caught(exc)
                 failed.append(f"{robot_id}: {type(exc).__name__}: {exc}")
 
     count = {prefix: sum(1 for b in design.bodies if b.startswith(prefix + "/"))
@@ -126,4 +132,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

@@ -16,6 +16,7 @@ import math
 
 import Rhino
 import scriptcontext as sc
+import session_log
 from System.Drawing import Color as _SDColor
 
 
@@ -285,6 +286,7 @@ class TrackingGetPoint(Rhino.Input.Custom.GetPoint):
         try:
             xform = self._frame_from_cursor(e.CurrentPoint)
         except Exception as exc:
+            session_log.caught(exc)
             print(f"TrackingGetPoint: frame_from_cursor raised {exc}; keeping last xform.")
             xform = None
         if xform is not None:

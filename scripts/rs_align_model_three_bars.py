@@ -42,6 +42,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 from scipy.optimize import least_squares
 
@@ -416,6 +418,7 @@ def _apply_transform(xform):
             if new_id is not None:
                 moved += 1
         except Exception as exc:
+            session_log.caught(exc)
             print("[align] failed to transform {}: {}".format(oid, exc))
     return moved, len(ids)
 
@@ -572,4 +575,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

@@ -31,7 +31,8 @@ SCRIPTS_ROOT = os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
 
 def _is_project_module(name: str, module) -> bool:
     file_attr = getattr(module, "__file__", None)
-    if not file_attr:
+    # ! Not the session log: it holds the open log file and the command now running.
+    if not file_attr or name == "session_log":
         return False
     try:
         return os.path.normcase(file_attr).startswith(SCRIPTS_ROOT)
@@ -47,4 +48,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if SCRIPTS_ROOT not in [os.path.normcase(p) for p in sys.path]:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import session_log
+
+    session_log.run(__file__, main)

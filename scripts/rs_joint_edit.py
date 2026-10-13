@@ -76,6 +76,8 @@ import rhino_env  # noqa: E402  (before any package import: requirements-rhino.t
 
 rhino_env.activate()
 
+import session_log  # noqa: E402
+
 import numpy as np
 import Rhino
 import rhinoscriptsyntax as rs
@@ -395,7 +397,7 @@ def _pick_bar_to_move(bar_a_id, bar_b_id):
     go.SetCommandPrompt(f"Select the bar that should move ({bar_a_id} or {bar_b_id})")
     go.EnablePreSelect(False, False)
     go.SetCustomGeometryFilter(_filter)
-    if go.Get() != Rhino.Input.GetResult.Object:
+    if session_log.ask(go) != Rhino.Input.GetResult.Object:
         return None
     oid = go.Object(0).ObjectId
     return rs.GetUserText(oid, BAR_ID_KEY) or rs.GetUserText(oid, TUBE_BAR_ID_KEY)
@@ -407,7 +409,7 @@ def _run_move_joint():
     go.SetCommandPrompt("Select the joint to move")
     go.EnablePreSelect(False, False)
     go.SetCustomGeometryFilter(_placed_joint_filter)
-    if go.Get() != Rhino.Input.GetResult.Object:
+    if session_log.ask(go) != Rhino.Input.GetResult.Object:
         return
     clicked_id = go.Object(0).ObjectId
     if rs.ObjectLayer(clicked_id) not in jnc.PAIRED_LAYERS or is_single_sided_block(clicked_id):
@@ -572,7 +574,7 @@ def _run_move_joint():
             f"Pick the point to align FROM, on or near {near_joint_id} "
             "(Esc cancels the whole move)"
         )
-        result = first.Get()
+        result = session_log.ask(first)
         if result != Rhino.Input.GetResult.Point:
             return None, None, _outcome(result)
         base = first.Point()
@@ -581,7 +583,7 @@ def _run_move_joint():
         second.SetCommandPrompt(f"Pick the point to align TO ({near_joint_id} slides there)")
         second.SetBasePoint(base, True)
         second.DrawLineFromPoint(base, True)
-        result = second.Get()
+        result = session_log.ask(second)
         if result != Rhino.Input.GetResult.Point:
             return None, None, _outcome(result)
         return base, second.Point(), "ok"
@@ -712,7 +714,7 @@ def _run_move_joint():
                 accept.AddOption("Repick")
                 accept.SetCommandPromptDefault("Accept")
                 accept.AcceptNothing(True)
-                res = accept.Get()
+                res = session_log.ask(accept)
                 if res == Rhino.Input.GetResult.Cancel:
                     _restore()
                     return
@@ -837,7 +839,7 @@ def _run_replace_joint():
         )
         go.EnablePreSelect(False, False)
         go.SetCustomGeometryFilter(_paired_joint_filter)
-        if go.Get() != Rhino.Input.GetResult.Object:
+        if session_log.ask(go) != Rhino.Input.GetResult.Object:
             print("RSJointEdit: Done.")
             return
         clicked_id = go.Object(0).ObjectId
@@ -896,7 +898,7 @@ def _ask_mode():
     go.SetCommandPromptDefault("FlipJoint")
     go.AcceptNothing(True)
     while True:
-        result = go.Get()
+        result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Nothing:
             return "flip"
         if result == Rhino.Input.GetResult.Option:
@@ -935,7 +937,7 @@ def main():
         )
         go.EnablePreSelect(False, False)
         go.SetCustomGeometryFilter(_placed_joint_filter)
-        result = go.Get()
+        result = session_log.ask(go)
         if result != Rhino.Input.GetResult.Object:
             print("RSJointEdit: Done.")
             return
@@ -1010,4 +1012,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

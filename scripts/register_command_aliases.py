@@ -23,9 +23,16 @@ track them. It is idempotent: an existing alias of the same name is replaced.
 """
 
 import os
+import sys
 import xml.etree.ElementTree as ET
 
 import rhinoscriptsyntax as rs
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import session_log  # noqa: E402
 
 
 # The toolbar file sits one level up from this scripts/ folder, at the repo root.
@@ -40,6 +47,9 @@ _LOCALE_TAG = "locale_1033"
 # Every macro in our toolbar starts with this prefix. Stripping it gives the
 # short alias (RSIKKeyframe -> IKKeyframe).
 _COMMAND_PREFIX = "RS"
+
+# Commands without a toolbar button: they get their aliases all the same.
+_EXTRA_COMMANDS = [("RSShowLog", '! _-ScriptEditor _R "rs_show_log.py"')]
 
 
 def _macro_entries(rui_path: str):
@@ -115,7 +125,7 @@ def main() -> None:
     replaced = 0
     failed = 0
     shadowed = []
-    for name, macro_script in _macro_entries(RUI_PATH):
+    for name, macro_script in list(_macro_entries(RUI_PATH)) + _EXTRA_COMMANDS:
         # * Full name first (RSIKKeyframe), then the short one (IKKeyframe).
         alias_names = [name]
         short = _short_name(name)
@@ -156,4 +166,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    session_log.run(__file__, main)

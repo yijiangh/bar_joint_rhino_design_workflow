@@ -78,6 +78,7 @@ import re
 import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
+import session_log
 
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
@@ -330,6 +331,7 @@ def _render_robots(store, design, step, notes):
                             hide_bodies=True)
         ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, True)
     except Exception as exc:  # noqa: BLE001 -- a bad step must not kill the solve
+        session_log.caught(exc)
         notes.append(f"robots not drawn: {exc}")
         ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
         return False

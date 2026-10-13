@@ -255,6 +255,13 @@ rod-to-rod connectivity:
 With nothing moved between import and export, the exported file is
 identical to the imported one (covered by `tests/test_scaffold_json.py`).
 
+### Session log
+
+Every command writes what it did to a log file, one per Rhino session, in `logs/` at the repository root: its
+prints, each prompt with the answer given, errors with their tracebacks, and where the time went (working vs.
+waiting for the user, by step). The first command of a session prints the file's path; `RSShowLog` opens it.
+See [docs/session_log.md](docs/session_log.md).
+
 ## Standalone Developer Tools
 
 Most of these run from a terminal, not from Rhino buttons. The `T1-S2` case exporter below is the one Rhino-side debugging exception because it captures live Rhino picks and the current solver output.

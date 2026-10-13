@@ -18,8 +18,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+import session_log
 from rs_lamcp_bridge_start import stop
 
 
 if __name__ == "__main__":
-    stop()
+    session_log.run(__file__, stop)

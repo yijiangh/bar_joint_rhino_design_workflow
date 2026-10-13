@@ -867,7 +867,7 @@ def compare_collisions(report: Report, pair, found: Dict[str, dict]) -> None:
         floor_y = {p for p in y if GROUND in p}
         problems = []
         if x - floor_x != y - floor_y:
-            problems.append(("pairs differ", f"only first {sorted((x - floor_x) - y)}, "
+            problems.append(("pairs only in the core", f"only first {sorted((x - floor_x) - y)}, "
                                              f"only second {sorted((y - floor_y) - x)}"))
         if floor_x != floor_y:
             if floor_x and not floor_y and pair[1] == "new":
@@ -943,11 +943,13 @@ def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, de
 
 
 def _narrower(design, state, pair: Tuple[str, str], only_export: bool) -> str:
-    """Why one pair differs between the export and the mirror, as a KNOWN kind, or "pairs differ" if unexplained."""
+    """Why one pair differs between the export and the mirror, as a KNOWN kind, or "pairs only in the core" if unexplained."""
     a, b = pair
     if only_export:
-        bars = [side for side in pair if side.startswith("bars/")]
-        return EXPORT_EARLY_BAR if bars and not is_present(design, state, bars[0]) else "pairs differ"
+        bars = [side if side.startswith("bars/") else bar_of(design, side) for side in pair
+                if side.startswith(("bars/", "joints/"))]
+        early = any(bar is not None and not is_present(design, state, bar) for bar in bars)
+        return EXPORT_EARLY_BAR if early else "pairs only in the old export"
     partner = {side: other for mate in design.mates for side, other in (mate, mate[::-1])}
     tool = next((side for side in pair if side.startswith("tools/")), None)
     body = b if tool == a else a
@@ -957,14 +959,14 @@ def _narrower(design, state, pair: Tuple[str, str], only_export: bool) -> str:
         flange = next((f"{robot_id}/{link}" for robot_id, robot in design.robots.items()
                        for link, mounted in robot.tools.items() if mounted == tool), None)
         works_on = flange in holders or (on is not None and bar_of(design, on) == body)
-        return NARROW_HELD if works_on else "pairs differ"
+        return NARROW_HELD if works_on else "pairs only in the core"
     if tool is not None and body.startswith("joints/"):
-        return NARROW_MATE_TOOL if on is not None and partner.get(on) == body else "pairs differ"
+        return NARROW_MATE_TOOL if on is not None and partner.get(on) == body else "pairs only in the core"
     if {a.split("/")[0], b.split("/")[0]} == {"bars", "joints"}:
         bar, half = (a, b) if a.startswith("bars/") else (b, a)
         mated = partner.get(half)
-        return NARROW_MATE_BAR if mated is not None and bar_of(design, mated) == bar else "pairs differ"
-    return "pairs differ"
+        return NARROW_MATE_BAR if mated is not None and bar_of(design, mated) == bar else "pairs only in the core"
+    return "pairs only in the core"
 
 
 # --- --- --- --- --- RUN --- --- --- --- ---

@@ -44,6 +44,7 @@ import compas_compare as cc  # noqa: E402
 from bar_assembly_core.design import read  # noqa: E402
 from bar_assembly_core.design.write import design_hashes  # noqa: E402
 import trimesh  # noqa: E402
+from compas.geometry import Transformation  # noqa: E402
 from bar_assembly_core.geometry import Geometry, Pose, TriMesh, compose, invert, shape_mesh  # noqa: E402
 from bar_assembly_core.legacy.conversion import SERIALS, robot_files  # noqa: E402
 from bar_assembly_core.legacy.export import ACTION_CODES, ACTION_KINDS, from_export, load_export  # noqa: E402
@@ -58,8 +59,49 @@ POSE_TOL, ANGLE_TOL, VALUE_TOL = 1e-6, 1e-5, 1e-9
 #: How far apart two shapes placed in the world may be (m), and a body's motion from its design placement (m, rad).
 SHAPE_TOL, MOTION_TOL, MOTION_ANGLE_TOL = 1e-4, 1e-4, 1e-5
 
-#: Difference kinds of this script that are explained. `compas_compare.KNOWN` holds the others.
-KNOWN: Dict[str, str] = {}
+#: Difference kinds that are explained, beyond `compas_compare.KNOWN`. Any other kind fails the run.
+KNOWN: Dict[str, str] = {
+    # * Representation: the same world, written differently. "body placement in the world" checks what they stand for.
+    "body state: frame differs": "body frames are a convention (a bar's sits at its end in the old export, at its "
+                                 "middle in the design); the placement check compares where the shapes are",
+    "body state: hidden body frame differs": "a hidden body's frame is never used; frames are a convention anyway",
+    "body state: grasp differs": "grasps are relative to the body frame, a convention; see the placement check",
+    "body state: attached body has a frame": "the core also writes the world frame of an attached body; compas_fab "
+                                             "ignores it",
+    "body state: attachment differs": "a held bar's halves ride on the first holder's flange in the core, on their "
+                                      "own flange in the old export; both arms hold the bar, see the placement check",
+    "bars: prism against cylinder": "bars are 12-sided prisms in the old export and cylinders (finer prisms) in the "
+                                    "design, 0.34 mm apart at most",
+    "geometry: visual differs": "robot visual meshes: the old export stores reduced copies of the source files the "
+                                "core loads; bars as above. Collision checks never use visual shapes",
+    "geometry: collision differs": "bars only (checked): prism against cylinder, and the frame convention",
+    "other robot: welded tool link named differently": "<flange>_obstacle_tool against <flange>_tool; same geometry",
+    "tool state: group name differs, same flange": "the support gripper on `manipulator` (old) or the base-rooted "
+                                                   "`base_arm_manipulator` (core); both end at the same flange",
+    "tool state: attached tool has a frame": "compas_fab ignores a frame on an attached tool",
+    "tool state: attachment_frame None vs identity": "compas_fab reads an empty attachment frame as identity",
+    # * Contacts: written by hand in the old plugin, derived in the core. The collision check compares the outcome.
+    "tool state: touch_links differ": "the core lists the flange links a tool is mounted on (`mount_contacts`)",
+    "body state: touch_bodies differ": "allowed contacts are derived in the core (format 8.4) and listed on both "
+                                       "bodies; the old plugin wrote them per movement. See the colliding pairs",
+    "body state: touch_bodies mirrored": "the same contact listed on the other body",
+    "body state: touch_links differ": "as touch_bodies: derived contacts with robot links",
+    "body state: hidden body touches differ": "a hidden body's contacts are never used",
+    # * The new plugin describes more, or decides differently on purpose.
+    "floor: only in core": "the old cells have no floor; the design holds the walkable ground as a body",
+    "bodies differ": "obstacles: the old plugin put them in Cindy's cell only; the design gives every robot's cell "
+                     "all of them",
+    "body keys differ": "as above: obstacles missing from the old support cells",
+    "movement only in core": "HR ends with `leave` (free, away from the structure): the support robot has to move "
+                             "away from the bar; the old export has no such movement (confirmed 2026-10-13)",
+    "tool frame differs": "the support gripper's TCP: at the flange in the old export, between the fingers on the "
+                          "bar axis in the design, which is the proper value (confirmed 2026-10-13)",
+    "configuration None in one": "the old export leaves a start configuration open where the planner fills it; the "
+                                 "design carries the last known joints forward (every state reads alone)",
+    "flanges differ": "as above: no configuration on one side, so no forward kinematics to compare",
+    "body state: hidden differs": "the old export shows a bar and its halves before the operator mounts them; the "
+                                  "design has them absent until the mount",
+}
 cc.KNOWN.update(KNOWN)
 
 
@@ -144,9 +186,9 @@ def load_core(design, report: cc.Report, watch: Stopwatch) -> cc.Loaded:
 
 
 def compare_worlds(report: cc.Report, old: cc.Loaded, core: cc.Loaded, design, collisions: bool,
-                   watch: Stopwatch, log) -> None:
+                   watch: Stopwatch, log, cells: bool = True) -> None:
     """Cells, states, flange poses and colliding pairs of the two planning worlds."""
-    for robot in sorted(set(old.cells) & set(core.cells)):
+    for robot in sorted(set(old.cells) & set(core.cells)) if cells else ():
         log(f"comparing cells: {robot}")
         cc.compare_cells(report, PAIR, old, core, robot)
     if set(old.cells) != set(core.cells):
@@ -164,7 +206,10 @@ def compare_worlds(report: cc.Report, old: cc.Loaded, core: cc.Loaded, design, c
     for key in common:
         cc.compare_states(report, PAIR, old, core, key)
         cc.compare_kinematics(report, PAIR, old, core, key)
+    _only_bars(report)
     watch.lap("compare states")
+    compare_placement(report, old, core, common)
+    watch.lap("compare body placement")
     if not collisions:
         return
     found = {}
@@ -182,6 +227,92 @@ def compare_worlds(report: cc.Report, old: cc.Loaded, core: cc.Loaded, design, c
     report.notes.append(f"collisions: {len(found)} of {len(common)} movements checked (both sides give the acting "
                         f"robot's joints); old export {sum(map(len, found.values()))} colliding pairs, core "
                         f"{sum(map(len, mirror.values()))}")
+
+
+def body_world(cell, state, body_state, cache: dict) -> Optional[np.ndarray]:
+    """A body's world pose (4x4) in a compas_fab state: its frame, or its link's pose times the attachment frame."""
+    if not body_state.attached_to_link:
+        return cc._matrix(body_state.frame) if body_state.frame is not None else None
+    if state.robot_configuration is None:
+        return None
+    if id(state) not in cache:
+        model = cell.robot_model
+        cache[id(state)] = (model.compute_transformations(cc._joint_map(state.robot_configuration)),
+                            np.asarray(Transformation.from_frame(state.robot_base_frame).matrix))
+    transformations, base = cache[id(state)]
+    joint = cell.robot_model.get_link_by_name(body_state.attached_to_link).parent_joint
+    link = base @ np.asarray(transformations[joint.name].matrix) @ cc._matrix(joint.current_origin)
+    return link @ cc._matrix(body_state.attachment_frame)
+
+
+def _placed(body, matrix: np.ndarray):
+    parts = cc.body_parts(body, "collision")
+    if not parts:
+        return None
+    vertices, faces, offset = [], [], 0
+    for part in parts:
+        vertices.append(part.vertices @ matrix[:3, :3].T + matrix[:3, 3])
+        faces.append(part.faces + offset)
+        offset += len(part.vertices)
+    return trimesh.Trimesh(np.vstack(vertices), np.vstack(faces), process=False)
+
+
+def compare_placement(report: cc.Report, old: cc.Loaded, core: cc.Loaded, keys) -> None:
+    """Where every visible body is in the world, whatever its frame convention.
+
+    Per body, the transform from the old frame to the core's is a constant if both sides move the body alike: the
+    first state gives it (and there the two collision shapes, placed in the world, must coincide), every other state
+    is compared with it.
+    """
+    category = report.category(PAIR, "body placement in the world")
+    shapes = report.category(PAIR, "body shape in the world")
+    reference: Dict[Tuple[str, str], np.ndarray] = {}
+    cache: dict = {}
+    for key in keys:
+        robot, sa = old.states[key]
+        _, sb = core.states[key]
+        cell_a, cell_b = old.cells[robot], core.cells[robot]
+        names_b = {v: k for k, v in core.keys[robot].items()}
+        problems = []
+        for name_a, state_a in sa.rigid_body_states.items():
+            body = old.keys[robot][name_a]
+            state_b = sb.rigid_body_states.get(names_b.get(body, ""))
+            if body == cc.GROUND or state_b is None or state_a.is_hidden or state_b.is_hidden:
+                continue
+            wa, wb = body_world(cell_a, sa, state_a, cache), body_world(cell_b, sb, state_b, cache)
+            if wa is None or wb is None:
+                continue
+            offset = np.linalg.inv(wa) @ wb
+            first = reference.get((robot, body))
+            if first is None:
+                reference[(robot, body)] = offset
+                x = _placed(cell_a.rigid_body_models[name_a], wa)
+                y = _placed(cell_b.rigid_body_models[names_b[body]], wb)
+                gap = surface_gap(x, y) if x is not None and y is not None else 0.0
+                shapes.deviation("surface m", gap)
+                kind = [] if gap <= SHAPE_TOL else \
+                    [("bars: prism against cylinder" if body.startswith("bars/") and gap < 5e-4
+                      else "body shape placed differently", f"surfaces up to {gap * 1000:.3g} mm apart ({key[1]})")]
+                shapes.add(f"{robot}:{body}", kind)
+                continue
+            change = np.linalg.inv(first) @ offset
+            distance = float(np.linalg.norm(change[:3, 3]))
+            angle = float(np.arccos(np.clip((np.trace(change[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)))
+            category.deviation("m", distance)
+            category.deviation("rad", angle)
+            if distance > MOTION_TOL or angle > MOTION_ANGLE_TOL:
+                problems.append(("body placed differently", f"{body}: {distance * 1000:.4g} mm, "
+                                                            f"{np.degrees(angle):.4g} deg"))
+        category.add(key[1], problems)
+
+
+def _only_bars(report: cc.Report) -> None:
+    """`geometry: collision differs` is explained for bars only: any other body is its own, unexplained kind."""
+    category = report.category(PAIR, "body collision")
+    others = [line for line in category.kinds.get("geometry: collision differs", []) if ":bars/" not in line]
+    for line in others:
+        category.counts["collision shape of a body that is not a bar differs"] += 1
+        category.kinds["collision shape of a body that is not a bar differs"].append(line)
 
 
 def _movement(design, key):
@@ -396,7 +527,7 @@ def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Sto
 # --- --- --- --- --- RUN --- --- --- --- ---
 
 def run(old_export: Path, new_design: Path, worlds: bool = True, collisions: bool = True, designs: bool = True,
-        log=print) -> Tuple[cc.Report, Stopwatch]:
+        log=print, cells: bool = True) -> Tuple[cc.Report, Stopwatch]:
     """Both tests on one pair of exports.
 
     Returns:
@@ -433,7 +564,7 @@ def run(old_export: Path, new_design: Path, worlds: bool = True, collisions: boo
     if worlds:
         old = load_old(export, design)
         core = load_core(design, report, watch)
-        compare_worlds(report, old, core, design, collisions, watch, log)
+        compare_worlds(report, old, core, design, collisions, watch, log, cells)
     if designs:
         log("comparing the designs")
         compare_designs(report, converted, design, ("old export converted", "new design"), watch)
@@ -448,11 +579,12 @@ def main() -> None:
     parser.add_argument("--json", type=Path, help="write the full report here")
     parser.add_argument("--no-worlds", action="store_true", help="skip test 1")
     parser.add_argument("--no-collisions", action="store_true", help="skip test 1's collision checks")
+    parser.add_argument("--no-cells", action="store_true", help="skip test 1's cell comparison (the slowest step)")
     parser.add_argument("--no-designs", action="store_true", help="skip test 2")
     args = parser.parse_args()
     start = time.perf_counter()
     report, watch = run(args.old_export, args.new_design, not args.no_worlds, not args.no_collisions,
-                        not args.no_designs)
+                        not args.no_designs, cells=not args.no_cells)
     report.print()
     print(f"\ntiming: {watch.summary()}; whole run {time.perf_counter() - start:.1f} s")
     if args.json:

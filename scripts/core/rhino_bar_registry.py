@@ -95,25 +95,48 @@ def _parse_bar_seq(s):
         return None
 
 
+def bar_curve_ids():
+    """Object ids of every registered bar curve, in document order.
+
+    The same objects as ``[oid for oid in rs.AllObjects() if is_bar(oid)]``
+    (normal, locked and hidden objects; no references), but Rhino filters to
+    curves before Python sees anything and the user text is read straight off
+    each object.  That matters because every entry point scans the bars several
+    times in ``repair_on_entry``: going through ``rs.AllObjects`` cost two
+    Python -> Rhino round trips for EVERY object in the document (meshes, tool
+    and joint blocks, robot geometry ...), about a second per scan in a
+    workshop-sized file, only to skip almost all of them.
+    """
+    settings = Rhino.DocObjects.ObjectEnumeratorSettings()
+    settings.ObjectTypeFilter = Rhino.DocObjects.ObjectType.Curve
+    settings.NormalObjects = True
+    settings.LockedObjects = True
+    settings.HiddenObjects = True
+    settings.ReferenceObjects = False
+    return [
+        obj.Id
+        for obj in sc.doc.Objects.GetObjectList(settings)
+        if obj.Attributes.GetUserString(BAR_TYPE_KEY) == BAR_TYPE_VALUE
+    ]
+
+
 def next_bar_id():
     """Return the next available bar ID (e.g. ``'B4'``)."""
     max_num = 0
-    for oid in rs.AllObjects():
-        if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-            num = jnc.bar_number(rs.GetUserText(oid, BAR_ID_KEY))
-            if num is not None and num > max_num:
-                max_num = num
+    for oid in bar_curve_ids():
+        num = jnc.bar_number(rs.GetUserText(oid, BAR_ID_KEY))
+        if num is not None and num > max_num:
+            max_num = num
     return jnc.bar_id(max_num + 1)
 
 
 def next_bar_seq():
     """Return the next available assembly sequence number (max existing + 1)."""
     max_seq = 0
-    for oid in rs.AllObjects():
-        if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-            seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
-            if seq is not None and seq > max_seq:
-                max_seq = seq
+    for oid in bar_curve_ids():
+        seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
+        if seq is not None and seq > max_seq:
+            max_seq = seq
     return max_seq + 1
 
 
@@ -183,10 +206,9 @@ def get_all_bars():
     Returns ``{bar_id: curve_guid}`` dict.
     """
     bars = {}
-    for oid in rs.AllObjects():
-        if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-            bar_id = ensure_bar_id(oid)  # heals guid mismatch / name drift
-            bars[bar_id] = rs.coerceguid(oid)
+    for oid in bar_curve_ids():
+        bar_id = ensure_bar_id(oid)  # heals guid mismatch / name drift
+        bars[bar_id] = rs.coerceguid(oid)
     return bars
 
 
@@ -284,9 +306,7 @@ def get_bar_seq_map():
     and *seq* is the integer assembly sequence number.
     """
     result = {}
-    for oid in rs.AllObjects():
-        if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
-            continue
+    for oid in bar_curve_ids():
         bar_id = rs.GetUserText(oid, BAR_ID_KEY)
         seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
         if bar_id and seq is not None:
@@ -332,9 +352,7 @@ def repair_bar_sequences():
         )
 
     bar_data = []  # (oid, bar_id, bar_id_num, old_seq)
-    for oid in rs.AllObjects():
-        if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
-            continue
+    for oid in bar_curve_ids():
         bar_id = rs.GetUserText(oid, BAR_ID_KEY)
         bar_id_num = jnc.bar_number(bar_id) or 0
         old_seq = _parse_bar_seq(rs.GetUserText(oid, BAR_SEQ_KEY))
@@ -606,9 +624,7 @@ def cleanup_stale_supports():
     """
     live_ids = set()
     bar_records = []  # (oid, bar_id)
-    for oid in rs.AllObjects():
-        if rs.GetUserText(oid, BAR_TYPE_KEY) != BAR_TYPE_VALUE:
-            continue
+    for oid in bar_curve_ids():
         bid = rs.GetUserText(oid, BAR_ID_KEY)
         bar_records.append((oid, bid))
         if bid:

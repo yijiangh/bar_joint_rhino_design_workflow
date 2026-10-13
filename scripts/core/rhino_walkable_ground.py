@@ -776,6 +776,28 @@ def _bar_ground_soups(bar_oid, grounds_map, soup_cache: dict = None):
     return soups
 
 
+def _seed_base(soups, bar_ground_point, ground_normal, heading_dir_mm, standoff_mm):
+    """Where the base stands: `standoff_mm` behind the bar's ground point, against the heading, snapped to the ground.
+
+    As the tamp submodule's ``derive_seed_base``, with the standoff as an argument:
+    that function takes it from its own config (``IK_BASE_STANDOFF_MM``), and
+    RSIKKeyframeAll lets the user type it.
+
+    Returns:
+        tuple: ``(origin_mm, normal, heading_dir)``; the heading is a unit vector in
+        the ground plane at the origin.
+    """
+    heading_dir = _walkable_np._ground_heading_direction(heading_dir_mm, ground_normal)
+    behind_point = np.asarray(bar_ground_point, dtype=float) - heading_dir * float(standoff_mm)
+    origin, normal = _walkable_np.closest_point_on_meshes(soups, behind_point)
+    if origin is None:
+        # The offset point missed the ground: stand under the bar (the caller reports it as off the guide).
+        origin, normal = bar_ground_point, ground_normal
+    # Flatten the heading again, onto the ground plane at the snapped origin.
+    heading_dir = _walkable_np._ground_heading_direction(heading_dir_mm, normal)
+    return np.asarray(origin, dtype=float), normal, heading_dir
+
+
 def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] = None,
                                standoff_mm: float = None,
                                center_mm=None,
@@ -849,13 +871,15 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
         diag_out["ground_point"] = np.asarray(ground_point, dtype=float)
 
     try:
-        origin, normal, heading_dir = _walkable_np.derive_seed_base(
-            soups, center_mm, heading_dir_mm=diag["heading"], standoff_mm=standoff,
-        )
+        origin, normal, heading_dir = _seed_base(soups, ground_point, ground_normal, diag["heading"], standoff)
         frame = _walkable_np.frame_from_origin_normal_heading(
             origin, normal, origin + heading_dir * 1000.0
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 -- one bar without a base must not stop the others
+        # ! Say why: this used to return None silently, and the caller reported
+        # every failure as "no WalkableGround", whatever had gone wrong.
+        session_log.caught(exc)
+        print(f"core.rhino_walkable_ground: no base for bar '{bar_id}' ({type(exc).__name__}: {exc}).")
         return None
 
     if diag_out is not None:

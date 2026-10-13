@@ -17,6 +17,9 @@ Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_a
 
 from __future__ import annotations
 
+import os
+import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Dict, List, Mapping, Optional, Tuple
 
@@ -36,11 +39,47 @@ MIRRORS_KEY = "bar_joint:core_mirrors"
 KEYFRAME_MOVEMENTS = {"M1": ("J", "J_transfer"), "M2": ("J", "J_insert"), "M3": ("R", "R_retreat")}
 
 
+def _stdout_is_a_file() -> bool:
+    """Whether `sys.stdout` has an OS handle that can be duplicated and reopened (what compas_fab's redirect does)."""
+    try:
+        fd = os.dup(sys.stdout.fileno())
+    except (OSError, ValueError, AttributeError):
+        return False
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+@contextmanager
+def _no_redirect(to=os.devnull, enabled=True):
+    yield
+
+
+def _allow_pybullet_without_stdout() -> None:
+    """Let compas_fab's PyBullet client connect when Rhino's stdout has no OS handle.
+
+    - ! The client hides PyBullet's start-up text by reopening a duplicate of stdout's descriptor. In Rhino on
+      Windows descriptor 1 may exist without a handle behind it (it depends on how Rhino was started); the reopen
+      then raises `OSError: [WinError 6] The handle is invalid` and no planning cell can be built.
+    - ? Without a handle that text goes nowhere anyway, so the redirect is skipped, not replaced.
+    """
+    if _stdout_is_a_file():
+        return
+    from compas_fab.backends.pybullet import client  # noqa: PLC0415
+
+    client.redirect_stdout = _no_redirect
+
+
 def mirror_for(store: dict, robot_id: str, log=print) -> CompasFabMirror:
     """The planning mirror of one robot, kept in `store` between commands; a new one if it was closed."""
     mirrors = store.setdefault(MIRRORS_KEY, {})
     mirror = mirrors.get(robot_id)
     if mirror is None or not mirror.connected:
+        _allow_pybullet_without_stdout()
         mirror = mirrors[robot_id] = CompasFabMirror(robot_id, log=log)
     return mirror
 

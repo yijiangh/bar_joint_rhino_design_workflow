@@ -75,6 +75,7 @@ from core import highlight_env as _highlight_env_module
 from core import hold_schedule as _hold_schedule_module
 from core import ik_viz as _ik_viz_module
 from core import keyframe_store as _keyframe_store_module
+from core import reach_check
 from core import reach_viz as _reach_viz_module
 from core import rhino_tool_place as _rhino_tool_place_module
 from core import rhino_walkable_ground as _rhino_walkable_ground_module
@@ -1510,10 +1511,30 @@ def _snap_to_brep(brep, origin_mm):
     return _point_to_mm(close_pt), np.array([normal.X, normal.Y, normal.Z], dtype=float)
 
 
+def _reach_inputs(urdf, ordered):
+    """What `reach_check.out_of_reach` needs for a chain: each arm's reach and the flange targets, or ({}, {}).
+
+    Args:
+        urdf: The robot's URDF, or None for no reach check.
+        ordered (list): ``[(role, movement), ...]`` with ``target_ee_frames`` {"left", "right"} in metres.
+    """
+    if urdf is None:
+        return {}, {}
+    try:
+        reach = {side: reach_check.arm_reach(urdf, f"{side}_ur_arm_tool0") for side in ("left", "right")}
+        targets = {role: {side: tuple(frame.point) for side, frame in (movement.target_ee_frames or {}).items()}
+                   for role, movement in ordered}
+    except Exception as exc:  # noqa: BLE001 -- the check is a shortcut: without it the solver decides
+        session_log.caught(exc)
+        print(f"RSIKKeyframe: reach check unavailable ({type(exc).__name__}: {exc}).")
+        return {}, {}
+    return reach, targets
+
+
 @session_log.timed()
 def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                                brep_id, heading_mm, include_self, include_env,
-                               viz=None):
+                               viz=None, urdf=None):
     """Solve the M1->M2->M3 IK chain; sample base frames around the seed on failure.
 
     A base frame is accepted only when the WHOLE chain solves (approach ->
@@ -1544,6 +1565,9 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
             ``check_collision``.
         viz: optional ``IKSampleVizConduit`` for live base-sampling visualization
             (ghost robot + per-attempt markers), or None to disable it.
+        urdf: the robot's URDF; when given, a base whose arms cannot reach the
+            flange targets by distance alone (``core.reach_check``) is skipped
+            without calling the solver.
 
     Returns:
         tuple: ``(solved_states, used_base_frame_mm)`` on success where
@@ -1552,6 +1576,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     """
     check_collision = bool(include_self or include_env)
     ordered = [("M1", movements["M1"]), ("M2", movements["M2"]), ("M3", movements["M3"])]
+    reach, flange_targets = _reach_inputs(urdf, ordered)
 
     # Candidate base frames: the seed first, then samples snapped to the brep.
     attempts = [seed_base_frame_mm]
@@ -1579,6 +1604,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     prev_redraw = rs.EnableRedraw(True) if viz is not None else None
 
     total = len(attempts)
+    skipped = 0
     try:
         for idx, base_frame in enumerate(attempts):
             label = "seed" if idx == 0 else f"sample {idx}/{total - 1}"
@@ -1589,6 +1615,14 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
             )
             if viz is not None:
                 viz.set_ghost_xform(np_mm_to_xform(base_frame))
+            too_far = reach_check.out_of_reach(base_frame, reach, flange_targets) if reach else []
+            if too_far:
+                print(f"RSIKKeyframe: [x] base frame ({label}) skipped, out of reach: {'; '.join(too_far)}.")
+                if viz is not None and idx > 0:
+                    sample_origin_doc, sample_x_doc, _z = _frame_mm_to_doc_marker(base_frame)
+                    viz.add_tried(sample_origin_doc, sample_x_doc, success=False)
+                skipped += 1
+                continue
             with session_log.step("solve_keyframe_chain", label):
                 solved = ik_keyframe.solve_keyframe_chain(
                     planner,
@@ -1612,10 +1646,17 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     finally:
         if prev_redraw is not None:
             rs.EnableRedraw(prev_redraw)
-    print(
-        f"RSIKKeyframe: [X] chain IK failed for all {total} attempt(s). "
-        f"Consider increasing IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER in config.py."
-    )
+    if skipped == total:
+        print(
+            f"RSIKKeyframe: [X] all {total} base frame(s) are out of the arms' reach: "
+            "pick a base closer to the bar (inside the reach spheres)."
+        )
+    else:
+        print(
+            f"RSIKKeyframe: [X] chain IK failed for all {total} attempt(s)"
+            + (f" ({skipped} skipped as out of reach)" if skipped else "")
+            + ". Consider increasing IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER in config.py."
+        )
     return None, None
 
 
@@ -2905,7 +2946,7 @@ def _main(stack, after):
                 solved, used_base = _solve_chain_with_sampling(
                     planner, movements, seed_base_frame,
                     brep_id, heading_mm, include_self, include_env,
-                    viz=viz,
+                    viz=viz, urdf=design.robots[robot_id].urdf,
                 )
                 # Drop the moving ghost robot but keep the circle + tried markers +
                 # seed arrow, so the "what was tried" history stays on screen without

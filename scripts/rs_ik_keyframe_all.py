@@ -226,7 +226,7 @@ def _solve_one(design, ctx, include_self, include_env):
                 planner, movements, base_frame,
                 brep_id=None, heading_mm=None,
                 include_self=include_self, include_env=include_env,
-                viz=None,
+                viz=None, urdf=design.robots[design.actions[f"{bar_id}_J"].robot].urdf,
             )
     except Exception as exc:  # noqa: BLE001 -- one bar must not stop the batch
         session_log.caught(exc)

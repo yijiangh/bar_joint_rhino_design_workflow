@@ -113,7 +113,7 @@ def canvas(source):  # noqa: F811
     sc.doc.RuntimeSerialNumber = 1
     sc.doc.Views = types.SimpleNamespace(RedrawEnabled=True, Redraw=lambda: None)
     sc.doc.Layers = types.SimpleNamespace(FindByFullPath=lambda path, _missing: list(canvas.layers).index(path))
-    sc.doc.Objects = types.SimpleNamespace(AddMesh=canvas.add_mesh)
+    sc.doc.Objects.AddMesh = canvas.add_mesh
     rhino.Geometry.Mesh, rhino.Geometry.Transform = Mesh, Transform
     rhino.DocObjects.ObjectAttributes = lambda: types.SimpleNamespace(LayerIndex=-1, Name="")
     for name in ("core.ik_viz", "core.rhino_helpers"):

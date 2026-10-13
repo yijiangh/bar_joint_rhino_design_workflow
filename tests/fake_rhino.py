@@ -133,11 +133,20 @@ def install(doc: Doc) -> None:
     rs.IsMesh = lambda oid: False
     sc = types.ModuleType("scriptcontext")
     sc.sticky = {}
-    sc.doc = types.SimpleNamespace(ModelUnitSystem="mm")
+
+    def object_list(settings):
+        """`doc.Objects.GetObjectList`: the objects of the settings' type, each with its id and user strings."""
+        return [types.SimpleNamespace(Id=oid, Attributes=types.SimpleNamespace(GetUserString=o.text.get))
+                for oid, o in doc.objects.items()
+                if settings.ObjectTypeFilter != "curve" or o.start is not None]
+
+    sc.doc = types.SimpleNamespace(ModelUnitSystem="mm", Objects=types.SimpleNamespace(GetObjectList=object_list))
     rhino = types.ModuleType("Rhino")
     rhino.RhinoMath = types.SimpleNamespace(UnitScale=lambda _from, _to: 1.0)
     rhino.UnitSystem = types.SimpleNamespace(Millimeters="mm")
-    rhino.DocObjects = types.SimpleNamespace(InstanceObject=InstanceObject)
+    rhino.DocObjects = types.SimpleNamespace(
+        InstanceObject=InstanceObject, ObjectType=types.SimpleNamespace(Curve="curve"),
+        ObjectEnumeratorSettings=lambda: types.SimpleNamespace(ObjectTypeFilter=None))
     rhino.Geometry = types.SimpleNamespace(Point3d=Point3d, Mesh=Mesh, Extrusion=type("Extrusion", (), {}),
                                            MeshingParameters=types.SimpleNamespace(Coarse=None))
     sys.modules.update({"rhinoscriptsyntax": rs, "scriptcontext": sc, "Rhino": rhino})

@@ -289,12 +289,11 @@ class RhinoDesignSource:
     @session_log.timed()
     def _check_duplicate_bars(self, rs) -> None:
         """Two bar curves with one `bar_id` (copy/paste) are a duplicate."""
-        from core.rhino_bar_registry import BAR_ID_KEY, BAR_TYPE_KEY, BAR_TYPE_VALUE
+        from core.rhino_bar_registry import BAR_ID_KEY, bar_curve_ids
         seen: Dict[str, int] = {}
-        for oid in rs.AllObjects() or []:
-            if rs.GetUserText(oid, BAR_TYPE_KEY) == BAR_TYPE_VALUE:
-                bar = rs.GetUserText(oid, BAR_ID_KEY)
-                seen[bar] = seen.get(bar, 0) + 1
+        for oid in bar_curve_ids():
+            bar = rs.GetUserText(oid, BAR_ID_KEY)
+            seen[bar] = seen.get(bar, 0) + 1
         self.duplicates += [f"duplicate bar id {bar} on {n} curves" for bar, n in sorted(seen.items()) if n > 1]
 
     @session_log.timed()

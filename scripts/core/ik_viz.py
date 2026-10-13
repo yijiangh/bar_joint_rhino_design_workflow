@@ -31,6 +31,8 @@ Session lifecycle
 
 from __future__ import annotations
 
+import hashlib
+import os
 from typing import Iterable, List, Optional
 
 import numpy as np
@@ -269,20 +271,91 @@ def _rhino_mesh(geometry, mesh_mode: str, scale: float):
     if not shapes:
         meshes[key] = (geometry, None)
         return None
-    mesh = Rhino.Geometry.Mesh()
+    triangle_sets = [shape_mesh(shape) for shape in shapes]
+    n_faces = sum(len(triangles.faces) for triangles in triangle_sets)
+    path = _disk_cache_path(triangle_sets, scale)
+    mesh = _read_cached_mesh(path, n_faces) if path else None
+    if mesh is None:
+        mesh = Rhino.Geometry.Mesh()
+        # ! One Python -> Rhino call per vertex and per face: a robot's visual meshes have 0.7 to 1 million
+        # vertices, 7 s for a support robot. Hence the disk cache for the large ones.
+        with session_log.step("build Rhino mesh"):
+            for triangles in triangle_sets:
+                offset = mesh.Vertices.Count
+                for x, y, z in (np.asarray(triangles.vertices) * scale).tolist():
+                    mesh.Vertices.Add(x, y, z)
+                for a, b, c in (np.asarray(triangles.faces) + offset).tolist():
+                    mesh.Faces.AddFace(a, b, c)
+            mesh.Normals.ComputeNormals()
+            mesh.Compact()
+        if path:
+            _write_cached_mesh(path, mesh)
     # ? Double-precision vertices: parts are moved by many small transforms, single precision would drift.
     mesh.Vertices.UseDoublePrecisionVertices = True
-    for shape in shapes:
-        triangles = shape_mesh(shape)
-        offset = mesh.Vertices.Count
-        for x, y, z in (np.asarray(triangles.vertices) * scale).tolist():
-            mesh.Vertices.Add(x, y, z)
-        for a, b, c in (np.asarray(triangles.faces) + offset).tolist():
-            mesh.Faces.AddFace(a, b, c)
-    mesh.Normals.ComputeNormals()
-    mesh.Compact()
     meshes[key] = (geometry, mesh)
     return mesh
+
+
+# --- Rhino meshes on disk ---
+# Building a large mesh costs one Python -> Rhino call per vertex and face; reading it back from a .3dm file is one
+# call. Measured in Rhino on a support robot (17 meshes, 686 000 vertices): built in 7.2 s, read in 0.16 s.
+
+#: Meshes with fewer vertices plus faces than this are built every time (bars, joints: milliseconds each).
+_DISK_CACHE_MIN_SIZE = 5000
+
+
+def _disk_cache_dir() -> str:
+    """Where the built meshes are kept between sessions: next to the Python packages of `rhino_env`."""
+    import tempfile
+
+    root = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return os.path.join(root, "bar_joint_rhino", "mesh_cache")
+
+
+def _disk_cache_path(triangle_sets, scale: float) -> Optional[str]:
+    """The cache file of a mesh, named by its content (vertices, faces, scale); None for a small mesh.
+
+    ? Named by content, so a changed robot or tool file gives a new name; the old file is just never read again.
+    Set `RS_MESH_CACHE=0` to switch the cache off.
+    """
+    if os.environ.get("RS_MESH_CACHE", "1") == "0":
+        return None
+    if sum(len(t.vertices) + len(t.faces) for t in triangle_sets) < _DISK_CACHE_MIN_SIZE:
+        return None
+    digest = hashlib.sha1(f"v1 {scale!r}".encode())
+    for triangles in triangle_sets:
+        digest.update(np.ascontiguousarray(triangles.vertices, dtype=np.float64).tobytes())
+        digest.update(np.ascontiguousarray(triangles.faces, dtype=np.int64).tobytes())
+    return os.path.join(_disk_cache_dir(), digest.hexdigest() + ".3dm")
+
+
+def _read_cached_mesh(path: str, n_faces: int):
+    """The mesh kept in a cache file, or None if there is none or it does not fit (then it is built again)."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with session_log.step("read mesh from disk cache"):
+            for obj in Rhino.FileIO.File3dm.Read(path).Objects:
+                mesh = obj.Geometry.DuplicateMesh()  # its own copy: the file object is dropped
+                if mesh.Faces.Count == n_faces:
+                    return mesh
+    except Exception as exc:  # noqa: BLE001 -- an unreadable cache file must never stop a preview
+        session_log.caught(exc)
+    return None
+
+
+def _write_cached_mesh(path: str, mesh) -> None:
+    """Keep a built mesh for later sessions; written beside its name, then moved, so a file is never half there."""
+    try:
+        with session_log.step("write mesh to disk cache"):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            partial = path[:-4] + ".part.3dm"
+            file = Rhino.FileIO.File3dm()
+            file.Objects.AddMesh(mesh)
+            if file.Write(partial, 8):
+                os.replace(partial, path)
+    except Exception as exc:  # noqa: BLE001 -- the cache is an optimization only
+        session_log.caught(exc)
 
 
 def _pose_xform(pose, scale: float) -> np.ndarray:

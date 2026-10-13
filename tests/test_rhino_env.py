@@ -86,3 +86,14 @@ def test_ik_backend_defaults_to_gradient_without_ssik(env, monkeypatch, tmp_path
     rhino_env._active = None
     rhino_env.activate(force=True)
     assert os.environ["HUSKY_IK_BACKEND"] == "ssik"
+
+
+def test_submodule_folders_are_put_back_on_the_path_every_time(env, monkeypatch):
+    """`core.core_lib` adds them only at its first import; a command after a lost `sys.path` must still find them."""
+    rhino_env.activate(force=True)
+    present = [p for p in rhino_env.SUBMODULE_PATHS if os.path.isdir(p)]
+    assert present and all(p in sys.path for p in present)
+    for p in present:
+        sys.path.remove(p)
+    target = rhino_env.activate(force=True)
+    assert sys.path[0] == target and all(p in sys.path for p in present)

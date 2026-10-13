@@ -141,6 +141,11 @@ def _warn_foreign_copies(target: str) -> List[str]:
     return foreign
 
 
+#: The submodule folders that hold importable packages (`core.core_lib` puts them on `sys.path` at its first import).
+SUBMODULE_PATHS = (os.path.join(REPO_ROOT, "external", "bar_assembly_core"),
+                   os.path.join(REPO_ROOT, "external", "compas_fab", "src"))
+
+
 def _default_ik_backend() -> None:
     """Use the `gradient` IK backend unless ssik is set up (its venv and its solver modules) or one was chosen."""
     if os.environ.get("HUSKY_IK_BACKEND"):
@@ -178,4 +183,10 @@ def activate(force: bool = False) -> Optional[str]:
         if target in sys.path:
             sys.path.remove(target)
         sys.path.insert(0, target)
+    # ! Again on every command: `core.core_lib` adds these once, at its first import, and stays in `sys.modules`.
+    # ! If `sys.path` loses them before compas_fab is first imported, a later command fails with
+    # ! "No module named 'compas_fab'" (seen in Rhino on 2026-10-13).
+    for folder in SUBMODULE_PATHS:
+        if folder not in sys.path and os.path.isdir(folder):
+            sys.path.insert(1, folder)
     return target

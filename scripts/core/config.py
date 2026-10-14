@@ -542,6 +542,9 @@ IK_BASE_SEARCH_REFINE_EVALS = 40          # cost evaluations of the descent per 
 # DEBUG view of what the search did: an arrow where a cost was computed, a green / red
 # circle where a collision check ran, a line along each descent. See core.base_search_viz.
 DEBUG_BASE_SEARCH_TRACE = True
+# Also draw the ground grid the search ranked (a short arrow per 50 mm cell, shaded by arm
+# cost). Dense: it covers the whole search circle, so it is off unless asked for.
+DEBUG_BASE_SEARCH_GRID = False
 
 # Layer holding the text-dot markers RSUpdatePreview drops on broken links. A
 # block instance's object color only reaches sub-objects whose color source is

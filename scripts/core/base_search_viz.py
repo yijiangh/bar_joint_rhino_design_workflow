@@ -2,8 +2,9 @@
 
 Shows a `base_search.Trace` while the search fills it:
 
-- a SHORT ARROW at every ground cell in the search circle, along its cheapest allowed heading and shaded by the
-  closed-form arm cost there: this dense grid is computed first (no planner) and orders the cells the search visits;
+- only with ``config.DEBUG_BASE_SEARCH_GRID``: a SHORT ARROW at every ground cell in the search circle, along its
+  cheapest allowed heading and shaded by the closed-form arm cost there: the dense grid that orders the cells the
+  search visits;
 - a LONGER ARROW at every base whose full cost (arm extension + clearance) was computed, along the base's heading.
   The planner was asked about these, so each also carries a green circle;
 - all arrows share one scale, pale to dark purple from the dearest to the cheapest;
@@ -72,7 +73,9 @@ class _TraceConduit(Rhino.Display.DisplayConduit):
             return Rhino.Geometry.Vector3d(float(xyz[0]), float(xyz[1]), float(xyz[2]))
 
         box = Rhino.Geometry.BoundingBox.Empty
-        values = [cost for _, cost in trace.costs] + ([] if trace.cells is None else list(trace.cells[1]))
+        # The grid is dense and covers the whole search circle: hidden unless asked for.
+        cells = trace.cells if getattr(config, "DEBUG_BASE_SEARCH_GRID", False) else None
+        values = [cost for _, cost in trace.costs] + ([] if cells is None else list(cells[1]))
         low, high = (min(values), max(values)) if values else (0.0, 0.0)
 
         def shade(cost):
@@ -81,7 +84,7 @@ class _TraceConduit(Rhino.Display.DisplayConduit):
 
         # The grid is many arrows: a few shades, each drawn in one call.
         by_shade = {}
-        for frame, cost in zip(*(trace.cells or ((), ()))):
+        for frame, cost in zip(*(cells or ((), ()))):
             cheap = 1.0 - (float(cost) - low) / max(high - low, 1e-12)
             start = at(frame)
             by_shade.setdefault(round(cheap * _SHADES), []).append(

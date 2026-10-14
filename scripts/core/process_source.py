@@ -1,5 +1,5 @@
 """
-Read the Rhino document into a schema 2 `Process` (bar_assembly_core), fresh on every command.
+Read the Rhino document into a schema 2 `Process` (scaffolding_assembly_core), fresh on every command.
 
 `RhinoProcessSource(command).build()` reads bars, halves, ground, obstacles, robots, tools, mates and the per-bar
 keyframe records, then `core.process_builder` adds the actions. Units are converted once, here: document units and
@@ -28,15 +28,15 @@ import numpy as np
 import session_log
 
 from core import config
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
 from core import joint_name_conventions as jnc
 from core.process_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, poses_in_tcp
-from bar_assembly_core.process import BodySpec, Process, ProcessError, Producer, RobotSpec
-from bar_assembly_core.process.version import writer_info
-from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
-from bar_assembly_core.kinematics import link_pose
-from bar_assembly_core.robot import Tool
-from bar_assembly_core.urdf import UR_JOINT_NAMES, copy_robot, urdf_links
+from scaffolding_assembly_core.process import BodySpec, Process, ProcessError, Producer, RobotSpec
+from scaffolding_assembly_core.process.version import writer_info
+from scaffolding_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.robot import Tool
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES, copy_robot, urdf_links
 
 REPO = "bar_joint_rhino_design_workflow"
 #: Robot name -> hardware serial. ? Rhino has no source for these; same values as the monitor's config.

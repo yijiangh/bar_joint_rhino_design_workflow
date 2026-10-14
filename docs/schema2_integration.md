@@ -1,14 +1,14 @@
 # Schema 2: export, planning and viewing through the shared core
 
 Branch `claude/schema2-core`, 2026-10-08 to 10-13. The plugin writes **schema 2 process folders** through the shared core
-`bar_assembly_core` (submodule `external/bar_assembly_core`), runs the core's file checks (A) and plan checks (B), and
-**plans and draws on the core**. Spec: `external/bar_assembly_core/doc/process_format.md`.
+`scaffolding_assembly_core` (submodule `external/scaffolding_assembly_core`), runs the core's file checks (A) and plan checks (B), and
+**plans and draws on the core**. Spec: `external/scaffolding_assembly_core/doc/process_format.md`.
 
 **The core is the only process → compas_fab interface.** The plugin reads the Rhino document into a `Process`
 (`core.process_source`); every compas_fab cell and state it uses comes from the core, built from the process's scenes
 (`Process.scene_at`). Drawing uses no compas_fab at all:
 
-- `bar_assembly_core.mirrors.compas_fab.CompasFabMirror`: one PyBullet world per robot, to plan and check collisions;
+- `scaffolding_assembly_core.mirrors.compas_fab.CompasFabMirror`: one PyBullet world per robot, to plan and check collisions;
   its planner is lent to the tamp and compas_fab solvers;
 - the core's `Scene` and `scene_parts`: what `core.process_display` and `core.ik_viz` draw, part by part, without a
   cell.
@@ -21,7 +21,7 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 
 | Piece | Where | State |
 | --- | --- | --- |
-| Core as a pinned submodule | `external/bar_assembly_core` (jeliag/bar_assembly_core `03a18e1`: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
+| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `03a18e1`: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
 | Document → `Process` | `core/process_source.py`, `RhinoProcessSource(command, cache).build()`; also records each body's Rhino object (`SourceResult.objects`) | tested on a fake document and on `YH_ik_test.3dm` and `examples/Example4_two_box.3dm` (rhino3dm) |
 | Keyframe records → actions | `core/process_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, `pose_in_tcp` per kind of half (`poses_in_tcp`) | pytest: an unsolved three-bar process with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the process on every command | |
@@ -212,7 +212,7 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
 
 **Setup** (once):
 
-1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/bar_assembly_core
+1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/scaffolding_assembly_core
    external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `03a18e1`.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportProcess` and `RSCheckProcess` can be typed
@@ -224,7 +224,7 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
 `RSExportProcess` → `Wrote …: 13 bodies, 4 mates, 2 actions, 8 movements; 1/1 bars with IK`, `A (file checks): passed`,
 B2 / B14 / B5 findings as before (B1, B2, B4 left out: no tool pair; since `bar_placing` they are placed by hand instead, `B1_P` …), B15 errors and a `STALE IK` line for B3, and **no B11 `on` errors**. The folder: role-named
 ids (`actions/B3_J.json` with `B3_J_load` … `B3_J_insert`, `actions/B3_R.json` with `B3_R_ungrasp`, `B3_R_retreat`,
-`B3_R_home`), meshes named `<owner>.<hash>.obj`, `pose_in_tcp` on the male and ground halves, tool ids `tools/cindy/…`, targets shaped as `target.robots[<robot>]` with `joints` and `link_poses`, obstacles listed in `present`, `writer.schema` 2.1, `writer.library` `bar_assembly_core`. `RSCheckProcess`
+`B3_R_home`), meshes named `<owner>.<hash>.obj`, `pose_in_tcp` on the male and ground halves, tool ids `tools/cindy/…`, targets shaped as `target.robots[<robot>]` with `joints` and `link_poses`, obstacles listed in `present`, `writer.schema` 2.1, `writer.library` `scaffolding_assembly_core`. `RSCheckProcess`
 on the folder: the same.
 
 **Test 2: IK** (the study document): `RSIKKeyframe` on a bar whose tools are placed. Expected: `rebuilt the planning

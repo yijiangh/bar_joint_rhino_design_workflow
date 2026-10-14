@@ -54,19 +54,19 @@ from scipy.spatial.transform import Rotation
 REPO = Path(__file__).resolve().parents[2]
 #: Holds `husky_urdf/` (the plugin's robot files).
 DATA = REPO / "asset"
-for _path in (REPO / "external" / "bar_assembly_core", REPO / "external" / "compas_fab" / "src",
+for _path in (REPO / "external" / "scaffolding_assembly_core", REPO / "external" / "compas_fab" / "src",
               REPO / "external" / "rs_data_structure"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
-from bar_assembly_core.process import read  # noqa: E402
-from bar_assembly_core.process.relations import bar_of, is_present  # noqa: E402
-from bar_assembly_core.mirrors.compas import PARKED_POSITION  # noqa: E402
-from bar_assembly_core.legacy.conversion import convert_export  # noqa: E402
-from bar_assembly_core.legacy.export import body_id, load_export  # noqa: E402
-from bar_assembly_core.legacy.timing import Stopwatch  # noqa: E402
-from bar_assembly_core.mirrors.compas_fab import CompasFabMirror  # noqa: E402
+from scaffolding_assembly_core.process import read  # noqa: E402
+from scaffolding_assembly_core.process.relations import bar_of, is_present  # noqa: E402
+from scaffolding_assembly_core.mirrors.compas import PARKED_POSITION  # noqa: E402
+from scaffolding_assembly_core.legacy.conversion import convert_export  # noqa: E402
+from scaffolding_assembly_core.legacy.export import body_id, load_export  # noqa: E402
+from scaffolding_assembly_core.legacy.timing import Stopwatch  # noqa: E402
+from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror  # noqa: E402
 
 #: Tolerances: joints (rad or m), frame positions (m) and rotations (rad), mesh points (m), areas/volumes (relative).
 JOINT_TOL, FRAME_TOL, MESH_TOL, RELATIVE_TOL = 1e-9, 1e-6, 1e-6, 1e-6

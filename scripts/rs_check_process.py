@@ -2,7 +2,7 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSCheckProcess - read a schema 2 process folder and print its file checks (A) and plan checks (B).
 
-The core (`external/bar_assembly_core`) does both: `read` runs A1-A13 and refuses a broken folder, `check_plan` runs
+The core (`external/scaffolding_assembly_core`) does both: `read` runs A1-A13 and refuses a broken folder, `check_plan` runs
 B1-B14. Needs no PyBullet, compas_fab or tamp.
 """
 
@@ -24,9 +24,9 @@ rhino_env.activate()
 
 import session_log  # noqa: E402
 
-from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
-from bar_assembly_core.process import ProcessError, read  # noqa: E402
-from bar_assembly_core.process.plan_check import check_plan  # noqa: E402
+from core import core_lib  # noqa: E402,F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
+from scaffolding_assembly_core.process import ProcessError, read  # noqa: E402
+from scaffolding_assembly_core.process.plan_check import check_plan  # noqa: E402
 
 #: Last process folder, shared with RSExportProcess.
 PROCESS_FOLDER_STICKY_KEY = "bar_joint:process_folder"

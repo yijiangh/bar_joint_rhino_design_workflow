@@ -28,12 +28,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path)
+from core import core_lib  # noqa: E402,F401  (puts scaffolding_assembly_core on sys.path)
 from core.process_planning import close_mirrors, mirror_for  # noqa: E402
-from bar_assembly_core.process import read  # noqa: E402
-from bar_assembly_core.process.carry import assumed_start_all  # noqa: E402
-from bar_assembly_core.process.scenes import seeded  # noqa: E402
-from bar_assembly_core.process.solutions import (MovementResult, Planner, Solution, Trajectory,  # noqa: E402
+from scaffolding_assembly_core.process import read  # noqa: E402
+from scaffolding_assembly_core.process.carry import assumed_start_all  # noqa: E402
+from scaffolding_assembly_core.process.scenes import seeded  # noqa: E402
+from scaffolding_assembly_core.process.solutions import (MovementResult, Planner, Solution, Trajectory,  # noqa: E402
                                                 solved_against, write_solution)
 
 #: Movement name suffix -> what plans it.

@@ -570,7 +570,7 @@
         <locale_1033>RSExportProcess</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Left-click: write the document as a schema 2 process folder through bar_assembly_core, then print the file checks (A) and plan checks (B). Right-click: RSCheckProcess on an existing process folder.</locale_1033>
+        <locale_1033>Left-click: write the document as a schema 2 process folder through scaffolding_assembly_core, then print the file checks (A) and plan checks (B). Right-click: RSCheckProcess on an existing process folder.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_export_process.py"</script>
     </macro_item>

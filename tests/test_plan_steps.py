@@ -16,8 +16,8 @@ pytestmark = pytest.mark.skipif(not CINDY_URDF.is_file(), reason="asset/husky_ur
 
 def _solved(unsolved=()):
     """The process with every bar's keyframe solved except `unsolved`, and Alice's hold of B2 solved."""
-    from bar_assembly_core.geometry import Pose
-    from bar_assembly_core.urdf import movable_joints
+    from scaffolding_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.urdf import movable_joints
     from core.process_builder import build_actions
 
     process = _process()
@@ -80,8 +80,8 @@ def test_timeline_keeps_releases_of_unsolved_bars():
 
 def test_solutions_become_frames_and_keyframes():
     """Trajectory rows become frames in schedule order; solved ends become Rhino's keyframe record."""
-    from bar_assembly_core.process.solutions import MovementResult, Planner, SolvedAgainst, Solution, Trajectory
-    from bar_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.process.solutions import MovementResult, Planner, SolvedAgainst, Solution, Trajectory
+    from scaffolding_assembly_core.geometry import Pose
     from core.plan_steps import arm_groups, solved_keyframes, trajectory_frames
 
     process = _solved(unsolved=("bars/B1",))
@@ -116,8 +116,8 @@ def test_solutions_become_frames_and_keyframes():
 
 def test_changed_since_planning(tmp_path):
     """Solutions planned on a written process are current for the same process in memory; a re-solved bar is not."""
-    from bar_assembly_core.process import read, write
-    from bar_assembly_core.process.solutions import Planner, Solution, solved_against
+    from scaffolding_assembly_core.process import read, write
+    from scaffolding_assembly_core.process.solutions import Planner, Solution, solved_against
     from core.plan_steps import changed_since_planning
     from test_process_builder import PKG
 

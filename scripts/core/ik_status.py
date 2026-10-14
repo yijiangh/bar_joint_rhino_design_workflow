@@ -17,9 +17,9 @@ from typing import Dict, Iterable, List, Optional
 
 import session_log
 
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.process import Process
-from bar_assembly_core.process.plan_check import UnreachedTarget, unreached_targets
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from scaffolding_assembly_core.process import Process
+from scaffolding_assembly_core.process.plan_check import UnreachedTarget, unreached_targets
 
 #: Action id suffix -> what the action is, for messages.
 _ROLES = {"J": "assembly", "R": "assembly", "H": "hold", "HR": "hold"}
@@ -68,7 +68,7 @@ def document_stale_ik(command: str = "RSScaffolding") -> Optional[Dict[str, str]
     import scriptcontext as sc  # noqa: PLC0415
 
     from core import process_source  # noqa: PLC0415
-    from bar_assembly_core.process import ProcessError  # noqa: PLC0415
+    from scaffolding_assembly_core.process import ProcessError  # noqa: PLC0415
 
     try:
         result = process_source.RhinoProcessSource(command, process_source.geometry_cache(sc.sticky)).build()

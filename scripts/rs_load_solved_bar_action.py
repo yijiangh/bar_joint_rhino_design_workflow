@@ -63,8 +63,8 @@ def load_and_view(batch: bool) -> None:
     viewer = importlib.reload(viewer)
     config = importlib.reload(_config_module)
     store = importlib.reload(_keyframe_store_module)
-    from bar_assembly_core.process import read
-    from bar_assembly_core.process.solutions import is_stale, read_solutions
+    from scaffolding_assembly_core.process import read
+    from scaffolding_assembly_core.process.solutions import is_stale, read_solutions
 
     repair_on_entry(float(config.BAR_RADIUS), "RSLoadSolvedBarAction")
     kind = _prompt_kind()

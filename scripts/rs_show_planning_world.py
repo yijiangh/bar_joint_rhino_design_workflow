@@ -30,7 +30,7 @@ rhino_env.activate()
 import session_log  # noqa: E402
 
 from core import config as _config_module
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_builder as _process_builder_module
 from core import process_planning as _process_planning_module
 from core import process_source as _process_source_module

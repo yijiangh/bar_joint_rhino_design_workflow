@@ -32,8 +32,8 @@ Rhino all the way to a real robot:
    (bars, joints, assembly sequence, walkable ground), run quick IK keyframe
    checks (`RSIKKeyframe`), then export everything as one **schema 2 process
    folder** (`RSExportProcess`) through the shared core
-   [`bar_assembly_core`](https://github.com/jeliag/bar_assembly_core)
-   (submodule `external/bar_assembly_core`, format spec in its
+   [`scaffolding_assembly_core`](https://github.com/yijiangh/scaffolding_assembly_core)
+   (submodule `external/scaffolding_assembly_core`, format spec in its
    `doc/process_format.md`). The folder carries the complete plan -- robots
    (URDF/SRDF), tools, every bar / joint / ground / obstacle body, the mates,
    every action and movement with its start state and targets -- so the
@@ -59,7 +59,7 @@ Rhino all the way to a real robot:
 
 Every compas_fab cell -- in Rhino, in the planner and on the robot -- is built
 by the core from the process's scenes (`Process.scene_at` ->
-`bar_assembly_core.mirrors`): a `CompasFabMirror` (its own PyBullet world) to
+`scaffolding_assembly_core.mirrors`): a `CompasFabMirror` (its own PyBullet world) to
 plan and check collisions; drawing goes part by part from the core's scene
 (`scene_parts`), with no cell. The plugin
 never builds a cell from Rhino objects. See
@@ -133,8 +133,8 @@ every command then puts that folder on `sys.path` before it imports anything.
 
 The planning workflow (RSIKKeyframe, the plan viewers, the Grasshopper
 preview) builds its compas_fab cells through the shared core
-[`bar_assembly_core`](https://github.com/jeliag/bar_assembly_core), vendored at
-`external/bar_assembly_core`, which plans with a specific development branch of
+[`scaffolding_assembly_core`](https://github.com/yijiangh/scaffolding_assembly_core), vendored at
+`external/scaffolding_assembly_core`, which plans with a specific development branch of
 [compas_fab](https://github.com/compas-dev/compas_fab/tree/wip_process),
 vendored at `external/compas_fab`, rather than pulled from PyPI --
 this keeps iteration on the branch deterministic and avoids the pip-cache SHA
@@ -146,7 +146,7 @@ After cloning this repo (or pulling changes that touch the submodules), run:
 git submodule update --init --recursive
 ```
 
-`scripts/core/core_lib.py` prepends `external/bar_assembly_core` and
+`scripts/core/core_lib.py` prepends `external/scaffolding_assembly_core` and
 `external/compas_fab/src` onto `sys.path` before any import of them, so Rhino
 scripts see the submodule versions automatically. To switch to a different
 upstream commit, `cd external/<submodule> && git fetch && git checkout <sha>`,
@@ -155,7 +155,7 @@ then reload Rhino's Python engine.
 The remaining dependencies (`compas`, `compas_robots`, `pybullet`,
 `pybullet_planning`, `roslibpy`, `trimesh`, `yourdfpy`, plus `numpy` / `scipy`) come from
 [requirements-rhino.txt](requirements-rhino.txt) (see step 3 above). Do **not**
-add `compas_fab` or `bar_assembly_core` to it -- that would bypass the
+add `compas_fab` or `scaffolding_assembly_core` to it -- that would bypass the
 submodules and silently shadow them.
 
 `external/rs_data_structure` (the old `BarAssemblyAction` schema) is no longer
@@ -440,14 +440,14 @@ scripts/
     joint_placement.py                  # Joint pair placement computation and bake helpers
     single_sided_placement.py           # Ground / standalone MoCap placement on one bar
     marker_points.py                    # MoCap marker spheres between block / world / bar frames
-    process_source.py                    # Rhino document -> schema 2 process (bar_assembly_core)
+    process_source.py                    # Rhino document -> schema 2 process (scaffolding_assembly_core)
     process_builder.py                   # Keyframe records -> the process's actions (Rhino-free)
     process_planning.py                  # Process scenes -> the core's CompasFabMirror -> tamp / compas_fab solvers
     process_display.py                   # Process scenes -> the parts ik_viz draws (no compas, no PyBullet)
     plan_steps.py                       # The viewers' poses, timeline and solutions as moments of the process
     keyframe_store.py                   # Solved keyframes in bar user text (the persistent store)
     support_ik.py                       # Support-arm IK on a lent planner
-    core_lib.py                         # Puts bar_assembly_core + compas_fab (submodules) on sys.path
+    core_lib.py                         # Puts scaffolding_assembly_core + compas_fab (submodules) on sys.path
     ik_viz.py                           # Rhino preview cache: a core Scene baked part by part
     scaffold_json.py                    # node/rod/coupler layout-JSON round trip, for the
                                         #   stability-simulation exchange (see RSStability below)
@@ -493,7 +493,7 @@ tests/
   test_process_*.py, test_plan_steps.py  # Process export, planning and drawing through the core
 
 external/
-  bar_assembly_core/                    # Shared core: process format, scenes, compas_fab cells (git submodule)
+  scaffolding_assembly_core/                    # Shared core: process format, scenes, compas_fab cells (git submodule)
   compas_fab/                           # IK/planning dependency of the core (git submodule)
   rs_data_structure/                    # Old BarAssemblyAction schema (only the core's legacy/ converter)
   husky_assembly_tamp/                  # Planner (git submodule): keyframe + motion solvers

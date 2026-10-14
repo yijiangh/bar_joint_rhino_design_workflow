@@ -133,7 +133,7 @@ def _movement(process, movement_id):
 
 def _expected(geometry, pose, mode="visual"):
     """A part's mesh points where its pose puts them, millimetres (the fake document's unit)."""
-    from bar_assembly_core.geometry import shape_mesh
+    from scaffolding_assembly_core.geometry import shape_mesh
 
     shapes = geometry.visual if mode == "visual" else geometry.collision
     points = np.vstack([shape_mesh(shape).vertices for shape in shapes])
@@ -142,8 +142,8 @@ def _expected(geometry, pose, mode="visual"):
 
 
 def test_update_state_bakes_moves_hides_and_rebakes(canvas):
-    from bar_assembly_core.geometry import Geometry, Pose
-    from bar_assembly_core.scene import scene_parts
+    from scaffolding_assembly_core.geometry import Geometry, Pose
+    from scaffolding_assembly_core.scene import scene_parts
     from core import config, process_display
 
     ik_viz = canvas.ik_viz
@@ -215,7 +215,7 @@ def test_update_state_bakes_moves_hides_and_rebakes(canvas):
 
 
 def test_robot_meshes_are_copies_at_the_robot(canvas):
-    from bar_assembly_core.scene import robot_parts
+    from scaffolding_assembly_core.scene import robot_parts
     from core import process_display
 
     ik_viz = canvas.ik_viz
@@ -248,7 +248,7 @@ def test_update_state_colours_parts_by_id_and_by_robot(canvas):
 
     rs.ObjectColor, rs.ObjectColorSource, rs.IsObject = object_color, object_color_source, lambda g: g in canvas.objects
     process = canvas.process
-    from bar_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.geometry import Pose
     from core import process_display
 
     scene = process.scene_at(_movement(process, "B1_J_insert"))

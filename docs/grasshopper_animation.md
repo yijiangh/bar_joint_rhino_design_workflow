@@ -189,7 +189,7 @@ retreated on its release frame, and is hidden from the next frame on.
 ## No PyBullet
 
 Every robot is drawn by **forward kinematics only**, from the shared core's scene parts
-(`bar_assembly_core.scene.scene_parts`: each link with shapes and each mounted tool, in
+(`scaffolding_assembly_core.scene.scene_parts`: each link with shapes and each mounted tool, in
 the world; no compas, no PyBullet). Nothing in the component or its import chain starts a
 PyBullet world, so it works on a freshly opened `.3dm`.
 

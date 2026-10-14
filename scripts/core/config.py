@@ -37,7 +37,7 @@ REPO_ROOT = os.path.dirname(SCRIPTS_DIR)
 # ! put on sys.path here -- config.py is imported first by every entry script,
 # ! which wires the path for all later `husky_assembly_tamp.*` imports too.
 _TAMP_ROOT = os.path.join(REPO_ROOT, "external", "husky_assembly_tamp")
-#: Whether the tamp submodule is checked out. ! The IK commands need it; the schema 2 export and RSCheckDesign do not.
+#: Whether the tamp submodule is checked out. ! The IK commands need it; the schema 2 export and RSCheckProcess do not.
 HAS_TAMP = os.path.isdir(os.path.join(_TAMP_ROOT, "husky_assembly_tamp"))
 if HAS_TAMP and _TAMP_ROOT not in sys.path:
     sys.path.insert(0, _TAMP_ROOT)
@@ -146,11 +146,11 @@ HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
 # Approach (M1 target = M2 start): BOTH tool0 frames translated by
 # ``-unit(avg(male z)) * LM_APPROACH_DISTANCE`` off the assembled pose -- one
 # shared axis, so the bar stays rigid between the arms
-# (`core.design_builder.Builder.jointing`, the transfer's link targets).
+# (`core.process_builder.Builder.jointing`, the transfer's link targets).
 LM_APPROACH_DISTANCE = 15.0  # mm
 # Retreat (M3 target): bar released, so each arm pulls back INDEPENDENTLY along
 # its OWN male joint's world -Z by this distance
-# (`core.design_builder.Builder.release`, the retreat's lines).
+# (`core.process_builder.Builder.release`, the retreat's lines).
 LM_RETREAT_DISTANCE = 50.0  # mm
 
 # Fixed dual-arm "home" configuration used by Plan M4 (return-to-home after
@@ -165,8 +165,8 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 
 # The 12-DOF home split into its two 6-DOF arm halves, keeping the authored
 # left-then-right order (first 6 -> left arm, last 6 -> right arm). These feed
-# the design's home target (`core.design_source`, Cindy's R_home), so the
-# exported design and every preview show the same home pose.
+# the process's home target (`core.process_source`, Cindy's R_home), so the
+# exported process and every preview show the same home pose.
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
@@ -413,7 +413,7 @@ LAYER_WALKABLE_GROUND = _managed_layer("Walkable Ground")
 
 # Static environment obstacle meshes (tables, walls, scaffolding, etc.). Any
 # mesh or brep placed on this layer becomes a static `obstacles/<name>` body of
-# the design (`core.design_source`) and is checked for collision against the
+# the process (`core.process_source`) and is checked for collision against the
 # robots, tools, and grasped workpieces.
 LAYER_ENVIRONMENT = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Environment Obstacles"
 # Cached preview meshes (robot links, tools, bodies), by part id. Baked once on first

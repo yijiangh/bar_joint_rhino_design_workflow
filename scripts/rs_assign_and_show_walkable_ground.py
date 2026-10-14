@@ -60,7 +60,7 @@ from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import ik_viz as _ik_viz_module
 from core import rhino_walkable_ground as _walkable_rhino_module
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_builder as _process_builder_module
 from core import process_display as _process_display_module
 from core import process_source as _process_source_module
@@ -149,7 +149,7 @@ def _prepare_ghost_meshes():
     """
     try:
         import scriptcontext as sc
-        from bar_assembly_core.urdf import UR_JOINT_NAMES
+        from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
         result = process_source.RhinoProcessSource(CMD, process_source.geometry_cache(sc.sticky)).build()
         robot_id = process_source.robot_id(config.ASSEMBLY_ROBOT_NAME)

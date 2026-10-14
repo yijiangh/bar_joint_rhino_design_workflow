@@ -31,7 +31,7 @@ rhino_env.activate()
 import numpy as np  # noqa: E402
 
 import session_log  # noqa: E402
-from core import core_lib  # noqa: E402, F401  (puts bar_assembly_core on sys.path)
+from core import core_lib  # noqa: E402, F401  (puts scaffolding_assembly_core on sys.path)
 from core import process_source, ik_viz  # noqa: E402
 
 ROBOT = "robots/alice"
@@ -39,7 +39,7 @@ ROBOT = "robots/alice"
 
 def _arrays(robot, scale):
     """(vertices, faces) per link of the robot's visual shapes, in document units."""
-    from bar_assembly_core.geometry import shape_mesh
+    from scaffolding_assembly_core.geometry import shape_mesh
 
     out = []
     for geometry in robot.model.link_geometry.values():

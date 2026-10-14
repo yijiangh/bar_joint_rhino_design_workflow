@@ -33,10 +33,10 @@ def setup():
     from husky_assembly_tamp.keyframe import config as tamp_config
     backend, tamp_config.IK_BACKEND = tamp_config.IK_BACKEND, "gradient"
     from dataclasses import replace
-    from bar_assembly_core.process import BodySpec
-    from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, compose, invert
-    from bar_assembly_core.kinematics import link_pose
-    from bar_assembly_core.urdf import UR_JOINT_NAMES
+    from scaffolding_assembly_core.process import BodySpec
+    from scaffolding_assembly_core.geometry import CylinderShape, Geometry, Pose, compose, invert
+    from scaffolding_assembly_core.kinematics import link_pose
+    from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
     from core import config
     from core.process_builder import BarRecord, HoldRecord, build_actions, grasp_of, z_axis
 
@@ -126,8 +126,8 @@ def test_keyframe_chain_solves_on_the_mirror(setup):
         solved = solve_keyframe_chain(planner, ordered, np.eye(4), check_collision=False)
     assert solved is not None
     cfg = solved["M2"].robot_configuration
-    from bar_assembly_core.kinematics import link_pose
-    from bar_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.kinematics import link_pose
+    from scaffolding_assembly_core.geometry import Pose
     joints = dict(zip(cfg.joint_names, cfg.joint_values))
     flange = link_pose(process.robots["robots/cindy"].urdf, Pose(), joints, "left_ur_arm_tool0")
     target = link_pose(process.robots["robots/cindy"].urdf, Pose(), reach, "left_ur_arm_tool0")
@@ -137,9 +137,9 @@ def test_keyframe_chain_solves_on_the_mirror(setup):
 def test_state_scene_draws_a_solver_state(setup):
     """A mirror's state as a scene to draw: the robot at its base and joints, the bar held or let go as the state
     has it (the transfer scene holds it; M3, the retreat, starts with it released)."""
-    from bar_assembly_core.geometry import Pose
-    from bar_assembly_core.mirrors.compas import frame_from_pose
-    from bar_assembly_core.scene import Attachment
+    from scaffolding_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.mirrors.compas import frame_from_pose
+    from scaffolding_assembly_core.scene import Attachment
     from core.process_planning import keyframe_movements, movement, state_scene
 
     process, store, reach, _, _ = setup
@@ -176,7 +176,7 @@ def test_geometry_unchanged_keeps_the_cell(setup):
 def test_support_ik_and_release_check(setup):
     """Alice's hold: compas_fab IK on her mirror reaches the grasp; the release check runs in its own scene."""
     from compas_fab.robots import FrameTarget, TargetMode
-    from bar_assembly_core.mirrors.compas import frame_from_pose
+    from scaffolding_assembly_core.mirrors.compas import frame_from_pose
     from core.process_planning import hold_solve_state, release_check
 
     process, store, _, alice_tool0, _ = setup
@@ -191,7 +191,7 @@ def test_support_ik_and_release_check(setup):
     assert cfg is not None
     verdict = release_check(process, store, "bars/B1")
     assert verdict.startswith(("OK", "collides")), verdict
-    from bar_assembly_core.kinematics import link_pose  # noqa: F401
+    from scaffolding_assembly_core.kinematics import link_pose  # noqa: F401
     from core.process_planning import hold_release_collisions
     joints = dict(zip(cfg.joint_names, cfg.joint_values))
     found = hold_release_collisions(process, store, "bars/B1", process.actions["B1_H"].movements[0].start
@@ -202,8 +202,8 @@ def test_support_ik_and_release_check(setup):
 def test_plan_process_writes_solutions(setup, tmp_path):
     """Keyframes solved on the mirror go into the process; plan_process plans Cindy's movements and writes solutions."""
     from husky_assembly_tamp.keyframe.ik_keyframe import solve_keyframe_chain
-    from bar_assembly_core.process import read, write
-    from bar_assembly_core.process.solutions import read_solutions
+    from scaffolding_assembly_core.process import read, write
+    from scaffolding_assembly_core.process.solutions import read_solutions
     from core.process_planning import keyframe_movements
     import plan_process
 

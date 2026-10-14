@@ -49,7 +49,7 @@ import scriptcontext as sc
 
 from core import base_frame_viz as _base_frame_viz_module
 from core import config as _config_module
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_builder as _process_builder_module
 from core import process_display as _process_display_module
 from core import process_planning as _process_planning_module
@@ -75,7 +75,7 @@ from core.rhino_bar_registry import (
 )
 from core.rhino_helpers import suspend_redraw
 from rs_check_process import PROCESS_FOLDER_STICKY_KEY  # the last process folder, shared with RSExportProcess
-from bar_assembly_core.urdf import UR_JOINT_NAMES, load_urdf  # after core_lib: it puts the core on sys.path
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES, load_urdf  # after core_lib: it puts the core on sys.path
 
 
 # The drawn walkable grounds: the one(s) the active bar stands on light, every other one dark. Greys on purpose:
@@ -810,8 +810,8 @@ def main_motion(folder=None, bar=None) -> None:
         folder (str | None): The process folder; None asks (default: the last one used).
         bar (tuple | None): ``(bar_id, bar_oid)`` to scrub without a pick.
     """
-    from bar_assembly_core.process import read
-    from bar_assembly_core.process.solutions import is_stale, read_solutions
+    from scaffolding_assembly_core.process import read
+    from scaffolding_assembly_core.process.solutions import is_stale, read_solutions
 
     _reload()
     folder = process_folder("RSShowBarActionPlan", folder)

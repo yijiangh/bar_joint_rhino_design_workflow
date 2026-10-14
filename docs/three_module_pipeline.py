@@ -2,7 +2,7 @@
 
 The whole three-module pipeline: (1) the Rhino 8 design frontend in this repo
 solves IK keyframes and exports a schema 2 process folder through the shared core
-`bar_assembly_core`, (2) `scripts/plan_process.py` plans the movements with the
+`scaffolding_assembly_core`, (2) `scripts/plan_process.py` plans the movements with the
 `external/husky_assembly_tamp` motion planner into `solutions/`, and (3) the
 live execution stack (`husky-assembly-teleop`, ROS2) runs the solved plans on
 the real robot, replanning the arms live against the original tool0 targets once
@@ -130,7 +130,7 @@ def main():
     box(ax, 2, 55, 21, 8,
         "Export   [RSExportProcess]",
         ["write one schema 2 process folder",
-         "(right) through bar_assembly_core"],
+         "(right) through scaffolding_assembly_core"],
         C_DESIGN, title_size=10.5, file="rs_export_process.py")
 
     # Grey auxiliary box: solved plans come back into Rhino for viewing.
@@ -179,7 +179,7 @@ def main():
          "robot); the tamp solvers plan on its",
          "lent planner (Rhino's IK check too)"],
         C_PLANNER, title_size=10.5,
-        file="bar_assembly_core/mirrors/")
+        file="scaffolding_assembly_core/mirrors/")
 
     box(ax, 40.5, 61, 22, 10,
         "Motion planning",
@@ -273,7 +273,7 @@ def main():
         ["process format (schema 2), scenes and compas_fab cells;",
          "every module reads and builds its cells with it"],
         C_AUX, title_size=10,
-        file="external/bar_assembly_core  (git submodule)")
+        file="external/scaffolding_assembly_core  (git submodule)")
 
     # -------------------------------------------------------------------
     # Legend
@@ -299,7 +299,7 @@ def main():
             "Solid arrow = produces / writes.   Dashed arrow = supplies data (reads).   "
             "The robot never reaches the planned base pose exactly — mocap tracks the real base,\n"
             "and once the base stops the ARM motion is replanned live against the ORIGINAL tool0 targets.   "
-            "The process format and its cells live in the shared core, external/bar_assembly_core.",
+            "The process format and its cells live in the shared core, external/scaffolding_assembly_core.",
             ha="center", va="center", fontsize=8.3, style="italic", color="#444")
 
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)),

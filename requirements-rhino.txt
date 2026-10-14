@@ -2,7 +2,7 @@
 # Installed once, in ONE pip call, by scripts/rhino_env.py on the first command that needs them; editing this file
 # makes the next command install a fresh environment. Do not add `# r:` lines to the scripts instead: Rhino installs
 # each one with its own pip call, and later packages then overwrite the pins of earlier ones (numpy 2, compas 2.15).
-# compas_fab, bar_assembly_core and husky_assembly_tamp come from the submodules in external/, never from here.
+# compas_fab, scaffolding_assembly_core and husky_assembly_tamp come from the submodules in external/, never from here.
 numpy==1.24.4
 scipy==1.13.1
 trimesh==4.12.2

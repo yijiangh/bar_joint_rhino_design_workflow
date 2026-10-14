@@ -25,8 +25,8 @@ def test_reach_is_a_ur5e(reach):
 
 
 def test_no_pose_the_arm_takes_is_out_of_reach(reach):
-    from bar_assembly_core.geometry import Pose
-    from bar_assembly_core.kinematics import link_pose
+    from scaffolding_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.kinematics import link_pose
     from core.reach_check import MARGIN_M, out_of_reach
 
     rng = np.random.default_rng(1)

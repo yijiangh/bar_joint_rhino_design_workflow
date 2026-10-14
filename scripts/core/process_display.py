@@ -5,7 +5,7 @@ A scene comes from the process (`Process.scene_at`, `scene_after`); `place` move
 trajectory row, a ghost at the origin); `drawn_parts` says what of it is shown, and where. No PyBullet and no
 compas: the Grasshopper preview uses this too.
 
-- Parts are the core's (`bar_assembly_core.scene.scene_parts`): bodies, robot links with shapes
+- Parts are the core's (`scaffolding_assembly_core.scene.scene_parts`): bodies, robot links with shapes
   ("robots/cindy/<link>") and mounted tools ("tools/<robot>/<name>", at their flange). Their `Geometry` objects are shared
   and never change, so `ik_viz` bakes a part again only when its object does.
 - ! Build the process with the same geometry cache every time (`process_source.geometry_cache`), or every body's
@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping, NamedTuple, Optional
 
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.geometry import Geometry, Pose
-from bar_assembly_core.ids import link_id
-from bar_assembly_core.kinematics import link_pose
-from bar_assembly_core.scene import Attachment, Scene, robot_parts, world_poses
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from scaffolding_assembly_core.geometry import Geometry, Pose
+from scaffolding_assembly_core.ids import link_id
+from scaffolding_assembly_core.kinematics import link_pose
+from scaffolding_assembly_core.scene import Attachment, Scene, robot_parts, world_poses
 
 
 class Drawn(NamedTuple):
@@ -132,9 +132,9 @@ def robot_scene(process, robot_id: str, joints: Optional[Mapping[str, float]] = 
         robot_id: The robot shown; the others are absent.
         joints: Its joint values (default 0).
     """
-    from bar_assembly_core.process.scenes import process_model
-    from bar_assembly_core.robot import RobotObject
-    from bar_assembly_core.scene import Body
+    from scaffolding_assembly_core.process.scenes import process_model
+    from scaffolding_assembly_core.robot import RobotObject
+    from scaffolding_assembly_core.scene import Body
 
     robots = {rid: RobotObject(rid, process_model(process, rid), Pose(), {}, enabled=rid == robot_id,
                                label=spec.name)

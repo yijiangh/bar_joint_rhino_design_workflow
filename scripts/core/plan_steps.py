@@ -21,10 +21,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.process import Process, Movement
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.scene import Scene
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from scaffolding_assembly_core.process import Process, Movement
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.scene import Scene
 
 from core.process_display import place, refresh
 
@@ -210,7 +210,7 @@ def trajectory_frames(process: Process, solutions: dict, bar: str) -> List[Frame
 
     Args:
         process: The process the solutions belong to.
-        solutions: Action id -> `Solution` (`bar_assembly_core.process.solutions.read_solutions`).
+        solutions: Action id -> `Solution` (`scaffolding_assembly_core.process.solutions.read_solutions`).
         bar: E.g. "bars/B3".
     """
     frames: List[Frame] = []
@@ -265,7 +265,7 @@ def arm_groups(joints: Dict[str, float]) -> Dict[str, dict]:
 
     Each arm's joints in UR order (shoulder pan ... wrist 3); joints outside it follow, sorted.
     """
-    from bar_assembly_core.urdf import UR_JOINT_NAMES
+    from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 
     out = {}
     for side in ("left", "right"):
@@ -286,7 +286,7 @@ def changed_since_planning(process_now: Process, solutions: dict, package_dirs=(
     Returns:
         list[str]: Action ids, sorted: changed since planning, or no longer in the process.
     """
-    from bar_assembly_core.process import process_hashes
+    from scaffolding_assembly_core.process import process_hashes
 
     _process_hash, actions = process_hashes(process_now, package_dirs)
     return sorted(action_id for action_id, solution in solutions.items()

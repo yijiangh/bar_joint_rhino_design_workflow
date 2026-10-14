@@ -7,10 +7,10 @@ import numpy as np
 from core import core_lib  # noqa: F401
 from core.process_builder import build_actions
 from core.ik_status import stale_from, stale_ik_bars, stale_ik_lines
-from bar_assembly_core.process.plan_check import UnreachedTarget, check_plan
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.kinematics import link_poses
-from bar_assembly_core.urdf import movable_joints
+from scaffolding_assembly_core.process.plan_check import UnreachedTarget, check_plan
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.kinematics import link_poses
+from scaffolding_assembly_core.urdf import movable_joints
 from test_process_builder import CINDY, CINDY_SRDF, CINDY_URDF, L, R, SCHEDULE, _process, _records
 
 

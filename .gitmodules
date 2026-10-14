@@ -14,6 +14,6 @@
 [submodule "external/husky_assembly_tamp"]
 	path = external/husky_assembly_tamp
 	url = git@github.com:yijiangh/husky_assembly_tamp.git
-[submodule "external/bar_assembly_core"]
-	path = external/bar_assembly_core
-	url = https://github.com/jeliag/bar_assembly_core.git
+[submodule "external/scaffolding_assembly_core"]
+	path = external/scaffolding_assembly_core
+	url = git@github.com:yijiangh/scaffolding_assembly_core.git

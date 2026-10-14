@@ -15,7 +15,7 @@ def _movement(process, movement_id):
 
 def test_drawn_parts(source):  # noqa: F811
     """Every body and robot part by id; absent robots and robots with unknown bases are hidden, with what they hold."""
-    from bar_assembly_core.scene import scene_parts
+    from scaffolding_assembly_core.scene import scene_parts
     from core import process_display
 
     store = {}
@@ -32,7 +32,7 @@ def test_drawn_parts(source):  # noqa: F811
     assert parts["bars/B1"].pose is None and parts["robots/cindy/left_ur_arm_wrist_3_link"].pose is None
     assert parts["ground/WG0"].pose is not None
 
-    from bar_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.geometry import Pose
     process_display.place(insert, "robots/cindy", Pose((1.0, 0.0, 0.0)))
     parts = process_display.drawn_parts(insert, ("robots/cindy",))
     shown = {part_id: (geometry, pose) for part_id, geometry, pose in scene_parts(insert)
@@ -50,7 +50,7 @@ def test_drawn_parts(source):  # noqa: F811
 
 def test_place_and_ghost(source):  # noqa: F811
     """`place` moves a robot and what it holds; a ghost scene keeps only that robot, at the origin."""
-    from bar_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.geometry import Pose
     from core import process_display
 
     store = {}

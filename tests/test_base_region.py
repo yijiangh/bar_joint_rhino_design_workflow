@@ -34,8 +34,8 @@ def test_wrist_point_is_behind_the_flange_and_tightens_the_reach(reach):
 
 @needs_urdf
 def test_no_base_the_arms_reach_from_is_ruled_out(reach):
-    from bar_assembly_core.geometry import Pose
-    from bar_assembly_core.kinematics import link_pose
+    from scaffolding_assembly_core.geometry import Pose
+    from scaffolding_assembly_core.kinematics import link_pose
     from core.base_region import constraints, feasible_yaws
 
     rng = np.random.default_rng(1)

@@ -182,7 +182,7 @@ def _session_header() -> List[str]:
     except Exception:  # noqa: BLE001 -- outside Rhino (tests)
         lines.append("rhino     not running in Rhino")
     lines.append(f"plugin    {_commit(REPO_ROOT)}")
-    for sub in ("bar_assembly_core", "compas_fab", "husky_assembly_tamp"):
+    for sub in ("scaffolding_assembly_core", "compas_fab", "husky_assembly_tamp"):
         folder = os.path.join(REPO_ROOT, "external", sub)
         if os.path.isdir(folder):
             lines.append(f"  {sub:20}{_commit(folder)}")

@@ -260,7 +260,7 @@ def _rhino_mesh(geometry, mesh_mode: str, scale: float):
 
     Returns None if the geometry has no shapes of that kind (a body without collision shapes never collides).
     """
-    from bar_assembly_core.geometry import shape_mesh
+    from scaffolding_assembly_core.geometry import shape_mesh
 
     meshes = sc.sticky.setdefault(_STICKY_MESHES, {})
     key = (id(geometry), mesh_mode, scale)
@@ -688,7 +688,7 @@ def robot_meshes(robot, mesh_mode: str = MESH_MODE_VISUAL) -> List:
         robot: A core `RobotObject`, e.g. from ``process_display.ghost_scene``.
         mesh_mode (str): which meshes to copy.
     """
-    from bar_assembly_core.scene import robot_parts
+    from scaffolding_assembly_core.scene import robot_parts
 
     other = MESH_MODE_COLLISION if _check_mode(mesh_mode) == MESH_MODE_VISUAL else MESH_MODE_VISUAL
     scale = _doc_units_per_metre()

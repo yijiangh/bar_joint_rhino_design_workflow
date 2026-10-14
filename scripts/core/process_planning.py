@@ -24,14 +24,14 @@ from types import SimpleNamespace
 from typing import Dict, List, Mapping, Optional, Tuple
 
 import session_log
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.process import Process
-from bar_assembly_core.process.hold import hold_scenes
-from bar_assembly_core.process.scenes import seeded
-from bar_assembly_core.geometry import Pose
-from bar_assembly_core.mirrors.compas import frame_from_pose
-from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
-from bar_assembly_core.scene import Scene
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from scaffolding_assembly_core.process import Process
+from scaffolding_assembly_core.process.hold import hold_scenes
+from scaffolding_assembly_core.process.scenes import seeded
+from scaffolding_assembly_core.geometry import Pose
+from scaffolding_assembly_core.mirrors.compas import frame_from_pose
+from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
+from scaffolding_assembly_core.scene import Scene
 from core.plan_steps import releases_after  # noqa: F401  (the release check's callers ask here)
 
 #: `sc.sticky` key of the mirrors, robot id -> CompasFabMirror.
@@ -274,8 +274,8 @@ def state_scene(scene: Scene, robot_id: str, state) -> Scene:
         robot_id: The mirror's robot, e.g. "robots/cindy".
         state: A `RobotCellState` of that mirror.
     """
-    from bar_assembly_core.mirrors.compas import pose_from_frame
-    from bar_assembly_core.scene import Attachment
+    from scaffolding_assembly_core.mirrors.compas import pose_from_frame
+    from scaffolding_assembly_core.scene import Attachment
     from core.process_display import place
 
     out = scene.copy()

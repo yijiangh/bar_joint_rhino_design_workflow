@@ -4,7 +4,7 @@ Run with `python -m pytest tests/ -q` (`--viz` adds matplotlib visualisations). 
 
 - **Geometry and joints** (`test_geometry.py`, `test_s2_t1.py`, `test_joint_pair_roundtrip.py`,
   `test_three_bar_scene.py`, `test_base_guide_geom.py`, ...): pure numpy / scipy.
-- **Schema 2 through the shared core** (`external/bar_assembly_core`):
+- **Schema 2 through the shared core** (`external/scaffolding_assembly_core`):
   - `test_process_builder.py`, `test_process_source.py`: the Rhino document (a fake Rhino API in `fake_rhino.py`, or a
     real `.3dm` read with rhino3dm) becomes a process that passes the core's file and plan checks;
   - `test_process_planning.py`: planning on the core's `CompasFabMirror` (tamp keyframe chain, support IK, the allowed

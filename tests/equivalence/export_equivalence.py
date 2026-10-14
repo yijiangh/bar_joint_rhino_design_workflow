@@ -36,20 +36,20 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
-for _path in (Path(__file__).resolve().parent, REPO / "external" / "bar_assembly_core",
+for _path in (Path(__file__).resolve().parent, REPO / "external" / "scaffolding_assembly_core",
               REPO / "external" / "compas_fab" / "src", REPO / "external" / "rs_data_structure"):
     sys.path.insert(0, str(_path))
 import compas_compare as cc  # noqa: E402
 
-from bar_assembly_core.process import read  # noqa: E402
-from bar_assembly_core.process.write import process_hashes  # noqa: E402
+from scaffolding_assembly_core.process import read  # noqa: E402
+from scaffolding_assembly_core.process.write import process_hashes  # noqa: E402
 import trimesh  # noqa: E402
 from compas.geometry import Transformation  # noqa: E402
-from bar_assembly_core.geometry import Geometry, Pose, TriMesh, compose, invert, shape_mesh  # noqa: E402
-from bar_assembly_core.legacy.conversion import SERIALS, robot_files  # noqa: E402
-from bar_assembly_core.legacy.export import ACTION_CODES, ACTION_KINDS, from_export, load_export  # noqa: E402
-from bar_assembly_core.legacy.timing import Stopwatch  # noqa: E402
-from bar_assembly_core.mirrors.cell import CompasFabCell  # noqa: E402
+from scaffolding_assembly_core.geometry import Geometry, Pose, TriMesh, compose, invert, shape_mesh  # noqa: E402
+from scaffolding_assembly_core.legacy.conversion import SERIALS, robot_files  # noqa: E402
+from scaffolding_assembly_core.legacy.export import ACTION_CODES, ACTION_KINDS, from_export, load_export  # noqa: E402
+from scaffolding_assembly_core.legacy.timing import Stopwatch  # noqa: E402
+from scaffolding_assembly_core.mirrors.cell import CompasFabCell  # noqa: E402
 
 OLD, CORE = "old export", "core"
 PAIR = (OLD, CORE)

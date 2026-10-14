@@ -23,7 +23,7 @@ import scriptcontext as sc
 import session_log
 
 from core import config
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_display
 from core import process_source
 from core import gh_bridge

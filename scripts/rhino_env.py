@@ -144,7 +144,7 @@ def _warn_foreign_copies(target: str) -> List[str]:
 #: Set next to a `HUSKY_IK_BACKEND=gradient` that `_default_ik_backend` chose, not the user.
 _AUTO_BACKEND_MARK = "BAR_JOINT_IK_BACKEND_AUTO"
 #: The submodule folders that hold importable packages (`core.core_lib` puts them on `sys.path` at its first import).
-SUBMODULE_PATHS = (os.path.join(REPO_ROOT, "external", "bar_assembly_core"),
+SUBMODULE_PATHS = (os.path.join(REPO_ROOT, "external", "scaffolding_assembly_core"),
                    os.path.join(REPO_ROOT, "external", "compas_fab", "src"))
 #: Why IK runs on the slow `gradient` backend although nobody asked for it ("" when it does not): what is missing.
 ik_fallback_reason = ""

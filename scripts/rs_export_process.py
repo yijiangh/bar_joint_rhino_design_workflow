@@ -30,14 +30,14 @@ rhino_env.activate()
 import session_log  # noqa: E402
 
 from core import config as _config_module  # noqa: E402
-from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
+from core import core_lib  # noqa: E402,F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_builder as _process_builder_module  # noqa: E402
 from core import process_source as _process_source_module  # noqa: E402
 from core import rhino_walkable_ground as _walkable_module  # noqa: E402
 from core.ik_status import stale_from, stale_ik_lines  # noqa: E402
 from core.rhino_bar_registry import repair_on_entry  # noqa: E402
-from bar_assembly_core.process import ProcessError, write  # noqa: E402
-from bar_assembly_core.process.plan_check import check_plan  # noqa: E402
+from scaffolding_assembly_core.process import ProcessError, write  # noqa: E402
+from scaffolding_assembly_core.process.plan_check import check_plan  # noqa: E402
 from rs_check_process import PROCESS_FOLDER_STICKY_KEY, report_lines  # noqa: E402
 
 

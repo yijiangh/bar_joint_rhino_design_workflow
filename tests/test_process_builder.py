@@ -14,11 +14,11 @@ from scipy.spatial.transform import Rotation
 
 from core import core_lib  # noqa: F401
 from core.process_builder import BarRecord, HoldRecord, build_actions, grasp_of, z_axis
-from bar_assembly_core.process import BodySpec, Process, RobotSpec, read, validate, write
-from bar_assembly_core.process.plan_check import check_plan
-from bar_assembly_core.process.version import writer_info
-from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, compose, invert
-from bar_assembly_core.robot import Tool
+from scaffolding_assembly_core.process import BodySpec, Process, RobotSpec, read, validate, write
+from scaffolding_assembly_core.process.plan_check import check_plan
+from scaffolding_assembly_core.process.version import writer_info
+from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, compose, invert
+from scaffolding_assembly_core.robot import Tool
 
 REPO = Path(__file__).resolve().parents[1]
 PKG = REPO / "asset" / "husky_urdf"
@@ -137,7 +137,7 @@ def test_keyframe_joints_chain(tmp_path):
     process = _process()
     bars, holds = _records(process)
     rng = np.random.default_rng(0)
-    from bar_assembly_core.urdf import movable_joints
+    from scaffolding_assembly_core.urdf import movable_joints
     names = movable_joints(CINDY_URDF, CINDY_SRDF)
 
     def joints():

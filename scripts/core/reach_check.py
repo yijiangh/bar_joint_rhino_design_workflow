@@ -17,8 +17,8 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 import numpy as np
 from scipy.optimize import minimize
 
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.urdf import load_urdf
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from scaffolding_assembly_core.urdf import load_urdf
 
 #: Added to the stretched-out distance: the search for it may stop a little short.
 MARGIN_M = 0.02

@@ -71,8 +71,8 @@ def source():
 
 def test_document_becomes_a_valid_process(source, tmp_path):
     """Bodies, mates, robots and actions; written and read back with no A or B errors."""
-    from bar_assembly_core.process import write
-    from bar_assembly_core.process.plan_check import check_plan
+    from scaffolding_assembly_core.process import write
+    from scaffolding_assembly_core.process.plan_check import check_plan
 
     result = source.RhinoProcessSource("RSExportProcess").build()
     process = write(result.process, tmp_path / "process", package_dirs=[PKG])
@@ -108,7 +108,7 @@ def test_real_documents_write(name, actions, tmp_path):
     """Real documents (read with rhino3dm) become processes that pass the file checks; bars without tools are named."""
     pytest.importorskip("rhino3dm")
     from pathlib import Path
-    from bar_assembly_core.process import write
+    from scaffolding_assembly_core.process import write
 
     fake_rhino.install(fake_rhino.doc_from_3dm(Path(__file__).resolve().parents[1] / name))
     try:
@@ -122,7 +122,7 @@ def test_real_documents_write(name, actions, tmp_path):
 
 def test_geometry_cache_keeps_objects(source):
     """Two builds with one cache share every Geometry, Tool and robot model; a resized bar gets a new Geometry."""
-    from bar_assembly_core.process.scenes import process_model
+    from scaffolding_assembly_core.process.scenes import process_model
 
     store = {}
     first = source.RhinoProcessSource("x", source.geometry_cache(store)).build().process

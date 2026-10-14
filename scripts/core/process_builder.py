@@ -25,10 +25,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.process import (Action, Process, Holder, LineSpec, Movement, RobotState, State, Target,
+from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from scaffolding_assembly_core.process import (Action, Process, Holder, LineSpec, Movement, RobotState, State, Target,
                                       ToolState)
-from bar_assembly_core.geometry import Pose, compose, invert
+from scaffolding_assembly_core.geometry import Pose, compose, invert
 
 #: Schedule kind -> action type and the suffix of its action id.
 KINDS = {"J": ("bar_jointing", "J"), "R": ("bar_release", "R"), "H": ("bar_holding", "H"),

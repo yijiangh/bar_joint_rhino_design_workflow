@@ -140,8 +140,8 @@ display materials, not object colours, so they vanish when the conduit closes:
 | Colour | RGB | Meaning | Defined at |
 | --- | --- | --- | --- |
 | green | `60, 200, 90` | WalkableGround highlight | [rs_assign_and_show_walkable_ground.py:87](scripts/rs_assign_and_show_walkable_ground.py#L87) |
-| green | `60, 200, 90` | WalkableGround highlight (**duplicated constant**) | [rs_show_bar_action_plan.py:86](scripts/rs_show_bar_action_plan.py#L86) |
-| green | `60, 179, 60` | env geometry highlighted for IK | [highlight_env.py:22](scripts/core/highlight_env.py#L22) |
+| light grey / dark grey | `215, 215, 215` / `95, 95, 95` | plan viewers: the active bar's walkable ground / every other one | [rs_show_bar_action_plan.py:83](scripts/rs_show_bar_action_plan.py#L83) |
+| green | `60, 179, 60` | env geometry highlighted for IK: in RSIKKeyframe's assembly flow exactly the bars in the planning scene (what the solve collides with, as the core decides, bars placed by hand included); elsewhere every bar earlier in the sequence | [highlight_env.py:22](scripts/core/highlight_env.py#L22) |
 | amber | `180, 120, 60` | Ground joint preview (RSJointPlace › JointOnly) | [single_sided_placement.py:56](scripts/core/single_sided_placement.py#L56) |
 | steel blue | `60, 150, 200` | standalone MoCap joint preview (RSJointPlace › JointOnly) | [single_sided_placement.py:57](scripts/core/single_sided_placement.py#L57) |
 

@@ -35,7 +35,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSExportBarTool0TF | `rs_export_bar_tool0_tf.py` | Pick a bar; export its bar-OCF -> `tool0_left` / `tool0_right` transforms to `<root>/BarTool0TF/<bar_id>.json` | Advanced IK users |
 | RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
 | RSSetup | RSDefineRoboticTool | `rs_define_robotic_tool.py` | AssemblyTool mode: define a tool candidate (block + TCP points + picked collision meshes, exports `.3dm` + `.obj`). SupportGripper mode: export bar-grasp -> tool0 transform | Advanced IK users |
-| RSSetup | RSSwapRoboticTool | `rs_swap_robotic_tool.py` | Prints registered tool names; type either L/R member to make its pair ACTIVE (registry updated, all placed tools re-placed, block geometry refreshed, cell rebuild offered) | Advanced IK users |
+| RSSetup | RSSwapRoboticTool | `rs_swap_robotic_tool.py` | Prints registered tool names; type either L/R member to make its pair ACTIVE (registry updated, all placed tools re-placed, block geometry refreshed) | Advanced IK users |
 | RSSetup | RSInspectRoboticTool | `rs_inspect_robotic_tool.py` | PyBullet viewer for ALL tool candidates: a slider steps through L/R pairs (L at origin, R at +0.30 m), each showing its tool0 + TCP frame (`M_tcp_from_block`); a two-step GUI confirm deletes a whole candidate pair (registry entries + `.3dm`/`.obj`). Reads/edits `robotic_tools.json` only — no Rhino geometry. | Advanced IK users |
 | RSSetup | RSShowPlanningWorld | `rs_show_planning_world.py` | Debugging: open the assembly robot's planning world (what IK checks collisions against) in PyBullet's window. Changes nothing in the document. | Advanced IK users |
 | RSSetup | RSResetPlanning | `rs_reset_planning.py` | Close every planning world, forget the cached geometry and preview meshes, stop the ssik sidecar. Only when something looks stuck: the IK commands and viewers rebuild what they need. | Advanced IK users |
@@ -428,7 +428,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 ### RSIKKeyframeAll (`rs_ik_keyframe_all.py`) — right-click on the RSIKKeyframe button
 
-- Multi-select bars; places a mobile base on each and optionally solves them all in one batch.
+- Multi-select bars, or take `AllBars` / `UnsolvedBars` from the prompt; places a mobile base on each and optionally solves them all in one batch. A bar with stale IK (plan check B15) is yellow on entry and is solved again without the overwrite question.
 - **Standoff** is typed at the prompt, defaulting to `config.IK_BASE_STANDOFF_MULTIBAR_MM` = **500 mm** — deliberately the *middle* base-guide offset, so the auto-placed base lands exactly on the middle guide line and 375 / 625 read as the two alternatives either side of it.
 - Each processed bar gets its own guide-line set plus a base marker and reach circle.
 - **FlipAll / FlipOne** at the off-ramp prompt move bases to the other side of their bar (FlipOne asks you to click a base marker). The guides, the saved base frame, and the L/R tool sides all follow the flip; a flip also clears any hand-picked tool side, since it is you re-deciding the approach.
@@ -439,7 +439,8 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 - **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles that bar's timeline — approach → assembled → *hold* (held bars only) → retreat → home, plus a *release* pose per hold whose LAST stabilizing bar is this one — each the document's design at that moment (`core.plan_steps`; keyframes from the `KEY_ASSEMBLY_*` / `KEY_SUPPORT_*` user-text); draws the active bar's **base frame** (axis triad + footprint). Support robots appear exactly where the design's schedule has them. **CheckCollision** checks every placed robot on its planning mirror and paints the offenders red; **InteractiveCollisionCheck** jogs the assembly robot's arms. Right after `RSLoadSolvedBarAction` it starts on the loaded bar(s), draws every base frame, and offers **NextBar/PrevBar**.
 - **Right-click** — the MOTION viewer. Pick a design folder (RSExportDesign's; the last one is offered) and a bar, then **step through its planned trajectories** from `solutions/` (`scripts/plan_design.py`) **from the command line** (Enter/Next/Prev/Jump — a prompt, not a modal dialog, so the viewport stays free to zoom/orbit). FK-only, so the held bar follows the arm.
-- **Both clicks** also temporarily color the active bar's assigned **WalkableGround** brep(s) green and print each ground's id + Rhino object id to the command line, so you can see which ground surface the robot base is allowed to stand on. The color is reverted to ByLayer when you switch bars or exit.
+- **Both clicks** draw the walkable grounds from the core's scene, the active bar's light grey and the others dark grey, and print each ground's id + Rhino object id to the command line, so you can see which ground surface the robot base is allowed to stand on.
+- **While a viewer is open** the document layers it stands in for (tube previews, joint and tool blocks, ground, obstacles) are hidden and restored on exit, so nothing is drawn twice. Bars and joints are coloured by sequence. Bars with stale IK are listed on open; at their steps the robot is yellow and the step line says `STALE IK`.
 
 ### RSShowAssemblyPlan (`rs_show_assembly_plan.py`)
 
@@ -461,8 +462,9 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   already has its assembly keyframe runs the support flow instead.
 - The old script's reusable pickers (two-phase grasp pick with the ghost
   gripper, base pick with the ghost support robot, dual-arm ghost bake)
-  moved to `core/support_grasp_pick.py`; keyframe IO + release validation
-  live in `core/hold_action_builder.py`; the hold derivation (which robot
+  moved to `core/support_grasp_pick.py`; keyframe IO lives in
+  `core/keyframe_store.py` and release validation in `core/design_planning.py`
+  (`release_check`, `hold_release_collisions`); the hold derivation (which robot
   holds which bar until when) is `core/hold_schedule.py`.
 - Results are written to the split `KEY_SUPPORT_*` user-text keys on the
   held bar (robot name, base frame, grasp frame, approach + held configs) —

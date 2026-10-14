@@ -168,9 +168,9 @@ A third submodule, [husky_assembly_tamp](https://github.com/yijiangh/husky_assem
 
 [ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` (and the headless planner) — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env`. The sidecar code and its path resolution live in the tamp submodule (`husky_assembly_tamp.keyframe.config`): the default is `<this repo>/external/ssik_env` + the per-arm solver modules at `<this repo>/asset/ssik`, overridable per machine with the `HUSKY_SSIK_VENV_DIR` / `HUSKY_SSIK_ARTIFACT_DIR` environment variables. The scripts start and talk to the sidecar automatically. (Offline planning in a Python 3.11 venv imports ssik **in-process** instead — no sidecar; the sidecar is a Rhino-only workaround.)
 
-**Until both exist, the Rhino commands use the `gradient` backend automatically** (`scripts/rhino_env.py` says so once per session). The built solver modules (`left_ur_arm_ik.py`, `right_ur_arm_ik.py`) are not in the tamp commit this repo pins: they are committed on tamp branches such as `yh/ssik-speedup`, at the tamp repo's own `asset/ssik`. Copy them to `<this repo>/asset/ssik`, or point `HUSKY_SSIK_ARTIFACT_DIR` at them.
+**Until both exist, the Rhino commands use the `gradient` backend automatically** (`scripts/rhino_env.py` says so once per session). The built solver modules (`left_ur_arm_ik.py`, `right_ur_arm_ik.py`) are committed in this repo's `asset/ssik/`, so only the venv is missing on a fresh machine. `HUSKY_SSIK_ARTIFACT_DIR` points elsewhere if needed.
 
-Or build them from this repo's own calibrated URDF (a few seconds per arm; install `"ssik[urdf]"` instead of `ssik` below, and see the sidecar README, step 2, for the two `ssik build` commands). `asset/ssik/` is machine-local until someone commits it.
+Or build them from this repo's own calibrated URDF (a few seconds per arm; install `"ssik[urdf]"` instead of `ssik` below, and see the sidecar README, step 2, for the two `ssik build` commands). Rebuild and commit `asset/ssik/` when the calibrated URDF changes.
 
 Without ssik, `RSIKKeyframe` and `RSIKKeyframeAll` say so in a message box once per session and on every run in the command history: the `gradient` fallback takes about 20 s per failed robot base and offers no `InspectCandidates`. Either backend skips a base whose arms cannot reach the flange targets by distance alone (`scripts/core/reach_check.py`) without calling the solver.
 
@@ -225,7 +225,9 @@ for the canonical Rhino entrypoint reference:
 2. Snap/brace bars and assign sequence.
 3. Place and edit joints.
 4. Run IK keyframe tools when needed.
-5. Export debug or prefab artifacts as needed.
+5. Export the design folder (`RSExportDesign`; right-click checks one, `RSCheckDesign`). Bars with stale IK are
+   listed: solve them again and export again.
+6. Export debug or prefab artifacts as needed.
 
 ### Blank-canvas quick start
 

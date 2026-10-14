@@ -69,7 +69,7 @@ It refuses cleanly (nothing changes) if the pair partner is missing or a
 ## 5. Compare the two sets
 
 Repeat steps 3–4 with the other set (`RSSwapRoboticTool` → type `AT5L` or
-`AT5R` → rebuild → re-solve the same bars). Whichever pair solves more bars /
+`AT5R` → re-solve the same bars). Whichever pair solves more bars /
 with better margins wins. The registry remembers only one active pair at a
 time.
 

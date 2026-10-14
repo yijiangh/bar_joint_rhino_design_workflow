@@ -218,7 +218,7 @@ canvas and it bakes Cindy, Alice and Belle into the same preview layer the previ
 draws on, leaving the layer hidden. Skipping it is legal — the preview
 then stalls once on its first frame.
 
-Three more things keep scrubbing cheap, all in `gh_seq_preview.run`:
+Two more things keep scrubbing cheap, both in `gh_seq_preview.run`:
 
 - **The design and its timeline are cached** in sticky and rebuilt only on the `reload`
   button or when the bar count changes — a slider move never re-reads the document.

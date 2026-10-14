@@ -24,9 +24,14 @@ Flow
    immediately.
 5. Choose Continue, FlipAll / FlipOne (stand on the other side of the bar), or
    Save-base-and-exit (keep the placed bases, stop).
-6. On Continue: solve each bar's approach/assembled/retreat chain ONCE at its placed
-   base (no base sampling). Solved bars turn ``COLOR_HAS_IK`` (same as already-solved),
-   failed bars turn ``COLOR_FAILED``; a popup tallies the outcome.
+6. On Continue: solve each bar's approach/assembled/retreat chain at its placed
+   base. ``BaseSearch`` at the collision-options prompt (one answer for the whole batch,
+   the same choice as RSIKKeyframe's) decides what a bar that fails there gets next,
+   exactly as in RSIKKeyframe: Single = nothing, Random = random bases around it,
+   Optimised (the default) = the bases ``core.base_search`` proposes. Solved bars turn ``COLOR_HAS_IK`` (same as already-solved),
+   failed bars turn ``COLOR_FAILED``; a popup tallies the outcome. Esc stops the
+   batch before the next bar: solved bars stay solved, the rest are listed as not
+   tried and the support pass (step 7) is skipped.
 7. Support pass: every bar in the hold plan whose grasp + base picks are already
    stored gets its support keyframe re-solved NON-interactively at the stored
    base; bars without picks are listed for the single-bar interactive flow
@@ -279,19 +284,34 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
 
 
 @session_log.timed()
-def _solve_one(design, ctx, include_self, include_env):
-    """Solve one bar's chain on Cindy's mirror, from the design's scenes, at its placed base. True on success."""
+def _solve_one(design, ctx, include_self, include_env, base_search="single", soups=None, moved=None):
+    """Solve one bar's chain on Cindy's mirror, from the design's scenes, at its placed base. True on success.
+
+    Args:
+        base_search (str): what to try after the placed base fails, as RSIKKeyframe does (the one
+            ``BaseSearch`` answer of the batch): ``"single"`` nothing, ``"sample"`` random bases,
+            ``"optimise"`` the bases ``core.base_search`` proposes.
+        soups (list | None): the bar's ground triangle soups, which the optimised search stands the bases on.
+        moved (list | None): gets ``(bar_id, mm moved, degrees turned)`` when a base other than the placed one
+            solved, so the summary can say the saved base is not the one that was reviewed.
+    """
     bar_id, curve, base_frame = ctx[0], ctx[1], ctx[2]
     try:
         mirror, movements = ikf.design_planning.keyframe_movements(design, sc.sticky, f"bars/{bar_id}")
-        # brep_id=None => sampling disabled: exactly one attempt at the placed base.
         with mirror.lend() as planner:
             solved, used_base = ikf._solve_chain_with_sampling(
                 planner, movements, base_frame,
                 brep_id=None, heading_mm=None,
                 include_self=include_self, include_env=include_env,
                 viz=None, urdf=design.robots[design.actions[f"{bar_id}_J"].robot].urdf,
+                base_search=base_search, soups=soups, command="RSIKKeyframeAll",
             )
+        if solved is not None and moved is not None:
+            placed_at = np.asarray(base_frame, dtype=float)
+            shift = float(np.linalg.norm(used_base[:3, 3] - placed_at[:3, 3]))
+            turn = float(np.degrees(np.arccos(np.clip(np.dot(used_base[:3, 0], placed_at[:3, 0]), -1.0, 1.0))))
+            if shift > 1.0 or turn > 0.5:
+                moved.append((bar_id, shift, turn))
     except Exception as exc:  # noqa: BLE001 -- one bar must not stop the batch
         session_log.caught(exc)
         print(f"RSIKKeyframeAll: {bar_id}: could not solve ({type(exc).__name__}: {exc}).")
@@ -374,6 +394,20 @@ def _support_resolve_pass(include_self, include_env):
     # * Every release in its own moment, now that the holds are solved.
     ikf._core_release_report("RSIKKeyframeAll", None, [f"bars/{b}" for b in resolved])
     return resolved, need_pick, failed
+
+
+def _escape_pressed():
+    """True once the user pressed Esc since the last call: the way to stop the batch between two bars.
+
+    Never raises: where the key cannot be read, the batch simply cannot be stopped.
+    """
+    try:
+        Rhino.RhinoApp.Wait()  # let Rhino see the key press; a running script does not pump messages
+        # ! Not `Rhino.RhinoApp.EscapeKeyPressed`: that is an event, and an event object is always true.
+        return bool(sc.escape_test(False, True))  # no exception; True = forget the press once read
+    except Exception as exc:  # noqa: BLE001
+        session_log.caught(exc)
+        return False
 
 
 def _ambiguous_ids(placed):
@@ -704,7 +738,7 @@ def main():
         # body count. The design is built once, after the bases and tool sides
         # are settled (they are in it).
         design = ikf._core_design("RSIKKeyframeAll")
-        opts = ikf._ask_collision_options(env_count=len(design.bodies))
+        opts = ikf._ask_collision_options(env_count=len(design.bodies), offer_base_search=True)
         if opts is None:
             print("RSIKKeyframeAll: cancelled at collision options (bases still saved).")
             rs.MessageBox(
@@ -712,15 +746,26 @@ def main():
                 0, "RSIKKeyframeAll",
             )
             return
-        include_self, include_env, _mesh_mode = opts
+        include_self, include_env, _mesh_mode, base_search = opts
 
-        # Solve each processable bar once at its placed base.
-        solved_ids, failed_ids = [], []
+        # Solve each processable bar at its placed base (and, per BaseSearch, at other
+        # bases after it). Esc stops the batch before the next bar: what is
+        # solved stays solved, the rest is not tried.
+        solved_ids, failed_ids, not_tried, moved = [], [], [], []
         total = len(placed)
+        print(f"RSIKKeyframeAll: solving {total} bar(s); press Esc to stop after the bar in progress.")
+        _escape_pressed()  # forget an Esc from the prompts before
         for i, ctx in enumerate(placed, start=1):
             bar_id, curve = ctx[0], ctx[1]
+            if _escape_pressed():
+                not_tried = [c[0] for c in placed[i - 1:]]
+                print(f"RSIKKeyframeAll: stopped by Esc; {len(not_tried)} bar(s) not tried: {', '.join(not_tried)}.")
+                break
             print(f"RSIKKeyframeAll: solving {bar_id} ({i}/{total}) ...")
-            ok = _solve_one(design, ctx, include_self, include_env)
+            bar_soups = (rwg._bar_ground_soups(curve, grounds, soup_cache=soup_cache)
+                         if base_search == "optimise" else None)
+            ok = _solve_one(design, ctx, include_self, include_env,
+                            base_search=base_search, soups=bar_soups, moved=moved)
             if ok:
                 solved_ids.append(bar_id)
                 paint_bar(curve, COLOR_HAS_IK)
@@ -731,8 +776,10 @@ def main():
                 print(f"RSIKKeyframeAll: {bar_id} ({i}/{total}) -> FAILED.")
 
         # Support pass: re-solve every hold whose grasp/base picks are stored;
-        # list the rest for the single-bar interactive flow.
-        support_resolved, support_need_pick, support_failed = _support_resolve_pass(include_self, include_env)
+        # list the rest for the single-bar interactive flow. Not after an Esc: it
+        # is the other long step, and the user asked to stop.
+        support_resolved, support_need_pick, support_failed = (
+            ([], [], []) if not_tried else _support_resolve_pass(include_self, include_env))
 
         # Calculation finished: drop the transient preview BEFORE the modal summary
         # so the per-bar solved/failed colors are the only thing left on screen.
@@ -758,9 +805,18 @@ def main():
                 f"  {b}: {e}" for b, e in support_failed))
         if support_lines:
             msg += "\n\n" + "\n".join(support_lines)
+        if not_tried:
+            msg += (f"\n\nSTOPPED by Esc. Not tried: {len(not_tried)}  {', '.join(not_tried)}\n"
+                    "  (their bases are saved; the support holds were not re-solved either. "
+                    "Run the command again for them.)")
+        if moved:
+            msg += ("\n\nSolved at another base, NOT the placed one (the new base is saved on the bar):\n"
+                    + "\n".join(f"  {b}: moved {mm:.0f} mm, turned {deg:.0f} deg" for b, mm, deg in moved))
         rs.MessageBox(msg, 0, "RSIKKeyframeAll")
     finally:
         _clear_base_preview(base_frame_viz)
+        # The base search's DEBUG trace (BaseSearch=Optimised) of the last bar searched.
+        ikf.base_search_viz.hide()
 
 
 if __name__ == "__main__":

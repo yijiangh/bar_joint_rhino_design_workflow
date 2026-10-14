@@ -31,11 +31,11 @@ block instances ARE the wrist+tool proxies; their world origins are tool0
 6. On accept, writes the split ``KEY_ASSEMBLY_*`` user-text keys on the bar
    curve; robot meshes are cleared.
 
-Planning runs on the shared core (``core.design_planning``): the document is read
-into a schema 2 design (``core.design_source``), each keyframe's scene comes from
-``Design.scene_at`` and is synced into the robot's ``CompasFabMirror``, whose
+Planning runs on the shared core (``core.process_planning``): the document is read
+into a schema 2 process (``core.process_source``), each keyframe's scene comes from
+``Process.scene_at`` and is synced into the robot's ``CompasFabMirror``, whose
 planner the tamp solvers borrow. Previews draw the same scene posed by the
-solver's states (``design_planning.state_scene``, drawn by ``core.ik_viz``). No PyBullet session
+solver's states (``process_planning.state_scene``, drawn by ``core.ik_viz``). No PyBullet session
 is needed: the mirrors own their PyBullet worlds.
 
 Right after the base point + heading are chosen (step 2), the command offers an
@@ -84,10 +84,10 @@ from core import rhino_tool_place as _rhino_tool_place_module
 from core import rhino_walkable_ground as _rhino_walkable_ground_module
 from core import support_grasp_pick as _support_grasp_pick_module
 from core import support_ik as _support_ik_module
-from core import design_builder as _design_builder_module
-from core import design_display as _design_display_module
-from core import design_planning as _design_planning_module
-from core import design_source as _design_source_module
+from core import process_builder as _process_builder_module
+from core import process_display as _process_display_module
+from core import process_planning as _process_planning_module
+from core import process_source as _process_source_module
 # The shared solvers live in the husky_assembly_tamp submodule (importing
 # core.config above put it on sys.path) -- ONE implementation used by both this
 # command and the headless planner.
@@ -144,7 +144,7 @@ from husky_assembly_tamp.keyframe.walkable_ground import (
 def _reload_runtime_modules():
     """Re-import the core runtime modules so edits take effect without restarting Rhino.
 
-    Rebinds the module-level globals (``config``, ``design_planning``, ``ik_keyframe``,
+    Rebinds the module-level globals (``config``, ``process_planning``, ``ik_keyframe``,
     etc.) to freshly reloaded copies. Matches the reload pattern used by
     ``rs_joint_place.py`` so a saved change to any shared solve-path module is
     picked up on the next command run.
@@ -157,7 +157,7 @@ def _reload_runtime_modules():
     global hold_schedule, ik_keyframe, ik_viz, reach_viz
     global rhino_tool_place, rhino_walkable_ground
     global support_grasp_pick, support_ik
-    global design_display, design_planning, design_source
+    global process_display, process_planning, process_source
     config = importlib.reload(_config_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
     highlight_env = importlib.reload(_highlight_env_module)
@@ -182,16 +182,16 @@ def _reload_runtime_modules():
     rhino_tool_place = importlib.reload(_rhino_tool_place_module)
     rhino_walkable_ground = importlib.reload(_rhino_walkable_ground_module)
     # dual_arm_ik + ik_keyframe (from the tamp submodule) solve the chained IK
-    # against the design's movements. Reloaded so edits to the shared solve
+    # against the process's movements. Reloaded so edits to the shared solve
     # path take effect without restarting Rhino.
     dual_arm_ik = importlib.reload(_dual_arm_ik_module)
     ik_keyframe = importlib.reload(_ik_keyframe_module)
-    # * document -> design -> scene -> mirror (plans) / ik_viz (previews).
+    # * document -> process -> scene -> mirror (plans) / ik_viz (previews).
     # * The core itself is never reloaded (core.core_lib).
-    importlib.reload(_design_builder_module)
-    design_source = importlib.reload(_design_source_module)
-    design_planning = importlib.reload(_design_planning_module)
-    design_display = importlib.reload(_design_display_module)
+    importlib.reload(_process_builder_module)
+    process_source = importlib.reload(_process_source_module)
+    process_planning = importlib.reload(_process_planning_module)
+    process_display = importlib.reload(_process_display_module)
 
 
 _reload_runtime_modules()
@@ -637,13 +637,13 @@ def _show_context(scene, robot_id, layer_key, mesh_mode):
     robots holding bars at this moment and Cindy (in the support flow) stay on screen as the collision context.
 
     Args:
-        scene: The planning moment's scene (from the design); not changed.
+        scene: The planning moment's scene (from the process); not changed.
         robot_id (str): The robot being placed, e.g. "robots/cindy".
         layer_key (str): The ik_viz sub-layer to draw on.
         mesh_mode (str): Which mesh set to show.
     """
     context = scene.copy()
-    design_display.place(context, robot_id, enabled=False)
+    process_display.place(context, robot_id, enabled=False)
     ik_viz.update_state(context, layer_key=layer_key, mesh_mode=mesh_mode)
 
 
@@ -659,7 +659,7 @@ def _ghost_meshes(scene, robot_id, layer_key, mesh_mode=None):
         layer_key (str): The ik_viz sub-layer the context is drawn on.
         mesh_mode (str | None): The context's mesh set; None keeps the user's.
     """
-    meshes = ik_viz.robot_meshes(design_display.ghost_scene(scene, robot_id).robots[robot_id])
+    meshes = ik_viz.robot_meshes(process_display.ghost_scene(scene, robot_id).robots[robot_id])
     _show_context(scene, robot_id, layer_key, mesh_mode or ik_viz.get_mesh_mode())
     return meshes
 
@@ -1164,12 +1164,12 @@ def _ask_accept(prompt="Accept this IK keyframe and save it on the bar", allow_a
 
 
 # ---------------------------------------------------------------------------
-# * Planning on the core: design -> scene -> CompasFabMirror (plans); the scene, posed by a state, is drawn
+# * Planning on the core: process -> scene -> CompasFabMirror (plans); the scene, posed by a state, is drawn
 # ---------------------------------------------------------------------------
 
 #: The ik_viz layer, planning scene and acting robot this run's assembly previews use. Set by `_use_preview`; the
 #: planner's states (its mirror's, synced with this scene) are drawn as this scene posed by them
-#: (`design_planning.state_scene`).
+#: (`process_planning.state_scene`).
 _PREVIEW = {"layer": ik_viz.LAYER_KEY_ASSEMBLY, "scene": None, "robot": None}
 
 
@@ -1179,29 +1179,29 @@ def _use_preview(scene, robot_id, layer_key=ik_viz.LAYER_KEY_ASSEMBLY):
 
 
 def _draw_state(view, state, layer_key, mesh_mode):
-    """Draw a solver's state: `view` (scene, robot id) posed by it (`design_planning.state_scene`)."""
+    """Draw a solver's state: `view` (scene, robot id) posed by it (`process_planning.state_scene`)."""
     scene, robot_id = view
-    ik_viz.update_state(design_planning.state_scene(scene, robot_id, state), robot_id=robot_id,
+    ik_viz.update_state(process_planning.state_scene(scene, robot_id, state), robot_id=robot_id,
                         layer_key=layer_key, mesh_mode=mesh_mode)
 
 
 @session_log.timed()
-def _core_design(command):
-    """The document as a schema 2 design, with the session's geometry cache; prints what was left out."""
-    result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
+def _core_process(command):
+    """The document as a schema 2 process, with the session's geometry cache; prints what was left out."""
+    result = process_source.RhinoProcessSource(command, process_source.geometry_cache(sc.sticky)).build()
     for problem in result.problems:
         print(f"{command} (core): {problem}")
-    return result.design
+    return result.process
 
 
 def _core_release_report(command, bar_id, held_bars=None):
     """Run the core release check for the holds released after `bar_id` (or `held_bars`); report-only."""
     try:
-        design = _core_design(command)
-        held = held_bars if held_bars is not None else design_planning.releases_after(design, f"bars/{bar_id}")
+        process = _core_process(command)
+        held = held_bars if held_bars is not None else process_planning.releases_after(process, f"bars/{bar_id}")
         failures = []
         for held_bar in held:
-            verdict = design_planning.release_check(design, sc.sticky, held_bar)
+            verdict = process_planning.release_check(process, sc.sticky, held_bar)
             print(f"{command}: release check for held bar {held_bar}: {verdict}")
             if not verdict.startswith("OK"):
                 failures.append(f"{held_bar}: {verdict}")
@@ -1570,7 +1570,7 @@ def _optimised_bases(planner, movements, brep_id, urdf, seed_base_frame_mm, *,
 
     Args:
         planner: The lent planner (collision checks of the robot at home).
-        movements (dict): ``{"M1": .., "M2": .., "M3": .., "M4": ..}`` from ``design_planning.keyframe_movements``.
+        movements (dict): ``{"M1": .., "M2": .., "M3": .., "M4": ..}`` from ``process_planning.keyframe_movements``.
         brep_id: The WalkableGround brep the bases stand on; not read when ``soups`` is given.
         urdf: The robot's URDF.
         seed_base_frame_mm (np.ndarray): The picked base; the search stays within
@@ -1663,7 +1663,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     Args:
         planner: the dual-arm planner.
         movements (dict): ``{"M1": .., "M2": .., "M3": ..}`` from
-            ``design_planning.keyframe_movements``.
+            ``process_planning.keyframe_movements``.
         seed_base_frame_mm (np.ndarray): 4x4 mm base frame to try first.
         brep_id: WalkableGround brep oid the samples snap to, or None to disable
             sampling.
@@ -1840,7 +1840,7 @@ def _write_assembly_keyframes(bar_oid, approach_state, assembled_state, retreat_
 
     Each is the per-arm joint config extracted from the corresponding solved
     movement state: ``approach`` = M1's solution, ``assembled`` = M2's, ``retreat``
-    = M3's. ``core.design_source`` reads them into the design's targets.
+    = M3's. ``core.process_source`` reads them into the process's targets.
 
     Args:
         bar_oid: Rhino object id of the bar curve.
@@ -2115,7 +2115,7 @@ def _oids_for_offenders(offenders, mesh_mode, robot_id, layer_key):
     (``dual_arm_ik.enumerate_ssik_candidate_pairs``,
     ``support_ik.enumerate_support_ik_candidates``), named by the planning cell's
     keys: link names of the planned robot, tool ids ("tools/AT3L", "robots/alice")
-    and body ids ("bars/B3"). As design ids (links become "robots/<name>/<link>")
+    and body ids ("bars/B3"). As process ids (links become "robots/<name>/<link>")
     each resolves to its drawn part on the preview (``ik_viz.objects_of``).
 
     Args:
@@ -2609,7 +2609,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
 
     Steps: derive the hold plan (which robot, until when) -> show the moment
     the bar is built (Cindy holding it at her assembled pose, other holders in
-    place) -> pick the grasp (ghost gripper) -> build the hold into the design
+    place) -> pick the grasp (ghost gripper) -> build the hold into the process
     and plan in its scene on the support robot's mirror -> pick the base
     (ghost robot) -> solve held + approach IK with base sampling -> preview ->
     write the split KEY_SUPPORT_* user-text on accept; the release is checked
@@ -2638,7 +2638,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
         return
     entry = hold_plan[bar_id]
     robot_name = entry["robot_name"]
-    robot_id = design_source.robot_id(robot_name)
+    robot_id = process_source.robot_id(robot_name)
     print(
         f"RSIKKeyframe(support): {robot_name} holds {bar_id} from step "
         f"{entry['hold_start_seq']} until after {entry['release_after_bar_id']} "
@@ -2675,8 +2675,8 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
         # built (Cindy still holds it, other holders in place), without this
         # support robot.
         try:
-            design = _core_design("RSIKKeyframe")
-            built = design.scene_at(design_planning.movement(design, f"bars/{bar_id}", "R", "R_ungrasp"))
+            process = _core_process("RSIKKeyframe")
+            built = process.scene_at(process_planning.movement(process, f"bars/{bar_id}", "R", "R_ungrasp"))
             _show_context(built, robot_id, SUPPORT_SOLVE_LAYER_KEY, ik_viz.get_mesh_mode())
         except Exception as exc:  # noqa: BLE001 -- context viz must not block the pick
             session_log.caught(exc)
@@ -2688,11 +2688,11 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
             return
         keyframe_store.write_support_grasp_frame(bar_oid, grasp_mm)
 
-        # * The hold exists in the design once its grasp is picked: solve in its scene, on its robot's mirror.
+        # * The hold exists in the process once its grasp is picked: solve in its scene, on its robot's mirror.
         try:
-            design = _core_design("RSIKKeyframe")
-            sr_mirror, template_state = design_planning.hold_solve_state(design, sc.sticky, f"bars/{bar_id}")
-            hold_scene = design_planning.hold_scene(design, f"bars/{bar_id}", 0)
+            process = _core_process("RSIKKeyframe")
+            sr_mirror, template_state = process_planning.hold_solve_state(process, sc.sticky, f"bars/{bar_id}")
+            hold_scene = process_planning.hold_scene(process, f"bars/{bar_id}", 0)
             sr_view = (hold_scene, robot_id)
         except (KeyError, ValueError, RuntimeError) as exc:
             rs.MessageBox(f"Cannot build the hold scene of {bar_id}: {exc}", 0, "RSIKKeyframe")
@@ -2722,7 +2722,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
             return
 
         env_token = highlight_env.highlight_env_for_ik(bar_id)
-        collision_opts = _ask_collision_options(env_count=len(design.bodies))
+        collision_opts = _ask_collision_options(env_count=len(process.bodies))
         if collision_opts is None:
             return
         include_self, include_env, mesh_mode = collision_opts
@@ -2737,8 +2737,8 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
             joints = lambda st: support_ik.extract_group_config(st, config.SUPPORT_GROUP, sr_cell)  # noqa: E731
             held_j, approach_j = (dict(zip(j["joint_names"], j["joint_values"]))
                                   for j in (joints(held_st), joints(approach_st)))
-            return design_planning.hold_release_collisions(
-                design, sc.sticky, f"bars/{bar_id}", design_source.pose_from_mm(base_mm), held_j, approach_j)
+            return process_planning.hold_release_collisions(
+                process, sc.sticky, f"bars/{bar_id}", process_source.pose_from_mm(base_mm), held_j, approach_j)
 
         # The support robot's own ghost meshes drive the base pick and the sampling viz.
         sampling_ghost_meshes = _ghost_meshes(hold_scene, robot_id, SUPPORT_SOLVE_LAYER_KEY, mesh_mode)
@@ -2863,7 +2863,7 @@ def _main(stack, after):
     """Run the dual-arm IK keyframe command end to end.
 
     Reloads the runtime modules and picks a bar that carries the required L/R
-    tools. Reads the document into a design and syncs the bar's keyframe scenes
+    tools. Reads the document into a process and syncs the bar's keyframe scenes
     into Cindy's mirror once, then loops: resolve a robot base frame (reuse
     saved / pick fresh), solve the approach -> assembled -> retreat IK chain on
     the mirror's planner (sampling base offsets on failure), preview the solved
@@ -2945,14 +2945,14 @@ def _main(stack, after):
         right_tool_oid,
     )
 
-    # * The movements are the design's transfer / insert / retreat (+ home), synced into Cindy's mirror;
+    # * The movements are the process's transfer / insert / retreat (+ home), synced into Cindy's mirror;
     # * the tool blocks just placed are the flange targets. Previews draw the same scene posed by the solves.
     try:
-        design = _core_design("RSIKKeyframe")
+        process = _core_process("RSIKKeyframe")
         bar = f"bars/{target_bar_id}"
-        mirror, movements = design_planning.keyframe_movements(design, sc.sticky, bar)
-        scene = design.scene_at(design_planning.movement(design, bar, "J", "J_transfer"))
-        robot_id = design.actions[f"{target_bar_id}_J"].robot
+        mirror, movements = process_planning.keyframe_movements(process, sc.sticky, bar)
+        scene = process.scene_at(process_planning.movement(process, bar, "J", "J_transfer"))
+        robot_id = process.actions[f"{target_bar_id}_J"].robot
         _use_preview(scene, robot_id)
         planner = stack.enter_context(mirror.lend())
         rcell = mirror.cell
@@ -2974,7 +2974,7 @@ def _main(stack, after):
         # Green = what this solve collides with: the bars in the planning scene, as the core decides.
         env_token = highlight_env.highlight_env_for_ik(target_bar_id, scene)
 
-        collision_opts = _ask_collision_options(env_count=len(design.bodies), offer_base_search=True)
+        collision_opts = _ask_collision_options(env_count=len(process.bodies), offer_base_search=True)
         if collision_opts is None:
             return
         include_self, include_env, mesh_mode, base_search_mode = collision_opts
@@ -2998,7 +2998,7 @@ def _main(stack, after):
         # DEBUG view (config.DEBUG_BASE_REGION): marks where the base can stand at all; gone when `stack` closes.
         stack.callback(base_search_viz.hide)
         stack.enter_context(base_region_viz.painted(
-            target_bar_oid, movements, design.robots[robot_id].urdf, planner))
+            target_bar_oid, movements, process.robots[robot_id].urdf, planner))
 
         while True:
             # A base is "freshly decided" this turn only when we don't already
@@ -3057,11 +3057,11 @@ def _main(stack, after):
                     extra_hidden_tools, tool0_left_final, tool0_right_final = _collect_target_context(
                         target_bar_id, left_tool_oid, right_tool_oid,
                     )
-                    # The flange targets come from the tools: build the design and the movements again.
+                    # The flange targets come from the tools: build the process and the movements again.
                     # Same mirror (one per robot), so the planner lent above stays the one to solve on.
-                    design = _core_design("RSIKKeyframe")
-                    mirror, movements = design_planning.keyframe_movements(design, sc.sticky, bar)
-                    scene = design.scene_at(design_planning.movement(design, bar, "J", "J_transfer"))
+                    process = _core_process("RSIKKeyframe")
+                    mirror, movements = process_planning.keyframe_movements(process, sc.sticky, bar)
+                    scene = process.scene_at(process_planning.movement(process, bar, "J", "J_transfer"))
                     _use_preview(scene, robot_id)
                     rcell = mirror.cell
                     neutral_seed_state = movements["M3"].start_state.copy()
@@ -3118,7 +3118,7 @@ def _main(stack, after):
                         f"RSIKKeyframe: base frame saved on bar '{target_bar_id}'; "
                         "skipped the in-Rhino IK solve.\n"
                         "  Solve its keyframes later with RSIKKeyframe (Reuse) or "
-                        "RSIKKeyframeAll; RSExportDesign writes the base into the design."
+                        "RSIKKeyframeAll; RSExportProcess writes the base into the process."
                     )
                     return
 
@@ -3141,7 +3141,7 @@ def _main(stack, after):
                 solved, used_base = _solve_chain_with_sampling(
                     planner, movements, seed_base_frame,
                     brep_id, heading_mm, include_self, include_env,
-                    viz=viz, urdf=design.robots[robot_id].urdf, base_search=base_search_mode,
+                    viz=viz, urdf=process.robots[robot_id].urdf, base_search=base_search_mode,
                 )
                 # Drop the moving ghost robot but keep the circle + tried markers +
                 # seed arrow, so the "what was tried" history stays on screen without

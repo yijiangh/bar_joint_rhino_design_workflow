@@ -60,7 +60,7 @@ It refuses cleanly (nothing changes) if the pair partner is missing or a
 
 ## 4. Re-solve IK
 
-1. Nothing to rebuild: the next IK command reads the document into a design with
+1. Nothing to rebuild: the next IK command reads the document into a process with
    the new tools, and the shared core rebuilds each planning cell
    whose tools changed (previews rebake changed tools).
 2. **RSIKKeyframe** on the bars you care about and check solve success /
@@ -73,6 +73,6 @@ Repeat steps 3–4 with the other set (`RSSwapRoboticTool` → type `AT5L` or
 with better margins wins. The registry remembers only one active pair at a
 time.
 
-After settling on a tool, re-export (`RSExportDesign`) — the design folder
-embeds the tool geometry and names, so designs exported with the old pair are
+After settling on a tool, re-export (`RSExportProcess`) — the process folder
+embeds the tool geometry and names, so processes exported with the old pair are
 stale.

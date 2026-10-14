@@ -1,8 +1,8 @@
 #! python 3
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
-"""RSExportDesign - write the document as a schema 2 design folder, then run the file and plan checks.
+"""RSExportProcess - write the document as a schema 2 process folder, then run the file and plan checks.
 
-The design comes from `core.design_source.RhinoDesignSource` (bars, halves, ground, obstacles, robots, tools, mates,
+The process comes from `core.process_source.RhinoProcessSource` (bars, halves, ground, obstacles, robots, tools, mates,
 and the actions built from each bar's keyframes) and is written by the core's `write`. Bars without IK are exported
 with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Needs no PyBullet,
 compas_fab or tamp. It is the only export command.
@@ -31,36 +31,36 @@ import session_log  # noqa: E402
 
 from core import config as _config_module  # noqa: E402
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_builder as _design_builder_module  # noqa: E402
-from core import design_source as _design_source_module  # noqa: E402
+from core import process_builder as _process_builder_module  # noqa: E402
+from core import process_source as _process_source_module  # noqa: E402
 from core import rhino_walkable_ground as _walkable_module  # noqa: E402
 from core.ik_status import stale_from, stale_ik_lines  # noqa: E402
 from core.rhino_bar_registry import repair_on_entry  # noqa: E402
-from bar_assembly_core.design import DesignError, write  # noqa: E402
-from bar_assembly_core.design.plan_check import check_plan  # noqa: E402
-from rs_check_design import DESIGN_FOLDER_STICKY_KEY, report_lines  # noqa: E402
+from bar_assembly_core.process import ProcessError, write  # noqa: E402
+from bar_assembly_core.process.plan_check import check_plan  # noqa: E402
+from rs_check_process import PROCESS_FOLDER_STICKY_KEY, report_lines  # noqa: E402
 
 
 def _pick_folder(command: str):
-    """Ask for the parent folder and the design folder's name; None if cancelled or refused."""
-    last = sc.sticky.get(DESIGN_FOLDER_STICKY_KEY)
+    """Ask for the parent folder and the process folder's name; None if cancelled or refused."""
+    last = sc.sticky.get(PROCESS_FOLDER_STICKY_KEY)
     parent = rs.BrowseForFolder(folder=os.path.dirname(last) if last else None,
-                                message="Select the folder to write the design folder into", title=command)
+                                message="Select the folder to write the process folder into", title=command)
     if not parent:
         return None
-    doc_name = os.path.splitext(sc.doc.Name or "design")[0]
-    default = os.path.basename(last) if last else f"{doc_name}_design"
-    name = rs.StringBox("Design folder name", default, command)
+    doc_name = os.path.splitext(sc.doc.Name or "process")[0]
+    default = os.path.basename(last) if last else f"{doc_name}_process"
+    name = rs.StringBox("Process folder name", default, command)
     if not name:
         return None
     folder = os.path.join(parent, name)
     if os.path.isdir(folder) and os.listdir(folder):
-        if not os.path.isfile(os.path.join(folder, "design.json")):
-            rs.MessageBox(f"{folder} is not empty and holds no design.json; pick another name.", 0, command)
+        if not os.path.isfile(os.path.join(folder, "process.json")):
+            rs.MessageBox(f"{folder} is not empty and holds no process.json; pick another name.", 0, command)
             return None
-        if rs.MessageBox(f"Replace the design in\n{folder}?\n(solutions/ and runs/ stay)", 4 | 32, command) != 6:
+        if rs.MessageBox(f"Replace the process in\n{folder}?\n(solutions/ and runs/ stay)", 4 | 32, command) != 6:
             return None
-    sc.sticky[DESIGN_FOLDER_STICKY_KEY] = folder
+    sc.sticky[PROCESS_FOLDER_STICKY_KEY] = folder
     return folder
 
 
@@ -76,11 +76,11 @@ def _copy_sources(folder: str, config) -> None:
         shutil.copy2(path, source)
 
 
-def export(command: str = "RSExportDesign") -> None:
-    """Build, write and check the design; print everything and show a summary."""
+def export(command: str = "RSExportProcess") -> None:
+    """Build, write and check the process; print everything and show a summary."""
     config = importlib.reload(_config_module)
-    importlib.reload(_design_builder_module)
-    design_source = importlib.reload(_design_source_module)
+    importlib.reload(_process_builder_module)
+    process_source = importlib.reload(_process_source_module)
     repair_on_entry(float(config.BAR_RADIUS), command)
     importlib.reload(_walkable_module).ensure_ground_and_base(command)
 
@@ -90,9 +90,9 @@ def export(command: str = "RSExportDesign") -> None:
         return
     started = time.perf_counter()
     try:
-        result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky),
+        result = process_source.RhinoProcessSource(command, process_source.geometry_cache(sc.sticky),
                                                  fresh_versions=True).build()
-    except DesignError as exc:
+    except ProcessError as exc:
         print(f"{command}: the document cannot be exported:\n  " + "\n  ".join(exc.problems))
         rs.MessageBox(f"Not exported: {len(exc.problems)} problem(s) in the document.\n\nDetails in the command "
                       "history.", 0, command)
@@ -102,9 +102,9 @@ def export(command: str = "RSExportDesign") -> None:
     if result.problems:
         lines += [f"Notes ({len(result.problems)}):"] + [f"  {p}" for p in result.problems]
     try:
-        with session_log.step("write design folder", folder):
-            written = write(result.design, folder, overwrite=True, package_dirs=[config.HUSKY_PKG_PATH])
-    except DesignError as exc:
+        with session_log.step("write process folder", folder):
+            written = write(result.process, folder, overwrite=True, package_dirs=[config.HUSKY_PKG_PATH])
+    except ProcessError as exc:
         lines += [f"A (file checks): FAILED, nothing usable written; {len(exc.problems)} problem(s)"]
         lines += [f"  {p}" for p in exc.problems]
         print("\n".join(lines))

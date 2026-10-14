@@ -17,7 +17,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from core import core_lib  # noqa: E402,F401
-from bar_assembly_core.design import version  # noqa: E402
+from bar_assembly_core.process import version  # noqa: E402
 
 LOGS = os.path.join(REPO, "logs")
 os.makedirs(LOGS, exist_ok=True)

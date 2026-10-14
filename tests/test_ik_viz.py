@@ -11,7 +11,7 @@ import types
 import numpy as np
 import pytest
 
-from test_design_source import source  # noqa: F401  (fixture: the fake document's design_source module)
+from test_process_source import source  # noqa: F401  (fixture: the fake document's process_source module)
 
 
 class _Vertices(list):
@@ -90,9 +90,9 @@ class Canvas:
 
 @pytest.fixture
 def canvas(source):  # noqa: F811
-    """The fake document's design, then its fake modules with a drawing canvas added; `core.ik_viz` imported fresh."""
+    """The fake document's process, then its fake modules with a drawing canvas added; `core.ik_viz` imported fresh."""
     canvas = Canvas()
-    canvas.design = source.RhinoDesignSource("x", source.geometry_cache({})).build().design
+    canvas.process = source.RhinoProcessSource("x", source.geometry_cache({})).build().process
     rs, sc, rhino = (sys.modules[n] for n in ("rhinoscriptsyntax", "scriptcontext", "Rhino"))
     rs.IsLayer = lambda path: path in canvas.layers
     rs.AddLayer = canvas.add_layer
@@ -127,8 +127,8 @@ def canvas(source):  # noqa: F811
         sys.modules.pop(name, None)
 
 
-def _movement(design, movement_id):
-    return next(m for a in design.actions.values() for m in a.movements if m.id == movement_id)
+def _movement(process, movement_id):
+    return next(m for a in process.actions.values() for m in a.movements if m.id == movement_id)
 
 
 def _expected(geometry, pose, mode="visual"):
@@ -144,12 +144,12 @@ def _expected(geometry, pose, mode="visual"):
 def test_update_state_bakes_moves_hides_and_rebakes(canvas):
     from bar_assembly_core.geometry import Geometry, Pose
     from bar_assembly_core.scene import scene_parts
-    from core import config, design_display
+    from core import config, process_display
 
     ik_viz = canvas.ik_viz
-    design = canvas.design
-    scene = design.scene_at(_movement(design, "B1_J_insert"))
-    design_display.place(scene, "robots/cindy", Pose((1.0, 0.5, 0.0)), {"left_ur_arm_elbow_joint": 0.4})
+    process = canvas.process
+    scene = process.scene_at(_movement(process, "B1_J_insert"))
+    process_display.place(scene, "robots/cindy", Pose((1.0, 0.5, 0.0)), {"left_ur_arm_elbow_joint": 0.4})
 
     ik_viz.begin_session(active_mesh_mode=ik_viz.MESH_MODE_VISUAL, layer_key="Assembly", hide_doc_layers=())
     ik_viz.update_state(scene, robot_id="robots/cindy", layer_key="Assembly")
@@ -163,7 +163,7 @@ def test_update_state_bakes_moves_hides_and_rebakes(canvas):
     assert not canvas.named("robots/alice/ur_arm_wrist_3_link")  # absent: never baked
 
     # Moving the robot moves its links and the bar it holds, by the change in their transform; nothing is baked.
-    design_display.place(scene, "robots/cindy", Pose((2.0, 0.0, 0.0), (0.0, 0.0, 0.7071068, 0.7071068)),
+    process_display.place(scene, "robots/cindy", Pose((2.0, 0.0, 0.0), (0.0, 0.0, 0.7071068, 0.7071068)),
                          {"left_ur_arm_elbow_joint": -0.8})
     ik_viz.update_state(scene, robot_id="robots/cindy", layer_key="Assembly")
     assert len(canvas.objects) == count
@@ -185,14 +185,14 @@ def test_update_state_bakes_moves_hides_and_rebakes(canvas):
                              if o["layer"].endswith("::Collision") and o["name"].startswith(("robots/cindy/", "tools/")))
 
     # Taken out of the scene: hidden, not deleted. A disabled body too.
-    design_display.place(scene, "robots/cindy", enabled=False)
+    process_display.place(scene, "robots/cindy", enabled=False)
     scene.bodies["ground/WG0"].enabled = False
     ik_viz.update_state(scene, robot_id="robots/cindy", layer_key="Assembly")
     assert len(canvas.objects) == count
     assert not any(canvas.shown(o) for name in (wrist, "bars/B1", "ground/WG0") for o in canvas.named(name))
 
     # A new Geometry object is baked again (once); a part whose id leaves the scene is deleted.
-    design_display.place(scene, "robots/cindy")
+    process_display.place(scene, "robots/cindy")
     old = scene.bodies["bars/B1"].geometry
     scene.bodies["bars/B1"].geometry = Geometry(old.visual, old.collision)
     del scene.bodies["ground/WG0"]
@@ -216,11 +216,11 @@ def test_update_state_bakes_moves_hides_and_rebakes(canvas):
 
 def test_robot_meshes_are_copies_at_the_robot(canvas):
     from bar_assembly_core.scene import robot_parts
-    from core import design_display
+    from core import process_display
 
     ik_viz = canvas.ik_viz
-    design = canvas.design
-    ghost = design_display.ghost_scene(design.scene_at(_movement(design, "B1_J_insert")), "robots/alice")
+    process = canvas.process
+    ghost = process_display.ghost_scene(process.scene_at(_movement(process, "B1_J_insert")), "robots/alice")
     alice = ghost.robots["robots/alice"]
     meshes = ik_viz.robot_meshes(alice)
     expected = [_expected(g, p) if g.visual else _expected(g, p, "collision") for _i, g, p in robot_parts(alice)
@@ -247,13 +247,13 @@ def test_update_state_colours_parts_by_id_and_by_robot(canvas):
             canvas.objects[guid].pop("color", None)
 
     rs.ObjectColor, rs.ObjectColorSource, rs.IsObject = object_color, object_color_source, lambda g: g in canvas.objects
-    design = canvas.design
+    process = canvas.process
     from bar_assembly_core.geometry import Pose
-    from core import design_display
+    from core import process_display
 
-    scene = design.scene_at(_movement(design, "B1_J_insert"))
+    scene = process.scene_at(_movement(process, "B1_J_insert"))
     robot, bar = "robots/cindy", "bars/B1"
-    design_display.place(scene, robot, Pose((1.0, 0.5, 0.0)), {"left_ur_arm_elbow_joint": 0.4})
+    process_display.place(scene, robot, Pose((1.0, 0.5, 0.0)), {"left_ur_arm_elbow_joint": 0.4})
     green, yellow = (60, 179, 60), (225, 185, 40)
 
     ik_viz.update_state(scene, robot_id=robot, layer_key="Assembly", colors={bar: green, robot: yellow})

@@ -1,5 +1,5 @@
 """
-Plan on the shared core: design -> `scene_at` -> `CompasFabMirror` -> the existing solvers (tamp, compas_fab).
+Plan on the shared core: process -> `scene_at` -> `CompasFabMirror` -> the existing solvers (tamp, compas_fab).
 
 The Rhino commands get their movements, planner and cell from here: `keyframe_movements` for Cindy's chain
 (RSIKKeyframe, RSIKKeyframeAll), `hold_solve_state` and `hold_release_collisions` for a support robot's hold,
@@ -10,7 +10,7 @@ Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_a
 `scenes.seeded` fills in the robot being planned for, the mirror parks other robots whose base or joints are unknown
 (`mirror.parked`), and `hold.hold_scenes` gives a hold's two scenes.
 
-- ! Keep the mirrors in `store` (Rhino's `sc.sticky`) and build the design with the same geometry cache every time:
+- ! Keep the mirrors in `store` (Rhino's `sc.sticky`) and build the process with the same geometry cache every time:
   a mirror rebuilds its cell (seconds) only when a geometry or robot object changes.
 - ! A mirror belongs to one thread, and only one may be lent at a time (`mirror.lend()`).
 """
@@ -25,9 +25,9 @@ from typing import Dict, List, Mapping, Optional, Tuple
 
 import session_log
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.design import Design
-from bar_assembly_core.design.hold import hold_scenes
-from bar_assembly_core.design.scenes import seeded
+from bar_assembly_core.process import Process
+from bar_assembly_core.process.hold import hold_scenes
+from bar_assembly_core.process.scenes import seeded
 from bar_assembly_core.geometry import Pose
 from bar_assembly_core.mirrors.compas import frame_from_pose
 from bar_assembly_core.mirrors.compas_fab import CompasFabMirror
@@ -97,14 +97,14 @@ def short(bar: str) -> str:
     return bar.split("/", 1)[1]
 
 
-def movement(design: Design, bar: str, action: str, name: str):
-    """A movement by its role-named id, e.g. `movement(design, "bars/B10", "J", "J_insert")`.
+def movement(process: Process, bar: str, action: str, name: str):
+    """A movement by its role-named id, e.g. `movement(process, "bars/B10", "J", "J_insert")`.
 
     Raises:
-        KeyError: If the design has no such action or movement (the bar was left out of the export).
+        KeyError: If the process has no such action or movement (the bar was left out of the export).
     """
     p = short(bar)
-    found = [m for m in design.actions[f"{p}_{action}"].movements if m.id == f"{p}_{name}"]
+    found = [m for m in process.actions[f"{p}_{action}"].movements if m.id == f"{p}_{name}"]
     if not found:
         raise KeyError(f"{p}_{name}")
     return found[0]
@@ -115,7 +115,7 @@ def sync_seeded(store: dict, scene: Scene, robot_id: str, joints: Optional[Mappi
     """Seed `robot_id` in the scene (`scenes.seeded`, in place), sync it into its mirror, and log the parked robots.
 
     Args:
-        joints, base: Seeds for what the design leaves open (else 0 and the origin: the solvers set the base they try).
+        joints, base: Seeds for what the process leaves open (else 0 and the origin: the solvers set the base they try).
         why: What the scene is for, in the parked-robots log line.
         report_parked: Log the parked robots (once per chain is enough).
     """
@@ -132,8 +132,8 @@ def sync_seeded(store: dict, scene: Scene, robot_id: str, joints: Optional[Mappi
 # --- --- --- --- --- CINDY: KEYFRAME CHAIN --- --- --- --- ---
 
 @session_log.timed()
-def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tuple[CompasFabMirror, Dict[str, object]]:
-    """Cindy's keyframe chain of one bar, as tamp's `solve_keyframe_chain` takes it, from the design's scenes.
+def keyframe_movements(process: Process, store: dict, bar: str, log=print) -> Tuple[CompasFabMirror, Dict[str, object]]:
+    """Cindy's keyframe chain of one bar, as tamp's `solve_keyframe_chain` takes it, from the process's scenes.
 
     Returns:
         tuple: (Cindy's mirror, {"M1": approach, "M2": assembled, "M3": retreat, "M4": home}), each with a
@@ -141,19 +141,19 @@ def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tupl
         `target_configuration` (home only). Lend the mirror's planner to solve them.
 
     Raises:
-        KeyError: If the bar has no J or R action in the design.
+        KeyError: If the bar has no J or R action in the process.
     """
-    robot_id = design.actions[f"{short(bar)}_J"].robot
+    robot_id = process.actions[f"{short(bar)}_J"].robot
     flanges = {side: f"{robot_id}/{side}_ur_arm_tool0" for side in ("left", "right")}
     out, mirror = {}, None
     for role, (action, name) in KEYFRAME_MOVEMENTS.items():
-        m = movement(design, bar, action, name)
-        mirror = sync_seeded(store, design.scene_at(m), robot_id, log=log, why=short(bar),
+        m = movement(process, bar, action, name)
+        mirror = sync_seeded(store, process.scene_at(m), robot_id, log=log, why=short(bar),
                              report_parked=role == "M1")
         out[role] = SimpleNamespace(start_state=mirror.state.copy(), target_configuration=None,
                                     target_ee_frames={side: frame_from_pose(m.target.link_poses[link])
                                                       for side, link in flanges.items()})
-    home = movement(design, bar, "R", "R_home").target.joints.get(robot_id)
+    home = movement(process, bar, "R", "R_home").target.joints.get(robot_id)
     out["M4"] = SimpleNamespace(start_state=out["M3"].start_state, target_ee_frames={},
                                 target_configuration=mirror.configuration(home) if home else None)
     return mirror, out
@@ -162,7 +162,7 @@ def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tupl
 # --- --- --- --- --- SUPPORT ROBOTS: HOLD AND RELEASE --- --- --- --- ---
 
 @session_log.timed()
-def hold_solve_state(design: Design, store: dict, bar: str, log=print):
+def hold_solve_state(process: Process, store: dict, bar: str, log=print):
     """A support robot's mirror and template state for solving one hold (`support_ik.solve_support_ik`).
 
     The hold is solved in the first of its scenes (`hold.hold_scenes`): the start of the movement that closes the
@@ -172,23 +172,23 @@ def hold_solve_state(design: Design, store: dict, bar: str, log=print):
         tuple: (the support robot's mirror, a compas_fab `RobotCellState` to fork per base).
 
     Raises:
-        KeyError: If the bar has no hold in the design (no grasp frame picked yet).
+        KeyError: If the bar has no hold in the process (no grasp frame picked yet).
         ValueError: If the hold has no closing movement or no release (`hold.hold_scenes`).
     """
     action_id = f"{short(bar)}_H"
-    robot_id = design.actions[action_id].robot
-    solve, _check = hold_scenes(design, action_id)
+    robot_id = process.actions[action_id].robot
+    solve, _check = hold_scenes(process, action_id)
     mirror = sync_seeded(store, solve, robot_id, log=log, why=f"the hold of {short(bar)}")
     return mirror, mirror.state.copy()
 
 
-def hold_scene(design: Design, bar: str, which: int = 0) -> Scene:
+def hold_scene(process: Process, bar: str, which: int = 0) -> Scene:
     """One of a hold's two scenes (`hold.hold_scenes`): 0 to solve it in, 1 to check it in (the release)."""
-    return hold_scenes(design, f"{short(bar)}_H")[which]
+    return hold_scenes(process, f"{short(bar)}_H")[which]
 
 
 @session_log.timed()
-def hold_release_collisions(design: Design, store: dict, bar: str, base: Pose, held: Mapping[str, float],
+def hold_release_collisions(process: Process, store: dict, bar: str, base: Pose, held: Mapping[str, float],
                             approach: Optional[Mapping[str, float]] = None, log=print) -> List[str]:
     """Check a hold candidate in the second of its scenes (the start of its release): at its held and approach joints.
 
@@ -204,8 +204,8 @@ def hold_release_collisions(design: Design, store: dict, bar: str, base: Pose, h
         KeyError, ValueError: As `hold_solve_state`.
     """
     action_id = f"{short(bar)}_H"
-    robot_id = design.actions[action_id].robot
-    check = hold_scenes(design, action_id)[1]
+    robot_id = process.actions[action_id].robot
+    check = hold_scenes(process, action_id)[1]
     robot = check.robots[robot_id]
     robot.base, robot.base_tracked = base, True
     robot.joints, robot.unmeasured = {**robot.joints, **{n: float(v) for n, v in held.items()}}, frozenset()
@@ -217,21 +217,21 @@ def hold_release_collisions(design: Design, store: dict, bar: str, base: Pose, h
 
 
 @session_log.timed()
-def release_check(design: Design, store: dict, bar: str, log=print) -> str:
+def release_check(process: Process, store: dict, bar: str, log=print) -> str:
     """Check a hold's release in its own scene: the support robot at its held and approach joints.
 
     Returns:
         str: "OK", "not solved" (no base or joints yet), or the colliding pairs.
     """
     p = short(bar)
-    if f"{p}_HR" not in design.actions or f"{p}_H" not in design.actions:
-        return "no release in the design"
-    action = design.actions[f"{p}_HR"]
+    if f"{p}_HR" not in process.actions or f"{p}_H" not in process.actions:
+        return "no release in the process"
+    action = process.actions[f"{p}_HR"]
     opening, retreat = action.movements[0], action.movements[1]
     robot = opening.start.robots.get(action.robot)
     if robot is None or robot.base is None or robot.joints is None:
         return "not solved"
-    check = hold_scene(design, f"bars/{p}", 1)
+    check = hold_scene(process, f"bars/{p}", 1)
     mirror = sync_seeded(store, check, action.robot, log=log)
     found = [f"held: {a} x {b}" for a, b in mirror.collisions()]
     approach = (retreat.target.joints or {}).get(action.robot) if retreat.target else None
@@ -242,11 +242,11 @@ def release_check(design: Design, store: dict, bar: str, log=print) -> str:
 
 
 @session_log.timed()
-def scene_collisions(design: Design, store: dict, scene: Scene, log=print) -> List[Tuple[str, str]]:
+def scene_collisions(process: Process, store: dict, scene: Scene, log=print) -> List[Tuple[str, str]]:
     """What collides in a scene, checked on the mirror of every robot placed in it (present, base and joints known).
 
     Args:
-        design: The design the scene comes from (its contacts are already in the scene, from `scene_at`).
+        process: The process the scene comes from (its contacts are already in the scene, from `scene_at`).
         store: Where the mirrors are kept (Rhino's `sc.sticky`).
         scene: The world to check; not changed.
 
@@ -276,7 +276,7 @@ def state_scene(scene: Scene, robot_id: str, state) -> Scene:
     """
     from bar_assembly_core.mirrors.compas import pose_from_frame
     from bar_assembly_core.scene import Attachment
-    from core.design_display import place
+    from core.process_display import place
 
     out = scene.copy()
     movable = set(out.robots[robot_id].model.movable_joints)

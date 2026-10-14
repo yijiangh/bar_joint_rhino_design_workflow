@@ -35,7 +35,7 @@ def env(tmp_path, monkeypatch):
 
 
 def test_outside_rhino_does_nothing(env, monkeypatch):
-    """Outside Rhino's Python (pytest, plan_design.py): no install, no sys.path change."""
+    """Outside Rhino's Python (pytest, plan_process.py): no install, no sys.path change."""
     monkeypatch.setattr(rhino_env, "in_rhino", lambda: False)
     before = list(sys.path)
     assert rhino_env.activate() is None

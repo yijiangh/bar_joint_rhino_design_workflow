@@ -4,10 +4,10 @@
 
 The first time a robot is drawn, `ik_viz` builds its Rhino meshes with one Python -> Rhino call per vertex and per
 face; a support robot has about 0.7 million vertices. This times that against the alternatives, on one robot of the
-open document's design, and prints the results (they also land in the session log). Nothing is added to the
+open document's process, and prints the results (they also land in the session log). Nothing is added to the
 document.
 
-Run in Rhino with a design document open: `_-ScriptEditor _R "_dev_mesh_bake_benchmark.py"`.
+Run in Rhino with a process document open: `_-ScriptEditor _R "_dev_mesh_bake_benchmark.py"`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import numpy as np  # noqa: E402
 
 import session_log  # noqa: E402
 from core import core_lib  # noqa: E402, F401  (puts bar_assembly_core on sys.path)
-from core import design_source, ik_viz  # noqa: E402
+from core import process_source, ik_viz  # noqa: E402
 
 ROBOT = "robots/alice"
 
@@ -104,13 +104,13 @@ def _count(meshes):
 
 
 def main() -> None:
-    result = design_source.RhinoDesignSource("MeshBakeBenchmark", design_source.geometry_cache(sc.sticky)).build()
-    design = result.design
-    movement = next((m for _action, m in design.movements()), None)
-    if movement is None or ROBOT not in design.robots:
-        print(f"MeshBakeBenchmark: the design has no movement or no {ROBOT}.")
+    result = process_source.RhinoProcessSource("MeshBakeBenchmark", process_source.geometry_cache(sc.sticky)).build()
+    process = result.process
+    movement = next((m for _action, m in process.movements()), None)
+    if movement is None or ROBOT not in process.robots:
+        print(f"MeshBakeBenchmark: the process has no movement or no {ROBOT}.")
         return
-    robot = design.scene_at(movement).robots[ROBOT]
+    robot = process.scene_at(movement).robots[ROBOT]
     with session_log.step("read robot meshes"):
         arrays = _arrays(robot, ik_viz._doc_units_per_metre())
     n_vertices, n_faces = sum(len(v) for v, _f in arrays), sum(len(f) for _v, f in arrays)

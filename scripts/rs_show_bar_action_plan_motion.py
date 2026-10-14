@@ -2,8 +2,8 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSShowBarActionPlanMotion - Right-click companion of RSShowBarActionPlan.
 
-Pick a design folder (written by RSExportDesign, planned by
-``scripts/plan_design.py``) and a bar, then step through the bar's planned
+Pick a process folder (written by RSExportProcess, planned by
+``scripts/plan_process.py``) and a bar, then step through the bar's planned
 trajectories from the command line. Delegates to
 ``rs_show_bar_action_plan.main_motion`` (the left-click script owns the viewer).
 """

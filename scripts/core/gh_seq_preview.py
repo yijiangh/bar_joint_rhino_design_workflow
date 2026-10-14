@@ -8,7 +8,7 @@ frame index, so the Rhino viewport can be driven from a Grasshopper slider
 
 One frame = one step of the global assembly timeline -- the SAME step list
 the ``RSShowAssemblyPlan`` command walks (``core.plan_steps.timeline`` of the
-document read as a schema 2 design): every bar contributes approach / assembled
+document read as a schema 2 process): every bar contributes approach / assembled
 / (hold) / retreat / home, and support-robot releases appear as their own
 steps.  In the current study file that is 88 steps: 20 bars x 4 poses + 4 hold
 + 4 release.  The caption output (``step 75/88 | bar B37 | release B21``)
@@ -24,7 +24,7 @@ What is drawn per frame
   (``show_support``) -- drawn ON TOP of the geometry with user-set pixel
   width and dash pattern.  The document's centerline curves are hidden while
   the preview runs: the overlay replaces them;
-* every robot where the design has it at this step -- the dual-arm assembly
+* every robot where the process has it at this step -- the dual-arm assembly
   robot WITH its assembly tools, the support robots holding bars (frozen
   holders, the bar's own holder from the hold pose onward, release retreats)
   -- the step's scene drawn part by part (``core.ik_viz``), on the
@@ -63,7 +63,7 @@ layers.
 
 Speed notes
 -----------
-The design and its step list are computed on the ``reload`` button and cached;
+The process and its step list are computed on the ``reload`` button and cached;
 a slider move builds that step's scene, repaints the sequence visibility and
 re-poses the robots -- no PyBullet, no document scans beyond the bar registry.
 The robot models themselves are loaded once per Rhino session (run
@@ -82,7 +82,7 @@ import session_log
 
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_source
+from core import process_source
 from core import gh_bridge
 from core import ik_viz
 from core import plan_steps
@@ -297,23 +297,23 @@ def _update_guide_lines(store, bar_map, active_bar_id, active_seq,
 
 
 def _build_timeline(bar_map):
-    """The document as a design, and its global step list (``core.plan_steps.timeline``)."""
-    result = design_source.RhinoDesignSource(
-        "RSGHSequencePreview", design_source.geometry_cache(sc.sticky)
+    """The document as a process, and its global step list (``core.plan_steps.timeline``)."""
+    result = process_source.RhinoProcessSource(
+        "RSGHSequencePreview", process_source.geometry_cache(sc.sticky)
     ).build()
-    steps, skipped = plan_steps.timeline(result.design)
-    return {"design": result.design, "steps": steps, "skipped": skipped, "n_bars": len(bar_map)}
+    steps, skipped = plan_steps.timeline(result.process)
+    return {"process": result.process, "steps": steps, "skipped": skipped, "n_bars": len(bar_map)}
 
 
-def _render_robots(store, design, step, notes):
+def _render_robots(store, process, step, notes):
     """Draw every robot of this step: the assembly robot with its tools, and every support robot present.
 
     The step's scene (``plan_steps.step_scene``) puts each robot where the
-    design has it at that moment, and ``ik_viz`` draws them all with their
+    process has it at that moment, and ``ik_viz`` draws them all with their
     tools. Robots absent from the moment (or whose base is not solved yet) are
     hidden. Bodies are hidden: the document's own geometry shows the bars.
     """
-    robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
+    robot_id = process_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
     rs.EnableRedraw(False)
     try:
         if not store.get("session"):
@@ -326,7 +326,7 @@ def _render_robots(store, design, step, notes):
                 hide_doc_layers=(),
             )
             store["session"] = True
-        ik_viz.update_state(plan_steps.step_scene(design, step), robot_id=robot_id,
+        ik_viz.update_state(plan_steps.step_scene(process, step), robot_id=robot_id,
                             layer_key=ik_viz.LAYER_KEY_ASSEMBLY, mesh_mode=ik_viz.MESH_MODE_VISUAL,
                             hide_bodies=True)
         ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, True)
@@ -456,7 +456,7 @@ def run(
                 "info": "no registered bars in this document",
             }
 
-        # The design and its timeline are cached in sticky and rebuilt only on the
+        # The process and its timeline are cached in sticky and rebuilt only on the
         # reload button or when the bar count changes underneath it -- a slider
         # move must not re-read the document.
         reload_edge = gh_bridge.rising_edge(store, "reload", reload)
@@ -541,7 +541,7 @@ def run(
             thickness, dashed, pattern,
         )
 
-        _render_robots(store, timeline["design"], current, notes)
+        _render_robots(store, timeline["process"], current, notes)
 
         store["fingerprint"] = fingerprint
         sc.doc.Views.Redraw()

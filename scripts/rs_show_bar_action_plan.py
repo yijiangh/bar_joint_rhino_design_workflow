@@ -3,24 +3,24 @@
 """RSShowBarActionPlan - View a bar's plan: its keyframe poses (left-click) or its planned motion (right-click).
 
 Left-click (``main``): the KEYFRAME viewer. The document is read into a schema 2
-design (``core.design_source``); pick a bar, then Enter (or ``TogglePose``)
+process (``core.process_source``); pick a bar, then Enter (or ``TogglePose``)
 cycles its steps (``core.plan_steps``): approach -> assembled -> hold (held bars:
 the support robot grips while the arms still hold) -> retreat -> home, then the
-release of every hold that lets go after this bar. Each step is the design's
+release of every hold that lets go after this bar. Each step is the process's
 scene at that moment, so the support robots stand exactly where the schedule has
 them. The active bar's base frame is drawn (axis triad + footprint). When
 ``RSLoadSolvedBarAction`` has just loaded solved bars, it starts on them and
 offers NextBar/PrevBar.
 
-Right-click (``main_motion``): the MOTION viewer. Reads a design folder written
-by RSExportDesign and the planner's ``solutions/`` there; pick a bar and step
+Right-click (``main_motion``): the MOTION viewer. Reads a process folder written
+by RSExportProcess and the planner's ``solutions/`` there; pick a bar and step
 through its planned trajectories (transfer -> insert -> retreat -> home) from the
 COMMAND LINE (Enter/Next/Prev/Jump), so the viewport stays free to zoom/orbit.
 Held bars follow the arm.
 
 Every view is a core scene drawn part by part (``core.ik_viz``: visual and
 collision meshes, no compas, no PyBullet); CheckCollision and the jog dialog
-check on the robots' planning mirrors (``core.design_planning``). The preview is
+check on the robots' planning mirrors (``core.process_planning``). The preview is
 non-baked: everything is cleaned up on exit and the sequence display is restored.
 """
 
@@ -50,10 +50,10 @@ import scriptcontext as sc
 from core import base_frame_viz as _base_frame_viz_module
 from core import config as _config_module
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_builder as _design_builder_module
-from core import design_display as _design_display_module
-from core import design_planning as _design_planning_module
-from core import design_source as _design_source_module
+from core import process_builder as _process_builder_module
+from core import process_display as _process_display_module
+from core import process_planning as _process_planning_module
+from core import process_source as _process_source_module
 from core import ik_status
 from core import ik_viz as _ik_viz_module
 from core import plan_steps as _plan_steps_module
@@ -74,7 +74,7 @@ from core.rhino_bar_registry import (
     show_sequence_colors,
 )
 from core.rhino_helpers import suspend_redraw
-from rs_check_design import DESIGN_FOLDER_STICKY_KEY  # the last design folder, shared with RSExportDesign
+from rs_check_process import PROCESS_FOLDER_STICKY_KEY  # the last process folder, shared with RSExportProcess
 from bar_assembly_core.urdf import UR_JOINT_NAMES, load_urdf  # after core_lib: it puts the core on sys.path
 
 
@@ -85,58 +85,58 @@ WALKABLE_GROUND_OTHER_COLOR = (95, 95, 95)
 COLLISION_COLOR = (255, 40, 40)
 #: ik_viz sub-layer the viewers draw their scenes on (every robot, every body).
 IK_LAYER_KEY_ASSEMBLY = "Assembly"
-#: `sc.sticky` key of the bars RSLoadSolvedBarAction just loaded: {"bars": [bar ids], "folder": design folder}.
+#: `sc.sticky` key of the bars RSLoadSolvedBarAction just loaded: {"bars": [bar ids], "folder": process folder}.
 LOADED_STICKY_KEY = "bar_joint:loaded_solved_bars"
 
 
 def _reload():
-    global base_frame_viz, config, design_display, design_planning, design_source, ik_viz, plan_steps
+    global base_frame_viz, config, process_display, process_planning, process_source, ik_viz, plan_steps
     global walkable_ground
     config = importlib.reload(_config_module)
     ik_viz = importlib.reload(_ik_viz_module)
     base_frame_viz = importlib.reload(_base_frame_viz_module)
     walkable_ground = importlib.reload(_walkable_ground_module)
-    importlib.reload(_design_builder_module)
-    design_source = importlib.reload(_design_source_module)
-    design_display = importlib.reload(_design_display_module)
+    importlib.reload(_process_builder_module)
+    process_source = importlib.reload(_process_source_module)
+    process_display = importlib.reload(_process_display_module)
     plan_steps = importlib.reload(_plan_steps_module)
-    design_planning = importlib.reload(_design_planning_module)
+    process_planning = importlib.reload(_process_planning_module)
 
 
 _reload()
 
 
 # ---------------------------------------------------------------------------
-# * Designs
+# * Processes
 # ---------------------------------------------------------------------------
 
 
-def design_from_document(command):
-    """The document as a schema 2 design, with the session's geometry cache; prints what was left out."""
-    result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
+def process_from_document(command):
+    """The document as a schema 2 process, with the session's geometry cache; prints what was left out."""
+    result = process_source.RhinoProcessSource(command, process_source.geometry_cache(sc.sticky)).build()
     for problem in result.problems:
         print(f"{command}: {problem}")
-    return result.design
+    return result.process
 
 
-def design_folder(command, folder=None):
-    """A design folder: `folder`, the last one used, or one the user browses to; None on cancel."""
-    folder = folder or sc.sticky.get(DESIGN_FOLDER_STICKY_KEY)
-    if not folder or not os.path.isfile(os.path.join(folder, "design.json")):
+def process_folder(command, folder=None):
+    """A process folder: `folder`, the last one used, or one the user browses to; None on cancel."""
+    folder = folder or sc.sticky.get(PROCESS_FOLDER_STICKY_KEY)
+    if not folder or not os.path.isfile(os.path.join(folder, "process.json")):
         folder = rs.BrowseForFolder(folder=folder if folder and os.path.isdir(folder) else None,
-                                    message="Select a design folder (written by RSExportDesign)", title=command)
+                                    message="Select a process folder (written by RSExportProcess)", title=command)
         if not folder:
             return None
-    if not os.path.isfile(os.path.join(folder, "design.json")):
-        rs.MessageBox(f"No design.json in\n{folder}", 0, command)
+    if not os.path.isfile(os.path.join(folder, "process.json")):
+        rs.MessageBox(f"No process.json in\n{folder}", 0, command)
         return None
-    sc.sticky[DESIGN_FOLDER_STICKY_KEY] = folder
+    sc.sticky[PROCESS_FOLDER_STICKY_KEY] = folder
     return folder
 
 
 def assembly_robot_id():
     """The assembly robot's id ("robots/cindy"): drawn even while some of its joints are unknown."""
-    return design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
+    return process_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
 
 
 def base_frame_mm(pose):
@@ -147,11 +147,11 @@ def base_frame_mm(pose):
 
 
 @session_log.timed("draw base frame marker")
-def draw_base_frames(design, bar_ids):
-    """Bake a base-frame marker (axis triad + footprint) for every bar with a base in the design."""
+def draw_base_frames(process, bar_ids):
+    """Bake a base-frame marker (axis triad + footprint) for every bar with a base in the process."""
     frames = {}
     for bar_id in bar_ids:
-        base = plan_steps.base_of(design, f"bars/{bar_id}")
+        base = plan_steps.base_of(process, f"bars/{bar_id}")
         if base is not None:
             frames[bar_id] = base_frame_mm(base)
     if frames:
@@ -170,41 +170,41 @@ class View:
         bar_id (str): The host bar ("B3").
         label (str): What the prompt says.
         make_scene (callable): `make_scene()` -> the scene to draw (a new one each call).
-        state: The design state the scene comes from.
+        state: The process state the scene comes from.
     """
 
     def __init__(self, bar_id, label, make_scene, state):
         self.bar_id, self.label, self.make_scene, self.state = bar_id, label, make_scene, state
 
 
-def keyframe_views(design, steps):
+def keyframe_views(process, steps):
     """Views of `plan_steps` steps."""
-    return [View(plan_steps.short(s.bar), s.label, lambda s=s: plan_steps.step_scene(design, s), s.movement.start)
+    return [View(plan_steps.short(s.bar), s.label, lambda s=s: plan_steps.step_scene(process, s), s.movement.start)
             for s in steps]
 
 
-def motion_views(design, frames):
+def motion_views(process, frames):
     """Views of trajectory frames; the scene of each movement is made once and copied per row."""
     scenes = {}
 
     def make(frame):
         scene = scenes.get(frame.movement.id)
         if scene is None:
-            scene = scenes[frame.movement.id] = design.scene_at(frame.movement)
+            scene = scenes[frame.movement.id] = process.scene_at(frame.movement)
         scene = scene.copy()
-        design_display.place(scene, frame.robot, frame.base, frame.joints)
+        process_display.place(scene, frame.robot, frame.base, frame.joints)
         return scene
 
-    bar_of = {m.id: a.bar for a, m in design.movements()}
+    bar_of = {m.id: a.bar for a, m in process.movements()}
     return [View(plan_steps.short(bar_of[f.movement.id]), f.label, lambda f=f: make(f), f.movement.start)
             for f in frames]
 
 
 class PlanSession:
-    """Mutable UI state of one viewer run: the design, the views, which one shows, and what is highlighted."""
+    """Mutable UI state of one viewer run: the process, the views, which one shows, and what is highlighted."""
 
-    def __init__(self, design, command="RSShowBarActionPlan"):
-        self.design = design
+    def __init__(self, process, command="RSShowBarActionPlan"):
+        self.process = process
         self.command = command
         self.robot_id = assembly_robot_id()
         self.views = []
@@ -225,7 +225,7 @@ class PlanSession:
         self._colors = {}
         #: Bar id -> why its saved IK no longer fits the document (the core's plan check B15): these bars' robot
         #: poses are drawn where they were solved, not at the bar.
-        self.stale = ik_status.stale_ik_bars(design)
+        self.stale = ik_status.stale_ik_bars(process)
         for line in ik_status.stale_ik_lines(self.stale):
             print(f"{command}: {line}")
         if self.stale:
@@ -247,11 +247,11 @@ class PlanSession:
         """Show one bar's keyframe steps (its oid is used for the sequence colors and its walkable grounds)."""
         self.active_bar_id, self.active_bar_oid = bar_id, bar_oid
         with session_log.step("plan steps of the bar", bar_id):
-            steps = plan_steps.bar_steps(self.design, f"bars/{bar_id}")
+            steps = plan_steps.bar_steps(self.process, f"bars/{bar_id}")
         if not steps:
-            print(f"{self.command}: bar {bar_id} has no step in the design (not assembled, or no solved keyframe "
+            print(f"{self.command}: bar {bar_id} has no step in the process (not assembled, or no solved keyframe "
                   "and no release after it).")
-        self.set_views(keyframe_views(self.design, steps), index)
+        self.set_views(keyframe_views(self.process, steps), index)
         self._show_walkable_grounds()
 
     def step(self, delta):
@@ -313,13 +313,13 @@ class PlanSession:
     def _part_colors(self, host):
         """Colours of the drawn meshes at this step: the bars and their joints by sequence, a stale pose's robot.
 
-        The viewer hides the document's tube previews and joint blocks and draws the design's meshes instead, so
+        The viewer hides the document's tube previews and joint blocks and draws the process's meshes instead, so
         the sequence colours `show_sequence_colors` paints on the document never show: the same colours go onto
         the drawn meshes here.
         """
         by_bar = {f"bars/{bar}": color for bar, color in sequence_colors(host).items()}
         colors = dict(by_bar)
-        for body_id, body in self.design.bodies.items():
+        for body_id, body in self.process.bodies.items():
             if body.mount in by_bar:
                 colors[body_id] = by_bar[body.mount]
         if host in self.stale:
@@ -332,7 +332,7 @@ class PlanSession:
         rs.EnableRedraw(False)
         try:
             if not self._session_started:
-                # * The viewers show the core's state: every body of the design is drawn from it (the planner's
+                # * The viewers show the core's state: every body of the process is drawn from it (the planner's
                 #   ground and obstacle meshes too; CheckCollision paints the drawn meshes), and every document
                 #   layer it stands in for is hidden for the session.
                 ik_viz.begin_session(active_mesh_mode=self.mesh_mode, layer_key=IK_LAYER_KEY_ASSEMBLY,
@@ -356,7 +356,7 @@ class PlanSession:
             return 0
         self._revert_highlight()
         try:
-            pairs = design_planning.scene_collisions(self.design, sc.sticky, self.scene)
+            pairs = process_planning.scene_collisions(self.process, sc.sticky, self.scene)
         except Exception as exc:  # noqa: BLE001 -- a diagnostic must never end the viewer
             session_log.caught(exc)
             print(f"{self.command}: collision check failed ({type(exc).__name__}: {exc}).")
@@ -409,7 +409,7 @@ class PlanSession:
             return
         mirror = None
         try:
-            mirror = design_planning.sync_seeded(sc.sticky, self.scene.copy(), self.robot_id)
+            mirror = process_planning.sync_seeded(sc.sticky, self.scene.copy(), self.robot_id)
         except Exception as exc:  # noqa: BLE001 -- jog still draws without the check
             session_log.caught(exc)
             print(f"{self.command}: collision checks unavailable while jogging ({exc}).")
@@ -447,10 +447,10 @@ class PlanSession:
     def _show_walkable_grounds(self):
         """Colour the drawn grounds: the active bar's assigned WalkableGround light grey, the others dark; name it.
 
-        The ground on screen is the design's (`ground/<id>`, the mesh the planner uses): the document's own
+        The ground on screen is the process's (`ground/<id>`, the mesh the planner uses): the document's own
         ground layer is hidden for the session, like every layer the preview replaces.
         """
-        self._ground_colors = {body_id: WALKABLE_GROUND_OTHER_COLOR for body_id in self.design.bodies
+        self._ground_colors = {body_id: WALKABLE_GROUND_OTHER_COLOR for body_id in self.process.bodies
                                if body_id.startswith("ground/")}
         if self.active_bar_oid is None:
             self._recolor()
@@ -460,8 +460,8 @@ class PlanSession:
             print(f"{self.command}: bar {self.active_bar_id} has no assigned WalkableGround "
                   "(run RSAssignAndShowWalkableGround, or RSUpdatePreview to assign the nearest).")
         for gid in ground_ids:
-            if f"ground/{gid}" not in self.design.bodies:
-                print(f"{self.command}: bar {self.active_bar_id} references WalkableGround '{gid}' but the design "
+            if f"ground/{gid}" not in self.process.bodies:
+                print(f"{self.command}: bar {self.active_bar_id} references WalkableGround '{gid}' but the process "
                       "has no such ground (no such brep in the document).")
                 continue
             self._ground_colors[f"ground/{gid}"] = WALKABLE_GROUND_ACTIVE_COLOR
@@ -568,7 +568,7 @@ def _run_collision_jog_dialog(session, mirror, joint_specs):
             val_label.Text = f"{math.degrees(rad):+7.1f}"
             rs.EnableRedraw(False)
             try:
-                design_display.place(scene, session.robot_id, joints={name: rad})
+                process_display.place(scene, session.robot_id, joints={name: rad})
                 session.draw(scene)
                 n = check()
             except Exception as exc:  # noqa: BLE001
@@ -694,7 +694,7 @@ def _step_bar(session, seq_map, delta):
     if oid_seq is not None:
         session.set_active_bar(nxt, oid_seq[0])
         base_frame_viz.clear_base_frames()
-        draw_base_frames(session.design, [nxt])
+        draw_base_frames(session.process, [nxt])
 
 
 def main() -> None:
@@ -705,11 +705,11 @@ def main() -> None:
     # loaded bar's base frame. Otherwise, classic flow: pick a bar.
     loaded = sc.sticky.pop(LOADED_STICKY_KEY, None) or {}
     loaded_here = [b for b in loaded.get("bars", []) if b in seq_map]
-    design = design_from_document("RSShowBarActionPlan")
+    process = process_from_document("RSShowBarActionPlan")
     if loaded_here:
         bar_ids = sorted(loaded_here, key=lambda b: seq_map[b][1])
         initial_bar_id, initial_oid = bar_ids[0], seq_map[bar_ids[0]][0]
-        draw_base_frames(design, bar_ids)
+        draw_base_frames(process, bar_ids)
     else:
         rs.UnselectAllObjects()
         initial_oid = pick_bar("Pick a bar to view its plan (Esc to cancel)")
@@ -720,9 +720,9 @@ def main() -> None:
             rs.MessageBox("Picked curve is not a registered bar (no 'bar_id' user-text).", 0, "RSShowBarActionPlan")
             return
         bar_ids = []
-        draw_base_frames(design, [initial_bar_id])
+        draw_base_frames(process, [initial_bar_id])
 
-    session = PlanSession(design)
+    session = PlanSession(process)
     session.bar_ids = bar_ids
     try:
         session.set_active_bar(initial_bar_id, initial_oid)
@@ -740,7 +740,7 @@ def main() -> None:
                 else:
                     session.set_active_bar(bar_id, bar_oid)
                     base_frame_viz.clear_base_frames()
-                    draw_base_frames(design, [bar_id])
+                    draw_base_frames(process, [bar_id])
                 continue
             if result == Rhino.Input.GetResult.Nothing:
                 session.step(+1)
@@ -804,29 +804,29 @@ def _run_motion_command_loop(session):
 
 
 def main_motion(folder=None, bar=None) -> None:
-    """Right-click entry: pick a bar and scrub its planned trajectories from a design folder's solutions.
+    """Right-click entry: pick a bar and scrub its planned trajectories from a process folder's solutions.
 
     Args:
-        folder (str | None): The design folder; None asks (default: the last one used).
+        folder (str | None): The process folder; None asks (default: the last one used).
         bar (tuple | None): ``(bar_id, bar_oid)`` to scrub without a pick.
     """
-    from bar_assembly_core.design import read
-    from bar_assembly_core.design.solutions import is_stale, read_solutions
+    from bar_assembly_core.process import read
+    from bar_assembly_core.process.solutions import is_stale, read_solutions
 
     _reload()
-    folder = design_folder("RSShowBarActionPlan", folder)
+    folder = process_folder("RSShowBarActionPlan", folder)
     if folder is None:
         return
     try:
-        design = read(folder)
-        solutions = read_solutions(design)
+        process = read(folder)
+        solutions = read_solutions(process)
     except Exception as exc:  # noqa: BLE001 -- a broken folder is reported, not raised
         session_log.caught(exc)
-        rs.MessageBox(f"Cannot read the design folder:\n{exc}", 0, "RSShowBarActionPlan")
+        rs.MessageBox(f"Cannot read the process folder:\n{exc}", 0, "RSShowBarActionPlan")
         return
-    stale = sorted(a for a, s in solutions.items() if is_stale(design, s))
+    stale = sorted(a for a, s in solutions.items() if is_stale(process, s))
     if stale:
-        print(f"RSShowBarActionPlan: stale solutions (the design changed since they were planned): {', '.join(stale)}")
+        print(f"RSShowBarActionPlan: stale solutions (the process changed since they were planned): {', '.join(stale)}")
 
     if bar is not None:
         bar_id, oid = bar
@@ -839,17 +839,17 @@ def main_motion(folder=None, bar=None) -> None:
         if not bar_id:
             rs.MessageBox("Picked curve is not a registered bar.", 0, "RSShowBarActionPlan")
             return
-    frames = plan_steps.trajectory_frames(design, solutions, f"bars/{bar_id}")
+    frames = plan_steps.trajectory_frames(process, solutions, f"bars/{bar_id}")
     if not frames:
         rs.MessageBox(f"Bar {bar_id} has no planned trajectory in\n{os.path.join(folder, 'solutions')}\n\n"
-                      "Plan it first: python scripts/plan_design.py <design folder>.", 0, "RSShowBarActionPlan")
+                      "Plan it first: python scripts/plan_process.py <process folder>.", 0, "RSShowBarActionPlan")
         return
 
-    session = PlanSession(design)
+    session = PlanSession(process)
     session.active_bar_id, session.active_bar_oid = bar_id, oid
     try:
-        draw_base_frames(design, [bar_id])
-        session.set_views(motion_views(design, frames))
+        draw_base_frames(process, [bar_id])
+        session.set_views(motion_views(process, frames))
         session._show_walkable_grounds()
         _run_motion_command_loop(session)
     finally:

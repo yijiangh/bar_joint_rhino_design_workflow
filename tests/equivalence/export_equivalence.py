@@ -1,21 +1,21 @@
 """Check that the old plugin and the new plugin describe the same assembly, from two exports of one .3dm file.
 
-    python tests/equivalence/export_equivalence.py <old export> <new design folder> [--json out.json]
-                                                   [--no-worlds] [--no-collisions] [--no-designs]
+    python tests/equivalence/export_equivalence.py <old export> <new process folder> [--json out.json]
+                                                   [--no-worlds] [--no-collisions] [--no-processes]
 
 - `old export`: the old plugin's RSExportAllBarActions folder (RobotCell*.json, BarActions/, ActionSchedule.json,
   WalkableGround.json), written by hs/mocap-experiment @ 069275f.
-- `new design folder`: the new plugin's RSExportDesign folder (schema 2), from the same file.
+- `new process folder`: the new plugin's RSExportProcess folder (schema 2), from the same file.
 
 Test 1, planner worlds: the old export's cells and movement start states are the old plugin's planning worlds. The
-new plugin's are the design's scenes (`Design.scene_at`) as compas_fab objects (`CompasFabCell`), which is what
+new plugin's are the process's scenes (`Process.scene_at`) as compas_fab objects (`CompasFabCell`), which is what
 `CompasFabMirror` plans on. Cells, states, flange poses and colliding pairs are compared with `compas_compare`.
 
-Test 2, designs: the old export converted by the core (`legacy.convert_in_memory`) against the new design as read
-(`design.read`): content hashes, then every field by id, then each movement's scene (world poses).
+Test 2, processes: the old export converted by the core (`legacy.convert_in_memory`) against the new process as read
+(`process.read`): content hashes, then every field by id, then each movement's scene (world poses).
 
 Old movements map onto new ones as the converter folds them (`legacy.export.actions`): a tighten runs into the insert
-after it, an untighten into the ungrasp after it. The mapping is checked against the converted design's counts.
+after it, an untighten into the ungrasp after it. The mapping is checked against the converted process's counts.
 
 Every difference is counted under a kind; `KNOWN` names the explained ones. Each step's time is in the report.
 ! Loads three cells of ~360 MB: ~4 GB of memory, a few minutes.
@@ -41,8 +41,8 @@ for _path in (Path(__file__).resolve().parent, REPO / "external" / "bar_assembly
     sys.path.insert(0, str(_path))
 import compas_compare as cc  # noqa: E402
 
-from bar_assembly_core.design import read  # noqa: E402
-from bar_assembly_core.design.write import design_hashes  # noqa: E402
+from bar_assembly_core.process import read  # noqa: E402
+from bar_assembly_core.process.write import process_hashes  # noqa: E402
 import trimesh  # noqa: E402
 from compas.geometry import Transformation  # noqa: E402
 from bar_assembly_core.geometry import Geometry, Pose, TriMesh, compose, invert, shape_mesh  # noqa: E402
@@ -53,17 +53,17 @@ from bar_assembly_core.mirrors.cell import CompasFabCell  # noqa: E402
 
 OLD, CORE = "old export", "core"
 PAIR = (OLD, CORE)
-#: Tolerance of the design diff: positions (m), angles (rad), other numbers.
-#: ? Angles: the old export stores frames as two axes, the design as a quaternion rounded to 12 decimals.
+#: Tolerance of the process diff: positions (m), angles (rad), other numbers.
+#: ? Angles: the old export stores frames as two axes, the process as a quaternion rounded to 12 decimals.
 POSE_TOL, ANGLE_TOL, VALUE_TOL = 1e-6, 1e-5, 1e-9
-#: How far apart two shapes placed in the world may be (m), and a body's motion from its design placement (m, rad).
+#: How far apart two shapes placed in the world may be (m), and a body's motion from its process placement (m, rad).
 SHAPE_TOL, MOTION_TOL, MOTION_ANGLE_TOL = 1e-4, 1e-4, 1e-5
 
 #: Difference kinds that are explained, beyond `compas_compare.KNOWN`. Any other kind fails the run.
 KNOWN: Dict[str, str] = {
     # * Representation: the same world, written differently. "body placement in the world" checks what they stand for.
     "body state: frame differs": "body frames are a convention (a bar's sits at its end in the old export, at its "
-                                 "middle in the design); the placement check compares where the shapes are",
+                                 "middle in the process); the placement check compares where the shapes are",
     "body state: hidden body frame differs": "a hidden body's frame is never used; frames are a convention anyway",
     "body state: grasp differs": "grasps are relative to the body frame, a convention; see the placement check",
     "body state: attached body has a frame": "the core also writes the world frame of an attached body; compas_fab "
@@ -71,7 +71,7 @@ KNOWN: Dict[str, str] = {
     "body state: attachment differs": "a held bar's halves ride on the first holder's flange in the core, on their "
                                       "own flange in the old export; both arms hold the bar, see the placement check",
     "bars: prism against cylinder": "bars are 12-sided prisms in the old export and cylinders (finer prisms) in the "
-                                    "design, 0.34 mm apart at most",
+                                    "process, 0.34 mm apart at most",
     "geometry: visual differs": "robot visual meshes: the old export stores reduced copies of the source files the "
                                 "core loads; bars as above. Collision checks never use visual shapes",
     "geometry: collision differs": "bars only (checked): prism against cylinder, and the frame convention",
@@ -88,19 +88,19 @@ KNOWN: Dict[str, str] = {
     "body state: touch_links differ": "as touch_bodies: derived contacts with robot links",
     "body state: hidden body touches differ": "a hidden body's contacts are never used",
     # * The new plugin describes more, or decides differently on purpose.
-    "floor: only in core": "the old cells have no floor; the design holds the walkable ground as a body",
-    "bodies differ": "obstacles: the old plugin put them in Cindy's cell only; the design gives every robot's cell "
+    "floor: only in core": "the old cells have no floor; the process holds the walkable ground as a body",
+    "bodies differ": "obstacles: the old plugin put them in Cindy's cell only; the process gives every robot's cell "
                      "all of them",
     "body keys differ": "as above: obstacles missing from the old support cells",
     "movement only in core": "HR ends with `leave` (free, away from the structure): the support robot has to move "
                              "away from the bar; the old export has no such movement (confirmed 2026-10-13)",
     "tool frame differs": "the support gripper's TCP: at the flange in the old export, between the fingers on the "
-                          "bar axis in the design, which is the proper value (confirmed 2026-10-13)",
+                          "bar axis in the process, which is the proper value (confirmed 2026-10-13)",
     "configuration None in one": "the old export leaves a start configuration open where the planner fills it; the "
-                                 "design carries the last known joints forward (every state reads alone)",
+                                 "process carries the last known joints forward (every state reads alone)",
     "flanges differ": "as above: no configuration on one side, so no forward kinematics to compare",
     "body state: hidden differs": "the old export shows a bar and its halves before the operator mounts them; the "
-                                  "design has them absent until the mount",
+                                  "process has them absent until the mount",
 }
 cc.KNOWN.update(KNOWN)
 
@@ -141,8 +141,8 @@ def movement_map(export) -> Tuple[Dict[Tuple[str, str], Tuple[str, int]], Dict[s
 
 # --- --- --- --- --- TEST 1: PLANNER WORLDS --- --- --- --- ---
 
-def load_old(export, design) -> cc.Loaded:
-    """The old plugin's planning objects, keyed by the new design's movement ids."""
+def load_old(export, process) -> cc.Loaded:
+    """The old plugin's planning objects, keyed by the new process's movement ids."""
     robots = {entry["robot_id"]: f"robots/{name.lower()}" for name, entry in export.schedule["robots"].items()}
     cells = {robots[name]: cell for name, cell in export.cells.items()}
     mapping, _ = movement_map(export)
@@ -150,29 +150,29 @@ def load_old(export, design) -> cc.Loaded:
     for entry, action in export.actions:
         for movement in action.movements:
             target = mapping.get((entry["action_id"], movement.movement_id))
-            if target is None or target[0] not in design.actions:
+            if target is None or target[0] not in process.actions:
                 continue
             new_action, index = target
-            if index < len(design.actions[new_action].movements):
-                key = (new_action, design.actions[new_action].movements[index].id)
+            if index < len(process.actions[new_action].movements):
+                key = (new_action, process.actions[new_action].movements[index].id)
                 states[key] = (f"robots/{entry['robot'].lower()}", movement.start_state)
     loaded = cc.Loaded(OLD, cells, states)
-    cc.name_maps(loaded, design)
+    cc.name_maps(loaded, process)
     return loaded
 
 
-def load_core(design, report: cc.Report, watch: Stopwatch) -> cc.Loaded:
+def load_core(process, report: cc.Report, watch: Stopwatch) -> cc.Loaded:
     """The new plugin's planning objects: per acting robot one `CompasFabCell`, per movement the state of its scene.
 
-    ? Not strict: where the design leaves the acting robot's base or joints open, the cell parks it; the old export
+    ? Not strict: where the process leaves the acting robot's base or joints open, the cell parks it; the old export
       then has no configuration either, or a placeholder.
     """
     cells, states, keys, builders = {}, {}, {}, {}
     rebuilds = defaultdict(int)
-    for action, movement in design.movements():
+    for action, movement in process.movements():
         robot = action.robot
         builder = builders.get(robot) or builders.setdefault(robot, CompasFabCell(robot, visual=True))
-        scene = design.scene_at(movement)
+        scene = process.scene_at(movement)
         if builder.update(scene) is not None:
             rebuilds[robot] += 1
         states[(action.id, movement.id)] = (robot, builder.state(scene, strict=False))
@@ -185,7 +185,7 @@ def load_core(design, report: cc.Report, watch: Stopwatch) -> cc.Loaded:
     return cc.Loaded(CORE, cells, states, keys)
 
 
-def compare_worlds(report: cc.Report, old: cc.Loaded, core: cc.Loaded, design, collisions: bool,
+def compare_worlds(report: cc.Report, old: cc.Loaded, core: cc.Loaded, process, collisions: bool,
                    watch: Stopwatch, log, cells: bool = True) -> None:
     """Cells, states, flange poses and colliding pairs of the two planning worlds."""
     for robot in sorted(set(old.cells) & set(core.cells)) if cells else ():
@@ -216,14 +216,14 @@ def compare_worlds(report: cc.Report, old: cc.Loaded, core: cc.Loaded, design, c
     for robot in sorted(old.cells):
         keys = [key for key in common if old.states[key][0] == robot
                 and old.states[key][1].robot_configuration is not None
-                and not design.scene_at(_movement(design, key)).robots[robot].unmeasured]
+                and not process.scene_at(_movement(process, key)).robots[robot].unmeasured]
         log(f"collisions: old export {robot} ({len(keys)} states)")
         found.update(cc.collision_pairs(old, robot, keys))
     watch.lap("collisions: old export (compas_fab check_collision)")
     log(f"collisions: core mirror ({len(found)} states)")
-    mirror, allowed = cc.mirror_collisions(design, sorted(found))
+    mirror, allowed = cc.mirror_collisions(process, sorted(found))
     watch.lap("collisions: core (CompasFabMirror)")
-    cc.compare_mirror(report, found, mirror, allowed, design, PAIR)
+    cc.compare_mirror(report, found, mirror, allowed, process, PAIR)
     report.notes.append(f"collisions: {len(found)} of {len(common)} movements checked (both sides give the acting "
                         f"robot's joints); old export {sum(map(len, found.values()))} colliding pairs, core "
                         f"{sum(map(len, mirror.values()))}")
@@ -315,11 +315,11 @@ def _only_bars(report: cc.Report) -> None:
         category.kinds["collision shape of a body that is not a bar differs"].append(line)
 
 
-def _movement(design, key):
-    return next(m for m in design.actions[key[0]].movements if m.id == key[1])
+def _movement(process, key):
+    return next(m for m in process.actions[key[0]].movements if m.id == key[1])
 
 
-# --- --- --- --- --- TEST 2: DESIGNS --- --- --- --- ---
+# --- --- --- --- --- TEST 2: PROCESSS --- --- --- --- ---
 
 _ID = re.compile(r"(?<![A-Za-z])(?:[BJG]\d+[\w-]*|WG\d+)")
 
@@ -335,7 +335,7 @@ def _rotation_angle(a, b) -> float:
 
 
 def diff(a, b, path: str, out: List[Tuple[str, str]]) -> None:
-    """Every difference between two values of a design, as (path, detail); floats within tolerance are equal."""
+    """Every difference between two values of a process, as (path, detail); floats within tolerance are equal."""
     if isinstance(a, Pose) and isinstance(b, Pose):
         distance = float(np.linalg.norm(np.subtract(a.position, b.position)))
         angle = _rotation_angle(a.orientation, b.orientation)
@@ -404,12 +404,12 @@ def surface_gap(a, b, samples: int = 1500) -> float:
     return worst
 
 
-def motion(world: Pose, design: Pose) -> Pose:
-    """The rigid motion, in the world, that carries a body from its design placement to `world`.
+def motion(world: Pose, process: Pose) -> Pose:
+    """The rigid motion, in the world, that carries a body from its process placement to `world`.
 
-    It does not depend on where the body's own frame sits, so two designs with different body frames compare.
+    It does not depend on where the body's own frame sits, so two processes with different body frames compare.
     """
-    return compose(world, invert(design))
+    return compose(world, invert(process))
 
 
 def _short(value, limit: int = 160) -> str:
@@ -417,18 +417,18 @@ def _short(value, limit: int = 160) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Stopwatch) -> None:
-    """Two in-memory designs: hashes, every field by id, then each movement's scene."""
+def compare_processes(report: cc.Report, a, b, labels: Tuple[str, str], watch: Stopwatch) -> None:
+    """Two in-memory processes: hashes, every field by id, then each movement's scene."""
     hashes = report.category(labels, "content hashes")
-    design_a, actions_a = design_hashes(a, [cc.DATA / "husky_urdf"])
-    design_b, actions_b = design_hashes(b, [cc.DATA / "husky_urdf"])
-    hashes.add("design.json", [] if design_a == design_b else [("design.json hash differs", "")])
+    process_a, actions_a = process_hashes(a, [cc.DATA / "husky_urdf"])
+    process_b, actions_b = process_hashes(b, [cc.DATA / "husky_urdf"])
+    hashes.add("process.json", [] if process_a == process_b else [("process.json hash differs", "")])
     for action in sorted(set(actions_a) & set(actions_b)):
         hashes.add(action, [] if actions_a[action] == actions_b[action] else [("action hash differs", "")])
-    watch.lap("designs: content hashes")
+    watch.lap("processes: content hashes")
 
     for name in ("robots", "tools", "bodies", "parts"):
-        category = report.category(labels, f"design {name}")
+        category = report.category(labels, f"process {name}")
         first, second = getattr(a, name), getattr(b, name)
         for key in sorted(set(first) | set(second)):
             if key not in first or key not in second:
@@ -438,12 +438,12 @@ def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Sto
             diff(first[key], second[key], name, found)
             if name == "bodies":
                 # * A body's frame is a convention (a bar's sits at its end in the old export, at its middle in
-                #   the new design): compare the shapes where the design poses put them, not the poses.
+                #   the new process): compare the shapes where the assembly poses put them, not the poses.
                 found = [(path, detail) for path, detail in found
-                         if not path.startswith(("bodies.pose", "bodies.geometry"))]
+                         if not path.startswith(("bodies.assembly_pose", "bodies.geometry"))]
                 for which in ("collision", "visual"):
-                    x = world_mesh(getattr(first[key].geometry, which), first[key].pose)
-                    y = world_mesh(getattr(second[key].geometry, which), second[key].pose)
+                    x = world_mesh(getattr(first[key].geometry, which), first[key].assembly_pose)
+                    y = world_mesh(getattr(second[key].geometry, which), second[key].assembly_pose)
                     if x is None or y is None:
                         if (x is None) != (y is None):
                             found.append((f"bodies.{which}: only one side has shapes", ""))
@@ -455,7 +455,7 @@ def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Sto
                                       f"surfaces up to {gap * 1000:.3g} mm apart"))
             category.add(key, [(_kind(path), detail) for path, detail in found])
     for name in ("mates", "schedule"):
-        category = report.category(labels, f"design {name}")
+        category = report.category(labels, f"process {name}")
         found = []
         diff(getattr(a, name), getattr(b, name), name, found)
         category.add(name, found)
@@ -485,7 +485,7 @@ def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Sto
             # ? Grasps are relative to body frames, which differ by convention; the scene check below compares
             #   where held bodies are in the world.
             movements.add(move.id, [(_kind(path), detail) for path, detail in found if ".grasp" not in path])
-    watch.lap("designs: fields")
+    watch.lap("processes: fields")
 
     scenes = report.category(labels, "scene world poses")
     second = {(action.id, movement.id): movement for action, movement in b.movements()}
@@ -500,8 +500,8 @@ def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Sto
             if on_a != on_b:
                 found.append((f"scene: {body.split('/')[0]} present differs", f"{body}: {on_a} vs {on_b}"))
             elif on_a:
-                moved_a = motion(scene_a.world_poses[body], a.bodies[body].pose)
-                moved_b = motion(scene_b.world_poses[body], b.bodies[body].pose)
+                moved_a = motion(scene_a.world_poses[body], a.bodies[body].assembly_pose)
+                moved_b = motion(scene_b.world_poses[body], b.bodies[body].assembly_pose)
                 distance = float(np.linalg.norm(np.subtract(moved_a.position, moved_b.position)))
                 angle = _rotation_angle(moved_a.orientation, moved_b.orientation)
                 scenes.deviation("body motion m", distance)
@@ -521,12 +521,12 @@ def compare_designs(report: cc.Report, a, b, labels: Tuple[str, str], watch: Sto
             found += [(f"scene: robot {_kind(p).split('[')[0].split(' ', 1)[-1]} differs", f"{p}: {d}")
                       for p, d in state]
         scenes.add(movement.id, found)
-    watch.lap("designs: scenes")
+    watch.lap("processes: scenes")
 
 
 # --- --- --- --- --- RUN --- --- --- --- ---
 
-def run(old_export: Path, new_design: Path, worlds: bool = True, collisions: bool = True, designs: bool = True,
+def run(old_export: Path, new_process: Path, worlds: bool = True, collisions: bool = True, processes: bool = True,
         log=print, cells: bool = True) -> Tuple[cc.Report, Stopwatch]:
     """Both tests on one pair of exports.
 
@@ -534,25 +534,25 @@ def run(old_export: Path, new_design: Path, worlds: bool = True, collisions: boo
         tuple[Report, Stopwatch]: Every category and difference kind, and the time of each step.
     """
     report, watch = cc.Report(), Stopwatch()
-    log("reading the new design")
-    design = read(new_design)
-    watch.lap("new: read design folder")
+    log("reading the new process")
+    process = read(new_process)
+    watch.lap("new: read process folder")
     log("loading the old export")
     export = load_export(old_export, cc.quiet, watch)
     mapping, dropped = movement_map(export)
     report.notes.append(f"old export: {len(export.actions)} actions, "
-                        f"{sum(len(a.movements) for _, a in export.actions)} movements; new design: "
-                        f"{len(design.actions)} actions, {sum(len(a.movements) for a in design.actions.values())} "
+                        f"{sum(len(a.movements) for _, a in export.actions)} movements; new process: "
+                        f"{len(process.actions)} actions, {sum(len(a.movements) for a in process.actions.values())} "
                         f"movements")
     report.notes.append("old movements that start no new movement: "
                         + ", ".join(f"{len(ids)} {reason}" for reason, ids in dropped.items()))
     report.notes.append(f"tolerances: joints {cc.JOINT_TOL}, frames {cc.FRAME_TOL} m / rad, mesh points "
-                        f"{cc.MESH_TOL} m; design diff: poses {POSE_TOL} m / rad, values {VALUE_TOL}")
+                        f"{cc.MESH_TOL} m; process diff: poses {POSE_TOL} m / rad, values {VALUE_TOL}")
     converted = None
-    if designs:
+    if processes:
         log("converting the old export")
         converted = from_export(export, robot_files(cc.DATA), serials=SERIALS, report=cc.quiet)
-        watch.lap("old: convert to a design")
+        watch.lap("old: convert to a process")
         counts = {key: len(action.movements) for key, action in converted.actions.items()}
         mapped = defaultdict(int)
         for new_action, _ in mapping.values():
@@ -562,12 +562,12 @@ def run(old_export: Path, new_design: Path, worlds: bool = True, collisions: boo
                                 + ", ".join(sorted(k for k in set(mapped) | set(counts)
                                                    if mapped.get(k) != counts.get(k))[:10]))
     if worlds:
-        old = load_old(export, design)
-        core = load_core(design, report, watch)
-        compare_worlds(report, old, core, design, collisions, watch, log, cells)
-    if designs:
-        log("comparing the designs")
-        compare_designs(report, converted, design, ("old export converted", "new design"), watch)
+        old = load_old(export, process)
+        core = load_core(process, report, watch)
+        compare_worlds(report, old, core, process, collisions, watch, log, cells)
+    if processes:
+        log("comparing the processes")
+        compare_processes(report, converted, process, ("old export converted", "new process"), watch)
     return report, watch
 
 
@@ -575,16 +575,16 @@ def main() -> None:
     """Command line."""
     parser = ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("old_export", type=Path)
-    parser.add_argument("new_design", type=Path)
+    parser.add_argument("new_process", type=Path)
     parser.add_argument("--json", type=Path, help="write the full report here")
     parser.add_argument("--no-worlds", action="store_true", help="skip test 1")
     parser.add_argument("--no-collisions", action="store_true", help="skip test 1's collision checks")
     parser.add_argument("--no-cells", action="store_true", help="skip test 1's cell comparison (the slowest step)")
-    parser.add_argument("--no-designs", action="store_true", help="skip test 2")
+    parser.add_argument("--no-processes", action="store_true", help="skip test 2")
     args = parser.parse_args()
     start = time.perf_counter()
-    report, watch = run(args.old_export, args.new_design, not args.no_worlds, not args.no_collisions,
-                        not args.no_designs, cells=not args.no_cells)
+    report, watch = run(args.old_export, args.new_process, not args.no_worlds, not args.no_collisions,
+                        not args.no_processes, cells=not args.no_cells)
     report.print()
     print(f"\ntiming: {watch.summary()}; whole run {time.perf_counter() - start:.1f} s")
     if args.json:

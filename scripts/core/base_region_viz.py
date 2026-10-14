@@ -252,7 +252,7 @@ def _build(bar_oid, movements, urdf, planner):
               f"{seen.max():.0f} mm (capped at {near_m * 1000.0:.0f}); {int((seen < near_m * 1000.0 - 1e-6).sum())} "
               f"of {len(seen)} free cell(s) are penalised.")
     if movements["M4"].target_configuration is None:
-        print("RSIKKeyframe (debug): base region has no collision crosses, the design has no home configuration.")
+        print("RSIKKeyframe (debug): base region has no collision crosses, the process has no home configuration.")
     elif asked:
         print(f"RSIKKeyframe (debug): base region collisions, {int(collides.sum())} of {checked} checked cell(s) "
               f"collide with the arms at home ({collision_seconds:.1f} s)"

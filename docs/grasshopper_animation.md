@@ -6,7 +6,7 @@ something you can film:
 | Component | File to paste | What it does |
 | --- | --- | --- |
 | `RSGHSequencePreview` | [scripts/gh/RSGHSequencePreview.py](../scripts/gh/RSGHSequencePreview.py) | one slider walks the **whole assembly timeline** — bars, joints, guide lines, the dual-arm robot and the support robots |
-| `RSGHPreviewWarmup` | [scripts/gh/RSGHPreviewWarmup.py](../scripts/gh/RSGHPreviewWarmup.py) | one button, once per Rhino session: reads the document into a design, reads the robots' meshes and bakes them so the first scrub has no stall |
+| `RSGHPreviewWarmup` | [scripts/gh/RSGHPreviewWarmup.py](../scripts/gh/RSGHPreviewWarmup.py) | one button, once per Rhino session: reads the document into a process, reads the robots' meshes and bakes them so the first scrub has no stall |
 | `RSGHCameraControl` | [scripts/gh/RSGHCameraControl.py](../scripts/gh/RSGHCameraControl.py) | drives the Rhino viewport camera from GH points |
 
 None is an `RS*` toolbar command, so none appears in
@@ -21,10 +21,10 @@ The files above are **shims**: the real logic lives in
 solve — so you edit those and the canvas picks it up without re-pasting anything.
 
 The timeline itself is **not** re-implemented here: `gh_seq_preview` reads the document
-into a schema 2 design (`core.design_source`) and walks the same
+into a schema 2 process (`core.process_source`) and walks the same
 [`core.plan_steps.timeline`](../scripts/core/plan_steps.py) the `RSShowAssemblyPlan`
 command uses, so the two viewers cannot drift apart. Each step's scene comes from the
-design (`plan_steps.step_scene`) and is drawn part by part from the shared core's
+process (`plan_steps.step_scene`) and is drawn part by part from the shared core's
 geometry (`core.ik_viz`).
 
 ---
@@ -123,8 +123,8 @@ One frame is one **step of the global assembly timeline** — the same list
 | `release X` | a hold whose LAST stabilizing bar is this one lets go | X's support keyframe (approach config = retreated) |
 
 plus the robot base frame from `assembly_robot_base_frame_world_mm`. All of it is read
-from the bar curves' user text in **this document** (through the design) — nothing is
-loaded from an exported design folder. Each step is a moment of the design: approach =
+from the bar curves' user text in **this document** (through the process) — nothing is
+loaded from an exported process folder. Each step is a moment of the process: approach =
 the start of the bar's insert, assembled = the start of the movement after its jointing,
 hold = the start of its ungrasp, retreat / home = the start / end of its home move,
 release X = the end of X's hold-release retreat (`core.plan_steps`).
@@ -197,8 +197,8 @@ Two consequences:
 
 - **No collision checking.** This is a viewer. A frame can look fine and still be a pose
   the planner would reject.
-- **The arms carry their assembly tools automatically**: the design holds each flange's
-  tool (from `robotic_tools.json` and the tools' collision OBJs), drawn at its flange. A tool whose OBJ export is missing is drawn without geometry (the design's
+- **The arms carry their assembly tools automatically**: the process holds each flange's
+  tool (from `robotic_tools.json` and the tools' collision OBJs), drawn at its flange. A tool whose OBJ export is missing is drawn without geometry (the process's
   notes say so).
 - **One scene draws every robot**: each link and tool is a Rhino object named by its
   id; robots absent from a step (or whose base is not solved yet) are hidden. The scene's
@@ -208,7 +208,7 @@ Two consequences:
 
 ## Speed: what is slow, and what the warm-up fixes
 
-The only genuinely heavy work is **reading the document into a design, reading the robot
+The only genuinely heavy work is **reading the document into a process, reading the robot
 meshes and baking them** — one-time per Rhino session, cached in `sc.sticky` (a part is
 baked again only when its geometry changes). Everything else per frame is building the
 step's scene plus mesh transforms.
@@ -220,7 +220,7 @@ then stalls once on its first frame.
 
 Two more things keep scrubbing cheap, both in `gh_seq_preview.run`:
 
-- **The design and its timeline are cached** in sticky and rebuilt only on the `reload`
+- **The process and its timeline are cached** in sticky and rebuilt only on the `reload`
   button or when the bar count changes — a slider move never re-reads the document.
 - **A render-skip fingerprint**: GH re-solves on any upstream tick or canvas move, and if
   nothing that affects the picture changed, the whole render is skipped

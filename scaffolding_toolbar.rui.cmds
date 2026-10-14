@@ -5,7 +5,7 @@
 <locale_1033>RSBarEdit</locale_1033>
 <locale_1033>RSBarSnap</locale_1033>
 <locale_1033>RSBarSubfloor</locale_1033>
-<locale_1033>RSCheckDesign</locale_1033>
+<locale_1033>RSCheckProcess</locale_1033>
 <locale_1033>RSClearColorPreview</locale_1033>
 <locale_1033>RSClearIKKeyframe</locale_1033>
 <locale_1033>RSClearIKKeyframeAll</locale_1033>
@@ -15,7 +15,7 @@
 <locale_1033>RSDefineRoboticTool</locale_1033>
 <locale_1033>RSDesign</locale_1033>
 <locale_1033>RSExportBarTool0TF</locale_1033>
-<locale_1033>RSExportDesign</locale_1033>
+<locale_1033>RSExportProcess</locale_1033>
 <locale_1033>RSExportPrefab</locale_1033>
 <locale_1033>RSExportScaffoldJSON</locale_1033>
 <locale_1033>RSIKKeyframe</locale_1033>

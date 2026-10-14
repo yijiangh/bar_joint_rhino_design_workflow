@@ -5,13 +5,13 @@ from dataclasses import replace
 import numpy as np
 
 from core import core_lib  # noqa: F401
-from core.design_builder import build_actions
+from core.process_builder import build_actions
 from core.ik_status import stale_from, stale_ik_bars, stale_ik_lines
-from bar_assembly_core.design.plan_check import UnreachedTarget, check_plan
+from bar_assembly_core.process.plan_check import UnreachedTarget, check_plan
 from bar_assembly_core.geometry import Pose
 from bar_assembly_core.kinematics import link_poses
 from bar_assembly_core.urdf import movable_joints
-from test_design_builder import CINDY, CINDY_SRDF, CINDY_URDF, L, R, SCHEDULE, _design, _records
+from test_process_builder import CINDY, CINDY_SRDF, CINDY_URDF, L, R, SCHEDULE, _process, _records
 
 
 def _solved(bars, bar, seed=0):
@@ -26,22 +26,22 @@ def _solved(bars, bar, seed=0):
 
 
 def test_a_valid_solve_is_not_stale():
-    design = _design()
-    bars, holds = _records(design)
+    process = _process()
+    bars, holds = _records(process)
     bars["bars/B1"] = _solved(bars, "bars/B1")
-    built = build_actions(design, SCHEDULE, bars, holds).design
+    built = build_actions(process, SCHEDULE, bars, holds).process
     assert stale_ik_bars(built) == {}
 
 
 def test_a_solve_whose_targets_moved_is_stale():
     """The flange targets come from the document as it is now; the joints were solved for where they were."""
-    design = _design()
-    bars, holds = _records(design)
+    process = _process()
+    bars, holds = _records(process)
     solved = _solved(bars, "bars/B1")
     moved = {flange: Pose(tuple(p + d for p, d in zip(pose.position, (0.0, 2.5, 0.0))), pose.orientation)
              for flange, pose in solved.tool0.items()}
     bars["bars/B1"] = replace(solved, tool0=moved)
-    built = build_actions(design, SCHEDULE, bars, holds).design
+    built = build_actions(process, SCHEDULE, bars, holds).process
     stale = stale_ik_bars(built)
     assert list(stale) == ["B1"]
     assert stale["B1"] == "assembly pose misses its target by 2.5 m"
@@ -52,9 +52,9 @@ def test_a_solve_whose_targets_moved_is_stale():
 
 
 def test_unsolved_bars_are_not_stale():
-    design = _design()
-    bars, holds = _records(design)
-    assert stale_ik_bars(build_actions(design, SCHEDULE, bars, holds).design) == {}
+    process = _process()
+    bars, holds = _records(process)
+    assert stale_ik_bars(build_actions(process, SCHEDULE, bars, holds).process) == {}
 
 
 def test_reasons_name_the_role_and_the_worst_miss():

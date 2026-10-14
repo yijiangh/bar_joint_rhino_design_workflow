@@ -11,7 +11,7 @@ needs ``rhinoscriptsyntax`` / ``Rhino``:
 - the distance heuristic that auto-associates a bar with its nearest ground(s);
 - read/write the bar's associated ground-id list (comma-separated user-text).
 
-Ids and the association list are read back by ``core.design_source`` at
+Ids and the association list are read back by ``core.process_source`` at
 export time and by ``rs_assign_and_show_walkable_ground`` (the interactive editor
 + base-placement preview).
 """
@@ -372,7 +372,7 @@ def _bar_center_mm(bar_oid):
 #
 # The heading comes from the bar's anchor joints: each joint block's local +Z is
 # its insertion axis (retreat is -Z -- see
-# ``core.design_source``'s retreat directions). Naively averaging those axes
+# ``core.process_source``'s retreat directions). Naively averaging those axes
 # degenerates in three ways, all of which used to put the base on an arbitrary
 # (often opposite) side:
 #
@@ -937,7 +937,7 @@ def auto_populate_base_frames_all_bars(grounds: Dict[str, object] = None,
 
 
 # ---------------------------------------------------------------------------
-# Ground and base on entry (RSIKKeyframe, RSIKKeyframeAll, RSUpdatePreview, RSExportDesign)
+# Ground and base on entry (RSIKKeyframe, RSIKKeyframeAll, RSUpdatePreview, RSExportProcess)
 # ---------------------------------------------------------------------------
 
 

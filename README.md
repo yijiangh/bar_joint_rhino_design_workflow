@@ -30,21 +30,21 @@ Rhino all the way to a real robot:
 
 1. **Design front-end (this repo, Rhino 8 / Windows).** Design the scaffolding
    (bars, joints, assembly sequence, walkable ground), run quick IK keyframe
-   checks (`RSIKKeyframe`), then export everything as one **schema 2 design
-   folder** (`RSExportDesign`) through the shared core
+   checks (`RSIKKeyframe`), then export everything as one **schema 2 process
+   folder** (`RSExportProcess`) through the shared core
    [`bar_assembly_core`](https://github.com/jeliag/bar_assembly_core)
    (submodule `external/bar_assembly_core`, format spec in its
-   `doc/design_format.md`). The folder carries the complete plan -- robots
+   `doc/process_format.md`). The folder carries the complete plan -- robots
    (URDF/SRDF), tools, every bar / joint / ground / obstacle body, the mates,
    every action and movement with its start state and targets -- so the
    downstream modules never read anything from Rhino or from this repo's
    Python config.
-2. **Offline planner.** `scripts/plan_design.py <design folder>` plans the
+2. **Offline planner.** `scripts/plan_process.py <process folder>` plans the
    assembly robot's movements with the motion planner of the
    `external/husky_assembly_tamp` submodule, through the core, and writes
-   `solutions/<action>.json` into the design folder.
+   `solutions/<action>.json` into the process folder.
 3. **Live execution ([husky-assembly-teleop], ROS2 / Ubuntu).** Loads the
-   design folder and its solutions on the robot. Motion capture localizes the
+   process folder and its solutions on the robot. Motion capture localizes the
    mobile base; the base tracks its planned pose as closely as it can, and --
    since it never lands on it exactly -- once the base stops, the **arm**
    motion is replanned live against the **original tool0 targets** using the
@@ -54,11 +54,11 @@ Rhino all the way to a real robot:
 
 | Artifact | Produced by | Consumed by |
 |---|---|---|
-| `<design>/design.json`, `actions/`, `meshes/`, `robots/` | 1 · `RSExportDesign` | 2, 3, 1 (`RSCheckDesign`) |
-| `<design>/solutions/<action>.json` (start/end joints, trajectories) | 2 · `scripts/plan_design.py` | 3 (execution), 1 (viewers, `RSLoadSolvedBarAction`) |
+| `<process>/process.json`, `actions/`, `meshes/`, `robots/` | 1 · `RSExportProcess` | 2, 3, 1 (`RSCheckProcess`) |
+| `<process>/solutions/<action>.json` (start/end joints, trajectories) | 2 · `scripts/plan_process.py` | 3 (execution), 1 (viewers, `RSLoadSolvedBarAction`) |
 
 Every compas_fab cell -- in Rhino, in the planner and on the robot -- is built
-by the core from the design's scenes (`Design.scene_at` ->
+by the core from the process's scenes (`Process.scene_at` ->
 `bar_assembly_core.mirrors`): a `CompasFabMirror` (its own PyBullet world) to
 plan and check collisions; drawing goes part by part from the core's scene
 (`scene_parts`), with no cell. The plugin
@@ -206,7 +206,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-> **Tip for developers:** The design folder's `design.json`, `actions/*.json` and `solutions/*.json` can be large and deeply nested. [Janice](https://github.com/ErikKalkoken/janice) is a handy desktop viewer for browsing and searching big JSON files without loading everything into a text editor.
+> **Tip for developers:** The process folder's `process.json`, `actions/*.json` and `solutions/*.json` can be large and deeply nested. [Janice](https://github.com/ErikKalkoken/janice) is a handy desktop viewer for browsing and searching big JSON files without loading everything into a text editor.
 
 ## Rhino 8 Workflow
 
@@ -225,7 +225,7 @@ for the canonical Rhino entrypoint reference:
 2. Snap/brace bars and assign sequence.
 3. Place and edit joints.
 4. Run IK keyframe tools when needed.
-5. Export the design folder (`RSExportDesign`; right-click checks one, `RSCheckDesign`). Bars with stale IK are
+5. Export the process folder (`RSExportProcess`; right-click checks one, `RSCheckProcess`). Bars with stale IK are
    listed: solve them again and export again.
 6. Export debug or prefab artifacts as needed.
 
@@ -415,9 +415,9 @@ python -m pytest -q --viz        # with matplotlib visualisations
 | `test_s2_t1.py` | S2-T1 bar-axis solver (single + all solutions) |
 | `test_joint_pair_roundtrip.py` | Joint-pair registry + canonical bar frame round-trip |
 | `test_three_bar_scene.py` | End-to-end pair-placement optimizer on a 3-bar scene |
-| `test_design_source.py`, `test_design_builder.py` | Rhino document (fake API, rhino3dm) -> schema 2 design |
-| `test_design_planning.py` | Planning on the core's mirrors: keyframe chain, support IK, contacts, `plan_design.py` |
-| `test_design_display.py`, `test_plan_steps.py` | Drawing cells, the viewers' steps, solutions read back |
+| `test_process_source.py`, `test_process_builder.py` | Rhino document (fake API, rhino3dm) -> schema 2 process |
+| `test_process_planning.py` | Planning on the core's mirrors: keyframe chain, support IK, contacts, `plan_process.py` |
+| `test_process_display.py`, `test_plan_steps.py` | Drawing cells, the viewers' steps, solutions read back |
 
 ## Project Structure
 
@@ -440,11 +440,11 @@ scripts/
     joint_placement.py                  # Joint pair placement computation and bake helpers
     single_sided_placement.py           # Ground / standalone MoCap placement on one bar
     marker_points.py                    # MoCap marker spheres between block / world / bar frames
-    design_source.py                    # Rhino document -> schema 2 design (bar_assembly_core)
-    design_builder.py                   # Keyframe records -> the design's actions (Rhino-free)
-    design_planning.py                  # Design scenes -> the core's CompasFabMirror -> tamp / compas_fab solvers
-    design_display.py                   # Design scenes -> the parts ik_viz draws (no compas, no PyBullet)
-    plan_steps.py                       # The viewers' poses, timeline and solutions as moments of the design
+    process_source.py                    # Rhino document -> schema 2 process (bar_assembly_core)
+    process_builder.py                   # Keyframe records -> the process's actions (Rhino-free)
+    process_planning.py                  # Process scenes -> the core's CompasFabMirror -> tamp / compas_fab solvers
+    process_display.py                   # Process scenes -> the parts ik_viz draws (no compas, no PyBullet)
+    plan_steps.py                       # The viewers' poses, timeline and solutions as moments of the process
     keyframe_store.py                   # Solved keyframes in bar user text (the persistent store)
     support_ik.py                       # Support-arm IK on a lent planner
     core_lib.py                         # Puts bar_assembly_core + compas_fab (submodules) on sys.path
@@ -473,9 +473,9 @@ scripts/
   rs_load_solved_bar_action.py          # Solutions -> bar keyframes
 
   # Planning/export and mocap entry points
-  rs_export_design.py                   # Document -> schema 2 design folder (+ file and plan checks)
-  rs_check_design.py                    # File and plan checks of a design folder
-  plan_design.py                        # Headless: plan a design folder's movements, write solutions/
+  rs_export_process.py                   # Document -> schema 2 process folder (+ file and plan checks)
+  rs_check_process.py                    # File and plan checks of a process folder
+  plan_process.py                        # Headless: plan a process folder's movements, write solutions/
   rs_reset_planning.py                  # Close the planning worlds and caches, stop the ssik sidecar
   rs_show_planning_world.py             # Debugging: the assembly robot's planning world in PyBullet's window
   rs_read_mocap_bar.py
@@ -490,10 +490,10 @@ tests/
   test_s2_t1.py
   test_joint_pair_roundtrip.py
   test_three_bar_scene.py
-  test_design_*.py, test_plan_steps.py  # Design export, planning and drawing through the core
+  test_process_*.py, test_plan_steps.py  # Process export, planning and drawing through the core
 
 external/
-  bar_assembly_core/                    # Shared core: design format, scenes, compas_fab cells (git submodule)
+  bar_assembly_core/                    # Shared core: process format, scenes, compas_fab cells (git submodule)
   compas_fab/                           # IK/planning dependency of the core (git submodule)
   rs_data_structure/                    # Old BarAssemblyAction schema (only the core's legacy/ converter)
   husky_assembly_tamp/                  # Planner (git submodule): keyframe + motion solvers

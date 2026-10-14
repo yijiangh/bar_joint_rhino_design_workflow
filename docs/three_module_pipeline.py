@@ -1,13 +1,13 @@
 """Generate `docs/three_module_pipeline.png`.
 
 The whole three-module pipeline: (1) the Rhino 8 design frontend in this repo
-solves IK keyframes and exports a schema 2 design folder through the shared core
-`bar_assembly_core`, (2) `scripts/plan_design.py` plans the movements with the
+solves IK keyframes and exports a schema 2 process folder through the shared core
+`bar_assembly_core`, (2) `scripts/plan_process.py` plans the movements with the
 `external/husky_assembly_tamp` motion planner into `solutions/`, and (3) the
 live execution stack (`husky-assembly-teleop`, ROS2) runs the solved plans on
 the real robot, replanning the arms live against the original tool0 targets once
 the mocap-tracked base stops. Solutions also flow BACK into Rhino. Every module
-builds its compas_fab cells from the design with the core.
+builds its compas_fab cells from the process with the core.
 
 Run with the plain (non-Rhino) Python that has matplotlib:
     python docs/three_module_pipeline.py
@@ -96,13 +96,13 @@ def main():
     ax.set_ylim(0, 100)
     ax.axis("off")
 
-    ax.text(50, 99.0, "Three-module pipeline  —  design → offline planning → live execution",
+    ax.text(50, 99.0, "Three-module pipeline  —  process → offline planning → live execution",
             ha="center", va="top", fontsize=19, fontweight="bold", color=INK)
 
     # ! Column headers: one per module, left to right.
     heads = [
-        (12.5, "1 · DESIGN\nRhino 8 (Windows)"),
-        (51.5, "2 · OFFLINE PLANNING\nplan_design.py + husky_assembly_tamp"),
+        (12.5, "1 · PROCESS\nRhino 8 (Windows)"),
+        (51.5, "2 · OFFLINE PLANNING\nplan_process.py + husky_assembly_tamp"),
         (88.5, "3 · LIVE EXECUTION\nhusky-assembly-teleop (ROS2, Ubuntu)"),
     ]
     for hx, ht in heads:
@@ -113,7 +113,7 @@ def main():
     # * Column 1 — design frontend (this repo, Rhino 8)
     # -------------------------------------------------------------------
     box(ax, 2, 81, 21, 8,
-        "Design scripts (bars / joints)",
+        "Process scripts (bars / joints)",
         ["place scaffolding bars + connector blocks,",
          "assign assembly sequence + walkable ground"],
         C_DESIGN, title_size=10.5,
@@ -128,10 +128,10 @@ def main():
         C_DESIGN, title_size=10.5, file="rs_ik_keyframe.py")
 
     box(ax, 2, 55, 21, 8,
-        "Export   [RSExportDesign]",
-        ["write one schema 2 design folder",
+        "Export   [RSExportProcess]",
+        ["write one schema 2 process folder",
          "(right) through bar_assembly_core"],
-        C_DESIGN, title_size=10.5, file="rs_export_design.py")
+        C_DESIGN, title_size=10.5, file="rs_export_process.py")
 
     # Grey auxiliary box: solved plans come back into Rhino for viewing.
     box(ax, 2, 25, 21, 9,
@@ -141,7 +141,7 @@ def main():
         C_AUX, title_size=10.5,
         file="RSLoadSolvedBarAction · RSShowBarActionPlan")
 
-    # Flow inside column 1: design -> quick IK check -> export.
+    # Flow inside column 1: process -> quick IK check -> export.
     arrow(ax, (12.5, 81), (12.5, 77.4), C_DESIGN[1])
     arrow(ax, (12.5, 67), (12.5, 63.4), C_DESIGN[1])
 
@@ -149,8 +149,8 @@ def main():
     # * Interface 1|2 — the clean exports (brown JSON artifacts)
     # -------------------------------------------------------------------
     box(ax, 25.5, 51, 13, 16,
-        "DESIGN FOLDER",
-        ["design.json",
+        "PROCESS FOLDER",
+        ["process.json",
          "  robots, tools, bodies,",
          "  mates, schedule",
          "",
@@ -166,7 +166,7 @@ def main():
     arrow(ax, (23, 59.5), (25.5, 61), C_DESIGN[1], rad=-0.1)
     # Offline planner READS them (dashed) — JSON is the source of truth.
     arrow(ax, (38.5, 64), (40.5, 79), C_ARTIFACT[1], style="--", rad=-0.2)
-    ax.text(37.6, 73.0, "reads (design =\nsource of truth)", ha="center",
+    ax.text(37.6, 73.0, "reads (process =\nsource of truth)", ha="center",
             va="center", fontsize=7.5, style="italic", color=C_ARTIFACT[1])
 
     # -------------------------------------------------------------------
@@ -174,7 +174,7 @@ def main():
     # -------------------------------------------------------------------
     box(ax, 40.5, 75.5, 22, 11,
         "Scenes → compas_fab cells",
-        ["Design.scene_at(movement) → the core's",
+        ["Process.scene_at(movement) → the core's",
          "CompasFabMirror (one PyBullet world per",
          "robot); the tamp solvers plan on its",
          "lent planner (Rhino's IK check too)"],
@@ -191,12 +191,12 @@ def main():
 
     box(ax, 40.5, 44, 22, 12.5,
         "CLI entry point (drives both steps above)",
-        ["plan_design.py <design folder>",
+        ["plan_process.py <process folder>",
          "  plan the movements, write solutions/",
          "  --bars B3,B10 plans some bars only",
          "runs on Windows or Ubuntu"],
         C_PLANNER, title_size=9.5,
-        file="scripts/plan_design.py  (this repo)")
+        file="scripts/plan_process.py  (this repo)")
 
     # Keyframe configs seed the motion planner (solid: produces the seeds).
     arrow(ax, (51.5, 75.5), (51.5, 71.4), C_PLANNER[1])
@@ -216,7 +216,7 @@ def main():
          "  start / end joints,",
          "  trajectories, bases",
          "",
-         "stale once the design",
+         "stale once the process",
          "  changes (hashes)"],
         C_ARTIFACT, title_size=10, body_size=7.8)
 
@@ -230,7 +230,7 @@ def main():
     # -------------------------------------------------------------------
     box(ax, 79.5, 79, 18.5, 7.5,
         "Load + live monitor",
-        ["load the design + solutions; monitor",
+        ["load the process + solutions; monitor",
          "and execute the assembly bar by bar"],
         C_LIVE, title_size=10.5)
 
@@ -270,7 +270,7 @@ def main():
     # -------------------------------------------------------------------
     box(ax, 36, 8, 38, 9,
         "Shared core — the interchange contract",
-        ["design format (schema 2), scenes and compas_fab cells;",
+        ["process format (schema 2), scenes and compas_fab cells;",
          "every module reads and builds its cells with it"],
         C_AUX, title_size=10,
         file="external/bar_assembly_core  (git submodule)")
@@ -280,7 +280,7 @@ def main():
     # -------------------------------------------------------------------
     leg = [
         (C_DESIGN,   "Module 1 — design frontend (this repo, Rhino 8 scripts)"),
-        (C_PLANNER,  "Module 2 — offline planner (plan_design.py + husky_assembly_tamp)"),
+        (C_PLANNER,  "Module 2 — offline planner (plan_process.py + husky_assembly_tamp)"),
         (C_LIVE,     "Module 3 — live execution (husky-assembly-teleop, ROS2)"),
         (C_ARTIFACT, "JSON artifacts — the interfaces between the modules"),
         (C_AUX,      "Auxiliary (Rhino plan viewers · shared core note)"),
@@ -299,7 +299,7 @@ def main():
             "Solid arrow = produces / writes.   Dashed arrow = supplies data (reads).   "
             "The robot never reaches the planned base pose exactly — mocap tracks the real base,\n"
             "and once the base stops the ARM motion is replanned live against the ORIGINAL tool0 targets.   "
-            "The design format and its cells live in the shared core, external/bar_assembly_core.",
+            "The process format and its cells live in the shared core, external/bar_assembly_core.",
             ha="center", va="center", fontsize=8.3, style="italic", color="#444")
 
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)),

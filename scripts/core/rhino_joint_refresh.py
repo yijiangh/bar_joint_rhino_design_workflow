@@ -568,7 +568,7 @@ def show_colors_preview() -> dict:
 
     clear_broken_link_marks()
 
-    # None: the document cannot become a design, so the saved IK was not checked.
+    # None: the document cannot become a process, so the saved IK was not checked.
     stale = find_stale_ik_bars("RSUpdatePreview")
     n_has_ik, n_total = show_all_ik_preview(stale or {})
     print_ik_preview_legend()

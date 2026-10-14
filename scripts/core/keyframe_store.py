@@ -2,7 +2,7 @@
 
 Cindy's assembly keyframe (`config.KEY_ASSEMBLY_*`: base frame, approach / assembled / retreat joints per arm) and a
 support robot's hold (`config.KEY_SUPPORT_*`: robot, base frame, grasp frame, approach / held joints) live on the bar
-curve. `core.design_source` reads them into the design on every command; the IK commands write them back.
+curve. `core.process_source` reads them into the process on every command; the IK commands write them back.
 
 - ! Frames are 4x4 world matrices in mm; joint records are `{"joint_names": [...], "joint_values": [...]}` (per arm
   `{"left": ..., "right": ...}` for Cindy).
@@ -182,7 +182,7 @@ def write_bar_support_keyframe(bar_oid, robot_name: str, base_frame_world_mm, gr
 def approach_tool0_from_grasp(tool0_world_mm) -> np.ndarray:
     """The support flange's approach pose: the grasp pose backed off along its own −z by `SUPPORT_LM_DISTANCE_MM`.
 
-    The hold's linear approach starts here and the release's retreat ends here (`design_builder` uses the same line).
+    The hold's linear approach starts here and the release's retreat ends here (`process_builder` uses the same line).
     """
     out = np.array(tool0_world_mm, dtype=float, copy=True)
     out[:3, 3] -= float(config.SUPPORT_LM_DISTANCE_MM) * out[:3, 2]

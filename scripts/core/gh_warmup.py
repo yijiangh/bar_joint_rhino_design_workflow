@@ -1,7 +1,7 @@
 """Logic behind the ``RSGHPreviewWarmup`` Grasshopper component.
 
 A one-shot cache warmer for ``RSGHSequencePreview``: reading the document into a
-design, reading the robot models (Cindy the dual-arm, Alice and Belle the
+process, reading the robot models (Cindy the dual-arm, Alice and Belle the
 support Huskies) and their meshes, and baking them into the document is
 the ONLY heavy work in the whole preview -- and it is one-time, cached for the
 Rhino session.  Without this component the preview pays it on its first frame
@@ -24,8 +24,8 @@ import session_log
 
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_display
-from core import design_source
+from core import process_display
+from core import process_source
 from core import gh_bridge
 from core import ik_viz
 
@@ -50,23 +50,23 @@ def run(ghenv, run=False):
     notes = []
     with gh_bridge.rhino_doc():
         try:
-            result = design_source.RhinoDesignSource(
-                "RSGHPreviewWarmup", design_source.geometry_cache(sc.sticky)
+            result = process_source.RhinoProcessSource(
+                "RSGHPreviewWarmup", process_source.geometry_cache(sc.sticky)
             ).build()
-            design = result.design
-            robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
-            movement = next((m for _action, m in design.movements()), None)
+            process = result.process
+            robot_id = process_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
+            movement = next((m for _action, m in process.movements()), None)
             if movement is None:
-                raise RuntimeError("the design has no actions yet (no bar with a left and a right tool)")
-            # Every robot placed (at its design base, else the origin) so each one's meshes are baked.
-            scene = design.scene_at(movement)
+                raise RuntimeError("the process has no actions yet (no bar with a left and a right tool)")
+            # Every robot placed (at its process base, else the origin) so each one's meshes are baked.
+            scene = process.scene_at(movement)
             for other, robot in scene.robots.items():
-                design_display.place(scene, other, robot.base, update=False)
-            design_display.refresh(scene)
+                process_display.place(scene, other, robot.base, update=False)
+            process_display.refresh(scene)
             ik_viz.update_state(scene, robot_id=robot_id, layer_key=ik_viz.LAYER_KEY_ASSEMBLY,
                                 mesh_mode=ik_viz.MESH_MODE_VISUAL, hide_bodies=True)
             ik_viz.set_layer_visible(ik_viz.LAYER_KEY_ASSEMBLY, False)
-            notes.append(f"{', '.join(sorted(design.robots))}: loaded + tools + meshes baked")
+            notes.append(f"{', '.join(sorted(process.robots))}: loaded + tools + meshes baked")
         except Exception as exc:  # noqa: BLE001 -- report, never raise into Grasshopper
             session_log.caught(exc)
             notes.append(f"FAILED ({exc})")

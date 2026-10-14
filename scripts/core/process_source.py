@@ -1,11 +1,11 @@
 """
-Read the Rhino document into a schema 2 `Design` (bar_assembly_core), fresh on every command.
+Read the Rhino document into a schema 2 `Process` (bar_assembly_core), fresh on every command.
 
-`RhinoDesignSource(command).build()` reads bars, halves, ground, obstacles, robots, tools, mates and the per-bar
-keyframe records, then `core.design_builder` adds the actions. Units are converted once, here: document units and
+`RhinoProcessSource(command).build()` reads bars, halves, ground, obstacles, robots, tools, mates and the per-bar
+keyframe records, then `core.process_builder` adds the actions. Units are converted once, here: document units and
 mm to metres.
 
-- ! Call it after `repair_on_entry` (it repairs sequences and migrates old joint names) and keep no `Design` between
+- ! Call it after `repair_on_entry` (it repairs sequences and migrates old joint names) and keep no `Process` between
   commands: the document may change in between.
 - Fake bars and their halves are left out. Duplicate ids and scaled or mirrored blocks are refused.
 - Needs numpy, the core and Rhino; not compas, compas_fab, PyBullet or the tamp submodule.
@@ -30,9 +30,9 @@ import session_log
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
 from core import joint_name_conventions as jnc
-from core.design_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, poses_in_tcp
-from bar_assembly_core.design import BodySpec, Design, DesignError, Producer, RobotSpec
-from bar_assembly_core.design.version import writer_info
+from core.process_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, poses_in_tcp
+from bar_assembly_core.process import BodySpec, Process, ProcessError, Producer, RobotSpec
+from bar_assembly_core.process.version import writer_info
 from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
 from bar_assembly_core.kinematics import link_pose
 from bar_assembly_core.robot import Tool
@@ -47,15 +47,15 @@ ASSEMBLY_TOOL_KIND, SUPPORT_TOOL_KIND = "scaffolding_v3", "robotiq"
 ROTATION_TOLERANCE = 1e-6
 
 
-class DesignSourceError(DesignError):
-    """The document cannot become a design (duplicate ids, a broken block); `problems` lists every reason."""
+class ProcessSourceError(ProcessError):
+    """The document cannot become a process (duplicate ids, a broken block); `problems` lists every reason."""
 
 
 @dataclass
 class SourceResult:
-    """The design read from the document and what was left out or assumed, one line each."""
+    """The process read from the document and what was left out or assumed, one line each."""
 
-    design: Design
+    process: Process
     problems: List[str] = field(default_factory=list)
     #: Body id -> the Rhino object it was read from (bar curve, joint block, ground or environment object).
     objects: Dict[str, object] = field(default_factory=dict)
@@ -89,7 +89,7 @@ def joints_from_groups(groups) -> Optional[Dict[str, float]]:
 
 
 def bar_pose(frame_mm, length_mm: float) -> Pose:
-    """A bar's design pose: its Rhino frame (origin at the start, z along the bar) moved to the midpoint, metres."""
+    """A bar's assembly pose: its Rhino frame (origin at the start, z along the bar) moved to the midpoint, metres."""
     matrix = np.array(frame_mm, dtype=float)
     matrix[:3, 3] += matrix[:3, 2] * (length_mm / 2.0)
     return pose_from_mm(matrix)
@@ -166,7 +166,7 @@ def file_digest(path: str) -> str:
 def robot_files(cache: dict, name: str, urdf: Path, srdf: Path) -> Tuple[Path, Path]:
     """A robot's URDF and SRDF with relative mesh paths (copied once per cache), as the mirrors need them.
 
-    ? The source URDFs name their meshes `package://`; compas_fab cannot load those from a design in memory.
+    ? The source URDFs name their meshes `package://`; compas_fab cannot load those from a process in memory.
     """
     stamp = tuple(os.path.getmtime(f) for f in (urdf, srdf))
 
@@ -197,8 +197,8 @@ def producer(command: str) -> Producer:
 
 # --- --- --- --- --- THE DOCUMENT --- --- --- --- ---
 
-class RhinoDesignSource:
-    """Builds a `Design` from the active Rhino document. Make a new one per command."""
+class RhinoProcessSource:
+    """Builds a `Process` from the active Rhino document. Make a new one per command."""
 
     def __init__(self, command: str, cache: Optional[dict] = None, fresh_versions: bool = False):
         """Remember the command name for `producer` and messages.
@@ -218,12 +218,12 @@ class RhinoDesignSource:
         self.ground_oids: Dict[str, object] = {}
         self.tool_names: Dict[str, str] = {}
 
-    @session_log.timed("design_source.build")
+    @session_log.timed("process_source.build")
     def build(self) -> SourceResult:
-        """Read the document and build the design with its actions.
+        """Read the document and build the process with its actions.
 
         Raises:
-            DesignSourceError: On duplicate ids or broken blocks, listing all of them.
+            ProcessSourceError: On duplicate ids or broken blocks, listing all of them.
         """
         import rhinoscriptsyntax as rs
         from core.hold_schedule import build_action_schedule, derive_hold_plan
@@ -243,7 +243,7 @@ class RhinoDesignSource:
         self.ground_oids = grounds
         self._read_obstacles(rs)
         if self.duplicates:
-            raise DesignSourceError(self.duplicates)
+            raise ProcessSourceError(self.duplicates)
         robots, tools = self._robots_and_tools()
         mates = self._mates(halves, grounds)
 
@@ -271,21 +271,21 @@ class RhinoDesignSource:
             for key, body in self.bodies.items():
                 if body.part in in_tcp and key.startswith("joints/"):
                     self.bodies[key] = replace(body, pose_in_tcp=in_tcp[body.part])
-        design = Design(folder=None, writer=writer, robots=robots, tools=tools, bodies=dict(self.bodies),
+        process = Process(folder=None, writer=writer, robots=robots, tools=tools, bodies=dict(self.bodies),
                         schedule=(), actions={}, mates=frozenset(mates), producer=made_by)
         with session_log.step("build_actions"):
             result: BuildResult = build_actions(
-                design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
+                process, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
                 retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,
                 support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0)
-        return SourceResult(result.design, self.problems + result.problems, dict(self.objects))
+        return SourceResult(result.process, self.problems + result.problems, dict(self.objects))
 
     def _versions(self):
-        """The design's `writer` and `producer`: the core's and this repository's commit, from git.
+        """The process's `writer` and `producer`: the core's and this repository's commit, from git.
 
         - ! Four git processes, about 3 s in Rhino on Windows (0.1 s in a terminal): asked once per cache, so once
           per Rhino session, and again by every export (`fresh_versions`), the only reader that writes them.
-        - ? A commit made while Rhino stays open shows in the next export, not in the planning and viewing designs
+        - ? A commit made while Rhino stays open shows in the next export, not in the planning and viewing processes
           before it; their hashes do not cover `writer` or `producer`.
         """
         import dataclasses
@@ -478,7 +478,7 @@ class RhinoDesignSource:
     # * Robots, tools, mates
 
     def _assembly_tools(self) -> Dict[str, object]:
-        """Side -> the tool Cindy carries for the whole design: the one placed most often, else the active pair's.
+        """Side -> the tool Cindy carries for the whole process: the one placed most often, else the active pair's.
 
         ? Schema 2 has one tool per flange; bars placed with another variant are reported in their records.
         """
@@ -561,7 +561,7 @@ class RhinoDesignSource:
         for half, (_jid, subtype, _bar) in sorted(halves.items()):
             if subtype != jnc.GROUND or not breps:
                 continue
-            p = self.bodies[half].pose.position
+            p = self.bodies[half].assembly_pose.position
             scale = 1000.0 / self._doc_scale_mm()
             point = Rhino.Geometry.Point3d(p[0] * scale, p[1] * scale, p[2] * scale)
             nearest = min(breps, key=lambda g: breps[g].ClosestPoint(point).DistanceTo(point))
@@ -597,7 +597,7 @@ class RhinoDesignSource:
                 self.problems.append(f"{bar}: tool on {half} has no L/R suffix ({name!r})")
                 continue
             if name != active.get(side):
-                self.problems.append(f"{bar}: tool {name} on {half}, but the design's {side} tool is "
+                self.problems.append(f"{bar}: tool {name} on {half}, but the process's {side} tool is "
                                      f"{active.get(side)} (B14 will flag the grasp)")
             flange = f"{cindy}/{config.ASSEMBLY_TOOL0_LINKS[side]}"
             if flange in tool0:
@@ -607,7 +607,7 @@ class RhinoDesignSource:
             tool0[flange] = pose_from_mm(xform)
             on[flange] = half
             tool_ids[flange] = f"tools/{cindy.split('/')[1]}/{active[side]}"
-            half_z = self.bodies[half].pose.matrix()[:3, 2]
+            half_z = self.bodies[half].assembly_pose.matrix()[:3, 2]
             retreat[flange] = unit(-half_z)
             z_axes.append(xform[:3, 2])
             if subtype == jnc.GROUND:
@@ -645,7 +645,7 @@ class RhinoDesignSource:
         normals = []
         scale = 1000.0 / self._doc_scale_mm()
         for half in ground_halves:
-            p = self.bodies[half].pose.position
+            p = self.bodies[half].assembly_pose.position
             point = Rhino.Geometry.Point3d(p[0] * scale, p[1] * scale, p[2] * scale)
             best = None
             for oid in self.ground_oids.values():
@@ -687,7 +687,7 @@ class RhinoDesignSource:
         tool0 = pose_from_mm(np.asarray(grasp_raw, dtype=float)
                              @ np.asarray(config.BAR_GRASP_TO_TOOL0["Robotiq"], dtype=float))
         base = pose_from_mm(base_raw) if base_raw is not None else None
-        bar_pose_ = self.bodies[f"bars/{bar}"].pose
+        bar_pose_ = self.bodies[f"bars/{bar}"].assembly_pose
         if base is not None and held:
             # * With a solved grasp, hold the bar where the robot's forward kinematics put the flange.
             grasp = grasp_of(link_pose(robots[rid].urdf, base, held, flange_link), bar_pose_)

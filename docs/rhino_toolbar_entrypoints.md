@@ -23,8 +23,8 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSDesign | RSSelectBar | `rs_select_bar.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: type a length in mm to select every bar of that length plus their male/ground joints, grouped exactly as RSBarEdit groups them. Both loop. Read-only. | Workshop participants |
 | RSDesign | RSSelectJoint | `rs_select_joint.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
-| RSDesign | RSShowAssemblyPlan | `rs_show_assembly_plan.py` | Step through the WHOLE assembly pose by pose: every bar's poses concatenated in the design's schedule order, each the design's scene at that moment (support robots arriving/leaving per the schedule). Enter=next, Prev/Jump/GoToBar, or click a bar to jump there. | Advanced IK users |
-| RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's timeline (approach / assembled / hold / retreat / home + base frame) as moments of the document's design, with support robots exactly where the schedule has them; the last stabilizer of a hold also plays that hold's release pose. Right-click (`rs_show_bar_action_plan_motion.py`): scrub a bar's planned trajectories from a design folder's `solutions/`. | Advanced IK users |
+| RSDesign | RSShowAssemblyPlan | `rs_show_assembly_plan.py` | Step through the WHOLE assembly pose by pose: every bar's poses concatenated in the process's schedule order, each the process's scene at that moment (support robots arriving/leaving per the schedule). Enter=next, Prev/Jump/GoToBar, or click a bar to jump there. | Advanced IK users |
+| RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's timeline (approach / assembled / hold / retreat / home + base frame) as moments of the document's process, with support robots exactly where the schedule has them; the last stabilizer of a hold also plays that hold's release pose. Right-click (`rs_show_bar_action_plan_motion.py`): scrub a bar's planned trajectories from a process folder's `solutions/`. | Advanced IK users |
 | RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
 | RSSetup | RSDefineJointHalf | `rs_define_joint_half.py` | Define one joint block (Female / Male / Ground / MoCap, read from its `<Type>_<Subtype>` name), its collision mesh, and a MoCap block's marker spheres | Joint-library authors |
 | RSSetup | RSDefineJointMate | `rs_define_joint_mate.py` | Define the mate between an existing Female and Male half (a MoCap half needs none) | Joint-library authors |
@@ -39,9 +39,9 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSInspectRoboticTool | `rs_inspect_robotic_tool.py` | PyBullet viewer for ALL tool candidates: a slider steps through L/R pairs (L at origin, R at +0.30 m), each showing its tool0 + TCP frame (`M_tcp_from_block`); a two-step GUI confirm deletes a whole candidate pair (registry entries + `.3dm`/`.obj`). Reads/edits `robotic_tools.json` only — no Rhino geometry. | Advanced IK users |
 | RSSetup | RSShowPlanningWorld | `rs_show_planning_world.py` | Debugging: open the assembly robot's planning world (what IK checks collisions against) in PyBullet's window. Changes nothing in the document. | Advanced IK users |
 | RSSetup | RSResetPlanning | `rs_reset_planning.py` | Close every planning world, forget the cached geometry and preview meshes, stop the ssik sidecar. Only when something looks stuck: the IK commands and viewers rebuild what they need. | Advanced IK users |
-| RSDesign | RSExportDesign | `rs_export_design.py` | Left-click: write the document as a schema 2 design folder through `bar_assembly_core` (asks for a parent folder, then the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckDesign** (`rs_check_design.py`): read an existing design folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
+| RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `bar_assembly_core` (asks for a parent folder, then the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
 | RSSetup | RSClearIKKeyframe | `rs_clear_ik_keyframe.py` | Left-click: pick ONE bar. Right-click (`rs_clear_ik_keyframe_all.py`): EVERY bar. Either way, then choose what to erase via two toggles — Keyframe (M1-M3 IK config + legacy blob) and BasePosition (mobile base) — both default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
-| RSSetup | RSLoadSolvedBarAction | `rs_load_solved_bar_action.py` | Left-click: pick a bar, write its solved keyframes from a design folder's `solutions/` onto its user text, then view its keyframes or motion (prompt). Right-click, **RSLoadSolvedBarActionAll** (`rs_load_solved_bar_action_all.py`): every solved bar, then the viewer with every base frame. | Planning/export users |
+| RSSetup | RSLoadSolvedBarAction | `rs_load_solved_bar_action.py` | Left-click: pick a bar, write its solved keyframes from a process folder's `solutions/` onto its user text, then view its keyframes or motion (prompt). Right-click, **RSLoadSolvedBarActionAll** (`rs_load_solved_bar_action_all.py`): every solved bar, then the viewer with every base frame. | Planning/export users |
 | RSDesign | RSAssignAndShowWalkableGround | `rs_assign_and_show_walkable_ground.py` | Pick a bar; view its assigned WalkableGround(s) + the default mobile-base placement (half-transparent ghost robot), then optionally overwrite the assignment by selecting brep(s) — loops back to re-show. Auto-assigns nearest if none. Auto-assign also runs on entry to the IK, preview and export commands; use this to inspect/correct a specific bar. | Planning/export users |
 | RSMoCap | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one rigid body from Motive and bake markers | Mocap users |
 | RSMoCap | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit model bars to mocap bars and transform managed layers | Mocap users |
@@ -370,7 +370,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   the side-matching new tool (each joint keeps its arm side), force-refreshes both
   block definitions from `asset/`, warns about bars whose solved IK keyframes are
   now stale. The planning cells and previews pick the new tools up by themselves
-  (the next design read carries them).
+  (the next process read carries them).
 - Pre-flight: both sides must be registered with their `.3dm` + collision `.obj`
   on disk -- otherwise nothing is changed.
 
@@ -406,14 +406,14 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - RSShowPlanningWorld opens the assembly robot's world in PyBullet's own window, for debugging.
 - RSRebuildRobotCell, RSPBStart and RSPBStop are gone. What RSRebuildRobotCell did besides rebuilding, linking
   each bar to its nearest WalkableGround and seeding a default base, now runs on entry to RSIKKeyframe,
-  RSIKKeyframeAll, RSUpdatePreview and RSExportDesign (`rhino_walkable_ground.ensure_ground_and_base`;
+  RSIKKeyframeAll, RSUpdatePreview and RSExportProcess (`rhino_walkable_ground.ensure_ground_and_base`;
   non-destructive, hand-picked grounds and bases are kept).
-- RSExportBarAction, RSExportAllBarActions and RSExportRobotCell are gone: they all ran RSExportDesign.
+- RSExportBarAction, RSExportAllBarActions and RSExportRobotCell are gone: they all ran RSExportProcess.
 
 ### RSIKKeyframe (`rs_ik_keyframe.py`)
 
 - Dual-arm IK for two selected male joints sharing one Ln bar.
-- Plans on the shared core: the document is read into a design, the bar's keyframe scenes are synced into the
+- Plans on the shared core: the document is read into a process, the bar's keyframe scenes are synced into the
   robot's planning mirror and the tamp solvers borrow its planner; previews draw the same
   scene posed by the solves (visual meshes; MeshMode flips to collision). No warm-up command needed.
 - Supports collision options and a base-search fallback when the picked base fails: with `IK_BASE_SEARCH = "optimise"`
@@ -443,23 +443,23 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 ### RSShowBarActionPlan (`rs_show_bar_action_plan.py`) / …Motion (`rs_show_bar_action_plan_motion.py`)
 
-- **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles that bar's timeline — approach → assembled → *hold* (held bars only) → retreat → home, plus a *release* pose per hold whose LAST stabilizing bar is this one — each the document's design at that moment (`core.plan_steps`; keyframes from the `KEY_ASSEMBLY_*` / `KEY_SUPPORT_*` user-text); draws the active bar's **base frame** (axis triad + footprint). Support robots appear exactly where the design's schedule has them. **CheckCollision** checks every placed robot on its planning mirror and paints the offenders red; **InteractiveCollisionCheck** jogs the assembly robot's arms. Right after `RSLoadSolvedBarAction` it starts on the loaded bar(s), draws every base frame, and offers **NextBar/PrevBar**.
-- **Right-click** — the MOTION viewer. Pick a design folder (RSExportDesign's; the last one is offered) and a bar, then **step through its planned trajectories** from `solutions/` (`scripts/plan_design.py`) **from the command line** (Enter/Next/Prev/Jump — a prompt, not a modal dialog, so the viewport stays free to zoom/orbit). FK-only, so the held bar follows the arm.
+- **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles that bar's timeline — approach → assembled → *hold* (held bars only) → retreat → home, plus a *release* pose per hold whose LAST stabilizing bar is this one — each the document's process at that moment (`core.plan_steps`; keyframes from the `KEY_ASSEMBLY_*` / `KEY_SUPPORT_*` user-text); draws the active bar's **base frame** (axis triad + footprint). Support robots appear exactly where the process's schedule has them. **CheckCollision** checks every placed robot on its planning mirror and paints the offenders red; **InteractiveCollisionCheck** jogs the assembly robot's arms. Right after `RSLoadSolvedBarAction` it starts on the loaded bar(s), draws every base frame, and offers **NextBar/PrevBar**.
+- **Right-click** — the MOTION viewer. Pick a process folder (RSExportProcess's; the last one is offered) and a bar, then **step through its planned trajectories** from `solutions/` (`scripts/plan_process.py`) **from the command line** (Enter/Next/Prev/Jump — a prompt, not a modal dialog, so the viewport stays free to zoom/orbit). FK-only, so the held bar follows the arm.
 - **Both clicks** draw the walkable grounds from the core's scene, the active bar's light grey and the others dark grey, and print each ground's id + Rhino object id to the command line, so you can see which ground surface the robot base is allowed to stand on.
 - **While a viewer is open** the document layers it stands in for (tube previews, joint and tool blocks, ground, obstacles) are hidden and restored on exit, so nothing is drawn twice. Bars and joints are coloured by sequence. Bars with stale IK are listed on open; at their steps the robot is yellow and the step line says `STALE IK`.
 
 ### RSShowAssemblyPlan (`rs_show_assembly_plan.py`)
 
-- The whole-assembly twin of RSShowBarActionPlan: **every bar's poses concatenated in the design's schedule order** (`core.plan_steps.timeline`), so Enter walks the build end to end (`B20 approach → … → B20 home → B21 approach → … → B37 release B21 → …`).
+- The whole-assembly twin of RSShowBarActionPlan: **every bar's poses concatenated in the process's schedule order** (`core.plan_steps.timeline`), so Enter walks the build end to end (`B20 approach → … → B20 home → B21 approach → … → B37 release B21 → …`).
 - Each step is one movement ENDPOINT (the poses that carry a solved keyframe). The tool/manual movements between them — gripper open/close, screw driving, the operator mounting the bar — are printed rather than drawn, since they are instants at a pose already on screen.
 - Bars that are **fake** or have **no solved IK keyframe** contribute no steps and are listed up front; holds with no solved support keyframe are named too, so a short timeline is never a silent one.
 - Command line: **Enter/Next**, **Prev**, **Jump** (step index), **GoToBar** (bar id), click a bar to jump there, **MeshMode**, **CheckCollision**, **ShowUnbuilt/HideUnbuilt**, Esc to exit.
 
 ### RSLoadSolvedBarAction (`rs_load_solved_bar_action.py`) / …All (`rs_load_solved_bar_action_all.py`)
 
-- Reads a design folder's `solutions/` (written by `scripts/plan_design.py`) through the shared core. Prompts what to view afterwards: keyframes or motion.
+- Reads a process folder's `solutions/` (written by `scripts/plan_process.py`) through the shared core. Prompts what to view afterwards: keyframes or motion.
 - **Left-click**: pick a bar. **Right-click**: every bar with a solved insert.
-- For each bar it **writes the solved keyframe** (base: the planner's, else the design's; approach / assembled / retreat: the ends of the transfer, the insert and the retreat) onto the bar's user text — the reverse of the export, so RSIKKeyframe, the viewers and a later re-export agree with the plan. Stale solutions (the design changed since planning) are named. Then it launches RSShowBarActionPlan.
+- For each bar it **writes the solved keyframe** (base: the planner's, else the process's; approach / assembled / retreat: the ends of the transfer, the insert and the retreat) onto the bar's user text — the reverse of the export, so RSIKKeyframe, the viewers and a later re-export agree with the plan. Stale solutions (the process changed since planning) are named. Then it launches RSShowBarActionPlan.
 
 ### RSIKSupportKeyframe (deleted)
 
@@ -469,7 +469,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - The old script's reusable pickers (two-phase grasp pick with the ghost
   gripper, base pick with the ghost support robot, dual-arm ghost bake)
   moved to `core/support_grasp_pick.py`; keyframe IO lives in
-  `core/keyframe_store.py` and release validation in `core/design_planning.py`
+  `core/keyframe_store.py` and release validation in `core/process_planning.py`
   (`release_check`, `hold_release_collisions`); the hold derivation (which robot
   holds which bar until when) is `core/hold_schedule.py`.
 - Results are written to the split `KEY_SUPPORT_*` user-text keys on the
@@ -482,8 +482,8 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   1. **View.** Pick a bar (first run). Its assigned WalkableGround(s) are highlighted green; the default mobile-base placement is computed — the same heuristic the headless solver uses in `--base sample` mode (`husky_assembly_tamp.keyframe.walkable_ground`: `derive_seed_base` + `frame_from_origin_normal_heading`): the base stands a standoff **behind** the bar and **faces along the average anchor-joint insertion direction** (the way the bar is pushed to mate), which removes the left/right side ambiguity. That average now covers **both** male and ground joints, discards near-vertical axes, and detects the case where a bar's two anchors cancel, falling back to the open side of the bar instead of to a noise direction (`core.rhino_walkable_ground.resolve_bar_heading`; see `docs/coordinate_conventions.md` §7). It's drawn as a base-frame marker + a **half-transparent ghost robot** standing on that base. The ground ids + base position are printed. Then it asks: *change the assignment?*
   2. **Re-assign** (only if you answer Yes). Select the WalkableGround brep(s) you want (multiple allowed), Enter to confirm. That set **overwrites** the bar's assignment (saved to user-text), and it loops back to step 1 to re-visualize. Answer No / Esc at step 1 to finish.
 - If a bar has no assignment yet, the nearest ground(s) are auto-assigned + saved first so step 1 always has something to show.
-- The ghost robot is FK-only (no PyBullet needed): its link and tool meshes are copied once at the home pose (`core.ik_viz.robot_meshes` of the robot alone, `core.design_display.robot_scene`) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.
-- Auto-assignment also runs on entry to RSIKKeyframe, RSIKKeyframeAll, RSUpdatePreview and RSExportDesign, so this command is for inspecting/correcting a specific bar. On the RSDesign toolbar.
+- The ghost robot is FK-only (no PyBullet needed): its link and tool meshes are copied once at the home pose (`core.ik_viz.robot_meshes` of the robot alone, `core.process_display.robot_scene`) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.
+- Auto-assignment also runs on entry to RSIKKeyframe, RSIKKeyframeAll, RSUpdatePreview and RSExportProcess, so this command is for inspecting/correcting a specific bar. On the RSDesign toolbar.
 
 ### RSClearIKKeyframe (`rs_clear_ik_keyframe.py`) / RSClearIKKeyframeAll (`rs_clear_ik_keyframe_all.py`)
 

@@ -1,8 +1,8 @@
 """
-The steps the plan viewers show, as moments of a schema 2 design: the poses per bar, the whole timeline, and the
-trajectories of a design folder's solutions.
+The steps the plan viewers show, as moments of a schema 2 process: the poses per bar, the whole timeline, and the
+trajectories of a process folder's solutions.
 
-Rhino-free (numpy and the core only); `core.design_display` draws the scenes.
+Rhino-free (numpy and the core only); `core.process_display` draws the scenes.
 
 Poses of one bar (the viewers' vocabulary, kept from the legacy viewer):
 
@@ -22,11 +22,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.design import Design, Movement
+from bar_assembly_core.process import Process, Movement
 from bar_assembly_core.geometry import Pose
 from bar_assembly_core.scene import Scene
 
-from core.design_display import place, refresh
+from core.process_display import place, refresh
 
 #: The release pose's tag: a step `("release", "bars/B2")`.
 RELEASE = "release"
@@ -44,7 +44,7 @@ def short(bar: str) -> str:
 
 @dataclass(frozen=True)
 class Step:
-    """One moment a viewer shows: the start (or end) of one design movement, named by its host bar's pose.
+    """One moment a viewer shows: the start (or end) of one process movement, named by its host bar's pose.
 
     Attributes:
         bar: The host bar, e.g. "bars/B3".
@@ -65,31 +65,31 @@ class Step:
         return f"{short(self.bar)} {pose}"
 
 
-def find_movement(design: Design, action_id: str, movement_id: str) -> Optional[Movement]:
+def find_movement(process: Process, action_id: str, movement_id: str) -> Optional[Movement]:
     """A movement by its action and movement ids, or None."""
-    action = design.actions.get(action_id)
+    action = process.actions.get(action_id)
     if action is None:
         return None
     return next((m for m in action.movements if m.id == movement_id), None)
 
 
-def movement_after(design: Design, movement: Movement) -> Optional[Movement]:
+def movement_after(process: Process, movement: Movement) -> Optional[Movement]:
     """The movement that follows one in the schedule, or None after the last."""
     found = False
-    for _action, m in design.movements():
+    for _action, m in process.movements():
         if found:
             return m
         found = m is movement
     return None
 
 
-def releases_after(design: Design, bar: str) -> List[str]:
+def releases_after(process: Process, bar: str) -> List[str]:
     """The held bars whose release follows this bar's actions in the schedule (in release order)."""
-    order = list(design.schedule)
-    after = [i for i, a in enumerate(order) if design.actions[a].bar == bar and design.actions[a].type == "bar_release"]
+    order = list(process.schedule)
+    after = [i for i, a in enumerate(order) if process.actions[a].bar == bar and process.actions[a].type == "bar_release"]
     out = []
     for action_id in order[after[0] + 1:] if after else []:
-        action = design.actions[action_id]
+        action = process.actions[action_id]
         if action.type != "bar_holding_release":
             break
         out.append(action.bar)
@@ -102,42 +102,42 @@ def _known(movement: Optional[Movement], robot: str) -> bool:
     return state is not None and state.joints is not None
 
 
-def is_solved(design: Design, bar: str) -> bool:
-    """Whether the bar's assembly keyframe is in the design: the assembling robot's joints known at the insert."""
+def is_solved(process: Process, bar: str) -> bool:
+    """Whether the bar's assembly keyframe is in the process: the assembling robot's joints known at the insert."""
     p = short(bar)
-    action = design.actions.get(f"{p}_J")
-    return action is not None and _known(find_movement(design, f"{p}_J", f"{p}_J_insert"), action.robot)
+    action = process.actions.get(f"{p}_J")
+    return action is not None and _known(find_movement(process, f"{p}_J", f"{p}_J_insert"), action.robot)
 
 
-def bar_steps(design: Design, bar: str) -> List[Step]:
-    """The ordered steps of one bar (see the module docstring); empty for a bar the design does not assemble."""
+def bar_steps(process: Process, bar: str) -> List[Step]:
+    """The ordered steps of one bar (see the module docstring); empty for a bar the process does not assemble."""
     p = short(bar)
-    jointing = design.actions.get(f"{p}_J")
+    jointing = process.actions.get(f"{p}_J")
     if jointing is None:
         return []
     steps: List[Step] = []
-    if is_solved(design, bar):
-        insert = find_movement(design, f"{p}_J", f"{p}_J_insert")
+    if is_solved(process, bar):
+        insert = find_movement(process, f"{p}_J", f"{p}_J_insert")
         steps.append(Step(bar, "approach", insert))
-        after = movement_after(design, jointing.movements[-1])
+        after = movement_after(process, jointing.movements[-1])
         steps.append(Step(bar, "assembled", after) if after is not None else Step(bar, "assembled", insert, True))
-        hold = design.actions.get(f"{p}_H")
-        ungrasp = find_movement(design, f"{p}_R", f"{p}_R_ungrasp")
+        hold = process.actions.get(f"{p}_H")
+        ungrasp = find_movement(process, f"{p}_R", f"{p}_R_ungrasp")
         if hold is not None and _known(ungrasp, hold.robot):
             steps.append(Step(bar, HOLD, ungrasp))
-        home = find_movement(design, f"{p}_R", f"{p}_R_home")
+        home = find_movement(process, f"{p}_R", f"{p}_R_home")
         if home is not None:
             steps.append(Step(bar, "retreat", home))
             steps.append(Step(bar, "home", home, True))
-    for held in releases_after(design, bar):
+    for held in releases_after(process, bar):
         h = short(held)
-        retreat = find_movement(design, f"{h}_HR", f"{h}_HR_retreat")
+        retreat = find_movement(process, f"{h}_HR", f"{h}_HR_retreat")
         if retreat is not None:
             steps.append(Step(bar, (RELEASE, held), retreat, True))
     return steps
 
 
-def timeline(design: Design) -> Tuple[List[Step], List[Tuple[str, str]]]:
+def timeline(process: Process) -> Tuple[List[Step], List[Tuple[str, str]]]:
     """Every step of the whole assembly in schedule order, and the bars that add no assembly step.
 
     Returns:
@@ -145,13 +145,13 @@ def timeline(design: Design) -> Tuple[List[Step], List[Tuple[str, str]]]:
         steps are kept: the holding robots must not vanish between two steps).
     """
     steps, skipped = [], []
-    for action_id in design.schedule:
-        action = design.actions[action_id]
+    for action_id in process.schedule:
+        action = process.actions[action_id]
         if action.type != "bar_jointing":
             continue
-        own = bar_steps(design, action.bar)
+        own = bar_steps(process, action.bar)
         steps += own
-        if not is_solved(design, action.bar):
+        if not is_solved(process, action.bar):
             reason = "no solved IK keyframe"
             if own:
                 reason += f" (its release step(s) for {', '.join(short(s.pose[1]) for s in own)} are kept)"
@@ -159,9 +159,9 @@ def timeline(design: Design) -> Tuple[List[Step], List[Tuple[str, str]]]:
     return steps, skipped
 
 
-def step_scene(design: Design, step: Step) -> Scene:
+def step_scene(process: Process, step: Step) -> Scene:
     """The world at one step: the movement's start, or its end with the target joints applied."""
-    scene = design.scene_at(step.movement)
+    scene = process.scene_at(step.movement)
     target = step.movement.target
     if step.at_end and target is not None:
         for robot, joints in target.joints.items():
@@ -170,11 +170,11 @@ def step_scene(design: Design, step: Step) -> Scene:
     return scene
 
 
-def base_of(design: Design, bar: str) -> Optional[Pose]:
+def base_of(process: Process, bar: str) -> Optional[Pose]:
     """The assembling robot's base for a bar (from the jointing action), or None before it is picked."""
     p = short(bar)
-    jointing = design.actions.get(f"{p}_J")
-    insert = find_movement(design, f"{p}_J", f"{p}_J_insert")
+    jointing = process.actions.get(f"{p}_J")
+    insert = find_movement(process, f"{p}_J", f"{p}_J_insert")
     state = insert.start.robots.get(jointing.robot) if insert is not None else None
     return state.base if state is not None else None
 
@@ -189,7 +189,7 @@ class Frame:
         movement: The movement it belongs to.
         robot: The robot the row moves.
         joints: Its joint values.
-        base: The base the planner chose (the design had none), or None to keep the scene's.
+        base: The base the planner chose (the process had none), or None to keep the scene's.
         index, count: Its place in the movement's trajectory (0-based) and the trajectory's length.
     """
 
@@ -205,16 +205,16 @@ class Frame:
         return f"{self.movement.id} {self.index + 1}/{self.count}"
 
 
-def trajectory_frames(design: Design, solutions: dict, bar: str) -> List[Frame]:
+def trajectory_frames(process: Process, solutions: dict, bar: str) -> List[Frame]:
     """Every trajectory row of a bar's actions (jointing, hold, release, hold release), in schedule order.
 
     Args:
-        design: The design the solutions belong to.
-        solutions: Action id -> `Solution` (`bar_assembly_core.design.solutions.read_solutions`).
+        process: The process the solutions belong to.
+        solutions: Action id -> `Solution` (`bar_assembly_core.process.solutions.read_solutions`).
         bar: E.g. "bars/B3".
     """
     frames: List[Frame] = []
-    for action, m in design.movements():
+    for action, m in process.movements():
         if action.bar != bar or action.id not in solutions:
             continue
         result = solutions[action.id].movements.get(m.id)
@@ -228,11 +228,11 @@ def trajectory_frames(design: Design, solutions: dict, bar: str) -> List[Frame]:
     return frames
 
 
-def solved_keyframes(design: Design, solutions: dict, bar: str) -> Optional[dict]:
+def solved_keyframes(process: Process, solutions: dict, bar: str) -> Optional[dict]:
     """The assembly keyframe a bar's solutions imply, as Rhino stores it; None without a solved insert.
 
     approach = the end of the transfer, assembled = the end of the insert, retreat = the end of the retreat; the base
-    is the one the planner chose, else the design's.
+    is the one the planner chose, else the process's.
 
     Returns:
         dict | None: `{"base": Pose, "approach": joints, "assembled": joints, "retreat": joints | None}`.
@@ -241,7 +241,7 @@ def solved_keyframes(design: Design, solutions: dict, bar: str) -> Optional[dict
     jointing, release = solutions.get(f"{p}_J"), solutions.get(f"{p}_R")
     if jointing is None:
         return None
-    robot = design.actions[f"{p}_J"].robot
+    robot = process.actions[f"{p}_J"].robot
 
     def end(solution, movement_id):
         result = solution.movements.get(movement_id) if solution is not None else None
@@ -254,7 +254,7 @@ def solved_keyframes(design: Design, solutions: dict, bar: str) -> Optional[dict
         insert = jointing.movements.get(f"{p}_J_insert")
         approach = insert.start.get(robot) if insert is not None else None
     base = next((r.bases[robot] for s in (jointing, release) if s is not None for r in s.movements.values()
-                 if robot in r.bases), None) or base_of(design, bar)
+                 if robot in r.bases), None) or base_of(process, bar)
     if not approach or base is None:
         return None
     return {"base": base, "approach": approach, "assembled": assembled, "retreat": end(release, f"{p}_R_retreat")}
@@ -276,18 +276,18 @@ def arm_groups(joints: Dict[str, float]) -> Dict[str, dict]:
     return out
 
 
-def changed_since_planning(design_now: Design, solutions: dict, package_dirs=()) -> List[str]:
-    """The solved actions that differ in a design held in memory (e.g. the Rhino document now) from what was planned.
+def changed_since_planning(process_now: Process, solutions: dict, package_dirs=()) -> List[str]:
+    """The solved actions that differ in a process held in memory (e.g. the Rhino document now) from what was planned.
 
-    Compares each action's hash in `design_now` (`design.design_hashes`, nothing written) with the one its solution
-    recorded (`solved_against.action`). ? Only action hashes: `design.json` records the producer (commit, command), so
+    Compares each action's hash in `process_now` (`process.process_hashes`, nothing written) with the one its solution
+    recorded (`solved_against.action`). ? Only action hashes: `process.json` records the producer (commit, command), so
     its hash differs between any two exports.
 
     Returns:
-        list[str]: Action ids, sorted: changed since planning, or no longer in the design.
+        list[str]: Action ids, sorted: changed since planning, or no longer in the process.
     """
-    from bar_assembly_core.design import design_hashes
+    from bar_assembly_core.process import process_hashes
 
-    _design_hash, actions = design_hashes(design_now, package_dirs)
+    _process_hash, actions = process_hashes(process_now, package_dirs)
     return sorted(action_id for action_id, solution in solutions.items()
                   if actions.get(action_id) != solution.solved_against.action)

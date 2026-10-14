@@ -178,7 +178,7 @@ def _run_update_preview():
 def _stale_ik_line(stale):
     """The popup's line on stale IK; `stale` is None when the document could not be checked."""
     if stale is None:
-        return "  saved IK NOT checked -- the document cannot become a design (see the command history)"
+        return "  saved IK NOT checked -- the document cannot become a process (see the command history)"
     return (f"  {len(stale)} bar(s) with STALE IK (yellow) -- the saved pose no longer reaches the bar's tools; "
             "re-run RSIKKeyframe")
 

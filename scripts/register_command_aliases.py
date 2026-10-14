@@ -53,7 +53,7 @@ _EXTRA_COMMANDS = [("RSShowLog", '! _-ScriptEditor _R "rs_show_log.py"')]
 
 # Commands that no longer exist: their aliases (full and short) are deleted, or they would run a missing script.
 _REMOVED_COMMANDS = ["RSRebuildRobotCell", "RSPBStart", "RSPBStartGUI", "RSPBStop", "RSExportRobotCell",
-                     "RSExportBarAction", "RSExportAllBarActions"]
+                     "RSExportBarAction", "RSExportAllBarActions", "RSExportDesign", "RSCheckDesign"]
 
 
 def _macro_entries(rui_path: str):

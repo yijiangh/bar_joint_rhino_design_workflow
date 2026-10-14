@@ -1,20 +1,20 @@
 #! python 3
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
-"""RSLoadSolvedBarAction - Read a design folder's planned solutions back into the document, then view them.
+"""RSLoadSolvedBarAction - Read a process folder's planned solutions back into the document, then view them.
 
-The planner (``scripts/plan_design.py``) writes ``<design folder>/solutions/``.
+The planner (``scripts/plan_process.py``) writes ``<process folder>/solutions/``.
 This button reads them through the shared core and, for every bar whose insert
 is solved, writes the keyframe the plan ended at back onto the bar's user text --
-the base frame (the planner's, else the design's) and the approach / assembled /
+the base frame (the planner's, else the process's) and the approach / assembled /
 retreat configs (the ends of the transfer, the insert and the retreat) -- so
-RSIKKeyframe, the keyframe viewer and the next RSExportDesign agree with the plan.
+RSIKKeyframe, the keyframe viewer and the next RSExportProcess agree with the plan.
 Then it opens RSShowBarActionPlan on the loaded bars: their keyframe poses, or
 their planned motion.
 
 Left-click (this script): pick ONE bar. Right-click
 (``rs_load_solved_bar_action_all.py``): every bar with a solved insert.
 
-The design folder is shared with RSExportDesign / RSCheckDesign (the last one
+The process folder is shared with RSExportProcess / RSCheckProcess (the last one
 used is offered).
 """
 
@@ -63,26 +63,26 @@ def load_and_view(batch: bool) -> None:
     viewer = importlib.reload(viewer)
     config = importlib.reload(_config_module)
     store = importlib.reload(_keyframe_store_module)
-    from bar_assembly_core.design import read
-    from bar_assembly_core.design.solutions import is_stale, read_solutions
+    from bar_assembly_core.process import read
+    from bar_assembly_core.process.solutions import is_stale, read_solutions
 
     repair_on_entry(float(config.BAR_RADIUS), "RSLoadSolvedBarAction")
     kind = _prompt_kind()
     if kind is None:
         return
-    folder = viewer.design_folder("RSLoadSolvedBarAction")
+    folder = viewer.process_folder("RSLoadSolvedBarAction")
     if folder is None:
         return
     try:
-        design = read(folder)
-        solutions = read_solutions(design)
+        process = read(folder)
+        solutions = read_solutions(process)
     except Exception as exc:  # noqa: BLE001 -- a broken folder is reported, not raised
         session_log.caught(exc)
-        rs.MessageBox(f"Cannot read the design folder:\n{exc}", 0, "RSLoadSolvedBarAction")
+        rs.MessageBox(f"Cannot read the process folder:\n{exc}", 0, "RSLoadSolvedBarAction")
         return
     if not solutions:
         rs.MessageBox(f"No solutions in\n{os.path.join(folder, 'solutions')}\n\n"
-                      "Plan the design first: python scripts/plan_design.py <design folder>.",
+                      "Plan the process first: python scripts/plan_process.py <process folder>.",
                       0, "RSLoadSolvedBarAction")
         return
 
@@ -90,13 +90,13 @@ def load_and_view(batch: bool) -> None:
     # * Stale against the document as it is now (not only the folder): the actions the model changed since planning.
     try:
         changed = set(viewer.plan_steps.changed_since_planning(
-            viewer.design_from_document("RSLoadSolvedBarAction"), solutions, [config.HUSKY_PKG_PATH]))
+            viewer.process_from_document("RSLoadSolvedBarAction"), solutions, [config.HUSKY_PKG_PATH]))
     except Exception as exc:  # noqa: BLE001 -- a note, never a blocker
         session_log.caught(exc)
         print(f"RSLoadSolvedBarAction: could not compare with the document ({type(exc).__name__}: {exc}).")
         changed = set()
     if batch:
-        bar_ids = sorted({viewer.plan_steps.short(design.actions[a].bar) for a in solutions},
+        bar_ids = sorted({viewer.plan_steps.short(process.actions[a].bar) for a in solutions},
                          key=lambda b: seq_map.get(b, (None, 1e9))[1])
     else:
         rs.UnselectAllObjects()
@@ -112,14 +112,14 @@ def load_and_view(batch: bool) -> None:
     loaded = []
     for bar_id in bar_ids:
         bar = f"bars/{bar_id}"
-        stale = [a for a in (f"{bar_id}_J", f"{bar_id}_R") if a in solutions and is_stale(design, solutions[a])]
+        stale = [a for a in (f"{bar_id}_J", f"{bar_id}_R") if a in solutions and is_stale(process, solutions[a])]
         if stale:
-            print(f"  [note] {bar_id}: stale solution(s) {', '.join(stale)} (the design folder changed since planning).")
+            print(f"  [note] {bar_id}: stale solution(s) {', '.join(stale)} (the process folder changed since planning).")
         moved = sorted(a for a in (f"{bar_id}_J", f"{bar_id}_R") if a in changed)
         if moved:
             print(f"  [note] {bar_id}: SOLUTION STALE: {', '.join(moved)} changed in the document since planning "
                   "(re-export and re-plan before running it).")
-        keyframes = viewer.plan_steps.solved_keyframes(design, solutions, bar)
+        keyframes = viewer.plan_steps.solved_keyframes(process, solutions, bar)
         if keyframes is None:
             print(f"  [x] {bar_id}: no solved insert in the solutions; nothing written.")
             continue
@@ -135,7 +135,7 @@ def load_and_view(batch: bool) -> None:
             print(f"  [note] {bar_id}: no solved retreat; its stored retreat keyframe (if any) is kept as it was.")
         loaded.append(bar_id)
     if not loaded:
-        rs.MessageBox("Nothing loaded: no picked bar has a solved insert in this design folder.",
+        rs.MessageBox("Nothing loaded: no picked bar has a solved insert in this process folder.",
                       0, "RSLoadSolvedBarAction")
         return
     print(f"RSLoadSolvedBarAction: wrote the solved keyframes of {len(loaded)} bar(s) to user text: "

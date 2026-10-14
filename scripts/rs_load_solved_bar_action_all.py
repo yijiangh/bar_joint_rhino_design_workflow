@@ -2,7 +2,7 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSLoadSolvedBarActionAll - Right-click companion of RSLoadSolvedBarAction.
 
-Reads EVERY bar's solved plan from a design folder's ``solutions/`` (instead of one
+Reads EVERY bar's solved plan from a process folder's ``solutions/`` (instead of one
 picked bar), writes each bar's solved keyframes to its user text, and launches
 RSShowBarActionPlan -- which then draws every loaded bar's base frame at once (the
 assembly-wide map) and steps through them with NextBar/PrevBar. Shares

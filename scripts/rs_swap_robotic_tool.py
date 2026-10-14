@@ -19,7 +19,7 @@ that pair:
        the document (a preview would rebake a changed tool by itself anyway)
 
 The planning cells need no rebuild: the next IK command or viewer reads the
-document into a design with the new tools, and the core rebuilds each cell
+document into a process with the new tools, and the core rebuilds each cell
 whose tools changed.
 
 Nothing is changed until the pre-flight checks pass: both sides of the pair

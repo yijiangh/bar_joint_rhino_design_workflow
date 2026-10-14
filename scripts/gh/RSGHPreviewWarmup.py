@@ -2,7 +2,7 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSGHPreviewWarmup -- one-shot robot pre-loader for RSGHSequencePreview.
 
-Click the button ONCE per Rhino session: it reads the document into a design,
+Click the button ONCE per Rhino session: it reads the document into a process,
 loads the three robot models
 (Cindy, Alice, Belle) and bakes their display meshes into the session cache --
 the only heavy work in the preview pipeline.  Clicking again is harmless;

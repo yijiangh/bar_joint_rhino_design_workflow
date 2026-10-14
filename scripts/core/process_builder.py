@@ -1,7 +1,7 @@
 """
-Build a schema 2 design's actions from Rhino's per-bar keyframe records, with one running state through the schedule.
+Build a schema 2 process's actions from Rhino's per-bar keyframe records, with one running state through the schedule.
 
-Rhino-free (numpy and the core only), so pytest covers it. `core.design_source` reads the records from the document.
+Rhino-free (numpy and the core only), so pytest covers it. `core.process_source` reads the records from the document.
 Procedure per action (`docs/schema2_integration.md`):
 
 - J (Cindy): load, place_bar (the operator puts the bar into the tools), grasp, transfer, insert (one movement that drives `tighten`; the bar is built at its end);
@@ -26,7 +26,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.design import (Action, Design, Holder, LineSpec, Movement, RobotState, State, Target,
+from bar_assembly_core.process import (Action, Process, Holder, LineSpec, Movement, RobotState, State, Target,
                                       ToolState)
 from bar_assembly_core.geometry import Pose, compose, invert
 
@@ -100,9 +100,9 @@ class HoldRecord:
 
 @dataclass
 class BuildResult:
-    """The design with its actions, and what the builder had to leave out (one line each)."""
+    """The process with its actions, and what the builder had to leave out (one line each)."""
 
-    design: Design
+    process: Process
     problems: List[str] = field(default_factory=list)
 
 
@@ -124,14 +124,14 @@ def grasp_of(tool0: Pose, body: Pose) -> Pose:
 class Builder:
     """One running state threaded through the schedule; each movement starts where the last one ended."""
 
-    def __init__(self, design: Design, insert_distance: float, retreat_distance: float, support_distance: float):
+    def __init__(self, process: Process, insert_distance: float, retreat_distance: float, support_distance: float):
         """Start with every robot and tool absent, and the ground and the obstacles present."""
-        self.design = design
+        self.process = process
         self.insert_distance, self.retreat_distance = insert_distance, retreat_distance
         self.support_distance = support_distance
-        grounds = frozenset(body for body in design.bodies if body.startswith(("ground/", "obstacles/")))
-        tools = {tool: None for robot in design.robots.values() for tool in robot.tools.values()}
-        self.state = State(robots={robot: None for robot in design.robots}, present=grounds, tools=tools)
+        grounds = frozenset(body for body in process.bodies if body.startswith(("ground/", "obstacles/")))
+        tools = {tool: None for robot in process.robots.values() for tool in robot.tools.values()}
+        self.state = State(robots={robot: None for robot in process.robots}, present=grounds, tools=tools)
         self.movements: List[Movement] = []
 
     def emit(self, id_: str, label: str, target: Optional[Target] = None, **parts) -> None:
@@ -188,7 +188,7 @@ class Builder:
         p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
         tools = {r.tools[a]: ToolState("open", None) for a in arms}
         self.arrive(r.robot, r.base, tools)
-        bar_pose = self.design.bodies[r.bar].pose
+        bar_pose = self.process.bodies[r.bar].assembly_pose
         approach_links = {a: shifted(r.tool0[a], r.insert_direction, -self.insert_distance) for a in arms}
 
         def joints(values: Optional[Joints]) -> Dict[str, Joints]:
@@ -267,13 +267,13 @@ class Builder:
         self.set(robots=robots, tools=tools)
 
 
-def build_actions(design: Design, schedule: Sequence[Tuple[str, str]], bars: Dict[str, BarRecord],
+def build_actions(process: Process, schedule: Sequence[Tuple[str, str]], bars: Dict[str, BarRecord],
                   holds: Dict[str, HoldRecord], *, insert_distance: float = 0.015, retreat_distance: float = 0.05,
                   support_distance: float = 0.1) -> BuildResult:
-    """Add the actions and the schedule to a design that holds its robots, tools, bodies and mates.
+    """Add the actions and the schedule to a process that holds its robots, tools, bodies and mates.
 
     Args:
-        design: The design without actions.
+        process: The process without actions.
         schedule: (kind, bar id) in execution order; kind is "J", "R", "H" or "HR".
         bars: Bar id -> its record, for J and R.
         holds: Held bar id -> its record, for H and HR.
@@ -286,14 +286,14 @@ def build_actions(design: Design, schedule: Sequence[Tuple[str, str]], bars: Dic
       lacks its tools looks the same.
 
     Returns:
-        BuildResult: The design, and one line per bar placed by hand and per hold left out (no record).
+        BuildResult: The process, and one line per bar placed by hand and per hold left out (no record).
     """
-    builder = Builder(design, insert_distance, retreat_distance, support_distance)
+    builder = Builder(process, insert_distance, retreat_distance, support_distance)
     actions: Dict[str, Action] = {}
     order: List[str] = []
     problems: List[str] = []
     for kind, bar in schedule:
-        if kind in ("J", "R") and bar not in bars and bar in design.bodies:
+        if kind in ("J", "R") and bar not in bars and bar in process.bodies:
             if kind == "J":
                 first = len(builder.movements)
                 builder.placing(bar)
@@ -320,7 +320,7 @@ def build_actions(design: Design, schedule: Sequence[Tuple[str, str]], bars: Dic
                                     movements=tuple(builder.movements[first:]), ground=tuple(record.ground),
                                     supports_until=tuple(supports), label=_label(kind, bar, record.robot))
         order.append(action_id)
-    return BuildResult(replace(design, actions=actions, schedule=tuple(order), folder=None), problems)
+    return BuildResult(replace(process, actions=actions, schedule=tuple(order), folder=None), problems)
 
 
 def _label(kind: str, bar: str, robot: str) -> str:

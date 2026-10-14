@@ -1,6 +1,6 @@
 """IK for a support robot's single arm, on any compas_fab planner: in Rhino, a mirror's lent planner.
 
-The planner's cell and the template state come from the core (`design_planning.hold_solve_state`); nothing here
+The planner's cell and the template state come from the core (`process_planning.hold_solve_state`); nothing here
 builds a cell. The arm group is `config.SUPPORT_GROUP`. Frames come in as 4x4 world matrices in mm.
 
 - Needs compas_fab and husky_assembly_tamp (frame conversion, collision-pair naming).
@@ -91,7 +91,7 @@ def enumerate_support_ik_candidates(planner, template_state, base_frame_world_mm
 
     The same gradient solver as `solve_support_ik`, with collision checks off; each solution is then checked with a
     full report. No candidates: the target is out of reach from this base. Candidates that all collide: reachable but
-    blocked, and the offenders say by what (named by the cell's keys: design ids on a mirror).
+    blocked, and the offenders say by what (named by the cell's keys: process ids on a mirror).
 
     Returns:
         dict: `{"n_reachable": int, "candidates": [{"index", "state", "in_collision", "summary", "offenders",

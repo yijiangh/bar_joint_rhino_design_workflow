@@ -284,8 +284,8 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
 
 
 @session_log.timed()
-def _solve_one(design, ctx, include_self, include_env, base_search="single", soups=None, moved=None):
-    """Solve one bar's chain on Cindy's mirror, from the design's scenes, at its placed base. True on success.
+def _solve_one(process, ctx, include_self, include_env, base_search="single", soups=None, moved=None):
+    """Solve one bar's chain on Cindy's mirror, from the process's scenes, at its placed base. True on success.
 
     Args:
         base_search (str): what to try after the placed base fails, as RSIKKeyframe does (the one
@@ -297,13 +297,13 @@ def _solve_one(design, ctx, include_self, include_env, base_search="single", sou
     """
     bar_id, curve, base_frame = ctx[0], ctx[1], ctx[2]
     try:
-        mirror, movements = ikf.design_planning.keyframe_movements(design, sc.sticky, f"bars/{bar_id}")
+        mirror, movements = ikf.process_planning.keyframe_movements(process, sc.sticky, f"bars/{bar_id}")
         with mirror.lend() as planner:
             solved, used_base = ikf._solve_chain_with_sampling(
                 planner, movements, base_frame,
                 brep_id=None, heading_mm=None,
                 include_self=include_self, include_env=include_env,
-                viz=None, urdf=design.robots[design.actions[f"{bar_id}_J"].robot].urdf,
+                viz=None, urdf=process.robots[process.actions[f"{bar_id}_J"].robot].urdf,
                 base_search=base_search, soups=soups, command="RSIKKeyframeAll",
             )
         if solved is not None and moved is not None:
@@ -328,7 +328,7 @@ def _support_resolve_pass(include_self, include_env):
     """Re-solve every hold whose grasp and base picks are stored, then check every release.
 
     Runs after the assembly loop. For every bar in the hold plan (in hold-start
-    order): if its grasp and base picks are stored (so the design holds the hold),
+    order): if its grasp and base picks are stored (so the process holds the hold),
     its support IK is re-solved NON-interactively at the stored base, on the
     support robot's mirror in the hold's scene; otherwise it is listed for the
     single-bar interactive flow. Grasps are never auto-picked.
@@ -350,20 +350,20 @@ def _support_resolve_pass(include_self, include_env):
         return [], [], [("<hold plan>", str(exc))]
     if not hold_plan:
         return [], [], []
-    design = ikf._core_design("RSIKKeyframeAll")
+    process = ikf._core_process("RSIKKeyframeAll")
     resolved, need_pick, failed = [], [], []
     check_collision = bool(include_self or include_env)
     for bar_id in sorted(hold_plan, key=lambda b: hold_plan[b]["hold_start_seq"]):
         oid = bar_map[bar_id][0]
         grasp_raw = rs.GetUserText(oid, config.KEY_SUPPORT_GRASP_FRAME)
         base_raw = rs.GetUserText(oid, config.KEY_SUPPORT_BASE_FRAME)
-        if not grasp_raw or not base_raw or f"{bar_id}_H" not in design.actions:
+        if not grasp_raw or not base_raw or f"{bar_id}_H" not in process.actions:
             need_pick.append(bar_id)
             continue
         robot_name = hold_plan[bar_id]["robot_name"]
         print(f"RSIKKeyframeAll: re-solving {robot_name}'s hold on {bar_id} ...")
         try:
-            mirror, template = ikf.design_planning.hold_solve_state(design, sc.sticky, f"bars/{bar_id}")
+            mirror, template = ikf.process_planning.hold_solve_state(process, sc.sticky, f"bars/{bar_id}")
             grasp_mm = np.asarray(json.loads(grasp_raw), dtype=float)
             base_mm = np.asarray(json.loads(base_raw), dtype=float)
             tool0_mm = grasp_mm @ np.asarray(config.BAR_GRASP_TO_TOOL0["Robotiq"], dtype=float)
@@ -379,8 +379,8 @@ def _support_resolve_pass(include_self, include_env):
             held_cfg = support_ik.extract_group_config(held, config.SUPPORT_GROUP, mirror.cell)
             if check_collision:
                 # * The hold must also clear its release scene (what was built while it held).
-                found = ikf.design_planning.hold_release_collisions(
-                    design, sc.sticky, f"bars/{bar_id}", ikf.design_source.pose_from_mm(base_mm),
+                found = ikf.process_planning.hold_release_collisions(
+                    process, sc.sticky, f"bars/{bar_id}", ikf.process_source.pose_from_mm(base_mm),
                     dict(zip(held_cfg["joint_names"], held_cfg["joint_values"])),
                     dict(zip(approach_cfg["joint_names"], approach_cfg["joint_values"])))
                 if found:
@@ -734,11 +734,11 @@ def main():
             )
             return
 
-        # One collision-option prompt for the whole batch, showing the design's
-        # body count. The design is built once, after the bases and tool sides
+        # One collision-option prompt for the whole batch, showing the process's
+        # body count. The process is built once, after the bases and tool sides
         # are settled (they are in it).
-        design = ikf._core_design("RSIKKeyframeAll")
-        opts = ikf._ask_collision_options(env_count=len(design.bodies), offer_base_search=True)
+        process = ikf._core_process("RSIKKeyframeAll")
+        opts = ikf._ask_collision_options(env_count=len(process.bodies), offer_base_search=True)
         if opts is None:
             print("RSIKKeyframeAll: cancelled at collision options (bases still saved).")
             rs.MessageBox(
@@ -764,7 +764,7 @@ def main():
             print(f"RSIKKeyframeAll: solving {bar_id} ({i}/{total}) ...")
             bar_soups = (rwg._bar_ground_soups(curve, grounds, soup_cache=soup_cache)
                          if base_search == "optimise" else None)
-            ok = _solve_one(design, ctx, include_self, include_env,
+            ok = _solve_one(process, ctx, include_self, include_env,
                             base_search=base_search, soups=bar_soups, moved=moved)
             if ok:
                 solved_ids.append(bar_id)

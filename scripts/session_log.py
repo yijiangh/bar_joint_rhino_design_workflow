@@ -2,7 +2,7 @@
 
 One text file per Rhino session, in `<repo>/logs/` (or `RS_LOG_DIR`), written line by line and flushed, so it
 survives a crash. Every command script runs its `main` through `run`; nothing is logged outside a command (tests,
-`plan_design.py`, Grasshopper), where `step`, `timed`, `ask` and `caught` cost one `if`.
+`plan_process.py`, Grasshopper), where `step`, `timed`, `ask` and `caught` cost one `if`.
 
 What a command's block holds, in order of time:
 

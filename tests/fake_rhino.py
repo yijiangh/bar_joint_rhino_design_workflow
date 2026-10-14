@@ -1,4 +1,4 @@
-"""A tiny fake of the Rhino API (`rhinoscriptsyntax`, `scriptcontext`, `Rhino`): just what `core.design_source` calls.
+"""A tiny fake of the Rhino API (`rhinoscriptsyntax`, `scriptcontext`, `Rhino`): just what `core.process_source` calls.
 
 `install(doc)` puts the fake modules into `sys.modules`; `doc` holds the objects. Units are mm. Walkable ground is a
 horizontal rectangle at z = 0.
@@ -155,7 +155,7 @@ def install(doc: Doc) -> None:
 def uninstall() -> List[str]:
     """Remove the fake modules and every `core` module that imported them."""
     names = ["rhinoscriptsyntax", "scriptcontext", "Rhino"] + [
-        n for n in sys.modules if n.startswith("core.rhino") or n in ("core.design_source",)]
+        n for n in sys.modules if n.startswith("core.rhino") or n in ("core.process_source",)]
     for name in names:
         sys.modules.pop(name, None)
     return names

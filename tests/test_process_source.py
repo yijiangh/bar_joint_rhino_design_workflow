@@ -1,6 +1,6 @@
-"""`core.design_source` on a fake Rhino document (`fake_rhino`): three bars, a hold, a fake bar, one walkable ground.
+"""`core.process_source` on a fake Rhino document (`fake_rhino`): three bars, a hold, a fake bar, one walkable ground.
 
-Same layout as `test_design_builder.py`, but read through the Rhino API as RSExportDesign does, in mm.
+Same layout as `test_process_builder.py`, but read through the Rhino API as RSExportProcess does, in mm.
 """
 
 import importlib
@@ -10,7 +10,7 @@ import pytest
 
 import fake_rhino
 from fake_rhino import Brep, Doc, Obj
-from test_design_builder import CINDY_URDF, PKG
+from test_process_builder import CINDY_URDF, PKG
 
 pytestmark = pytest.mark.skipif(not CINDY_URDF.is_file(), reason="asset/husky_urdf submodule not checked out")
 
@@ -26,7 +26,7 @@ def _xform(rotation, position) -> np.ndarray:
 
 @pytest.fixture
 def source():
-    """A fake document installed as the Rhino API; yields the `core.design_source` module over it."""
+    """A fake document installed as the Rhino API; yields the `core.process_source` module over it."""
     from core import config, joint_name_conventions as jnc
     from core.robotic_tool import get_active_pair
 
@@ -64,37 +64,37 @@ def source():
     doc.objects[b2].text[config.KEY_SUPPORT_GRASP_FRAME] = str(grasp.tolist())
     fake_rhino.install(doc)
     try:
-        yield importlib.import_module("core.design_source")  # * fresh: uninstall() drops it from sys.modules
+        yield importlib.import_module("core.process_source")  # * fresh: uninstall() drops it from sys.modules
     finally:
         fake_rhino.uninstall()
 
 
-def test_document_becomes_a_valid_design(source, tmp_path):
+def test_document_becomes_a_valid_process(source, tmp_path):
     """Bodies, mates, robots and actions; written and read back with no A or B errors."""
-    from bar_assembly_core.design import write
-    from bar_assembly_core.design.plan_check import check_plan
+    from bar_assembly_core.process import write
+    from bar_assembly_core.process.plan_check import check_plan
 
-    result = source.RhinoDesignSource("RSExportDesign").build()
-    design = write(result.design, tmp_path / "design", package_dirs=[PKG])
-    assert design.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B3_J", "B3_R", "B2_HR")
-    assert "bars/B4" not in design.bodies and "joints/J4-3_female" not in design.bodies
+    result = source.RhinoProcessSource("RSExportProcess").build()
+    process = write(result.process, tmp_path / "process", package_dirs=[PKG])
+    assert process.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B3_J", "B3_R", "B2_HR")
+    assert "bars/B4" not in process.bodies and "joints/J4-3_female" not in process.bodies
     assert any("fake bars" in p for p in result.problems)
-    assert ("joints/J1-2_female", "joints/J1-2_male") in design.mates
-    assert ("ground/WG0", "joints/G1-T20-0_ground") in design.mates
-    assert design.bodies["joints/J1-2_male"].part == "T20/Male" and design.bodies["joints/J1-2_male"].mount == \
+    assert ("joints/J1-2_female", "joints/J1-2_male") in process.mates
+    assert ("ground/WG0", "joints/G1-T20-0_ground") in process.mates
+    assert process.bodies["joints/J1-2_male"].part == "T20/Male" and process.bodies["joints/J1-2_male"].mount == \
         "bars/B2"
-    bar = design.bodies["bars/B1"]
-    assert np.allclose(bar.pose.position, (0.5, 0.0, 0.05)) and bar.geometry.collision[0].height == pytest.approx(1)
-    assert design.producer.command == "RSExportDesign"
-    insert = design.actions["B1_J"].movements[-1]
+    bar = process.bodies["bars/B1"]
+    assert np.allclose(bar.assembly_pose.position, (0.5, 0.0, 0.05)) and bar.geometry.collision[0].height == pytest.approx(1)
+    assert process.producer.command == "RSExportProcess"
+    insert = process.actions["B1_J"].movements[-1]
     assert np.allclose(insert.line["robots/cindy/left_ur_arm_tool0"].direction, (0, 0, -1))
-    report = check_plan(design)
+    report = check_plan(process)
     assert report.ok, report.errors
 
 
 def test_keyframe_groups_merge():
     """Rhino's per-arm keyframe record becomes one joint map; a support record is one group."""
-    from core.design_source import joints_from_groups
+    from core.process_source import joints_from_groups
 
     groups = {"left": {"joint_names": ["a", "b"], "joint_values": [1, 2]},
               "right": {"joint_names": ["c"], "joint_values": [3]}}
@@ -103,37 +103,37 @@ def test_keyframe_groups_merge():
     assert joints_from_groups(None) is None
 
 
-@pytest.mark.parametrize("name, actions", [("YH_ik_test.3dm", 2), ("examples/Example4_two_box.3dm", 36)])
+@pytest.mark.parametrize("name, actions", [("YH_ik_test.3dm", 5), ("examples/Example4_two_box.3dm", 45)])
 def test_real_documents_write(name, actions, tmp_path):
-    """Real documents (read with rhino3dm) become designs that pass the file checks; bars without tools are named."""
+    """Real documents (read with rhino3dm) become processes that pass the file checks; bars without tools are named."""
     pytest.importorskip("rhino3dm")
     from pathlib import Path
-    from bar_assembly_core.design import write
+    from bar_assembly_core.process import write
 
     fake_rhino.install(fake_rhino.doc_from_3dm(Path(__file__).resolve().parents[1] / name))
     try:
-        result = importlib.import_module("core.design_source").RhinoDesignSource("RSExportDesign").build()
+        result = importlib.import_module("core.process_source").RhinoProcessSource("RSExportProcess").build()
     finally:
         fake_rhino.uninstall()
-    design = write(result.design, tmp_path / "design", package_dirs=[PKG])
-    assert len(design.actions) == actions
+    process = write(result.process, tmp_path / "process", package_dirs=[PKG])
+    assert len(process.actions) == actions
     assert any("needs a left and a right tool" in p for p in result.problems)
 
 
 def test_geometry_cache_keeps_objects(source):
     """Two builds with one cache share every Geometry, Tool and robot model; a resized bar gets a new Geometry."""
-    from bar_assembly_core.design.scenes import design_model
+    from bar_assembly_core.process.scenes import process_model
 
     store = {}
-    first = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
-    second = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
+    first = source.RhinoProcessSource("x", source.geometry_cache(store)).build().process
+    second = source.RhinoProcessSource("x", source.geometry_cache(store)).build().process
     assert all(second.bodies[b].geometry is first.bodies[b].geometry for b in first.bodies)
     assert len({id(body.geometry) for body in first.bodies.values()}) == len(first.bodies)  # never shared
     assert all(second.tools[t] is first.tools[t] for t in first.tools)
-    assert design_model(second, "robots/cindy") is design_model(first, "robots/cindy")
+    assert process_model(second, "robots/cindy") is process_model(first, "robots/cindy")
     rs = __import__("rhinoscriptsyntax")
     b1 = next(oid for oid in rs.AllObjects() if rs.GetUserText(oid, "bar_id") == "B1")
     rs.coercerhinoobject(b1).end = (900, 0, 50)
-    third = source.RhinoDesignSource("x", source.geometry_cache(store)).build().design
+    third = source.RhinoProcessSource("x", source.geometry_cache(store)).build().process
     assert third.bodies["bars/B1"].geometry is not first.bodies["bars/B1"].geometry
     assert third.bodies["bars/B2"].geometry is first.bodies["bars/B2"].geometry

@@ -1,6 +1,6 @@
 #! python 3
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
-"""RSCheckDesign - read a schema 2 design folder and print its file checks (A) and plan checks (B).
+"""RSCheckProcess - read a schema 2 process folder and print its file checks (A) and plan checks (B).
 
 The core (`external/bar_assembly_core`) does both: `read` runs A1-A13 and refuses a broken folder, `check_plan` runs
 B1-B14. Needs no PyBullet, compas_fab or tamp.
@@ -25,11 +25,11 @@ rhino_env.activate()
 import session_log  # noqa: E402
 
 from core import core_lib  # noqa: E402,F401  (puts bar_assembly_core on sys.path; never reloaded)
-from bar_assembly_core.design import DesignError, read  # noqa: E402
-from bar_assembly_core.design.plan_check import check_plan  # noqa: E402
+from bar_assembly_core.process import ProcessError, read  # noqa: E402
+from bar_assembly_core.process.plan_check import check_plan  # noqa: E402
 
-#: Last design folder, shared with RSExportDesign.
-DESIGN_FOLDER_STICKY_KEY = "bar_joint:design_folder"
+#: Last process folder, shared with RSExportProcess.
+PROCESS_FOLDER_STICKY_KEY = "bar_joint:process_folder"
 #: Messages printed per check before "... and N more".
 SHOWN_PER_CHECK = 6
 
@@ -50,34 +50,34 @@ def report_lines(report) -> list:
 
 
 def check_folder(folder: str) -> tuple:
-    """Read a design folder and plan-check it.
+    """Read a process folder and plan-check it.
 
     Returns:
         tuple: (summary line, printable lines).
     """
     try:
-        design = read(folder)
-    except DesignError as exc:
+        process = read(folder)
+    except ProcessError as exc:
         lines = [f"A (file checks): FAILED, {len(exc.problems)} problem(s)"] + [f"  {p}" for p in exc.problems]
         return f"A failed: {len(exc.problems)} problem(s)", lines
-    report = check_plan(design)
-    n = sum(len(a.movements) for a in design.actions.values())
-    lines = [f"design {folder}: {len(design.bodies)} bodies, {len(design.mates)} mates, {len(design.actions)} actions,"
+    report = check_plan(process)
+    n = sum(len(a.movements) for a in process.actions.values())
+    lines = [f"process {folder}: {len(process.bodies)} bodies, {len(process.mates)} mates, {len(process.actions)} actions,"
              f" {n} movements", "A (file checks): passed"] + report_lines(report)
     return f"A passed; B {len(report.errors)} error(s), {len(report.warnings)} warning(s)", lines
 
 
 def main() -> None:
-    last = sc.sticky.get(DESIGN_FOLDER_STICKY_KEY)
+    last = sc.sticky.get(PROCESS_FOLDER_STICKY_KEY)
     folder = rs.BrowseForFolder(folder=last if last and os.path.isdir(last) else None,
-                                message="Select a design folder (it holds design.json)", title="RSCheckDesign")
+                                message="Select a process folder (it holds process.json)", title="RSCheckProcess")
     if not folder:
-        print("RSCheckDesign: cancelled.")
+        print("RSCheckProcess: cancelled.")
         return
-    sc.sticky[DESIGN_FOLDER_STICKY_KEY] = folder
+    sc.sticky[PROCESS_FOLDER_STICKY_KEY] = folder
     summary, lines = check_folder(folder)
-    print("RSCheckDesign:\n" + "\n".join(lines))
-    rs.MessageBox(f"{summary}\n\nDetails in the command history.", 0, "RSCheckDesign")
+    print("RSCheckProcess:\n" + "\n".join(lines))
+    rs.MessageBox(f"{summary}\n\nDetails in the command history.", 0, "RSCheckProcess")
 
 
 if __name__ == "__main__":

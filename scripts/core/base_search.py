@@ -42,7 +42,7 @@ class HomeCheck:
     solve will see.
 
     Attributes:
-        available (bool): False when the design has no home configuration: every base then passes, unmeasured.
+        available (bool): False when the process has no home configuration: every base then passes, unmeasured.
         calls (int): How many bases were checked.
     """
 

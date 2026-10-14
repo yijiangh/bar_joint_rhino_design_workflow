@@ -10,7 +10,7 @@ whole requirements file with ONE pip call into a folder this module owns, named 
   sometimes rebuilt `scaffolding_env` from scratch.
 - The install goes to `<folder>.partial` and is renamed when pip succeeds: the folder exists only when complete.
   A changed requirements file gives a new folder, so a package Rhino has loaded is never overwritten.
-- Outside Rhino (pytest, `plan_design.py`) `activate()` does nothing: those use the Python they run in.
+- Outside Rhino (pytest, `plan_process.py`) `activate()` does nothing: those use the Python they run in.
 - Needs only the standard library; Rhino's API only for messages, when it is there.
 """
 

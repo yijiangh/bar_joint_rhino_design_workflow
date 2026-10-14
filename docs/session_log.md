@@ -64,7 +64,7 @@ indented steps ran inside the step above and are already counted in it, so only 
 ## For developers
 
 `scripts/session_log.py` holds everything; it needs the standard library only and does nothing outside a command
-(tests, `plan_design.py`, Grasshopper).
+(tests, `plan_process.py`, Grasshopper).
 
 | Call | Use |
 | --- | --- |

@@ -60,7 +60,7 @@ BAR_TYPE_VALUE = "scaffolding_bar"
 # joint halves) so the joint math and the sequence display keep working.
 #
 # ! It is NOT collision geometry: the fake bar and every joint half mounted on
-# it (its females) are left out of the design (`core.design_source`), so of
+# it (its females) are left out of the process (`core.process_source`), so of
 # every collision scene -- assembly and support alike.  Only the real bar's
 # male half, which is parented to the real bar, survives.
 #
@@ -879,7 +879,7 @@ def sequence_colors(active_bar_id, bar_map=None, highlight_supports=True):
     The same rules and precedence as :func:`show_sequence_colors` paints with
     (built / unstable / active / unbuilt, then fake, then the active bar's
     supports), for callers that colour something other than the document's own
-    bars: the plan viewers hide the tube previews and draw the design's meshes
+    bars: the plan viewers hide the tube previews and draw the process's meshes
     instead, so they colour those.
 
     - ! Keep the two in step: a rule changed there changes here.
@@ -1961,12 +1961,12 @@ def find_stale_ik_bars(caller="RSScaffolding"):
     """The fabricated bars whose saved IK no longer reaches its target in the document as it is now.
 
     The core decides (plan check B15, through ``core.ik_status``): the document
-    is read into a design and each saved pose is compared with the flange poses
+    is read into a process and each saved pose is compared with the flange poses
     the placed tools ask for.
 
     Returns:
         dict | None: ``{bar_id: reason}`` in sequence order; None when the
-        document cannot become a design, so nothing can be said.
+        document cannot become a process, so nothing can be said.
     """
     from core.ik_status import document_stale_ik  # noqa: PLC0415 -- needs the core; keep this module import-light
 

@@ -3,19 +3,19 @@
 """RSShowAssemblyPlan - Step through the WHOLE assembly, pose by pose.
 
 RSShowBarActionPlan shows ONE bar's steps. This is the same viewer with every
-bar's steps concatenated in the design's schedule order (``core.plan_steps``), so
+bar's steps concatenated in the process's schedule order (``core.plan_steps``), so
 Enter walks the build from the first bar to the last:
 
     B20 approach -> B20 assembled -> B20 retreat -> B20 home
     -> B21 approach -> B21 assembled -> B21 hold -> B21 retreat -> B21 home
     -> ... -> B37 home -> B37 release B21 -> B37 release B35 -> ...
 
-Each step is a moment of the design (a movement's start or end), drawn with the
+Each step is a moment of the process (a movement's start or end), drawn with the
 robots exactly where the schedule has them: holders from earlier bars stand
 frozen throughout, a bar's own holder joins at its "hold" step, and a hold's
 release plays right after its last stabilizing bar.
 
-Bars that the design leaves out (fake, or without a left and a right tool), or
+Bars that the process leaves out (fake, or without a left and a right tool), or
 whose keyframe is unsolved, add no assembly steps and are listed up front.
 
 Command line: Enter/Next advances, Prev goes back, Jump asks for a step index,
@@ -73,7 +73,7 @@ def _show(session, idx, bar_map):
         # about 0.5 s apiece with the robots on screen, and `refresh` below redraws anyway.
         rs.EnableRedraw(False)
         try:
-            viewer.draw_base_frames(session.design, [bar_id])  # replaces the previous bar's marker
+            viewer.draw_base_frames(session.process, [bar_id])  # replaces the previous bar's marker
             session._show_walkable_grounds()
         finally:
             with session_log.step("viewport redraw"):
@@ -116,8 +116,8 @@ def main() -> None:
         rs.MessageBox("No registered bars in this document.", 0, "RSShowAssemblyPlan")
         return
 
-    design = viewer.design_from_document("RSShowAssemblyPlan")
-    steps, skipped = viewer.plan_steps.timeline(design)
+    process = viewer.process_from_document("RSShowAssemblyPlan")
+    steps, skipped = viewer.plan_steps.timeline(process)
     if not steps:
         rs.MessageBox(
             "No bar in this document has a solved IK keyframe, so there is "
@@ -127,18 +127,18 @@ def main() -> None:
         return
 
     # Say what is NOT in the walkthrough, rather than quietly dropping it.
-    in_design = {viewer.plan_steps.short(a.bar) for a in design.actions.values()}
-    left_out = sorted((b for b in bar_map if b not in in_design), key=lambda b: bar_map[b][1])
-    holds = [a for a in design.actions.values() if a.type == "bar_holding"]
+    in_process = {viewer.plan_steps.short(a.bar) for a in process.actions.values()}
+    left_out = sorted((b for b in bar_map if b not in in_process), key=lambda b: bar_map[b][1])
+    holds = [a for a in process.actions.values() if a.type == "bar_holding"]
     print(f"RSShowAssemblyPlan: {len(steps)} step(s) across "
-          f"{len({s.bar for s in steps})} bar(s); {len(holds)} hold(s) in the design.")
+          f"{len({s.bar for s in steps})} bar(s); {len(holds)} hold(s) in the process.")
     for bar, reason in skipped:
         print(f"  - {viewer.plan_steps.short(bar)}: {reason}")
     if left_out:
-        print(f"RSShowAssemblyPlan: not in the design (fake, or no tool pair): {', '.join(left_out)}")
+        print(f"RSShowAssemblyPlan: not in the process (fake, or no tool pair): {', '.join(left_out)}")
 
-    session = viewer.PlanSession(design, "RSShowAssemblyPlan")
-    session.views = viewer.keyframe_views(design, steps)
+    session = viewer.PlanSession(process, "RSShowAssemblyPlan")
+    session.views = viewer.keyframe_views(process, steps)
     try:
         _show(session, 0, bar_map)
         while True:
@@ -155,7 +155,7 @@ def main() -> None:
                 target = _first_step_of(session, picked_bar)
                 if target is None:
                     print("RSShowAssemblyPlan: picked bar has no steps in this timeline "
-                          "(not in the design, or no solved IK keyframe).")
+                          "(not in the process, or no solved IK keyframe).")
                     continue
                 _show(session, target, bar_map)
                 continue

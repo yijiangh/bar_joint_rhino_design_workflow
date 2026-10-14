@@ -30,7 +30,7 @@ the average of the bar's male-joint blocks' +Z (their insertion axis).
 
 The ghost robot is FK-only (no PyBullet): its link meshes are harvested once at
 the home pose via ``core.ik_viz.robot_meshes`` from the core's geometry, with
-only the robot shown (``core.design_display.robot_scene``),
+only the robot shown (``core.process_display.robot_scene``),
 and drawn translucent through ``core.dynamic_preview.mesh_preview`` -- the same
 style as the IK base-sampling ghost -- rigidly transformed onto the computed base
 frame.
@@ -61,9 +61,9 @@ from core import dynamic_preview as _dynamic_preview_module
 from core import ik_viz as _ik_viz_module
 from core import rhino_walkable_ground as _walkable_rhino_module
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_builder as _design_builder_module
-from core import design_display as _design_display_module
-from core import design_source as _design_source_module
+from core import process_builder as _process_builder_module
+from core import process_display as _process_display_module
+from core import process_source as _process_source_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 from core.rhino_helpers import np_mm_to_xform
@@ -90,12 +90,12 @@ def _reload():
     file. Mirrors the reload pattern in the other RS* commands.
     """
     global base_frame_viz, config, dynamic_preview, ik_viz
-    global walkable_rhino, design_display, design_source
+    global walkable_rhino, process_display, process_source
     config = importlib.reload(_config_module)
     walkable_rhino = importlib.reload(_walkable_rhino_module)
-    importlib.reload(_design_builder_module)
-    design_source = importlib.reload(_design_source_module)
-    design_display = importlib.reload(_design_display_module)
+    importlib.reload(_process_builder_module)
+    process_source = importlib.reload(_process_source_module)
+    process_display = importlib.reload(_process_display_module)
     ik_viz = importlib.reload(_ik_viz_module)
     base_frame_viz = importlib.reload(_base_frame_viz_module)
     dynamic_preview = importlib.reload(_dynamic_preview_module)
@@ -137,8 +137,8 @@ def _compute_default_base_frame_mm(bar_id, bar_oid, grounds_map):
 def _prepare_ghost_meshes():
     """Harvest the assembly robot's visual link meshes at the home pose (for the conduit).
 
-    The document is read into a design (``core.design_source``) and the robot is
-    put alone at the world origin (``core.design_display.robot_scene``), posed at
+    The document is read into a process (``core.process_source``) and the robot is
+    put alone at the world origin (``core.process_display.robot_scene``), posed at
     the home arm configuration; copies of its link and tool meshes are returned
     (``core.ik_viz.robot_meshes``). The conduit later rigidly transforms this whole
     mesh set onto each computed base frame.
@@ -151,13 +151,13 @@ def _prepare_ghost_meshes():
         import scriptcontext as sc
         from bar_assembly_core.urdf import UR_JOINT_NAMES
 
-        result = design_source.RhinoDesignSource(CMD, design_source.geometry_cache(sc.sticky)).build()
-        robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
+        result = process_source.RhinoProcessSource(CMD, process_source.geometry_cache(sc.sticky)).build()
+        robot_id = process_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
         # Home arm pose (left 6 then right 6) so the ghost looks folded, not a
         # scarecrow at the zero configuration.
         home = dict(zip([f"{side}_ur_arm_{j}" for side in ("left", "right") for j in UR_JOINT_NAMES],
                         (float(v) for v in config.HUSKY_DUAL_ARM_HOME_CONF_12)))
-        scene = design_display.robot_scene(result.design, robot_id, home)
+        scene = process_display.robot_scene(result.process, robot_id, home)
         return ik_viz.robot_meshes(scene.robots[robot_id]) or None
     except Exception as exc:  # noqa: BLE001 -- the ghost is an aid, never a blocker
         session_log.caught(exc)

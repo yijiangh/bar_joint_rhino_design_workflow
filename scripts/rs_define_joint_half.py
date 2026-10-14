@@ -584,7 +584,7 @@ def main() -> None:
         clear_tool_attach_cache()
         print(f"{_DIALOG}: saved ground joint '{block_def_name}' to registry.")
 
-    # The planning cells pick the new collision OBJ up by itself: the design
+    # The planning cells pick the new collision OBJ up by itself: the process
     # reads the registry fresh and caches meshes by file content.
     print(f"{_DIALOG}: done.")
 

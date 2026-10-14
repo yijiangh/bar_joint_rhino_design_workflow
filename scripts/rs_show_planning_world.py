@@ -2,7 +2,7 @@
 # Python packages: requirements-rhino.txt, installed and put on sys.path by `rhino_env.activate()` below.
 """RSShowPlanningWorld - Open the assembly robot's planning world in PyBullet's window (debugging).
 
-Reads the document as a design, syncs the scene at the first movement into the assembly robot's planning mirror, and
+Reads the document as a process, syncs the scene at the first movement into the assembly robot's planning mirror, and
 shows that PyBullet world in its own window: what the IK commands check collisions against. Nothing in the document
 changes. RSResetPlanning closes it.
 
@@ -31,9 +31,9 @@ import session_log  # noqa: E402
 
 from core import config as _config_module
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path; never reloaded)
-from core import design_builder as _design_builder_module
-from core import design_planning as _design_planning_module
-from core import design_source as _design_source_module
+from core import process_builder as _process_builder_module
+from core import process_planning as _process_planning_module
+from core import process_source as _process_source_module
 from core.rhino_bar_registry import repair_on_entry
 
 COMMAND = "RSShowPlanningWorld"
@@ -41,30 +41,30 @@ COMMAND = "RSShowPlanningWorld"
 
 def main() -> None:
     config = importlib.reload(_config_module)
-    importlib.reload(_design_builder_module)
-    design_source = importlib.reload(_design_source_module)
-    design_planning = importlib.reload(_design_planning_module)
+    importlib.reload(_process_builder_module)
+    process_source = importlib.reload(_process_source_module)
+    process_planning = importlib.reload(_process_planning_module)
     repair_on_entry(float(config.BAR_RADIUS), COMMAND)
 
     try:
-        result = design_source.RhinoDesignSource(COMMAND, design_source.geometry_cache(sc.sticky)).build()
+        result = process_source.RhinoProcessSource(COMMAND, process_source.geometry_cache(sc.sticky)).build()
     except Exception as exc:  # noqa: BLE001 -- surface any build error to the user
         session_log.caught(exc)
-        rs.MessageBox(f"The document cannot become a design:\n{type(exc).__name__}: {exc}", 0, COMMAND)
+        rs.MessageBox(f"The document cannot become a process:\n{type(exc).__name__}: {exc}", 0, COMMAND)
         return
-    design = result.design
+    process = result.process
     for problem in result.problems:
         print(f"{COMMAND}: {problem}")
-    movement = next((m for _action, m in design.movements()), None)
+    movement = next((m for _action, m in process.movements()), None)
     if movement is None:
-        rs.MessageBox("Nothing to show yet: no bar has a left and a right tool, so the design has no movement.",
+        rs.MessageBox("Nothing to show yet: no bar has a left and a right tool, so the process has no movement.",
                       0, COMMAND)
         return
-    robot_id = design_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
+    robot_id = process_source.robot_id(config.ASSEMBLY_ROBOT_NAME)
     try:
         with session_log.step("open planning world", robot_id):
-            design_planning.mirror_for(sc.sticky, robot_id).set_gui(True)
-            design_planning.sync_seeded(sc.sticky, design.scene_at(movement), robot_id, report_parked=False)
+            process_planning.mirror_for(sc.sticky, robot_id).set_gui(True)
+            process_planning.sync_seeded(sc.sticky, process.scene_at(movement), robot_id, report_parked=False)
     except Exception as exc:  # noqa: BLE001 -- PyBullet allows one window per process, and may have none
         session_log.caught(exc)
         rs.MessageBox(f"Could not open PyBullet's window:\n{type(exc).__name__}: {exc}", 0, COMMAND)

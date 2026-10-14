@@ -2,7 +2,7 @@
 compare compas_fab cells, states and collision pairs. `export_equivalence.py` drives them; only the paths and
 `compare_mirror`'s pair label were changed here. Original description:
 
-Check that the old app, the export loader and the design library hand the planner the same compas_fab objects.
+Check that the old app, the export loader and the process library hand the planner the same compas_fab objects.
 
     python scripts/legacy_equivalence.py <export> [--json out.json] [--no-collisions]
                                             [--timing [--runs 3] [--no-compare]]
@@ -11,15 +11,15 @@ Loaders, each giving one `RobotCell` per acting robot and one `RobotCellState` p
   old     the pre-refactor monitor (husky_assembly_teleop/old): RobotCell.json plus its floor body, and
           Cindy's scheduled actions with the floor state added. It never loaded the Alice/Belle cells.
   new     `legacy.export.load_export`, as loaded.
-With collisions, the export is also converted into a schema 2 design (`convert_export` into a temporary folder,
-`read`), and each movement's scene (`Design.scene_at`) goes through a `CompasFabMirror` for its acting robot; its
+With collisions, the export is also converted into a schema 2 process (`convert_export` into a temporary folder,
+`read`), and each movement's scene (`Process.scene_at`) goes through a `CompasFabMirror` for its acting robot; its
 colliding pairs are compared with the export's own ("new vs mirror"). Movements merged by the conversion (an insert
 run into its tighten) are compared under the first one's id; movements the conversion drops (the untighten opening
 each release) are not compared. Pairs that follow from schema 2's narrower allowed contacts are listed under their
 own kinds (`_narrower`).
 
-Names are mapped to design ids before comparing (`bar_B1`, `env_bar_B1` -> `bars/B1`); the floors (old
-`obstacle_ground`, design `ground/*`) are compared on their own. Each difference kind is listed with its count
+Names are mapped to process ids before comparing (`bar_B1`, `env_bar_B1` -> `bars/B1`); the floors (old
+`obstacle_ground`, process `ground/*`) are compared on their own. Each difference kind is listed with its count
 and examples, and marked as explained (KNOWN) or not.
 ! Loads seven cells of ~350 MB: ~4 GB of memory and ~5 minutes, a third of it PyBullet collision checks.
 ! The `old` loader imports husky_assembly_teleop/old: drop it from this script when old/ is deleted.
@@ -60,8 +60,8 @@ for _path in (REPO / "external" / "bar_assembly_core", REPO / "external" / "comp
         sys.path.insert(0, str(_path))
 
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
-from bar_assembly_core.design import read  # noqa: E402
-from bar_assembly_core.design.relations import bar_of, is_present  # noqa: E402
+from bar_assembly_core.process import read  # noqa: E402
+from bar_assembly_core.process.relations import bar_of, is_present  # noqa: E402
 from bar_assembly_core.mirrors.compas import PARKED_POSITION  # noqa: E402
 from bar_assembly_core.legacy.conversion import convert_export  # noqa: E402
 from bar_assembly_core.legacy.export import body_id, load_export  # noqa: E402
@@ -84,8 +84,8 @@ PAIRS = (("old", "new"),)
 KNOWN = {
     "floor: only in old": "the export has no floor; the old app adds one (old/cfab_session.py:254)",
     "floor pairs: only in old": "pairs with the old app's floor; the export has none (old/cfab_session.py:254)",
-    "floor pairs: only in design": "pairs with design's floor; the export has none (legacy._walkable_ground)",
-    "floor pairs: differ": "old and the mirror check different floors: old's slab tops at z=0, the converted design "
+    "floor pairs: only in process": "pairs with process's floor; the export has none (legacy._walkable_ground)",
+    "floor pairs: differ": "old and the mirror check different floors: old's slab tops at z=0, the converted process "
                            "keeps the 3D polygons (legacy._slab)",
     "pairs allowed by static_contacts": "the mirror allows other robots' tool/body pairs already touching at sync "
                                         "(mirrors/compas_fab.py `_allow_static_contacts`); the export has no such rule",
@@ -194,7 +194,7 @@ class Loaded:
     Attributes:
         cells: Robot id -> cell.
         states: (action id, movement id) -> (acting robot id, start state).
-        keys: Robot id -> cell key -> design id (GROUND for a floor).
+        keys: Robot id -> cell key -> process id (GROUND for a floor).
     """
 
     label: str
@@ -297,10 +297,10 @@ def convert(export: Path, destination: Path) -> Path:
     return convert_export(export, destination, DATA, report=quiet)
 
 
-def name_maps(loaded: Loaded, design) -> None:
-    """Fill `loaded.keys`: each cell key as a design id."""
+def name_maps(loaded: Loaded, process) -> None:
+    """Fill `loaded.keys`: each cell key as a process id."""
     for robot, cell in loaded.cells.items():
-        tools = {tool_id.split("/")[-1]: tool_id for tool_id in design.robots[robot].tools.values()}
+        tools = {tool_id.split("/")[-1]: tool_id for tool_id in process.robots[robot].tools.values()}
         keys = {}
         for key in [*cell.tool_models, *cell.rigid_body_models]:
             if key.startswith("ground/"):
@@ -478,13 +478,13 @@ def compare_parts(category: Category, a: List[Part], b: List[Part], label: str) 
 
 # --- --- --- --- --- CELL COMPARISONS --- --- --- --- ---
 
-#: The export names another robot's welded tool link `<flange>_obstacle_tool`; design `<flange>_tool`.
-WELDED_EXPORT, WELDED_DESIGN = "_obstacle_tool", "_tool"
+#: The export names another robot's welded tool link `<flange>_obstacle_tool`; process `<flange>_tool`.
+WELDED_EXPORT, WELDED_PROCESS = "_obstacle_tool", "_tool"
 
 
 def _same_name(name: str) -> str:
-    """A link or joint name with the export's welded-tool suffix written as design's."""
-    return name.replace(WELDED_EXPORT, WELDED_DESIGN)
+    """A link or joint name with the export's welded-tool suffix written as process's."""
+    return name.replace(WELDED_EXPORT, WELDED_PROCESS)
 
 
 def compare_model(report: Report, pair, a, b, owner: str, category_prefix: str) -> None:
@@ -495,7 +495,7 @@ def compare_model(report: Report, pair, a, b, owner: str, category_prefix: str) 
     problems = []
     renamed = sorted(link.name for link in [*a.links, *b.links] if WELDED_EXPORT in link.name)
     if renamed and {link.name for link in a.links} != {link.name for link in b.links}:
-        problems.append(("other robot: welded tool link named differently", f"{renamed} vs {WELDED_DESIGN}"))
+        problems.append(("other robot: welded tool link named differently", f"{renamed} vs {WELDED_PROCESS}"))
     if a.root.name != b.root.name:
         problems.append(("root differs", f"{a.root.name} vs {b.root.name}"))
     if set(links_a) != set(links_b):
@@ -832,7 +832,7 @@ def compare_kinematics(report: Report, pair, a: Loaded, b: Loaded, key) -> None:
 # --- --- --- --- --- COLLISIONS --- --- --- --- ---
 
 def collision_pairs(loaded: Loaded, robot: str, keys: List[Tuple[str, str]]) -> Dict[Tuple[str, str], set]:
-    """compas_fab's colliding pairs (`check_collision`, full report) per movement, as design ids.
+    """compas_fab's colliding pairs (`check_collision`, full report) per movement, as process ids.
 
     ? Movements without a configuration (M0 starts) are left out: compas_fab cannot place the robot.
     """
@@ -873,7 +873,7 @@ def compare_collisions(report: Report, pair, found: Dict[str, dict]) -> None:
             if floor_x and not floor_y and pair[1] == "new":
                 kind = "floor pairs: only in old"
             elif floor_y and not floor_x and pair[0] == "new":
-                kind = "floor pairs: only in design"
+                kind = "floor pairs: only in process"
             else:
                 kind = "floor pairs: differ"
             problems.append((kind, f"only first {sorted(floor_x - floor_y)}, only second {sorted(floor_y - floor_x)}"))
@@ -882,28 +882,28 @@ def compare_collisions(report: Report, pair, found: Dict[str, dict]) -> None:
 
 
 def _floor(name: str) -> str:
-    """A design id, or GROUND for any floor body."""
+    """A process id, or GROUND for any floor body."""
     return GROUND if name.startswith("ground/") else name
 
 
-def mirror_collisions(design, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
-    """The mirror's colliding pairs per movement: `design.scene_at` synced into a CompasFabMirror per acting robot.
+def mirror_collisions(process, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
+    """The mirror's colliding pairs per movement: `process.scene_at` synced into a CompasFabMirror per acting robot.
 
     Args:
-        design: The design.
+        process: The process.
         keys: (action id, movement id) of the movements to check.
 
     Returns:
-        tuple[dict, dict]: Pairs per movement, as sorted design ids (GROUND for a floor), and the pairs the mirror's
+        tuple[dict, dict]: Pairs per movement, as sorted process ids (GROUND for a floor), and the pairs the mirror's
             `static_contacts` allowed in that movement.
     """
-    movements = {(action.id, movement.id): (action.robot, movement) for action, movement in design.movements()}
+    movements = {(action.id, movement.id): (action.robot, movement) for action, movement in process.movements()}
     found, allowed, mirrors = {}, {}, {}
     try:
         for key in keys:
             robot, movement = movements[key]
             mirror = mirrors.get(robot) or mirrors.setdefault(robot, CompasFabMirror(robot))
-            mirror.sync(design.scene_at(movement))
+            mirror.sync(process.scene_at(movement))
             found[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.collisions(full_report=True)}
             allowed[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.static_contacts}
     finally:
@@ -912,7 +912,7 @@ def mirror_collisions(design, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]:
     return found, allowed
 
 
-def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, design,
+def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, process,
                    pair: Tuple[str, str] = ("new", "mirror")) -> None:
     """The export's pairs against the mirror's, every pair listed.
 
@@ -920,7 +920,7 @@ def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, de
     (`_narrower`), are told apart.
     """
     category = report.category(pair, "collision pairs")
-    movements = {(action.id, movement.id): movement for action, movement in design.movements()}
+    movements = {(action.id, movement.id): movement for action, movement in process.movements()}
     for key in sorted(set(export) & set(mirror)):
         x, y = export[key], mirror[key]
         floor_x, floor_y = {p for p in x if GROUND in p}, {p for p in y if GROUND in p}
@@ -928,44 +928,44 @@ def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, de
         problems = []
         kinds = defaultdict(list)
         for pair in sorted((x - floor_x - hidden) - y):
-            kinds[_narrower(design, movements[key].start, pair, only_export=True)].append(pair)
+            kinds[_narrower(process, movements[key].start, pair, only_export=True)].append(pair)
         for pair in sorted((y - floor_y) - x):
-            kinds[_narrower(design, movements[key].start, pair, only_export=False)].append(pair)
+            kinds[_narrower(process, movements[key].start, pair, only_export=False)].append(pair)
         for kind, pairs in kinds.items():
             problems.append((kind, f"{sorted(pairs)}"))
         if hidden - floor_x:
             problems.append(("pairs allowed by static_contacts", f"{sorted(hidden - floor_x)}"))
         if floor_x != floor_y:
-            kind = "floor pairs: only in design" if not floor_x else "floor pairs: differ"
+            kind = "floor pairs: only in process" if not floor_x else "floor pairs: differ"
             problems.append((kind, f"only export {sorted(floor_x - floor_y)}, only mirror {sorted(floor_y - floor_x)}"))
         category.add(key[1], problems)
         category.deviation("pairs per state", max(len(x), len(y)))
 
 
-def _narrower(design, state, pair: Tuple[str, str], only_export: bool) -> str:
+def _narrower(process, state, pair: Tuple[str, str], only_export: bool) -> str:
     """Why one pair differs between the export and the mirror, as a KNOWN kind, or "pairs only in the core" if unexplained."""
     a, b = pair
     if only_export:
-        bars = [side if side.startswith("bars/") else bar_of(design, side) for side in pair
+        bars = [side if side.startswith("bars/") else bar_of(process, side) for side in pair
                 if side.startswith(("bars/", "joints/"))]
-        early = any(bar is not None and not is_present(design, state, bar) for bar in bars)
+        early = any(bar is not None and not is_present(process, state, bar) for bar in bars)
         return EXPORT_EARLY_BAR if early else "pairs only in the old export"
-    partner = {side: other for mate in design.mates for side, other in (mate, mate[::-1])}
+    partner = {side: other for mate in process.mates for side, other in (mate, mate[::-1])}
     tool = next((side for side in pair if side.startswith("tools/")), None)
     body = b if tool == a else a
     on = state.tools[tool].on if tool is not None and state.tools.get(tool) else None
     if tool is not None and body.startswith("bars/"):
         holders = {holder.to for holder in state.attached.get(body, ())}
-        flange = next((f"{robot_id}/{link}" for robot_id, robot in design.robots.items()
+        flange = next((f"{robot_id}/{link}" for robot_id, robot in process.robots.items()
                        for link, mounted in robot.tools.items() if mounted == tool), None)
-        works_on = flange in holders or (on is not None and bar_of(design, on) == body)
+        works_on = flange in holders or (on is not None and bar_of(process, on) == body)
         return NARROW_HELD if works_on else "pairs only in the core"
     if tool is not None and body.startswith("joints/"):
         return NARROW_MATE_TOOL if on is not None and partner.get(on) == body else "pairs only in the core"
     if {a.split("/")[0], b.split("/")[0]} == {"bars", "joints"}:
         bar, half = (a, b) if a.startswith("bars/") else (b, a)
         mated = partner.get(half)
-        return NARROW_MATE_BAR if mated is not None and bar_of(design, mated) == bar else "pairs only in the core"
+        return NARROW_MATE_BAR if mated is not None and bar_of(process, mated) == bar else "pairs only in the core"
     return "pairs only in the core"
 
 
@@ -975,8 +975,8 @@ def run(export: Path, collisions: bool = True, log: Callable[[str], None] = prin
     """Load the export with all three loaders and compare every pair."""
     export = Path(export).expanduser().resolve()
     with TemporaryDirectory() as tmp:
-        # ! The converted design stays until the end: the mirror loads its robot files late.
-        return _run(export, Path(tmp) / "design", collisions, log)
+        # ! The converted process stays until the end: the mirror loads its robot files late.
+        return _run(export, Path(tmp) / "process", collisions, log)
 
 
 def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None]) -> Report:
@@ -984,16 +984,16 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
     report = Report()
     log("converting")
     convert(export, folder)
-    log("loading: design")
-    design = read(folder)
+    log("loading: process")
+    process = read(folder)
     log("loading: export loader")
     loaded = {"new": load_new(export)}
     log("loading: old app")
     loaded["old"] = load_old(export)
     for each in loaded.values():
-        name_maps(each, design)
+        name_maps(each, process)
     report.notes.append(f"{export.name}: old covers {sorted(loaded['old'].cells)} "
-                        f"({len(loaded['old'].states)} movements); new and design cover {sorted(loaded['new'].cells)} "
+                        f"({len(loaded['old'].states)} movements); new and process cover {sorted(loaded['new'].cells)} "
                         f"({len(loaded['new'].states)} movements)")
     report.notes.append(f"tolerances: joints {JOINT_TOL}, frames {FRAME_TOL} m / rad, mesh points {MESH_TOL} m, "
                         f"areas and volumes {RELATIVE_TOL} relative")
@@ -1018,11 +1018,11 @@ def _run(export: Path, folder: Path, collisions: bool, log: Callable[[str], None
         report.notes.append(f"collisions: {skipped} movements without a configuration are not checked")
         for pair in PAIRS:
             compare_collisions(report, pair, found)
-        movements = {(action.id, movement.id) for action, movement in design.movements()}
+        movements = {(action.id, movement.id) for action, movement in process.movements()}
         keys = [key for key in found["new"] if key in movements]
         log(f"collisions: mirror ({len(keys)} states)")
-        found["mirror"], allowed = mirror_collisions(design, keys)
-        compare_mirror(report, found["new"], found["mirror"], allowed, design)
+        found["mirror"], allowed = mirror_collisions(process, keys)
+        compare_mirror(report, found["new"], found["mirror"], allowed, process)
         report.notes.append(f"mirror: {sum(map(len, found['mirror'].values()))} colliding pairs over {len(keys)} "
                             f"movements; export: {sum(len(found['new'][key]) for key in keys)}")
     return report
@@ -1048,14 +1048,14 @@ def step_new(export: str) -> dict:
     return _timed(lambda watch: load_new(Path(export), watch))
 
 
-def step_design(design: str) -> dict:
-    """Time `read` of the converted design."""
-    return _timed(lambda watch: (read(Path(design)), watch.lap("read")))
+def step_process(process: str) -> dict:
+    """Time `read` of the converted process."""
+    return _timed(lambda watch: (read(Path(process)), watch.lap("read")))
 
 
-def step_convert(export: str, design: str) -> dict:
+def step_convert(export: str, process: str) -> dict:
     """Time `convert_export`."""
-    return _timed(lambda watch: convert_export(Path(export), Path(design), DATA, report=quiet, watch=watch))
+    return _timed(lambda watch: convert_export(Path(export), Path(process), DATA, report=quiet, watch=watch))
 
 
 def run_step(name: str, *args: str) -> Tuple[dict, float]:
@@ -1081,9 +1081,9 @@ def timing(export: Path, runs: int) -> dict:
     with TemporaryDirectory() as tmp:
         for i in range(runs):
             print(f"timing run {i + 1}/{runs}", file=sys.stderr)
-            steps = (("convert", str(export), str(Path(tmp) / f"design_{i}")), ("old", str(export)),
-                     ("new", str(export)), ("design", str(Path(tmp) / f"design_{i}")),
-                     ("design_cindy", str(Path(tmp) / f"design_{i}")))
+            steps = (("convert", str(export), str(Path(tmp) / f"process_{i}")), ("old", str(export)),
+                     ("new", str(export)), ("process", str(Path(tmp) / f"process_{i}")),
+                     ("process_cindy", str(Path(tmp) / f"process_{i}")))
             for name, *args in steps:
                 step, process = run_step(name, *args)
                 times[name].append(step["seconds"])

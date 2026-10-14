@@ -3,9 +3,9 @@
 The keyframes on the bar curves (`core.keyframe_store`) are world values: a robot base and joints. Nothing moves them
 when the bar, a connector or a tool is moved afterwards, or when the bar is copied with its user text. The core
 decides: `plan_check.unreached_targets` (plan check B15) compares each target's joints with the flange poses the
-target asks for, which `core.design_source` reads from the document as it is now.
+target asks for, which `core.process_source` reads from the document as it is now.
 
-- `stale_ik_bars(design)` is Rhino-free; `document_stale_ik` reads the open document first.
+- `stale_ik_bars(process)` is Rhino-free; `document_stale_ik` reads the open document first.
 - ! The verdict is computed from the document every time, never saved on the bars: a saved flag would go stale too.
 - ? It says the saved pose misses its target, not that it collides: a bar added next to a solved one changes the
   scene, not the target. The collision check of the viewers (CheckCollision) answers that.
@@ -18,8 +18,8 @@ from typing import Dict, Iterable, List, Optional
 import session_log
 
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
-from bar_assembly_core.design import Design
-from bar_assembly_core.design.plan_check import UnreachedTarget, unreached_targets
+from bar_assembly_core.process import Process
+from bar_assembly_core.process.plan_check import UnreachedTarget, unreached_targets
 
 #: Action id suffix -> what the action is, for messages.
 _ROLES = {"J": "assembly", "R": "assembly", "H": "hold", "HR": "hold"}
@@ -29,7 +29,7 @@ def stale_from(misses: Iterable[UnreachedTarget]) -> Dict[str, str]:
     """The core's unreached targets as `{bar id: reason}`, e.g. `{"B25": "assembly pose misses its target by 5.9 m"}`.
 
     Args:
-        misses: `unreached_targets(design)` or a `PlanReport.unreached`.
+        misses: `unreached_targets(process)` or a `PlanReport.unreached`.
     """
     worst: Dict[str, Dict[str, UnreachedTarget]] = {}
     for miss in misses:
@@ -53,29 +53,29 @@ def _how_far(miss: UnreachedTarget) -> str:
 
 
 @session_log.timed("check saved IK against the document (core B15)")
-def stale_ik_bars(design: Design) -> Dict[str, str]:
-    """`{bar id: reason}` of the bars whose saved IK does not reach its target in this design; empty when all do."""
-    return stale_from(unreached_targets(design))
+def stale_ik_bars(process: Process) -> Dict[str, str]:
+    """`{bar id: reason}` of the bars whose saved IK does not reach its target in this process; empty when all do."""
+    return stale_from(unreached_targets(process))
 
 
 def document_stale_ik(command: str = "RSScaffolding") -> Optional[Dict[str, str]]:
     """`stale_ik_bars` of the open document.
 
     Returns:
-        dict | None: None when the document cannot become a design (duplicate ids, a broken block): the reason is
+        dict | None: None when the document cannot become a process (duplicate ids, a broken block): the reason is
         printed, and nothing can be said about its saved IK.
     """
     import scriptcontext as sc  # noqa: PLC0415
 
-    from core import design_source  # noqa: PLC0415
-    from bar_assembly_core.design import DesignError  # noqa: PLC0415
+    from core import process_source  # noqa: PLC0415
+    from bar_assembly_core.process import ProcessError  # noqa: PLC0415
 
     try:
-        result = design_source.RhinoDesignSource(command, design_source.geometry_cache(sc.sticky)).build()
-        return stale_ik_bars(result.design)
-    except DesignError as exc:
+        result = process_source.RhinoProcessSource(command, process_source.geometry_cache(sc.sticky)).build()
+        return stale_ik_bars(result.process)
+    except ProcessError as exc:
         session_log.caught(exc)
-        print(f"{command}: saved IK not checked, the document cannot become a design: "
+        print(f"{command}: saved IK not checked, the document cannot become a process: "
               + "; ".join(getattr(exc, "problems", None) or [str(exc)]))
     except Exception as exc:  # noqa: BLE001 -- a report must never end the command that asks for it
         session_log.caught(exc)

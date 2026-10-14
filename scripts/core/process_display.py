@@ -1,14 +1,14 @@
 """
-Draw a design's scenes in Rhino: what `core.ik_viz` draws of a core `Scene`, part by part.
+Draw a process's scenes in Rhino: what `core.ik_viz` draws of a core `Scene`, part by part.
 
-A scene comes from the design (`Design.scene_at`, `scene_after`); `place` moves a robot in it (a solved keyframe, a
+A scene comes from the process (`Process.scene_at`, `scene_after`); `place` moves a robot in it (a solved keyframe, a
 trajectory row, a ghost at the origin); `drawn_parts` says what of it is shown, and where. No PyBullet and no
 compas: the Grasshopper preview uses this too.
 
 - Parts are the core's (`bar_assembly_core.scene.scene_parts`): bodies, robot links with shapes
   ("robots/cindy/<link>") and mounted tools ("tools/<robot>/<name>", at their flange). Their `Geometry` objects are shared
   and never change, so `ik_viz` bakes a part again only when its object does.
-- ! Build the design with the same geometry cache every time (`design_source.geometry_cache`), or every body's
+- ! Build the process with the same geometry cache every time (`process_source.geometry_cache`), or every body's
   geometry is new and is baked again.
 """
 
@@ -124,23 +124,23 @@ def drawn_parts(scene: Scene, acting: Iterable[str] = (), hide_bodies: bool = Fa
     return out
 
 
-def robot_scene(design, robot_id: str, joints: Optional[Mapping[str, float]] = None) -> Scene:
-    """A scene of one design robot alone at the world origin (every body hidden), even before any action exists.
+def robot_scene(process, robot_id: str, joints: Optional[Mapping[str, float]] = None) -> Scene:
+    """A scene of one process robot alone at the world origin (every body hidden), even before any action exists.
 
     Args:
-        design: The design.
+        process: The process.
         robot_id: The robot shown; the others are absent.
         joints: Its joint values (default 0).
     """
-    from bar_assembly_core.design.scenes import design_model
+    from bar_assembly_core.process.scenes import process_model
     from bar_assembly_core.robot import RobotObject
     from bar_assembly_core.scene import Body
 
-    robots = {rid: RobotObject(rid, design_model(design, rid), Pose(), {}, enabled=rid == robot_id,
+    robots = {rid: RobotObject(rid, process_model(process, rid), Pose(), {}, enabled=rid == robot_id,
                                label=spec.name)
-              for rid, spec in design.robots.items()}
-    bodies = {bid: Body(bid, spec.geometry, spec.pose, label=spec.label, enabled=False)
-              for bid, spec in design.bodies.items()}
+              for rid, spec in process.robots.items()}
+    bodies = {bid: Body(bid, spec.geometry, spec.assembly_pose, label=spec.label, enabled=False)
+              for bid, spec in process.bodies.items()}
     scene = Scene(bodies=bodies, robots=robots)
     place(scene, robot_id, Pose(), joints or {})
     return scene

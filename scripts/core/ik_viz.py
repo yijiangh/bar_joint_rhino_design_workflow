@@ -3,7 +3,7 @@
 What this module owns
 ---------------------
 For each ``layer_key`` (one preview, e.g. "Assembly" or "SupportSolve") it keeps one entry per part of the scene,
-keyed by the part's id (``core.design_display.drawn_parts``, from the core's ``scene_parts``): bodies ("bars/B3"),
+keyed by the part's id (``core.process_display.drawn_parts``, from the core's ``scene_parts``): bodies ("bars/B3"),
 robot links with shapes ("robots/cindy/left_ur_arm_wrist_3_link") and mounted tools ("tools/cindy/AT3L"). Each part is
 baked into the Rhino document ONCE, a visual and a collision mesh, each named by the part's id, on the sub-layers
 ``LAYER_IK_CACHE::<layer_key>::Visual`` and ``::Collision``. No compas: the meshes come from the core's `Geometry`.
@@ -12,7 +12,7 @@ How the meshes move
 -------------------
 :func:`update_state` moves each part's objects by the change in its transform since the last call, and hides the
 parts the scene does not show (disabled bodies, robots that are absent or parked, see
-``design_display.parked``). A part is baked again only when its `Geometry` object changes (the core shares them and
+``process_display.parked``). A part is baked again only when its `Geometry` object changes (the core shares them and
 never changes one); parts whose id leaves the scene are deleted, new ids are baked. Switching between the visual
 and the collision meshes is a sub-layer visibility flip -- nothing is baked again.
 
@@ -23,7 +23,7 @@ Session lifecycle
   :func:`end_session` hides the cache layer and restores them.
 * :func:`update_state` draws a scene on one layer key; the other layer keys are hidden (one preview at a time).
 * :func:`set_active_mesh_mode` flips which mesh set is visible.
-* :func:`objects_of` finds the drawn objects of design ids (offender highlighting); :func:`robot_meshes` copies a
+* :func:`objects_of` finds the drawn objects of process ids (offender highlighting); :func:`robot_meshes` copies a
   robot's meshes for a see-through ghost without touching the document.
 * :func:`end_session` leaves the geometry in place, so the next session only moves it;
   :func:`discard_cache` deletes everything (hard reset).
@@ -508,7 +508,7 @@ def update_state(
             and mounted tools); every other part is drawn in its layer's colour. None: no part is coloured,
             and parts an earlier call coloured go back to the layer's.
     """
-    from core.design_display import drawn_parts
+    from core.process_display import drawn_parts
 
     # ? The `session_log.step`s named "viz: ..." only time this function's stages (a step under 0.02 s is not logged).
     with session_log.step("viz: layers and old previews"):
@@ -655,13 +655,13 @@ def set_active_mesh_mode(layer_key: Optional[str], mesh_mode: str) -> None:
 
 
 def objects_of(ids: Iterable[str], layer_key: Optional[str], mesh_mode: str) -> List:
-    """The Rhino objects drawn for design ids on one preview, in one mesh mode (e.g. collision offenders).
+    """The Rhino objects drawn for process ids on one preview, in one mesh mode (e.g. collision offenders).
 
     An id is a part ("bars/B3", "tools/cindy/AT3L", "robots/cindy/left_ur_arm_wrist_3_link"), or a robot
     ("robots/alice": every link and tool it carries). Ids drawn nowhere (a link without shapes) give nothing.
 
     Args:
-        ids: The design ids.
+        ids: The process ids.
         layer_key (str | None): the preview.
         mesh_mode (str): ``"visual"`` or ``"collision"``.
     """
@@ -685,7 +685,7 @@ def robot_meshes(robot, mesh_mode: str = MESH_MODE_VISUAL) -> List:
     Parts without shapes of `mesh_mode` give their other mesh instead.
 
     Args:
-        robot: A core `RobotObject`, e.g. from ``design_display.ghost_scene``.
+        robot: A core `RobotObject`, e.g. from ``process_display.ghost_scene``.
         mesh_mode (str): which meshes to copy.
     """
     from bar_assembly_core.scene import robot_parts

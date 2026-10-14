@@ -4,7 +4,7 @@ What this module owns
 ---------------------
 For each ``layer_key`` (one preview, e.g. "Assembly" or "SupportSolve") it keeps one entry per part of the scene,
 keyed by the part's id (``core.design_display.drawn_parts``, from the core's ``scene_parts``): bodies ("bars/B3"),
-robot links with shapes ("robots/cindy/left_ur_arm_wrist_3_link") and mounted tools ("tools/AT3L"). Each part is
+robot links with shapes ("robots/cindy/left_ur_arm_wrist_3_link") and mounted tools ("tools/cindy/AT3L"). Each part is
 baked into the Rhino document ONCE, a visual and a collision mesh, each named by the part's id, on the sub-layers
 ``LAYER_IK_CACHE::<layer_key>::Visual`` and ``::Collision``. No compas: the meshes come from the core's `Geometry`.
 
@@ -647,7 +647,7 @@ def set_active_mesh_mode(layer_key: Optional[str], mesh_mode: str) -> None:
 def objects_of(ids: Iterable[str], layer_key: Optional[str], mesh_mode: str) -> List:
     """The Rhino objects drawn for design ids on one preview, in one mesh mode (e.g. collision offenders).
 
-    An id is a part ("bars/B3", "tools/AT3L", "robots/cindy/left_ur_arm_wrist_3_link"), or a robot
+    An id is a part ("bars/B3", "tools/cindy/AT3L", "robots/cindy/left_ur_arm_wrist_3_link"), or a robot
     ("robots/alice": every link and tool it carries). Ids drawn nowhere (a link without shapes) give nothing.
 
     Args:

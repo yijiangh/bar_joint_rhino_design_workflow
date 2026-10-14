@@ -81,7 +81,7 @@ KNOWN: Dict[str, str] = {
     "tool state: attached tool has a frame": "compas_fab ignores a frame on an attached tool",
     "tool state: attachment_frame None vs identity": "compas_fab reads an empty attachment frame as identity",
     # * Contacts: written by hand in the old plugin, derived in the core. The collision check compares the outcome.
-    "tool state: touch_links differ": "the core lists the flange links a tool is mounted on (`mount_contacts`)",
+    "tool state: touch_links differ": "the core lets a tool touch the last links of its arm (`urdf.TOOL_TOUCHES_ARM_LINKS`)",
     "body state: touch_bodies differ": "allowed contacts are derived in the core (format 8.4) and listed on both "
                                        "bodies; the old plugin wrote them per movement. See the colliding pairs",
     "body state: touch_bodies mirrored": "the same contact listed on the other body",

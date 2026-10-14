@@ -60,7 +60,8 @@ Rhino all the way to a real robot:
 Every compas_fab cell -- in Rhino, in the planner and on the robot -- is built
 by the core from the design's scenes (`Design.scene_at` ->
 `bar_assembly_core.mirrors`): a `CompasFabMirror` (its own PyBullet world) to
-plan and check collisions, a `CompasFabCell(visual=True)` to draw. The plugin
+plan and check collisions; drawing goes part by part from the core's scene
+(`scene_parts`), with no cell. The plugin
 never builds a cell from Rhino objects. See
 [docs/schema2_integration.md](docs/schema2_integration.md).
 
@@ -152,7 +153,7 @@ upstream commit, `cd external/<submodule> && git fetch && git checkout <sha>`,
 then reload Rhino's Python engine.
 
 The remaining dependencies (`compas`, `compas_robots`, `pybullet`,
-`pybullet_planning`, `roslibpy`, `trimesh`, plus `numpy` / `scipy`) come from
+`pybullet_planning`, `roslibpy`, `trimesh`, `yourdfpy`, plus `numpy` / `scipy`) come from
 [requirements-rhino.txt](requirements-rhino.txt) (see step 3 above). Do **not**
 add `compas_fab` or `bar_assembly_core` to it -- that would bypass the
 submodules and silently shadow them.

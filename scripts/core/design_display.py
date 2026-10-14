@@ -6,7 +6,7 @@ trajectory row, a ghost at the origin); `drawn_parts` says what of it is shown, 
 compas: the Grasshopper preview uses this too.
 
 - Parts are the core's (`bar_assembly_core.scene.scene_parts`): bodies, robot links with shapes
-  ("robots/cindy/<link>") and mounted tools ("tools/<name>", at their flange). Their `Geometry` objects are shared
+  ("robots/cindy/<link>") and mounted tools ("tools/<robot>/<name>", at their flange). Their `Geometry` objects are shared
   and never change, so `ik_viz` bakes a part again only when its object does.
 - ! Build the design with the same geometry cache every time (`design_source.geometry_cache`), or every body's
   geometry is new and is baked again.

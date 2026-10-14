@@ -151,7 +151,7 @@ def keyframe_movements(design: Design, store: dict, bar: str, log=print) -> Tupl
         mirror = sync_seeded(store, design.scene_at(m), robot_id, log=log, why=short(bar),
                              report_parked=role == "M1")
         out[role] = SimpleNamespace(start_state=mirror.state.copy(), target_configuration=None,
-                                    target_ee_frames={side: frame_from_pose(m.target.links[link])
+                                    target_ee_frames={side: frame_from_pose(m.target.link_poses[link])
                                                       for side, link in flanges.items()})
     home = movement(design, bar, "R", "R_home").target.joints.get(robot_id)
     out["M4"] = SimpleNamespace(start_state=out["M3"].start_state, target_ee_frames={},

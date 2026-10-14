@@ -1,17 +1,17 @@
 # Schema 2: export, planning and viewing through the shared core
 
-Branch `claude/schema2-core`, 2026-10-08/09. The plugin writes **schema 2 design folders** through the shared core
+Branch `claude/schema2-core`, 2026-10-08 to 10-13. The plugin writes **schema 2 design folders** through the shared core
 `bar_assembly_core` (submodule `external/bar_assembly_core`), runs the core's file checks (A) and plan checks (B), and
 **plans and draws on the core**. Spec: `external/bar_assembly_core/doc/design_format.md`.
 
 **The core is the only design → compas_fab interface.** The plugin reads the Rhino document into a `Design`
 (`core.design_source`); every compas_fab cell and state it uses comes from the core, built from the design's scenes
-(`Design.scene_at`):
+(`Design.scene_at`). Drawing uses no compas_fab at all:
 
 - `bar_assembly_core.mirrors.compas_fab.CompasFabMirror`: one PyBullet world per robot, to plan and check collisions;
   its planner is lent to the tamp and compas_fab solvers;
-- `bar_assembly_core.mirrors.cell.CompasFabCell(visual=True)`: the same cell with visual meshes and no PyBullet, to
-  draw (`core.design_display`, `core.ik_viz`).
+- the core's `Scene` and `scene_parts`: what `core.design_display` and `core.ik_viz` draw, part by part, without a
+  cell.
 
 The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_collision`, `ik_collision_setup`,
 `bar_action`, `hold_action_builder`), the old JSON export (`RobotCell.json`, `BarActions/`, `ActionSchedule.json`,
@@ -21,13 +21,13 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 
 | Piece | Where | State |
 | --- | --- | --- |
-| Core as a pinned submodule | `external/bar_assembly_core` (jeliag/bar_assembly_core `90cad0d`, origin/main: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
+| Core as a pinned submodule | `external/bar_assembly_core` (jeliag/bar_assembly_core `03a18e1`: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
 | Document → `Design` | `core/design_source.py`, `RhinoDesignSource(command, cache).build()`; also records each body's Rhino object (`SourceResult.objects`) | tested on a fake document and on `YH_ik_test.3dm` and `examples/Example4_two_box.3dm` (rhino3dm) |
-| Keyframe records → actions | `core/design_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, the `parts` catalogue | pytest: an unsolved three-bar design with a hold passes A and B, no B11 `on` errors |
+| Keyframe records → actions | `core/design_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, `pose_in_tcp` per kind of half (`poses_in_tcp`) | pytest: an unsolved three-bar design with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the design on every command | |
-| `RSExportDesign`, `RSCheckDesign` | `rs_export_design.py`, `rs_check_design.py` | builds, writes, copies `source/`, prints A and B |
-| `RSIKKeyframe`, `RSIKKeyframeAll` | `core/design_planning.py` (`keyframe_movements`, `hold_solve_state`, `release_check`, `state_scene`), `core/support_ik.py`; previews by `core/ik_viz.py` | headless: tamp's `solve_keyframe_chain` and compas_fab support IK solve through the mirrors; **not run in Rhino** |
-| `RSShowBarActionPlan`, `RSShowAssemblyPlan` | `core/plan_steps.py` (poses → design moments), each step's scene drawn by `core/ik_viz.py`; CheckCollision and the jog dialog on the mirrors (`design_planning.scene_collisions`) | steps tested headless; **not run in Rhino** |
+| `RSExportDesign`, `RSCheckDesign` | `rs_export_design.py`, `rs_check_design.py` | builds, writes, copies `source/`, prints A and B; run in Rhino 8 on 2026-10-13 (`261008_2ModulesDemo.3dm`, session logs): 204 bodies, 60 mates, 78 actions, 306 movements written in 2 to 4 s |
+| `RSIKKeyframe`, `RSIKKeyframeAll` | `core/design_planning.py` (`keyframe_movements`, `hold_solve_state`, `release_check`, `state_scene`), `core/support_ik.py`; previews by `core/ik_viz.py` | headless: tamp's `solve_keyframe_chain` and compas_fab support IK solve through the mirrors; run in Rhino 8 on 2026-10-13 (`261008_2ModulesDemo.3dm`, session logs), including the base search, the chain solve and the support re-solve pass |
+| `RSShowBarActionPlan`, `RSShowAssemblyPlan` | `core/plan_steps.py` (poses → design moments), each step's scene drawn by `core/ik_viz.py`; CheckCollision and the jog dialog on the mirrors (`design_planning.scene_collisions`) | steps tested headless; run in Rhino 8 on 2026-10-13 (`261008_2ModulesDemo.3dm`, session logs) |
 | Motion viewer (`RSShowBarActionPlan` right-click), `RSLoadSolvedBarAction(All)` | read `<design>/solutions/` (`plan_steps.trajectory_frames`, `solved_keyframes`); RSLoadSolvedBarAction also says `SOLUTION STALE` for actions the open document changed since planning (`design_hashes` of the document's design vs `solved_against`) | tested headless; **not run in Rhino** |
 | Grasshopper preview + warm-up | `core/gh_seq_preview.py`, `core/gh_warmup.py`: the timeline of the document's design drawn by `ik_viz`, no compas, no PyBullet | **not run in Grasshopper** |
 | `RSResetPlanning`, `RSShowPlanningWorld` | close the core's mirrors and caches and stop the ssik sidecar; open Cindy's mirror in PyBullet's window. The walkable-ground auto-assign and base seeding run on entry to the IK, preview and export commands (`ensure_ground_and_base`) | |
@@ -55,15 +55,16 @@ compas, no PyBullet. Every core import needs yourdfpy (in `requirements-rhino.tx
 
 | Action | Movements |
 | --- | --- |
-| `B10_J` | `load` (free, target null), `mount` (operator; bar attached to both flanges; target puts the tools `on` their halves), `grasp` (grip closed), `transfer` (free, coupled), `insert` (linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; bar built) |
-| `B10_R` | `ungrasp` (form B: grips open, `drives: loosen`, bar released, stays built), `retreat` (per-arm linear along each half's −z; target clears `on`), `home` |
+| `B10_J` | `load` (free, target null), `place_bar` (operator; bar attached to both flanges; target puts the tools `on` their halves), `grasp` (grip closed), `transfer` (free, coupled), `insert` (linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; bar built) |
+| `B10_R` | `ungrasp` (form B: grips open, `drives: loosen`, bar released, stays built), `retreat` (per-arm linear along each half's −z; target clears `on`), `home`; then Cindy drives away (`null` until her next J) |
 | `B3_H` | `approach` (free), `open`, `to_grasp` (linear along the flange z; target puts the gripper `on` the bar), `close` (Alice holds the built bar too) |
 | `B3_HR` | `open` (Alice lets go), `retreat` (linear; target clears `on`), `leave` (free, target null: planned live); then Alice drives away (`null`) |
 
-`on` lives in targets only, never changes between movements (B11). The design's `parts` catalogue
-(`design_builder.parts_catalogue`, from `joint_pairs.json`): every male part with its TCP at the block
-(`T20/Male`, `T20Deck12/Male`, identity seat), every ground joint with its seat = `M_tool_from_block`⁻¹ (`T20/Ground`:
-180° about z); receivers get no tool in Rhino's flow, so no seat.
+`on` lives in targets only, never changes between movements (B11). Every half a tool acts on carries
+`pose_in_tcp`, its pose in the frame of that tool's TCP (`design_builder.poses_in_tcp`, from `joint_pairs.json`):
+identity for male halves (`T20/Male`, `T20Deck12/Male`: the TCP is at the block), `M_tool_from_block`⁻¹ for ground
+halves (`T20/Ground`: 180° about z). Receivers get no tool in Rhino's flow, so no `pose_in_tcp`; a tool put on one
+is a B14 error.
 
 ## The plan viewers show the core's state
 
@@ -133,7 +134,7 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
   its cell only when a `Geometry`, `Tool` or robot model object changes; the geometry cache keeps those objects while
   the document is unchanged. Measured headless on `YH_ik_test.3dm`: first mirror sync 1.5 s, next command 0.04 s.
 - Drawing (`core/ik_viz.py`) has no cell: it draws a core `Scene` part by part (`design_display.drawn_parts`, from the
-  core's `scene_parts`), keyed by layer key and part id ("bars/B3", "robots/cindy/<link>", "tools/AT3L"). Each part is
+  core's `scene_parts`), keyed by layer key and part id ("bars/B3", "robots/cindy/<link>", "tools/cindy/AT3L"). Each part is
   baked once (visual and collision mesh, on `IK Cache::<key>::Visual` / `::Collision`, named by its id) and then moved
   by the change in its transform; a part is baked again only when its `Geometry` object changes. Robots that are
   absent, whose base is unknown, or (other than the acting one) whose joints are unknown are hidden, with what they
@@ -162,9 +163,9 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 | Cindy's tool per flange = the variant placed most often (fallback: the active pair) | Schema 2 has one tool per flange; the wrong TCP gives false B14 errors. Bars placed with another variant are listed |
 | Insert direction: mean of the two flange z axes; ground bars: against the walkable ground's normal | As the legacy builder (approach = assembled − direction × 15 mm) |
 | Retreat: each flange along its half's −z, 50 mm; support approach and retreat 100 mm along the flange z | The distances come from `config` |
-| Cindy's grasp = flange⁻¹ · bar from the placed tool blocks; Alice's from forward kinematics of the held keyframe when solved | B14 checks TCP × seat × mount |
+| Cindy's grasp = flange⁻¹ · bar from the placed tool blocks; Alice's from forward kinematics of the held keyframe when solved | B14 checks TCP × the half's `pose_in_tcp` × mount |
 | Home joints from `HUSKY_DUAL_ARM_HOME_CONF_12` | As before |
-| Bars without a left and a right tool are left out (J and R) and listed | They cannot be jointed |
+| Bars without a left and a right tool get no J and R but a `bar_placing` action (`<bar>_P`, no robot, one manual step) at their place in the schedule, and are listed | They cannot be jointed, but the bars after them must be planned around them: absent before their place in the sequence, built after it |
 | Duplicate ids and scaled or mirrored joint blocks refuse the export | A dict would silently drop one body |
 | The ungrasp drives `loosen` on Cindy's tools; the bar stays built | Decision #5: the untighten is folded into the ungrasp |
 | `on` in targets: the mount, the support's linear approach, the retreats | Decision #2; B11 refuses `on` changing between movements |
@@ -174,7 +175,10 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 
 ## Known gaps
 
-- **Nothing of this has run inside Rhino or Grasshopper.** Tested on Rhino's CPython 3.9.10 with Rhino's pins (numpy
+- **Run in Rhino 8 on 2026-10-13:** `RSExportDesign`, `RSIKKeyframe`, `RSIKKeyframeAll`, `RSShowBarActionPlan`,
+  `RSShowAssemblyPlan` and `RSUpdatePreview`, on `261008_2ModulesDemo.3dm` (`logs/rs_session_20261013_*.log`).
+  **Not yet run in Rhino:** the motion viewer, `RSLoadSolvedBarAction(All)`, `RSShowPlanningWorld`,
+  `RSResetPlanning`, and anything in Grasshopper. Headless, everything is tested on Rhino's CPython 3.9.10 with Rhino's pins (numpy
   1.24.4, scipy 1.13.1, trimesh 4.12.2) and compas_fab from the submodule: pytest (fake Rhino API, rhino3dm) and an
   import of every command and core module against stand-ins for the Rhino API. Rhino-only calls to watch:
   `Brep.ClosestPoint(point, maxDistance)` (out parameters), `Mesh.CreateFromBrep`, ik_viz's mesh baking and
@@ -184,7 +188,7 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
   keyframe chain run only in Rhino (RSIKKeyframe / RSIKKeyframeAll). tamp's legacy `--solve-keyframes` and
   `replay_bar_action_plan.py` read the old export and are not ported.
 - Support-robot movements are not planned (decision #11); movements without arm motion are `still` only where the
-  robot's joints are known (the design's start, else the previous result's end): Cindy's `mount` and `grasp` follow
+  robot's joints are known (the design's start, else the previous result's end): Cindy's `place_bar` and `grasp` follow
   the unplanned `load` (target null) and stay `not_planned`; the bar transfer failed on the constructed design
   (`rrt_failed`).
 - **The cradle contact is gone.** The legacy touch policy (and the removed `allow_part_contacts`) let a tool on a male
@@ -198,8 +202,6 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 - The core keeps `mirrors/cell.py` (`CompasFabCell`): `CompasFabMirror` builds its planning cell with it. Its
   `visual=True` mode has no user left.
 - A ground half mates only the nearest walkable ground (review P4).
-- Cindy stays in the scene after her last release (review C2): the release poses show her at home (the legacy viewer
-  parked her).
 - The design folder holds copies of the robot files (~40 MB) on every export.
 - The core mirror names collision pairs by geometry object: two bodies sharing one `Geometry` are reported under one
   name. The geometry cache never shares; other callers of the core must not either.
@@ -211,18 +213,18 @@ Rhino doc ──RhinoDesignSource(cache=sc.sticky)──► Design (same Geometr
 **Setup** (once):
 
 1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/bar_assembly_core
-   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at origin/main `90cad0d`.
+   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `03a18e1`.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportDesign` and `RSCheckDesign` can be typed
    (both are also on the RSDesign toolbar: left- and right-click of one button).
 4. The first command installs `requirements-rhino.txt` (README, step 3): several minutes, pybullet is compiled and needs
-   Visual Studio Build Tools. yourdfpy is new in it: editing the file makes Rhino install a fresh environment. Without ssik set up, IK uses the gradient backend (one line in the command history).
+   Visual Studio Build Tools. yourdfpy is new in it: editing the file makes Rhino install a fresh environment. Without the ssik venv (`external/ssik_env`), IK uses the slow gradient backend: a warning on every run and a message box once per session. The solver modules themselves are committed in `asset/ssik/`.
 
 **Test 1: export** (`YH_ik_test.3dm`, in the repo; 4 bars, only B3 has a solved keyframe, and it is stale):
 `RSExportDesign` → `Wrote …: 13 bodies, 4 mates, 2 actions, 8 movements; 1/1 bars with IK`, `A (file checks): passed`,
-B2 / B14 / B5 findings as before (B1, B2, B4 left out: no tool pair), and **no B11 `on` errors**. The folder: role-named
+B2 / B14 / B5 findings as before (B1, B2, B4 left out: no tool pair; since `bar_placing` they are placed by hand instead, `B1_P` …), B15 errors and a `STALE IK` line for B3, and **no B11 `on` errors**. The folder: role-named
 ids (`actions/B3_J.json` with `B3_J_load` … `B3_J_insert`, `actions/B3_R.json` with `B3_R_ungrasp`, `B3_R_retreat`,
-`B3_R_home`), meshes named by content, `parts` in `design.json`, `writer.library` `bar_assembly_core`. `RSCheckDesign`
+`B3_R_home`), meshes named `<owner>.<hash>.obj`, `pose_in_tcp` on the male and ground halves, tool ids `tools/cindy/…`, targets shaped as `target.robots[<robot>]` with `joints` and `link_poses`, obstacles listed in `present`, `writer.schema` 2.1, `writer.library` `bar_assembly_core`. `RSCheckDesign`
 on the folder: the same.
 
 **Test 2: IK** (the study document): `RSIKKeyframe` on a bar whose tools are placed. Expected: `rebuilt the planning

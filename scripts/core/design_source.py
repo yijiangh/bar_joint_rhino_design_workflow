@@ -21,7 +21,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -30,7 +30,7 @@ import session_log
 from core import config
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
 from core import joint_name_conventions as jnc
-from core.design_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, parts_catalogue
+from core.design_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, poses_in_tcp
 from bar_assembly_core.design import BodySpec, Design, DesignError, Producer, RobotSpec
 from bar_assembly_core.design.version import writer_info
 from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
@@ -43,9 +43,6 @@ REPO = "bar_joint_rhino_design_workflow"
 SERIALS = {"Cindy": "0806", "Alice": "0804", "Belle": "0805"}
 #: Tool kinds (format §7). ? Rhino has no source: Cindy's tools are scaffolding_v3, the support gripper a Robotiq.
 ASSEMBLY_TOOL_KIND, SUPPORT_TOOL_KIND = "scaffolding_v3", "robotiq"
-#: Flange side -> robot links Cindy's tools may touch (the tools sit a few mm from wrist 2).
-ARM_TOOL_TOUCH_LINKS = {"left": ("left_ur_arm_wrist_2_link", "left_ur_arm_wrist_3_link"),
-                        "right": ("right_ur_arm_wrist_2_link", "right_ur_arm_wrist_3_link")}
 #: A block transform whose rotation part is further than this from a rotation is refused (scaled or mirrored).
 ROTATION_TOLERANCE = 1e-6
 
@@ -268,10 +265,14 @@ class RhinoDesignSource:
 
         from core.joint_pair import load_joint_registry
         writer, made_by = self._versions()
-        with session_log.step("parts catalogue"):
-            parts = parts_catalogue(load_joint_registry())
+        with session_log.step("tool poses on halves"):
+            # * Every half a tool acts on (males, ground halves) says where it sits in that tool's TCP frame.
+            in_tcp = poses_in_tcp(load_joint_registry())
+            for key, body in self.bodies.items():
+                if body.part in in_tcp and key.startswith("joints/"):
+                    self.bodies[key] = replace(body, pose_in_tcp=in_tcp[body.part])
         design = Design(folder=None, writer=writer, robots=robots, tools=tools, bodies=dict(self.bodies),
-                        schedule=(), actions={}, mates=frozenset(mates), producer=made_by, parts=parts)
+                        schedule=(), actions={}, mates=frozenset(mates), producer=made_by)
         with session_log.step("build_actions"):
             result: BuildResult = build_actions(
                 design, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
@@ -503,10 +504,9 @@ class RhinoDesignSource:
         self.tool_names = {}
         for side, tool in self._assembly_tools().items():
             self.tool_names[side] = tool.name
-            tool_id = f"tools/{tool.name}"
-            touch = tuple(f"{cindy}/{link}" for link in ARM_TOOL_TOUCH_LINKS[side])
+            tool_id = f"tools/{cindy.split('/')[1]}/{tool.name}"
             tools[tool_id] = self._tool(tool_id, self._file_geometry(tool_id, tool.collision_path()),
-                                        pose_from_mm(tool.M_tcp_from_block), ASSEMBLY_TOOL_KIND, touch)
+                                        pose_from_mm(tool.M_tcp_from_block), ASSEMBLY_TOOL_KIND)
             flanges[config.ASSEMBLY_TOOL0_LINKS[side]] = tool_id
         urdf, srdf = robot_files(self.cache, config.ASSEMBLY_ROBOT_NAME, urdf, srdf)
         robots[cindy] = RobotSpec(cindy, urdf, srdf, SERIALS.get(config.ASSEMBLY_ROBOT_NAME), flanges, wheels(urdf))
@@ -521,20 +521,19 @@ class RhinoDesignSource:
             urdf, srdf = robot_files(self.cache, name, urdf, srdf)
             tool_id = f"tools/{name.lower()}/{config.SUPPORT_TOOL_NAME}"
             tools[tool_id] = self._tool(tool_id, self._file_geometry(tool_id, gripper_path, scale=1.0), tcp,
-                                        SUPPORT_TOOL_KIND,
-                                        tuple(f"{rid}/{link}" for link in config.SUPPORT_TOOL_TOUCH_LINKS))
+                                        SUPPORT_TOOL_KIND)
             robots[rid] = RobotSpec(rid, urdf, srdf, SERIALS.get(name), {config.SUPPORT_TOOL0_LINK: tool_id},
                                     wheels(urdf))
         return robots, tools
 
-    def _tool(self, tool_id: str, geometry: Optional[Geometry], tcp: Pose, kind: str, touch) -> Tool:
+    def _tool(self, tool_id: str, geometry: Optional[Geometry], tcp: Pose, kind: str) -> Tool:
         """A tool, the same object while nothing about it changed; no geometry means it never collides."""
         if geometry is None:
             self.problems.append(f"{tool_id}: collision OBJ missing; the tool never collides")
             geometry = cached(self.cache, (tool_id, "empty"), lambda: Geometry((), ()))
         key = ("tool", tool_id, id(geometry), tuple(np.round(tcp.position, 9)), tuple(np.round(tcp.orientation, 9)),
-               kind, tuple(touch))
-        return cached(self.cache, key, lambda: Tool(tool_id, geometry, tcp, kind, tuple(touch)))
+               kind)
+        return cached(self.cache, key, lambda: Tool(tool_id, geometry, tcp, kind))
 
     @session_log.timed()
     def _mates(self, halves, grounds) -> List[Tuple[str, str]]:
@@ -599,7 +598,7 @@ class RhinoDesignSource:
             xform = block_instance_xform_mm(toid)
             tool0[flange] = pose_from_mm(xform)
             on[flange] = half
-            tool_ids[flange] = f"tools/{active[side]}"
+            tool_ids[flange] = f"tools/{cindy.split('/')[1]}/{active[side]}"
             half_z = self.bodies[half].pose.matrix()[:3, 2]
             retreat[flange] = unit(-half_z)
             z_axes.append(xform[:3, 2])

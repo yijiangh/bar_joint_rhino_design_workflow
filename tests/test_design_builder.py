@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
 from core import core_lib  # noqa: F401
 from core.design_builder import BarRecord, HoldRecord, build_actions, grasp_of, z_axis
 from bar_assembly_core.design import BodySpec, Design, RobotSpec, read, validate, write
-from bar_assembly_core.design.plan_check import PART_SEATS, check_plan
+from bar_assembly_core.design.plan_check import check_plan
 from bar_assembly_core.design.version import writer_info
 from bar_assembly_core.geometry import BoxShape, CylinderShape, Geometry, Pose, compose, invert
 from bar_assembly_core.robot import Tool
@@ -35,6 +35,8 @@ ALICE_FLANGE = f"{ALICE}/ur_arm_tool0"
 TCP_L, TCP_R = Pose((-0.07, 0.0, 0.08)), Pose((0.07, 0.0, 0.08))
 WHEELS = ("front_left_wheel_link", "front_right_wheel_link", "rear_left_wheel_link", "rear_right_wheel_link")
 BOX = Geometry((BoxShape((0.02, 0.02, 0.02)),), (BoxShape((0.02, 0.02, 0.02)),))
+#: Part -> the half's pose in the frame of the tool centre point on it (a body's `pose_in_tcp`).
+POSE_IN_TCP = {"T20/Male": Pose(), "T20/Ground": Pose(orientation=(0.0, 0.0, 1.0, 0.0))}
 
 
 def _bar(y: float, z: float) -> BodySpec:
@@ -47,7 +49,7 @@ def _bar(y: float, z: float) -> BodySpec:
 def _half(half_id: str, bar: str, part: str, position) -> BodySpec:
     """A half at `position`, its z axis pointing down (into the ground or the receiving bar)."""
     pose = Pose(tuple(position), tuple(Rotation.from_euler("x", 180, degrees=True).as_quat()))
-    return BodySpec(id=half_id, pose=pose, geometry=BOX, part=part, mount=bar)
+    return BodySpec(id=half_id, pose=pose, geometry=BOX, part=part, mount=bar, pose_in_tcp=POSE_IN_TCP.get(part))
 
 
 def _design() -> Design:
@@ -70,24 +72,24 @@ def _design() -> Design:
         ("ground/WG0", "joints/G1-T20-0_ground"), ("ground/WG0", "joints/G1-T20-1_ground"),
         ("ground/WG0", "joints/G2-T20-0_ground"), ("joints/J1-2_female", "joints/J1-2_male"),
         ("joints/J1-3_female", "joints/J1-3_male"), ("joints/J2-3_female", "joints/J2-3_male")))
-    tools = {"tools/AT3L": Tool("tools/AT3L", BOX, TCP_L, "scaffolding_v3", (f"{CINDY}/left_ur_arm_wrist_3_link",)),
-             "tools/AT3R": Tool("tools/AT3R", BOX, TCP_R, "scaffolding_v3", (f"{CINDY}/right_ur_arm_wrist_3_link",)),
+    tools = {"tools/cindy/AT3L": Tool("tools/cindy/AT3L", BOX, TCP_L, "scaffolding_v3"),
+             "tools/cindy/AT3R": Tool("tools/cindy/AT3R", BOX, TCP_R, "scaffolding_v3"),
              "tools/alice/SupportGripper": Tool("tools/alice/SupportGripper", BOX, Pose(), "robotiq")}
     robots = {CINDY: RobotSpec(CINDY, CINDY_URDF, CINDY_SRDF, "0806",
-                               {"left_ur_arm_tool0": "tools/AT3L", "right_ur_arm_tool0": "tools/AT3R"}, WHEELS),
+                               {"left_ur_arm_tool0": "tools/cindy/AT3L", "right_ur_arm_tool0": "tools/cindy/AT3R"}, WHEELS),
               ALICE: RobotSpec(ALICE, ALICE_URDF, ALICE_SRDF, "0804", {"ur_arm_tool0": "tools/alice/SupportGripper"},
                                WHEELS)}
     return Design(None, writer_info(), robots, tools, bodies, (), {}, mates)
 
 
 def _record(design: Design, bar: str, left_half: str, right_half: str, **keyframes) -> BarRecord:
-    """Cindy's record for a bar: each flange placed so its TCP sits on its half at the part's seat."""
+    """Cindy's record for a bar: each flange placed so its TCP sits on its half at the half's `pose_in_tcp`."""
     tool0, retreat = {}, {}
     for flange, half, tcp in ((L, left_half, TCP_L), (R, right_half, TCP_R)):
-        seat = PART_SEATS[design.bodies[half].part]
+        seat = design.bodies[half].pose_in_tcp
         tool0[flange] = compose(design.bodies[half].pose, invert(compose(tcp, seat)))
         retreat[flange] = tuple(-v for v in z_axis(design.bodies[half].pose))
-    return BarRecord(bar=bar, robot=CINDY, tools={L: "tools/AT3L", R: "tools/AT3R"}, tool0=tool0,
+    return BarRecord(bar=bar, robot=CINDY, tools={L: "tools/cindy/AT3L", R: "tools/cindy/AT3R"}, tool0=tool0,
                      on={L: left_half, R: right_half}, insert_direction=(0.0, 0.0, -1.0), retreat_direction=retreat,
                      ground=("ground/WG0",), **keyframes)
 
@@ -119,9 +121,9 @@ def test_unsolved_design_passes_file_and_plan_checks(tmp_path):
     report = check_plan(written)
     assert report.ok, report.errors
     assert [m.id for m in written.actions["B2_J"].movements] == [
-        "B2_J_load", "B2_J_mount", "B2_J_grasp", "B2_J_transfer", "B2_J_insert"]
+        "B2_J_load", "B2_J_place_bar", "B2_J_grasp", "B2_J_transfer", "B2_J_insert"]
     insert = written.actions["B2_J"].movements[-1]
-    assert insert.drives == {"tools/AT3L": "tighten", "tools/AT3R": "tighten"} and insert.ends_on == "tools"
+    assert insert.drives == {"tools/cindy/AT3L": "tighten", "tools/cindy/AT3R": "tighten"} and insert.ends_on == "tools"
     assert insert.target.built == {"bars/B1", "bars/B2"} and insert.coupled and insert.controller == "compliant"
     # * Alice holds B2 together with Cindy until Cindy lets go.
     close = written.actions["B2_H"].movements[-1]
@@ -162,30 +164,30 @@ def test_missing_records_are_reported():
     assert len(result.problems) == 2 and all("bars/B2" in p for p in result.problems)
 
 
-def test_on_lives_in_targets_and_parts_are_catalogued():
+def test_on_lives_in_targets_and_halves_know_their_tool_pose():
     """Decisions of 2026-10-09: `on` is set and cleared by targets only (B11), the ungrasp loosens, a hold release
-    leaves, and the parts catalogue gives the seats the tools act on."""
-    from bar_assembly_core.design.types import PartSpec
-    from core.design_builder import parts_catalogue
+    leaves, and the joint registry gives the pose of each tool-carrying half in its tool's TCP frame."""
+    from core.design_builder import poses_in_tcp
     from core.joint_pair import load_joint_registry
 
     design = _design()
     bars, holds = _records(design)
     design = build_actions(design, SCHEDULE, bars, holds).design
     by_id = {m.id: m for _a, m in design.movements()}
-    tools = {L: "tools/AT3L", R: "tools/AT3R"}
-    assert by_id["B2_J_mount"].target.on == {tools[L]: "joints/J1-2_male", tools[R]: "joints/G2-T20-0_ground"}
-    assert by_id["B2_R_ungrasp"].drives == {"tools/AT3L": "loosen", "tools/AT3R": "loosen"}
-    assert by_id["B2_R_retreat"].target.on == {"tools/AT3L": None, "tools/AT3R": None}
+    tools = {L: "tools/cindy/AT3L", R: "tools/cindy/AT3R"}
+    assert by_id["B2_J_place_bar"].target.on == {tools[L]: "joints/J1-2_male", tools[R]: "joints/G2-T20-0_ground"}
+    assert by_id["B2_R_ungrasp"].drives == {"tools/cindy/AT3L": "loosen", "tools/cindy/AT3R": "loosen"}
+    assert by_id["B2_R_retreat"].target.on == {"tools/cindy/AT3L": None, "tools/cindy/AT3R": None}
     assert by_id["B2_H_to_grasp"].target.on == {"tools/alice/SupportGripper": "bars/B2"}
     assert by_id["B2_HR_retreat"].target.on == {"tools/alice/SupportGripper": None}
     assert [m.id for m in design.actions["B2_HR"].movements] == ["B2_HR_open", "B2_HR_retreat", "B2_HR_leave"]
     report = check_plan(design, geometry=False)
     assert not [e for e in report.errors if e.startswith("B11")], report.errors
 
-    parts = parts_catalogue(load_joint_registry())
-    assert parts["T20/Male"] == PartSpec(Pose()) and "T20Deck12/Male" in parts
+    parts = poses_in_tcp(load_joint_registry())
+    assert parts["T20/Male"] == Pose() and "T20Deck12/Male" in parts
     assert "T20/Female" not in parts and "T20/MoCap" not in parts
-    turned = parts["T20/Ground"].seat
-    expected = PART_SEATS["T20/Ground"]
+    turned = parts["T20/Ground"]
+    expected = POSE_IN_TCP["T20/Ground"]
     assert np.allclose(turned.matrix(), expected.matrix(), atol=1e-9)
+    assert all(v == 0.0 or abs(v) == 1.0 for v in turned.orientation), "a half turn is written exactly"

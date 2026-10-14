@@ -34,7 +34,6 @@ def setup():
     backend, tamp_config.IK_BACKEND = tamp_config.IK_BACKEND, "gradient"
     from dataclasses import replace
     from bar_assembly_core.design import BodySpec
-    from bar_assembly_core.design.plan_check import PART_SEATS
     from bar_assembly_core.geometry import CylinderShape, Geometry, Pose, compose, invert
     from bar_assembly_core.kinematics import link_pose
     from bar_assembly_core.urdf import UR_JOINT_NAMES
@@ -52,7 +51,7 @@ def setup():
     base = Pose()
     cindy_urdf = design.robots[CINDY].urdf
     tool0 = {f: link_pose(cindy_urdf, base, reach, f.split("/")[-1]) for f in (L, R)}
-    seat = PART_SEATS["T20/Ground"]
+    seat = Pose(orientation=(0.0, 0.0, 1.0, 0.0))  # a ground half's pose_in_tcp
     halves = {L: compose(compose(tool0[L], TCP_L), seat), R: compose(compose(tool0[R], TCP_R), seat)}
     a, b = (np.array(halves[f].position) for f in (L, R))
     axis = (b - a) / np.linalg.norm(b - a)
@@ -64,10 +63,10 @@ def setup():
     bodies["bars/B1"] = BodySpec("bars/B1", bar_pose, Geometry((cylinder,), (cylinder,)))
     for name, f in (("joints/G1-T20-0_ground", L), ("joints/G1-T20-1_ground", R)):
         bodies[name] = BodySpec(name, halves[f], design.bodies["joints/G1-T20-0_ground"].geometry,
-                                part="T20/Ground", mount="bars/B1")
+                                part="T20/Ground", mount="bars/B1", pose_in_tcp=seat)
     design = replace(design, bodies=bodies, mates=frozenset({("ground/WG0", "joints/G1-T20-0_ground"),
                                                              ("ground/WG0", "joints/G1-T20-1_ground")}))
-    record = BarRecord(bar="bars/B1", robot=CINDY, tools={L: "tools/AT3L", R: "tools/AT3R"}, tool0=tool0,
+    record = BarRecord(bar="bars/B1", robot=CINDY, tools={L: "tools/cindy/AT3L", R: "tools/cindy/AT3R"}, tool0=tool0,
                        on={L: "joints/G1-T20-0_ground", R: "joints/G1-T20-1_ground"},
                        insert_direction=(0.0, 0.0, -1.0),
                        retreat_direction={f: tuple(-v for v in z_axis(halves[f])) for f in (L, R)},
@@ -107,9 +106,9 @@ def test_scenes_carry_the_part_contacts():
         return set(scene.bodies[body].touches)
 
     assert "bars/B2" in touches("joints/J1-2_female")             # the incoming bar seats into it
-    assert "tools/AT3L" in touches("bars/B2")                      # the tool may touch its whole part
+    assert "tools/cindy/AT3L" in touches("bars/B2")                      # the tool may touch its whole part
     assert "ground/WG0" in touches("joints/G2-T20-0_ground")
-    assert "tools/AT3L" not in touches("joints/J1-2_female")       # a receiver never gets the tool
+    assert "tools/cindy/AT3L" not in touches("joints/J1-2_female")       # a receiver never gets the tool
 
 
 def test_keyframe_chain_solves_on_the_mirror(setup):

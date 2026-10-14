@@ -2,19 +2,20 @@
 Build a schema 2 design's actions from Rhino's per-bar keyframe records, with one running state through the schedule.
 
 Rhino-free (numpy and the core only), so pytest covers it. `core.design_source` reads the records from the document.
-Procedure per action (`doc/schema2_integration.md`):
+Procedure per action (`docs/schema2_integration.md`):
 
-- J (Cindy): load, mount, grasp, transfer, insert (one movement that drives `tighten`; the bar is built at its end);
+- J (Cindy): load, place_bar (the operator puts the bar into the tools), grasp, transfer, insert (one movement that drives `tighten`; the bar is built at its end);
 - R (Cindy), form B: ungrasp (drives `loosen`: the untighten folded in, the bar stays built), linear retreat, home;
   then she drives away (absent until her next J);
 - H (support robot): free approach, open, linear onto the bar, close (it now holds the built bar too);
 - HR: open, linear retreat, leave (free, planned live); then the robot drives away.
 
-`on` is written in targets, never changed between movements (B11): the mount's target puts Cindy's tools on their
+`on` is written in targets, never changed between movements (B11): the place_bar target puts Cindy's tools on their
 halves, the support's linear approach puts the gripper on its bar, and the retreats (R and HR) clear it (`None`).
 Robots arriving and driving away between actions stay changes of the running state.
 
-`parts_catalogue` gives the design's `parts` (format §4.5): the seat of every half a tool acts on.
+`poses_in_tcp` gives, per kind of half a tool acts on, the half's pose in the frame of the tool centre point on it
+(a body's `pose_in_tcp`, format §4.3).
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ import numpy as np
 from core import core_lib  # noqa: F401  (puts bar_assembly_core on sys.path)
 from bar_assembly_core.design import (Action, Design, Holder, LineSpec, Movement, RobotState, State, Target,
                                       ToolState)
-from bar_assembly_core.design.types import PartSpec
 from bar_assembly_core.geometry import Pose, compose, invert
 
 #: Schedule kind -> action type and the suffix of its action id.
@@ -179,7 +179,7 @@ class Builder:
     # * Cindy: jointing (merged insert) and release (form B, no untighten).
 
     def jointing(self, r: BarRecord) -> None:
-        """Load, mount, grasp, transfer, insert."""
+        """Load, place_bar, grasp, transfer, insert."""
         p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
         tools = {r.tools[a]: ToolState("open", None) for a in arms}
         self.arrive(r.robot, r.base, tools)
@@ -191,16 +191,16 @@ class Builder:
 
         self.emit(f"{p}_J_load", "Free to the loading pose", arms=arms, path="free", controller="position")
         holders = tuple(Holder(a, grasp_of(r.tool0[a], bar_pose)) for a in arms)
-        self.emit(f"{p}_J_mount", "Operator mounts the bar", ends_on="operator",
+        self.emit(f"{p}_J_place_bar", "Operator places the bar", ends_on="operator",
                   target=Target(attached={**self.state.attached, r.bar: holders},
                                 on={r.tools[a]: r.on[a] for a in arms}))
         self.emit(f"{p}_J_grasp", "Grasp", ends_on="tools", target=Target(tools={r.tools[a]: "closed" for a in arms}))
         self.emit(f"{p}_J_transfer", "Transfer to the approach", arms=arms, path="free", coupled=True,
-                  controller="position", target=Target(joints=joints(r.approach), links=approach_links))
+                  controller="position", target=Target.of(joints=joints(r.approach), link_poses=approach_links))
         self.emit(f"{p}_J_insert", "Insert", arms=arms, path="linear", coupled=True, controller="compliant",
                   ends_on="tools", drives={r.tools[a]: "tighten" for a in arms},
                   line={a: LineSpec(r.insert_direction, self.insert_distance) for a in arms},
-                  target=Target(joints=joints(r.assembled), links=dict(r.tool0), built=self.state.built | {r.bar}))
+                  target=Target.of(joints=joints(r.assembled), link_poses=dict(r.tool0), built=self.state.built | {r.bar}))
 
     def release(self, r: BarRecord) -> None:
         """Ungrasp (form B, backing the jointing screw off), careful retreat, home; then the robot drives away."""
@@ -211,10 +211,10 @@ class Builder:
         retreat_links = {a: shifted(r.tool0[a], r.retreat_direction[a], self.retreat_distance) for a in arms}
         self.emit(f"{p}_R_retreat", "Careful retreat", arms=arms, path="linear", controller="position",
                   line={a: LineSpec(r.retreat_direction[a], self.retreat_distance) for a in arms},
-                  target=Target(joints={r.robot: r.retreat} if r.retreat else {}, links=retreat_links,
+                  target=Target.of(joints={r.robot: r.retreat} if r.retreat else {}, link_poses=retreat_links,
                                 on={r.tools[a]: None for a in arms}))
         self.emit(f"{p}_R_home", "Home", arms=arms, path="free", controller="position",
-                  target=Target(joints={r.robot: r.home} if r.home else {}))
+                  target=Target.of(joints={r.robot: r.home} if r.home else {}))
         # * Cindy drives away to load her next bar: absent until her next jointing arrives. Left standing here, she
         #   would be an obstacle in the support robots' hold releases, where she no longer is.
         robots = dict(self.state.robots)
@@ -233,11 +233,11 @@ class Builder:
         down = z_axis(h.tool0)
         approach_link = shifted(h.tool0, down, -self.support_distance)
         self.emit(f"{p}_H_approach", "Free to the approach", arms=(h.flange,), path="free", controller="position",
-                  target=Target(joints={h.robot: h.approach} if h.approach else {}, links={h.flange: approach_link}))
+                  target=Target.of(joints={h.robot: h.approach} if h.approach else {}, link_poses={h.flange: approach_link}))
         self.emit(f"{p}_H_open", "Gripper opens", ends_on="tools", target=Target(tools={h.tool: "open"}))
         self.emit(f"{p}_H_to_grasp", "Linear onto the bar", arms=(h.flange,), path="linear", controller="position",
                   line={h.flange: LineSpec(down, self.support_distance)},
-                  target=Target(joints={h.robot: h.held} if h.held else {}, links={h.flange: h.tool0},
+                  target=Target.of(joints={h.robot: h.held} if h.held else {}, link_poses={h.flange: h.tool0},
                                 on={h.tool: h.bar}))
         attached = dict(self.state.attached)
         attached[h.bar] = attached.get(h.bar, ()) + (Holder(h.flange, h.grasp),)
@@ -252,8 +252,8 @@ class Builder:
                   target=Target(tools={h.tool: "open"}, attached=self.without(h.bar, (h.flange,))))
         self.emit(f"{p}_HR_retreat", "Linear retreat", arms=(h.flange,), path="linear", controller="position",
                   line={h.flange: LineSpec(up, self.support_distance)},
-                  target=Target(joints={h.robot: h.approach} if h.approach else {},
-                                links={h.flange: shifted(h.tool0, up, self.support_distance)},
+                  target=Target.of(joints={h.robot: h.approach} if h.approach else {},
+                                link_poses={h.flange: shifted(h.tool0, up, self.support_distance)},
                                 on={h.tool: None}))
         self.emit(f"{p}_HR_leave", "Free away from the structure", arms=(h.flange,), path="free",
                   controller="position")
@@ -307,29 +307,32 @@ def _label(kind: str, bar: str, robot: str) -> str:
     return f"{robot.split('/')[1]} {verb} {bar.split('/')[1]}"
 
 
-def parts_catalogue(registry, seat_of=None) -> Dict[str, PartSpec]:
-    """The design's `parts` (format §4.5): the seat of every half a robotic tool acts on, from the joint registry.
+def poses_in_tcp(registry, seat_of=None) -> Dict[str, Pose]:
+    """Per kind of half a robotic tool acts on: the half's pose in the frame of the TCP on it (`pose_in_tcp`).
 
-    A seat is the half's pose in the frame of the TCP on it. A male's tool TCP is the male block's frame (identity);
-    a ground joint's TCP is the block's frame turned by `M_tool_from_block` (the tool placement's rule,
-    `rhino_tool_place.tool_attach_frame`), so its seat is the inverse. Receivers (females, MoCap halves) get no tool
-    in Rhino's flow and so no seat.
+    A male's tool TCP is the male block's frame (identity); a ground joint's TCP is the block's frame turned by
+    `M_tool_from_block` (the tool placement's rule, `rhino_tool_place.tool_attach_frame`), so its pose is the
+    inverse. Receivers (females, MoCap halves) get no tool in Rhino's flow and so no pose.
 
     Args:
         registry: A `core.joint_pair.JointRegistry` (`load_joint_registry()`).
         seat_of: Block name -> `(type, subtype)` (default `joint_name_conventions.split_block_name`).
 
     Returns:
-        dict: Part name ("T20/Male") -> PartSpec.
+        dict: Part name ("T20/Male") -> the pose.
     """
     if seat_of is None:
         from core.joint_name_conventions import split_block_name as seat_of
-    parts: Dict[str, PartSpec] = {}
+    parts: Dict[str, Pose] = {}
     for name, half in registry.halves.items():
         if getattr(half, "kind", "") == "male":
-            parts["/".join(seat_of(name))] = PartSpec(Pose())
+            parts["/".join(seat_of(name))] = Pose()
     for ground in registry.ground_joints.values():
         tool_from_block = np.asarray(ground.M_tool_from_block, dtype=float).copy()
         tool_from_block[:3, 3] /= 1000.0  # * mm -> m (a pure rotation today: GroundJointDef zeroes it)
-        parts["/".join(seat_of(ground.block_name))] = PartSpec(Pose.from_matrix(np.linalg.inv(tool_from_block)))
+        pose = Pose.from_matrix(np.linalg.inv(tool_from_block))
+        # * Exact values: a half turn comes out of the matrix with 1e-12 where 0 is meant.
+        turn = np.round(pose.orientation, 9) + 0.0
+        parts["/".join(seat_of(ground.block_name))] = Pose.from_arrays(np.round(pose.position, 9) + 0.0,
+                                                                       turn / np.linalg.norm(turn))
     return parts

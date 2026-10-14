@@ -54,6 +54,9 @@ def plan_movement(api, mirror, design, action, m, names, seeds, args, joints_now
     """
     robot = action.robot
     kind = m.id[len(action.bar.split("/")[1]) + 1:]
+    if m.base:
+        # ? The format allows a movement to drive the base (schema 2.1); no planner or path type does it yet.
+        return MovementResult("not_planned", reason="the base moves: base motion is not planned yet")
     if not m.arms:
         # * The design wins: its start joints; else where the previous movement's solution ended.
         here = (m.start.robots[robot].joints if m.start.robots.get(robot) else None) or joints_now

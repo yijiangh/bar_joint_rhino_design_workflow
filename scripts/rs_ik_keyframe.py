@@ -2780,6 +2780,20 @@ def _main(stack, after):
     guide_diag = _draw_base_guides_for_bar(
         target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm
     )
+    # A base saved on the bar that faces the other way is the user's choice of
+    # side (a Flip or a NewPick of an earlier run): follow it, so the tool sides
+    # below are derived for where the robot will actually stand. Without this the
+    # automatic side wins again on every run and the arms end up crossed.
+    saved_side_base = _read_saved_assembly_base_frame(target_bar_oid)
+    guides_flipped = False  # are the guides (and so the tool sides) on the other side from the automatic one?
+    if (guide_diag is not None and saved_side_base is not None
+            and float(np.dot(saved_side_base[:3, 0], guide_diag["heading"])) < 0.0):
+        print("RSIKKeyframe: the base saved on this bar stands on the other side; "
+              "guides and tool sides follow it.")
+        guide_diag = _draw_base_guides_for_bar(
+            target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm, flip=True
+        )
+        guides_flipped = True
 
     # Which end of the bar carries the LEFT tool follows from where the robot
     # stands (see core.rhino_tool_place.assign_tool_sides_from_heading). Correct
@@ -2889,18 +2903,50 @@ def _main(stack, after):
             # the bar for the next run's reuse path.
             _write_assembly_base_frame(target_bar_oid, seed_base_frame)
 
-            # The tool sides were set from the AUTO heading before the movements
-            # were built. If the user hand-picked a base on the other side of the
-            # bar, the arms are now crossed -- warn rather than silently re-place,
-            # because re-placing a tool here would leave `movements` pointing at
-            # the old tool poses.
-            if guide_diag is not None and base_freshly_decided:
-                if float(np.dot(seed_base_frame[:3, 0], guide_diag["heading"])) < 0.0:
-                    print("RSIKKeyframe: WARNING - the picked base faces the OPPOSITE "
-                          "way to the base guide lines, so the bar's L/R tools are on "
-                          "the wrong ends for this approach.\n"
-                          "  Re-run the command to have the tool sides re-derived from "
-                          "this base, or pick a base on the guide side.")
+            # The tool sides were set for the guides' side before the movements were
+            # built. A base on the other side of the bar (picked there, or moved there
+            # by the reuse prompt's Flip) re-decides the side, exactly as
+            # RSIKKeyframeAll's Flip does: hand-picked tool sides are cleared, the
+            # tools are re-placed for the new side, the guides follow, and the
+            # movements are built again from the re-placed tools before the solve.
+            if (guide_diag is not None and base_freshly_decided
+                    and float(np.dot(seed_base_frame[:3, 0], guide_diag["heading"])) < 0.0):
+                print("RSIKKeyframe: the base stands on the other side of the bar; "
+                      "re-placing the L/R tools for that side.")
+                try:
+                    rhino_tool_place.clear_tool_side_overrides(target_bar_id, verbose=True)
+                    new_diag = _draw_base_guides_for_bar(
+                        target_bar_oid, target_bar_id, joint_a_mm, joint_b_mm, flip=not guides_flipped
+                    )
+                    if new_diag is None:
+                        raise RuntimeError("the guide lines for the other side could not be built")
+                    guide_diag, guides_flipped = new_diag, not guides_flipped
+                    n_sides = rhino_tool_place.assign_tool_sides_from_heading(
+                        target_bar_id, guide_diag["heading"], guide_diag["ground_normal"], verbose=True,
+                    )
+                    result, err = _resolve_arm_tools_on_bar(target_bar_oid)
+                    if err is not None:
+                        raise RuntimeError(err)
+                    _bid, (left_joint_oid, left_tool_oid), (right_joint_oid, right_tool_oid) = result
+                    # The focus hid other bars' tools: show those, then focus again with the new tools.
+                    _show_objects(extra_hidden_tools)
+                    extra_hidden_tools, tool0_left_final, tool0_right_final = _collect_target_context(
+                        target_bar_id, left_tool_oid, right_tool_oid,
+                    )
+                    # The flange targets come from the tools: build the design and the movements again.
+                    # Same mirror (one per robot), so the planner lent above stays the one to solve on.
+                    design = _core_design("RSIKKeyframe")
+                    mirror, movements = design_planning.keyframe_movements(design, sc.sticky, bar)
+                    scene = design.scene_at(design_planning.movement(design, bar, "J", "J_transfer"))
+                    _use_preview(scene, robot_id)
+                    rcell = mirror.cell
+                    neutral_seed_state = movements["M3"].start_state.copy()
+                    print(f"RSIKKeyframe: {n_sides} tool(s) re-placed; movements rebuilt for this side.")
+                except Exception as exc:  # noqa: BLE001 -- say so; the solve then runs with crossed arms
+                    session_log.caught(exc)
+                    print(f"RSIKKeyframe: WARNING - could not switch the tools to this side "
+                          f"({type(exc).__name__}: {exc}); this solve will have the arms crossed. "
+                          "Re-run the command and Reuse this base.")
 
             # ! Off-ramp: with the base pose now set + saved, let the user stop
             # here and run the (slow) keyframe IK solve headlessly instead of in

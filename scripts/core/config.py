@@ -489,6 +489,30 @@ ARM_MOUNT_LINKS = {
 }
 
 # ---------------------------------------------------------------------------
+# Base region (RSIKKeyframe DEBUG view, core.base_region / core.base_region_viz)
+#
+# Marks on the walkable ground wherever every flange target of the bar is within
+# the arms' reach for at least one base heading: dots, heading arrows, and crosses
+# where the robot collides standing there. An outer bound only. What each mark
+# means, and how to remove the whole feature: see the core.base_region_viz docstring.
+# ---------------------------------------------------------------------------
+DEBUG_BASE_REGION = False
+DEBUG_BASE_REGION_STEP_MM = 50.0   # ground grid spacing
+DEBUG_BASE_REGION_YAW_STEPS = 72   # base headings tested per ground point (5 deg apart)
+DEBUG_BASE_REGION_DOT_PX = 4       # dot size on screen
+# The crosses cost one planner collision check per possible cell, by far the slow
+# part. The budget only keeps a huge region from hanging Rhino: cells past it stay
+# unchecked, and the console says how many.
+DEBUG_BASE_REGION_COLLISIONS = True
+DEBUG_BASE_REGION_COLLISION_BUDGET_S = 60.0  # measured: about 12 ms per check, ~900 cells for one bar
+# What the dots' shade (dark = better) and the arrows mean:
+#   "heading": the width of the longest range of base headings that works; arrow = its middle.
+#   "cost":    the cost a base optimiser would descend on -- how far the arms are from a
+#              partly extended pose, at the best heading there; arrow = that heading.
+#              It is the cost of the base search below (IK_BASE_SEARCH_*), clearance included.
+DEBUG_BASE_REGION_SHADE = "cost"
+
+# ---------------------------------------------------------------------------
 # Base search (RSIKKeyframe and RSIKKeyframeAll alike): where to try the IK chain when the
 # picked / placed base fails: the BaseSearch choice at the collision-options prompt. This is
 # its first default; then the last answer is kept for the session. The IK chain is the

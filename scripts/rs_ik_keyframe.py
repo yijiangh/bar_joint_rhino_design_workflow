@@ -69,6 +69,7 @@ import scriptcontext as sc
 
 from core import base_guide_geom as _base_guide_geom_module
 from core import base_guide_viz as _base_guide_viz_module
+from core import base_region_viz as _base_region_viz_module
 from core import base_search as _base_search_module
 from core import base_search_viz as _base_search_viz_module
 from core import config as _config_module
@@ -172,10 +173,12 @@ def _reload_runtime_modules():
     base_guide_geom = importlib.reload(_base_guide_geom_module)
     base_guide_viz = importlib.reload(_base_guide_viz_module)
     reach_viz = importlib.reload(_reach_viz_module)
+    global base_region_viz  # DEBUG view, removable (see its docstring)
     global base_search
     base_search = importlib.reload(_base_search_module)
     global base_search_viz  # DEBUG view, removable (see its docstring)
     base_search_viz = importlib.reload(_base_search_viz_module)
+    base_region_viz = importlib.reload(_base_region_viz_module)
     rhino_tool_place = importlib.reload(_rhino_tool_place_module)
     rhino_walkable_ground = importlib.reload(_rhino_walkable_ground_module)
     # dual_arm_ik + ik_keyframe (from the tamp submodule) solve the chained IK
@@ -2992,7 +2995,10 @@ def _main(stack, after):
         allow_saved_base_prompt = True
         # Arm reach volumes, built once and reused by every ghost this run.
         reach_meshes = _reach_sphere_meshes(rcell)
+        # DEBUG view (config.DEBUG_BASE_REGION): marks where the base can stand at all; gone when `stack` closes.
         stack.callback(base_search_viz.hide)
+        stack.enter_context(base_region_viz.painted(
+            target_bar_oid, movements, design.robots[robot_id].urdf, planner))
 
         while True:
             # A base is "freshly decided" this turn only when we don't already

@@ -2852,7 +2852,8 @@ def _main(stack, after):
     try:
         sc.doc.Views.Redraw()
 
-        env_token = highlight_env.highlight_env_for_ik(target_bar_id)
+        # Green = what this solve collides with: the bars in the planning scene, as the core decides.
+        env_token = highlight_env.highlight_env_for_ik(target_bar_id, scene)
 
         collision_opts = _ask_collision_options(env_count=len(design.bodies))
         if collision_opts is None:

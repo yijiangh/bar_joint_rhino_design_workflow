@@ -601,7 +601,7 @@ class RhinoDesignSource:
                                      f"{active.get(side)} (B14 will flag the grasp)")
             flange = f"{cindy}/{config.ASSEMBLY_TOOL0_LINKS[side]}"
             if flange in tool0:
-                self.problems.append(f"{bar}: two {side} tools; bar left out")
+                self.problems.append(f"{bar}: two {side} tools; no robot action for it")
                 return None
             xform = block_instance_xform_mm(toid)
             tool0[flange] = pose_from_mm(xform)
@@ -614,7 +614,7 @@ class RhinoDesignSource:
                 ground_points.append(half)
         if len(tool0) != 2:
             self.problems.append(f"{bar}: needs a left and a right tool on its male or ground halves, has "
-                                 f"{len(tool0)}; bar left out")
+                                 f"{len(tool0)}; no robot action for it")
             return None
         if ground_points:
             insert = self._ground_insert_direction(bar, ground_points)

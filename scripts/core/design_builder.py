@@ -178,6 +178,11 @@ class Builder:
 
     # * Cindy: jointing (merged insert) and release (form B, no untighten).
 
+    def placing(self, bar: str) -> None:
+        """A bar no robot handles: one manual step, the bar is in the structure at its end."""
+        self.emit(f"{bar.split('/')[1]}_P_place", "Placed by hand", ends_on="operator",
+                  target=Target(built=self.state.built | {bar}))
+
     def jointing(self, r: BarRecord) -> None:
         """Load, place_bar, grasp, transfer, insert."""
         p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
@@ -275,14 +280,31 @@ def build_actions(design: Design, schedule: Sequence[Tuple[str, str]], bars: Dic
         insert_distance, retreat_distance: Cindy's insert and retreat lengths, metres.
         support_distance: The support robot's linear approach and retreat length, metres.
 
+    - ! A bar without a record has no robot action: it gets a `bar_placing` action at its place in the schedule (where
+      its jointing would be), one manual step that ends with the bar built. It is absent before and an obstacle
+      after, like any other bar, so the bars after it are planned around it. Reported, because a bar that merely
+      lacks its tools looks the same.
+
     Returns:
-        BuildResult: The design, and one line per action left out (a bar or a hold without a record).
+        BuildResult: The design, and one line per bar placed by hand and per hold left out (no record).
     """
     builder = Builder(design, insert_distance, retreat_distance, support_distance)
     actions: Dict[str, Action] = {}
     order: List[str] = []
     problems: List[str] = []
     for kind, bar in schedule:
+        if kind in ("J", "R") and bar not in bars and bar in design.bodies:
+            if kind == "J":
+                first = len(builder.movements)
+                builder.placing(bar)
+                action_id = f"{bar.split('/')[1]}_P"
+                actions[action_id] = Action(id=action_id, type="bar_placing", robot="", bar=bar,
+                                            movements=tuple(builder.movements[first:]),
+                                            label=f"{bar.split('/')[1]} placed by hand")
+                order.append(action_id)
+                problems.append(f"{bar}: no robot action (no keyframe record); taken as placed by hand at its place "
+                                f"in the sequence")
+            continue  # ? Nothing to release: no robot held it.
         record = bars.get(bar) if kind in ("J", "R") else holds.get(bar)
         if record is None:
             problems.append(f"{bar} {kind}: no {'keyframe' if kind in ('J', 'R') else 'hold'} record; "

@@ -164,6 +164,35 @@ def test_missing_records_are_reported():
     assert len(result.problems) == 2 and all("bars/B2" in p for p in result.problems)
 
 
+def test_bars_without_a_record_are_placed_by_hand_at_their_place(tmp_path):
+    """No J or R but a `bar_placing` action where the jointing would be: absent before it, built after it."""
+    design = _design()
+    bars, holds = _records(design)
+    del bars["bars/B2"], holds["bars/B2"]
+    result = build_actions(design, SCHEDULE, bars, holds)
+    assert result.design.schedule == ("B1_J", "B1_R", "B2_P", "B3_J", "B3_R")
+    assert sum("placed by hand" in p for p in result.problems) == 1
+    placing = result.design.actions["B2_P"]
+    assert (placing.type, placing.robot, len(placing.movements)) == ("bar_placing", "", 1)
+    for action, movement in result.design.movements():
+        there = action.id in ("B3_J", "B3_R")
+        assert ("bars/B2" in movement.start.built) == there and ("bars/B2" in movement.start.present) == there
+    assert not result.design.scene_at(result.design.actions["B1_J"].movements[0]).bodies["bars/B2"].enabled
+
+    del bars["bars/B1"]
+    result = build_actions(design, SCHEDULE, bars, holds)
+    assert result.design.schedule == ("B1_P", "B2_P", "B3_J", "B3_R")
+    transfer = next(m for _, m in result.design.movements() if m.id == "B3_J_transfer")
+    scene = result.design.scene_at(transfer)
+    assert scene.bodies["bars/B1"].enabled and scene.bodies["joints/J1-3_female"].enabled
+    # * The half B3 is inserted into may be touched by B3's half; a bar it does not join onto may not.
+    assert "joints/J1-3_male" in scene.bodies["joints/J1-3_female"].touches
+    validate(result.design, check_robot_meshes=False)
+    written = write(result.design, tmp_path / "design", package_dirs=[PKG])
+    report = check_plan(written)
+    assert report.ok, report.errors
+
+
 def test_on_lives_in_targets_and_halves_know_their_tool_pose():
     """Decisions of 2026-10-09: `on` is set and cleared by targets only (B11), the ungrasp loosens, a hold release
     leaves, and the joint registry gives the pose of each tool-carrying half in its tool's TCP frame."""

@@ -36,8 +36,13 @@ def _reset_obj_color(oid):
     rs.ObjectColorSource(oid, 0)
 
 
-def highlight_env_for_ik(active_bar_id):
+def highlight_env_for_ik(active_bar_id, scene=None):
     """Paint built bars + joints green; record originals for revert.
+
+    Args:
+        active_bar_id (str): The bar being solved; never painted.
+        scene: The core scene the solve plans in. Given, the bars painted are exactly the ones in it (what the
+            planner collides with); None: every bar earlier in the sequence, as before.
 
     Returns a token (list of oids touched) for ``revert_env_highlight``.
     """
@@ -46,7 +51,12 @@ def highlight_env_for_ik(active_bar_id):
         return []
     _, active_seq = bar_map[active_bar_id]
 
-    built_bar_ids = {bid for bid, (_, seq) in bar_map.items() if seq < active_seq}
+    if scene is not None:
+        in_scene = {body_id.split("/", 1)[1] for body_id, body in scene.bodies.items()
+                    if body_id.startswith("bars/") and body.enabled}
+        built_bar_ids = {bid for bid in bar_map if bid in in_scene and bid != active_bar_id}
+    else:
+        built_bar_ids = {bid for bid, (_, seq) in bar_map.items() if seq < active_seq}
     if not built_bar_ids:
         return []
 

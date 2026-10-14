@@ -456,7 +456,10 @@ class RhinoDesignSource:
     def _read_obstacles(self, rs) -> None:
         """Every mesh or brep on the environment layer, as a world-frame mesh."""
         layer = config.LAYER_ENVIRONMENT
+        unnamed = []
         for i, oid in enumerate((rs.ObjectsByLayer(layer) or []) if rs.IsLayer(layer) else []):
+            if not rs.ObjectName(oid):
+                unnamed.append(f"env{i}")
             name = body_id("obstacles", rs.ObjectName(oid) or f"env{i}")
             base, k = name, 1
             while name in self.bodies:
@@ -466,6 +469,11 @@ class RhinoDesignSource:
                 self.problems.append(f"environment object {oid} is neither a mesh nor a brep; left out")
                 continue
             self._add(BodySpec(name, Pose(), geometry), f"environment object {oid}", oid)
+        if unnamed:
+            # ? A number is not a name: it follows the objects' order in the document and can change between exports.
+            shown = ", ".join(unnamed[:5]) + (", ..." if len(unnamed) > 5 else "")
+            self.problems.append(f"WARNING: {len(unnamed)} environment object(s) on layer {layer!r} have no name; "
+                                 f"exported as {shown}. Name them in Rhino (Properties > Name) for stable ids.")
 
     # * Robots, tools, mates
 

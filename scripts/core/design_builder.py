@@ -125,11 +125,11 @@ class Builder:
     """One running state threaded through the schedule; each movement starts where the last one ended."""
 
     def __init__(self, design: Design, insert_distance: float, retreat_distance: float, support_distance: float):
-        """Start with every robot and tool absent and only the ground present."""
+        """Start with every robot and tool absent, and the ground and the obstacles present."""
         self.design = design
         self.insert_distance, self.retreat_distance = insert_distance, retreat_distance
         self.support_distance = support_distance
-        grounds = frozenset(body for body in design.bodies if body.startswith("ground/"))
+        grounds = frozenset(body for body in design.bodies if body.startswith(("ground/", "obstacles/")))
         tools = {tool: None for robot in design.robots.values() for tool in robot.tools.values()}
         self.state = State(robots={robot: None for robot in design.robots}, present=grounds, tools=tools)
         self.movements: List[Movement] = []

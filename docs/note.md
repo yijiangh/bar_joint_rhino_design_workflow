@@ -1461,7 +1461,7 @@ into one that fails**. In the other screenshot the carried `joint_J49-51_male` h
 
 | Dominant `CC` line | Meaning | First thing to try |
 |---|---|---|
-| CC.1 (link <-> link) | arm folds into the robot | `RetryNewBase`; if base sampling keeps failing, raise `IK_BASE_SAMPLE_RADIUS` (1000 mm) / `IK_BASE_SAMPLE_MAX_ITER` (10) in `scripts/core/config.py` |
+| CC.1 (link <-> link) | arm folds into the robot | `RetryNewBase`; if the base search keeps failing, raise `IK_BASE_SAMPLE_RADIUS` (1000 mm, the search circle) / `IK_BASE_SEARCH_MAX_PROPOSALS` (10), or set `IK_BASE_SEARCH = "sample"` with `IK_BASE_SAMPLE_MAX_ITER` (10), in `scripts/core/config.py` |
 | CC.3 / CC.5 vs `bar_*` | arm hits built structure | new base, from another side; check the assembly sequence -- should that bar already be up? |
 | CC.4 male <-> its own female at M1 | halves overlap before mating | check the approach offset, and whether the female block sits where the design says |
 | `0 analytical branches` | target out of reach for that arm | modelling problem: tool block pose or base frame, not a search problem |

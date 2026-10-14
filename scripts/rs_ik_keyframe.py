@@ -69,6 +69,8 @@ import scriptcontext as sc
 
 from core import base_guide_geom as _base_guide_geom_module
 from core import base_guide_viz as _base_guide_viz_module
+from core import base_search as _base_search_module
+from core import base_search_viz as _base_search_viz_module
 from core import config as _config_module
 from core import dynamic_preview as _dynamic_preview_module
 from core import highlight_env as _highlight_env_module
@@ -170,6 +172,10 @@ def _reload_runtime_modules():
     base_guide_geom = importlib.reload(_base_guide_geom_module)
     base_guide_viz = importlib.reload(_base_guide_viz_module)
     reach_viz = importlib.reload(_reach_viz_module)
+    global base_search
+    base_search = importlib.reload(_base_search_module)
+    global base_search_viz  # DEBUG view, removable (see its docstring)
+    base_search_viz = importlib.reload(_base_search_viz_module)
     rhino_tool_place = importlib.reload(_rhino_tool_place_module)
     rhino_walkable_ground = importlib.reload(_rhino_walkable_ground_module)
     # dual_arm_ik + ik_keyframe (from the tamp submodule) solve the chained IK
@@ -1060,10 +1066,20 @@ def _pick_base_frame_on_walkable(brep_id, reach_meshes=None):
 # ---------------------------------------------------------------------------
 
 
-def _ask_collision_options(env_count: int = 0):
-    """Prompt for IK collision flags + the robot mesh display mode.
+_BASE_SEARCH_KEY = "bar_joint:base_search_mode"
+#: The BaseSearch answers of the collision-options prompt, in prompt order, and the mode each one is.
+BASE_SEARCH_MODES = (("Single", "single"), ("Random", "sample"), ("Optimised", "optimise"))
 
-    Returns ``(include_self, include_env, mesh_mode)`` or ``None`` on cancel.
+
+def _ask_collision_options(env_count: int = 0, offer_base_search: bool = False):
+    """Prompt for IK collision flags + the robot mesh display mode (+ the base search).
+
+    Returns ``(include_self, include_env, mesh_mode)`` or ``None`` on cancel; with
+    ``offer_base_search`` also a ``BaseSearch`` choice and a 4th value, the mode of
+    `_solve_chain_with_sampling` (``"single"`` / ``"sample"`` / ``"optimise"``, see
+    ``BASE_SEARCH_MODES``). RSIKKeyframe and RSIKKeyframeAll both ask it here, so one
+    answer means the same in both; the last answer is remembered for the session (first
+    default: ``config.IK_BASE_SEARCH``).
     The `mesh_mode` toggle picks between ``ik_viz.MESH_MODE_VISUAL`` and
     ``MESH_MODE_COLLISION`` for the previews. The previous choice is
     cached in `sc.sticky` (via ik_viz.set_mesh_mode) so subsequent runs in
@@ -1080,15 +1096,26 @@ def _ask_collision_options(env_count: int = 0):
     go.AddOptionToggle("IncludeSelf", opt_self)
     go.AddOptionToggle("IncludeEnv", opt_env)
     go.AddOptionToggle("MeshMode", opt_mesh)
+    modes = [mode for _name, mode in BASE_SEARCH_MODES]
+    search_index, search_option = None, None
+    if offer_base_search:
+        current = sc.sticky.get(_BASE_SEARCH_KEY, getattr(config, "IK_BASE_SEARCH", "optimise"))
+        search_index = modes.index(current) if current in modes else modes.index("optimise")
+        search_option = go.AddOptionList("BaseSearch", [name for name, _mode in BASE_SEARCH_MODES], search_index)
     go.AcceptNothing(True)
     while True:
         result = session_log.ask(go)
         if result == Rhino.Input.GetResult.Option:
+            if search_option is not None and go.OptionIndex() == search_option:
+                search_index = go.Option().CurrentListOptionIndex
             continue
         if result == Rhino.Input.GetResult.Nothing:
             mesh_mode = ik_viz.MESH_MODE_COLLISION if bool(opt_mesh.CurrentValue) else ik_viz.MESH_MODE_VISUAL
             ik_viz.set_mesh_mode(mesh_mode)
-            return bool(opt_self.CurrentValue), bool(opt_env.CurrentValue), mesh_mode
+            if search_option is None:
+                return bool(opt_self.CurrentValue), bool(opt_env.CurrentValue), mesh_mode
+            sc.sticky[_BASE_SEARCH_KEY] = modes[search_index]
+            return bool(opt_self.CurrentValue), bool(opt_env.CurrentValue), mesh_mode, modes[search_index]
         return None
 
 
@@ -1531,6 +1558,59 @@ def _reach_inputs(urdf, ordered):
     return reach, targets
 
 
+_WRIST_REACH_KEY = "bar_joint:base_search_reach"
+
+
+def _optimised_bases(planner, movements, brep_id, urdf, seed_base_frame_mm, *,
+                     soups=None, command="RSIKKeyframe"):
+    """Base frames proposed by `core.base_search` for this chain on one WalkableGround brep, cheapest first.
+
+    Args:
+        planner: The lent planner (collision checks of the robot at home).
+        movements (dict): ``{"M1": .., "M2": .., "M3": .., "M4": ..}`` from ``design_planning.keyframe_movements``.
+        brep_id: The WalkableGround brep the bases stand on; not read when ``soups`` is given.
+        urdf: The robot's URDF.
+        seed_base_frame_mm (np.ndarray): The picked base; the search stays within
+            ``config.IK_BASE_SAMPLE_RADIUS`` of it and ``config.IK_BASE_SEARCH_FACING_DEG`` of its heading.
+        soups (list | None): The ground as triangle soups, in place of ``brep_id`` (RSIKKeyframeAll has a
+            bar's grounds in this form already).
+        command (str): The command name the progress lines start with.
+
+    Returns:
+        iterator: 4x4 mm base frames; each ``next`` runs the search for one more.
+    """
+    from core import base_region  # noqa: PLC0415
+
+    # The reach search takes about a second and module reloads drop its cache: keep it for the session.
+    path = os.path.abspath(str(urdf))
+    key = (path, os.stat(path).st_mtime_ns)
+    cache = sc.sticky.setdefault(_WRIST_REACH_KEY, {})
+    if key not in cache:
+        cache.clear()
+        cache[key] = {side: base_region.wrist_reach(path, f"{side}_ur_arm_tool0") for side in ("left", "right")}
+    targets = {role: {side: _dual_arm_ik_module.frame_to_m_matrix(frame)
+                      for side, frame in (movements[role].target_ee_frames or {}).items()}
+               for role in ("M1", "M2", "M3")}
+    limits = base_region.constraints(cache[key], targets)
+    walkable = rhino_walkable_ground._walkable_np
+    if soups is None:
+        soups = [walkable._mesh_to_soup(rhino_walkable_ground.brep_to_compas_mesh(brep_id))]
+    near_m = float(config.IK_BASE_SEARCH_CLEARANCE_MM) / 1000.0
+    trace = base_search.Trace()
+    base_search_viz.show(trace)  # DEBUG view (config.DEBUG_BASE_SEARCH_TRACE); switched off when the command ends
+    return base_search.proposals(
+        soups, limits, base_search.HomeCheck(planner, movements, near_m),
+        lambda point_mm: walkable.closest_point_on_meshes(soups, point_mm),
+        step_mm=float(config.IK_BASE_SEARCH_STEP_MM), yaw_steps=int(config.IK_BASE_SEARCH_YAW_STEPS),
+        prefer=float(config.IK_BASE_SEARCH_PREFERRED_EXTENSION), near_m=near_m,
+        weight=float(config.IK_BASE_SEARCH_CLEARANCE_WEIGHT), spacing_mm=float(config.IK_BASE_SEARCH_SPACING_MM),
+        max_checks=int(config.IK_BASE_SEARCH_MAX_CHECKS), refine_evals=int(config.IK_BASE_SEARCH_REFINE_EVALS),
+        seed_frame_mm=seed_base_frame_mm, radius_mm=float(config.IK_BASE_SAMPLE_RADIUS),
+        facing_range=float(np.radians(config.IK_BASE_SEARCH_FACING_DEG)),
+        log=lambda line: print(f"{command}: {line}"), trace=trace,
+    )
+
+
 _SLOW_IK_WARNED_KEY = "bar_joint:slow_ik_warned"
 
 
@@ -1554,8 +1634,14 @@ def warn_slow_ik_backend(command):
 @session_log.timed()
 def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                                brep_id, heading_mm, include_self, include_env,
-                               viz=None, urdf=None):
-    """Solve the M1->M2->M3 IK chain; sample base frames around the seed on failure.
+                               viz=None, urdf=None, base_search="single", soups=None, command="RSIKKeyframe"):
+    """Solve the M1->M2->M3 IK chain at the seed base and, per ``base_search``, at other bases on failure.
+
+    The ONE base search of both RSIKKeyframe and RSIKKeyframeAll (``BaseSearch`` in
+    `_ask_collision_options`): ``"single"`` tries the seed only; ``"sample"`` the seed, then
+    ``config.IK_BASE_SAMPLE_MAX_ITER`` random bases around it; ``"optimise"`` the seed, then up
+    to ``config.IK_BASE_SEARCH_MAX_PROPOSALS`` bases from `core.base_search`. The chain solve
+    is the yes / no on each.
 
     A base frame is accepted only when the WHOLE chain solves (approach ->
     assembled -> retreat). The chain itself is solved by
@@ -1563,9 +1649,8 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     headless test. This wrapper only adds the Rhino-specific base search: try the
     seed base, then sample offsets on the WalkableGround brep and re-snap each.
 
-    If ``brep_id`` is None (reuse-saved-base path) the sampling fallback is
-    disabled and only the seed base is tried; the caller re-prompts for a fresh
-    base on the next run.
+    If ``brep_id`` is None (reuse-saved-base path, RSIKKeyframeAll) the search
+    stands its bases on the WalkableGround nearest the seed (or on ``soups``).
 
     When ``viz`` is an ``IKSampleVizConduit`` (see ``core.dynamic_preview``), the
     ghost robot is positioned at each attempt's base frame before the IK call,
@@ -1588,6 +1673,11 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
         urdf: the robot's URDF; when given, a base whose arms cannot reach the
             flange targets by distance alone (``core.reach_check``) is skipped
             without calling the solver.
+        base_search (str): ``"single"``, ``"sample"`` or ``"optimise"`` (see above).
+        soups (list | None): the ground as triangle soups, in place of ``brep_id`` for the
+            optimised search (RSIKKeyframeAll). Without ``brep_id`` the random samples stand on
+            the WalkableGround nearest the seed.
+        command (str): the command name the search's progress lines start with.
 
     Returns:
         tuple: ``(solved_states, used_base_frame_mm)`` on success where
@@ -1598,36 +1688,61 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     ordered = [("M1", movements["M1"]), ("M2", movements["M2"]), ("M3", movements["M3"])]
     reach, flange_targets = _reach_inputs(urdf, ordered)
 
-    # Candidate base frames: the seed first, then samples snapped to the brep.
-    attempts = [seed_base_frame_mm]
-    if brep_id is not None:
-        brep = _as_brep(brep_id)
-        for offset in _sample_base_offsets(config.IK_BASE_SAMPLE_MAX_ITER, config.IK_BASE_SAMPLE_RADIUS):
+    def _attempts():
+        """(label, base frame) in the order to try: the seed, then optimised proposals or random samples."""
+        yield "seed", seed_base_frame_mm
+        if base_search not in ("sample", "optimise"):
+            return
+        ground_id = brep_id
+        if ground_id is None and (soups is None or base_search == "sample"):
+            # A reused (or batch-placed) base comes without its ground: the WalkableGround it stands on.
+            ground_id = _resolve_sampling_brep_for_base(seed_base_frame_mm, None)
+            if ground_id is None and soups is None:
+                print(f"{command}: no WalkableGround under the base; trying the seed base frame only.")
+                return
+        if base_search == "optimise" and urdf is not None:
+            # Built lazily: each proposal costs planner collision checks, and the seed often solves.
+            try:
+                found = _optimised_bases(planner, movements, ground_id, urdf, seed_base_frame_mm,
+                                         soups=soups, command=command)
+                for number in range(1, int(config.IK_BASE_SEARCH_MAX_PROPOSALS) + 1):
+                    with session_log.step("base_search proposal", str(number)):
+                        frame = next(found, None)
+                    if frame is None:
+                        break
+                    yield f"optimised {number}", frame
+                return
+            except Exception as exc:  # noqa: BLE001 -- fall back to the random samples below
+                session_log.caught(exc)
+                print(f"{command}: optimised base search failed ({type(exc).__name__}: {exc}); "
+                      "sampling bases at random instead.")
+        if ground_id is None:
+            print(f"{command}: random base samples need a WalkableGround brep; trying the seed base frame only.")
+            return
+        brep = _as_brep(ground_id)
+        sample_heading_mm = heading_mm if heading_mm is not None else _heading_mm_from_base_frame(seed_base_frame_mm)
+        count = int(config.IK_BASE_SAMPLE_MAX_ITER)
+        for number, offset in enumerate(_sample_base_offsets(count, config.IK_BASE_SAMPLE_RADIUS), start=1):
             sample_origin_mm = seed_base_frame_mm[:3, 3] + offset
             snapped_origin, normal = _snap_to_brep(brep, sample_origin_mm)
             if snapped_origin is None:
                 continue
             try:
-                sample_frame = _frame_from_origin_normal_heading(snapped_origin, normal, heading_mm)
+                yield (f"sample {number}/{count}",
+                       _frame_from_origin_normal_heading(snapped_origin, normal, sample_heading_mm))
             except RuntimeError:
                 continue
-            attempts.append(sample_frame)
-    else:
-        print(
-            "RSIKKeyframe: brep_id=None (reuse path) - sampling fallback disabled; "
-            "trying seed base frame only."
-        )
 
     # Force redraws on while the viz is driving the ghost preview; many callers
     # wrap this function in `rs.EnableRedraw(False)` which otherwise would
     # short-circuit `sc.doc.Views.Redraw()` from the conduit's setters.
     prev_redraw = rs.EnableRedraw(True) if viz is not None else None
 
-    total = len(attempts)
+    total = 0
     skipped = 0
     try:
-        for idx, base_frame in enumerate(attempts):
-            label = "seed" if idx == 0 else f"sample {idx}/{total - 1}"
+        for idx, (label, base_frame) in enumerate(_attempts()):
+            total = idx + 1
             origin = base_frame[:3, 3]
             print(
                 f"RSIKKeyframe: trying base frame ({label}) "
@@ -1659,10 +1774,10 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                 viz.add_tried(sample_origin_doc, sample_x_doc, success=solved is not None)
             if solved is not None:
                 print(
-                    f"RSIKKeyframe: [OK] M1->M2->M3 IK chain solved on attempt {idx + 1}/{total} ({label})."
+                    f"RSIKKeyframe: [OK] M1->M2->M3 IK chain solved on attempt {idx + 1} ({label})."
                 )
                 return solved, base_frame
-            print(f"RSIKKeyframe: [x] chain IK failed on attempt {idx + 1}/{total} ({label}).")
+            print(f"RSIKKeyframe: [x] chain IK failed on attempt {idx + 1} ({label}).")
     finally:
         if prev_redraw is not None:
             rs.EnableRedraw(prev_redraw)
@@ -1675,7 +1790,8 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
         print(
             f"RSIKKeyframe: [X] chain IK failed for all {total} attempt(s)"
             + (f" ({skipped} skipped as out of reach)" if skipped else "")
-            + ". Consider increasing IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER in config.py."
+            + ". Consider raising IK_BASE_SEARCH_MAX_PROPOSALS (optimised search) or "
+            "IK_BASE_SAMPLE_RADIUS / IK_BASE_SAMPLE_MAX_ITER (random samples) in config.py."
         )
     return None, None
 
@@ -2855,10 +2971,10 @@ def _main(stack, after):
         # Green = what this solve collides with: the bars in the planning scene, as the core decides.
         env_token = highlight_env.highlight_env_for_ik(target_bar_id, scene)
 
-        collision_opts = _ask_collision_options(env_count=len(design.bodies))
+        collision_opts = _ask_collision_options(env_count=len(design.bodies), offer_base_search=True)
         if collision_opts is None:
             return
-        include_self, include_env, mesh_mode = collision_opts
+        include_self, include_env, mesh_mode, base_search_mode = collision_opts
 
         # * The moment of this bar's transfer without Cindy: the built bars and the
         # support robots holding bars at this step, where the collision scene has
@@ -2876,6 +2992,7 @@ def _main(stack, after):
         allow_saved_base_prompt = True
         # Arm reach volumes, built once and reused by every ghost this run.
         reach_meshes = _reach_sphere_meshes(rcell)
+        stack.callback(base_search_viz.hide)
 
         while True:
             # A base is "freshly decided" this turn only when we don't already
@@ -3018,7 +3135,7 @@ def _main(stack, after):
                 solved, used_base = _solve_chain_with_sampling(
                     planner, movements, seed_base_frame,
                     brep_id, heading_mm, include_self, include_env,
-                    viz=viz, urdf=design.robots[robot_id].urdf,
+                    viz=viz, urdf=design.robots[robot_id].urdf, base_search=base_search_mode,
                 )
                 # Drop the moving ghost robot but keep the circle + tried markers +
                 # seed arrow, so the "what was tried" history stays on screen without

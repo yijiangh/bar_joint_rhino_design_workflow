@@ -488,6 +488,37 @@ ARM_MOUNT_LINKS = {
     "right": "right_ur_arm_base_link",
 }
 
+# ---------------------------------------------------------------------------
+# Base search (RSIKKeyframe and RSIKKeyframeAll alike): where to try the IK chain when the
+# picked / placed base fails: the BaseSearch choice at the collision-options prompt. This is
+# its first default; then the last answer is kept for the session. The IK chain is the
+# yes / no on every base.
+#   "single":   only the picked / placed base.
+#   "sample":   random points within IK_BASE_SAMPLE_RADIUS of the picked base, same heading.
+#   "optimise": bases proposed by core.base_search -- cheapest arm extension over all
+#               flange targets, clear of the scene with the arms at home -- starting at
+#               the picked base and staying within IK_BASE_SAMPLE_RADIUS of it (the circle
+#               drawn around it) and within IK_BASE_SEARCH_FACING_DEG of its heading.
+# ---------------------------------------------------------------------------
+IK_BASE_SEARCH = "optimise"
+IK_BASE_SEARCH_MAX_PROPOSALS = 10         # bases to try after the picked one
+# How far a proposal may be turned from the picked heading. The bar's left / right tools
+# were assigned from that heading: past 90 deg the arms would cross.
+IK_BASE_SEARCH_FACING_DEG = 90.0
+IK_BASE_SEARCH_STEP_MM = 50.0             # ground grid the search starts from
+IK_BASE_SEARCH_YAW_STEPS = 72             # headings per ground cell (5 deg apart)
+IK_BASE_SEARCH_PREFERRED_EXTENSION = 0.65  # shoulder-to-wrist distance over reach that costs nothing
+# Penalty where the robot (arms at home) is nearer than this to the scene, rising to
+# WEIGHT at contact (the arm cost runs from 0 to 1). 0 mm = off.
+IK_BASE_SEARCH_CLEARANCE_MM = 300.0
+IK_BASE_SEARCH_CLEARANCE_WEIGHT = 0.25
+IK_BASE_SEARCH_SPACING_MM = 200.0         # a later proposal starts this far from the earlier ones
+IK_BASE_SEARCH_MAX_CHECKS = 300           # grid cells collision-checked per run, ~12 ms each
+IK_BASE_SEARCH_REFINE_EVALS = 40          # cost evaluations of the descent per proposal; 0 = none
+# DEBUG view of what the search did: an arrow where a cost was computed, a green / red
+# circle where a collision check ran, a line along each descent. See core.base_search_viz.
+DEBUG_BASE_SEARCH_TRACE = True
+
 # Layer holding the text-dot markers RSUpdatePreview drops on broken links. A
 # block instance's object color only reaches sub-objects whose color source is
 # "by parent", and the robotic-tool assets carry baked colors, so recoloring the

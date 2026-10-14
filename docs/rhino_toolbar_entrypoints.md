@@ -416,7 +416,11 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - Plans on the shared core: the document is read into a design, the bar's keyframe scenes are synced into the
   robot's planning mirror and the tamp solvers borrow its planner; previews draw the same
   scene posed by the solves (visual meshes; MeshMode flips to collision). No warm-up command needed.
-- Supports collision options and base-sampling fallback when direct solve fails.
+- Supports collision options and a base-search fallback when the picked base fails: with `IK_BASE_SEARCH = "optimise"`
+  (`core.base_search`) bases are proposed by cost (arm extension over all flange targets + clearance at home),
+  first descending from the picked base, then from the cheapest grid cells within `IK_BASE_SAMPLE_RADIUS` of it and
+  `IK_BASE_SEARCH_FACING_DEG` of its heading; `"sample"` keeps the random samples around the picked base. The
+  debug views `DEBUG_BASE_SEARCH_TRACE` (what the search did) and `DEBUG_BASE_REGION` (dense reach map) are in config.
 - Green = the bars in the planning scene (what the solve collides with), bars placed by hand included.
 - Saves the split `KEY_ASSEMBLY_*` keys on the shared Ln bar.
 - **A rejected pick points at the joints, not the bar.** The bar must carry exactly two tool-bearing joints (male or ground) and be in the bar registry. If it does not, the offending **joint blocks** are painted `COLOR_FAILED` pink and named on the command line — you already know which bar you just clicked; what you cannot see is which of its joint blocks the count is complaining about. A bar with no tool-bearing joint at all is marked itself, there being nothing else to point at. The count is of *blocks*, so a duplicated block instance makes a visibly-two-joint bar report three; that case is called out by name, since it is otherwise baffling. The mark clears on the next pick and on exit, and restores whatever colour the block carried before — it never eats a sequence colour or a broken-link mark.

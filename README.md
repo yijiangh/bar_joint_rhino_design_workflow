@@ -143,8 +143,22 @@ gotcha described in [tasks/yh_lesson.md](tasks/yh_lesson.md).
 After cloning this repo (or pulling changes that touch the submodules), run:
 
 ```bash
+git submodule sync
 git submodule update --init --recursive
 ```
+
+`git submodule sync` matters after a submodule moves. On 2026-10-14 the shared core
+moved from `external/bar_assembly_core` (github.com/jeliag/bar_assembly_core) to
+`external/scaffolding_assembly_core` (github.com/yijiangh/scaffolding_assembly_core), and its
+*design* became a *process*. An existing checkout then also needs:
+
+- delete the leftover `external/bar_assembly_core` folder;
+- restart Rhino, reload the toolbar (`scaffolding_toolbar.rui`) and run
+  `scripts/register_command_aliases.py` once: it removes the old `RSExportDesign` /
+  `RSCheckDesign` aliases and adds `RSExportProcess` / `RSCheckProcess`;
+- export again with `RSExportProcess`: folders holding `design.json` are no longer read, and
+  `solutions/` planned against them must be planned again (`scripts/plan_process.py`);
+- a pip-installed copy of the core (`pip install -e`) must be reinstalled under its new name.
 
 `scripts/core/core_lib.py` prepends `external/scaffolding_assembly_core` and
 `external/compas_fab/src` onto `sys.path` before any import of them, so Rhino

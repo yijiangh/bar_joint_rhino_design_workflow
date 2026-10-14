@@ -21,7 +21,7 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 
 | Piece | Where | State |
 | --- | --- | --- |
-| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `03a18e1`: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
+| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `7ebd9c0`: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
 | Document → `Process` | `core/process_source.py`, `RhinoProcessSource(command, cache).build()`; also records each body's Rhino object (`SourceResult.objects`) | tested on a fake document and on `YH_ik_test.3dm` and `examples/Example4_two_box.3dm` (rhino3dm) |
 | Keyframe records → actions | `core/process_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, `pose_in_tcp` per kind of half (`poses_in_tcp`) | pytest: an unsolved three-bar process with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the process on every command | |
@@ -138,7 +138,7 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
   baked once (visual and collision mesh, on `IK Cache::<key>::Visual` / `::Collision`, named by its id) and then moved
   by the change in its transform; a part is baked again only when its `Geometry` object changes. Robots that are
   absent, whose base is unknown, or (other than the acting one) whose joints are unknown are hidden, with what they
-  hold. Offenders are looked up by design id (`ik_viz.objects_of`). The solvers' compas_fab states are drawn as their
+  hold. Offenders are looked up by part id (`ik_viz.objects_of`). The solvers' compas_fab states are drawn as their
   scene posed by them (`process_planning.state_scene`).
 - No workarounds left in `process_planning.py`: the decisions of 2026-10-09 are in the core.
   - **#1 contacts**: `scene_at` derives them (`relations.allowed_contacts`): a tool on its whole part, mated halves on
@@ -213,7 +213,7 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
 **Setup** (once):
 
 1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/scaffolding_assembly_core
-   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `03a18e1`.
+   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `7ebd9c0`.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportProcess` and `RSCheckProcess` can be typed
    (both are also on the RSDesign toolbar: left- and right-click of one button).

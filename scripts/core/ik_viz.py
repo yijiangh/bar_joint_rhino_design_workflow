@@ -271,9 +271,10 @@ def _rhino_mesh(geometry, mesh_mode: str, scale: float):
     if not shapes:
         meshes[key] = (geometry, None)
         return None
-    triangle_sets = [shape_mesh(shape) for shape in shapes]
-    n_faces = sum(len(triangles.faces) for triangles in triangle_sets)
-    path = _disk_cache_path(triangle_sets, scale)
+    with session_log.step("viz: triangles and cache name of a mesh"):
+        triangle_sets = [shape_mesh(shape) for shape in shapes]
+        n_faces = sum(len(triangles.faces) for triangles in triangle_sets)
+        path = _disk_cache_path(triangle_sets, scale)
     mesh = _read_cached_mesh(path, n_faces) if path else None
     if mesh is None:
         mesh = Rhino.Geometry.Mesh()
@@ -509,10 +510,13 @@ def update_state(
     """
     from core.design_display import drawn_parts
 
-    entry = _entry(layer_key)
+    # ? The `session_log.step`s named "viz: ..." only time this function's stages (a step under 0.02 s is not logged).
+    with session_log.step("viz: layers and old previews"):
+        entry = _entry(layer_key)
     parts = entry["parts"]
     scale = _doc_units_per_metre()
-    wanted = drawn_parts(scene, (robot_id,) if robot_id else (), hide_bodies=hide_bodies)
+    with session_log.step("viz: list the scene's parts"):
+        wanted = drawn_parts(scene, (robot_id,) if robot_id else (), hide_bodies=hide_bodies)
     # ! Never a second copy of what the document already shows in the same place: two coplanar surfaces
     #   flicker as the view moves (z-fighting). The walkable ground stays the document's (it is picked on and
     #   highlighted); the obstacles too, unless the caller hid their layer for the session.
@@ -541,6 +545,8 @@ def update_state(
             del parts[part_id]
 
         hide, show = [], []
+        baking = session_log.step("viz: bake and move parts", f"{len(wanted)} wanted")
+        baking.__enter__()
         for part_id, drawn in wanted.items():
             part = parts.get(part_id)
             if part is not None and part["geometry"] is not drawn.geometry:
@@ -570,19 +576,23 @@ def update_state(
             if not part["shown"]:
                 show += _guids(part)
                 part["shown"] = True
-        if hide:
-            rs.HideObjects(hide)
-        if show:
-            rs.ShowObjects(show)
+        baking.__exit__(None, None, None)
+        with session_log.step("viz: hide and show objects", f"{len(hide)} hidden, {len(show)} shown"):
+            if hide:
+                rs.HideObjects(hide)
+            if show:
+                rs.ShowObjects(show)
         colors = colors or {}
         for part_id, part in parts.items():
             wanted_color = colors.get(part_id) or colors.get(part.get("owner"))
             part["color"] = tuple(wanted_color) if wanted_color else None
         _apply_colors(parts)
-        _show_mode(entry, _check_mode(mesh_mode) if mesh_mode else entry["mode"])
+        with session_log.step("viz: switch mesh mode layers"):
+            _show_mode(entry, _check_mode(mesh_mode) if mesh_mode else entry["mode"])
     finally:
         sc.doc.Views.RedrawEnabled = was
-    sc.doc.Views.Redraw()
+    with session_log.step("viz: redraw the views"):
+        sc.doc.Views.Redraw()
 
 
 def _apply_colors(parts: dict, force: bool = False) -> None:

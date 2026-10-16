@@ -35,7 +35,7 @@ document (re-export it with the right-click instead). A hold releasing after
 the range's last bar keeps its holding action but gets no release file.
 
 Run RSRebuildRobotCell after any geometry edit so the export reflects it. Root
-folder is shared with RSExportRobotCell via ``sc.sticky[EXPORT_ROOT_STICKY_KEY]``.
+folder is shared with RSExportRobotCell via ``core.export_root``.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ import os
 import sys
 
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -94,27 +93,10 @@ from core.rhino_bar_registry import (
 
 from compas import json_dump
 
+from core.export_root import prompt_export_root
 
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
+
 CALLER = "RSExportBarAction"
-
-
-def _prompt_export_root() -> str | None:
-    """Ask for the export folder (remembered for the next export).
-
-    Returns:
-        str | None: the chosen folder, or None when cancelled.
-    """
-    last = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-    chosen = rs.BrowseForFolder(
-        folder=last if last and os.path.isdir(last) else None,
-        message="Select export root folder",
-        title=CALLER,
-    )
-    if not chosen:
-        return None
-    sc.sticky[EXPORT_ROOT_STICKY_KEY] = chosen
-    return chosen
 
 
 def _read_bundle_schedule(root: str) -> dict | None:
@@ -289,7 +271,7 @@ def main() -> None:
 
     to_write = [("__J", jointing_action), ("__R", release_action)] + hold_actions
 
-    root = _prompt_export_root()
+    root = prompt_export_root(CALLER)
     if not root:
         print(f"{CALLER}: cancelled.")
         return

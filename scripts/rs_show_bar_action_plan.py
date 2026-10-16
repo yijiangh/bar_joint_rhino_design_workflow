@@ -89,6 +89,7 @@ from core.rhino_bar_registry import (
     set_build_stage,
     show_sequence_colors,
 )
+from core.export_root import resolve_actions_root
 from core.rhino_helpers import block_instance_xform_mm, reset_object_color, suspend_redraw
 
 
@@ -1689,8 +1690,6 @@ def main() -> None:
         solved_action_cache.clear_loaded()
 
 
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
-
 
 def _run_motion_command_loop(session):
     """Step through the active bar's trajectory from the Rhino COMMAND LINE.
@@ -1778,16 +1777,9 @@ def main_motion() -> None:
     loaded, kind = solved_action_cache.get_loaded()
     action = loaded.get(bar_id) if kind == "motion" else None
     if action is None:
-        root = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-        if not root or not os.path.isdir(os.path.join(root, "BarActions")):
-            root = rs.BrowseForFolder(
-                folder=root if root and os.path.isdir(root) else None,
-                message="Select export root (folder that contains BarActions/)",
-                title="RSShowBarActionPlan",
-            )
-            if not root:
-                return
-            sc.sticky[EXPORT_ROOT_STICKY_KEY] = root
+        root = resolve_actions_root("RSShowBarActionPlan")
+        if not root:
+            return
         actions_dir = os.path.join(root, "BarActions")
         action = solved_action_cache.load_solved_action_file(actions_dir, bar_id, "motion")
         if action is None:

@@ -46,7 +46,7 @@ A range export (From .. Until) is a smaller, self-consistent bundle
 
 PyBullet must be running (RSPBStart); run RSRebuildRobotCell after geometry
 edits. Root folder is shared with RSExportBarAction / RSExportRobotCell via
-``sc.sticky[EXPORT_ROOT_STICKY_KEY]``.
+``core.export_root``.
 """
 
 from __future__ import annotations
@@ -59,7 +59,6 @@ import sys
 import traceback
 
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +88,7 @@ importlib.reload(_rhino_export_range_module)
 
 from core import bar_action as _bar_action_module
 from core import config as _config_module
+from core import export_root as _export_root_module
 from core import hold_action_builder as _hold_action_builder_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import robot_cell as _robot_cell_module
@@ -122,30 +122,11 @@ from core.rhino_walkable_ground import (
 from compas import json_dump
 
 
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
 CALLER = "RSExportAllBarActions"
 
 #: An action file this exporter writes: ``<bar>__J|R|H|HR.json``. Other files
 #: in ``BarActions/`` (planned motions, ...) are never touched.
 _ACTION_FILE_RE = re.compile(r"^.+__(J|R|H|HR)\.json$")
-
-
-def _prompt_export_root() -> str | None:
-    """Ask for the export folder (remembered for the next export).
-
-    Returns:
-        str | None: the chosen folder, or None when cancelled.
-    """
-    last = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-    chosen = rs.BrowseForFolder(
-        folder=last if last and os.path.isdir(last) else None,
-        message="Select export root folder (all BarActions + RobotCell go here)",
-        title=CALLER,
-    )
-    if not chosen:
-        return None
-    sc.sticky[EXPORT_ROOT_STICKY_KEY] = chosen
-    return chosen
 
 
 def _ask_remove_leftovers(root: str, planned_files: set) -> list:
@@ -206,6 +187,7 @@ def main() -> None:
     bar_action = importlib.reload(_bar_action_module)
     robot_cell_support = importlib.reload(_robot_cell_support_module)
     hold_action_builder = importlib.reload(_hold_action_builder_module)
+    export_root = importlib.reload(_export_root_module)
 
     if not robot_cell.is_pb_running():
         rs.MessageBox("PyBullet is not running. Click RSPBStart first.", 0, CALLER)
@@ -271,7 +253,9 @@ def main() -> None:
     with_ik_ids = [bid for bid, oid in all_bars if bar_action.has_ik_keyframe(oid)]
     without_ik_ids = [bid for bid, oid in all_bars if not bar_action.has_ik_keyframe(oid)]
 
-    root = _prompt_export_root()
+    root = export_root.prompt_export_root(
+        CALLER, "Select export root folder (all BarActions + RobotCell go here)",
+    )
     if not root:
         print(f"{CALLER}: cancelled.")
         return

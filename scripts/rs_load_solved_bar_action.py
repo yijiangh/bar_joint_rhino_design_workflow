@@ -22,7 +22,7 @@ Right-click (``rs_load_solved_bar_action_all.py``): load EVERY
 
 Both prompt whether to load the ``solved_keyframe`` sidecar (base + IK keyframe
 configs) or the ``solved_motion`` sidecar (planned trajectories). The export root
-is shared with the RSExport* commands via ``sc.sticky[EXPORT_ROOT_STICKY_KEY]``.
+is shared with the RSExport* commands via ``core.export_root``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ import os
 import sys
 
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 from compas.data import json_load
 
@@ -45,11 +44,10 @@ from core import bar_action as _bar_action_module
 from core import config as _config_module
 from core import robot_cell as _robot_cell_module
 from core import solved_action_cache as _cache_module
+from core.export_root import resolve_actions_root
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, get_bar_seq_map, repair_on_entry
 
-
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
 
 
 def _prompt_kind() -> str | None:
@@ -62,22 +60,6 @@ def _prompt_kind() -> str | None:
     if not choice:
         return None
     return "motion" if "motion" in choice else "keyframe"
-
-
-def _resolve_root() -> str | None:
-    """Return the export root (shared sticky), browsing for it if unset/invalid."""
-    last = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-    if last and os.path.isdir(os.path.join(last, "BarActions")):
-        return last
-    chosen = rs.BrowseForFolder(
-        folder=last if last and os.path.isdir(last) else None,
-        message="Select export root (the folder that contains BarActions/)",
-        title="RSLoadSolvedBarAction",
-    )
-    if not chosen:
-        return None
-    sc.sticky[EXPORT_ROOT_STICKY_KEY] = chosen
-    return chosen
 
 
 def load_and_view(batch: bool) -> None:
@@ -100,7 +82,7 @@ def load_and_view(batch: bool) -> None:
     kind = _prompt_kind()
     if kind is None:
         return
-    root = _resolve_root()
+    root = resolve_actions_root("RSLoadSolvedBarAction")
     if not root:
         return
     actions_dir = os.path.join(root, "BarActions")

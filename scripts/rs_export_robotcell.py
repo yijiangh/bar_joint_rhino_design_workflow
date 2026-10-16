@@ -36,36 +36,20 @@ import os
 import sys
 
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
+from core import export_root as _export_root_module
 from core import robot_cell as _robot_cell_module
 
-from compas import json_dump
-
-
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
-
-
-def _prompt_export_root() -> str | None:
-    last = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-    chosen = rs.BrowseForFolder(
-        folder=last if last and os.path.isdir(last) else None,
-        message="Select export root folder",
-        title="RSExportRobotCell",
-    )
-    if not chosen:
-        return None
-    sc.sticky[EXPORT_ROOT_STICKY_KEY] = chosen
-    return chosen
 
 
 def main() -> None:
     robot_cell = importlib.reload(_robot_cell_module)
+    export_root = importlib.reload(_export_root_module)
 
     if not robot_cell.is_pb_running():
         rs.MessageBox(
@@ -102,15 +86,15 @@ def main() -> None:
     else:
         print(f"RSExportRobotCell: cell carries {n_rb} rigid_body_models + {n_tools} tool_models.")
 
-    root = _prompt_export_root()
+    root = export_root.prompt_export_root("RSExportRobotCell")
     if not root:
         print("RSExportRobotCell: cancelled.")
         return
 
     os.makedirs(root, exist_ok=True)
-    os.makedirs(os.path.join(root, "BarActions"), exist_ok=True)
+    os.makedirs(os.path.join(root, export_root.BAR_ACTIONS_DIR), exist_ok=True)
 
-    out = os.path.join(root, "RobotCell.json")
+    out = os.path.join(root, export_root.ROBOT_CELL_FILE)
     if os.path.exists(out):
         ans = rs.MessageBox(
             f"'{out}' exists. Overwrite?",
@@ -121,10 +105,7 @@ def main() -> None:
             print("RSExportRobotCell: cancelled (kept existing file).")
             return
 
-    with open(out, "w") as f:
-        # Names are already canonical (bar_<bid> / joint_<jid>_<sub> /
-        # obstacle_<name>); tools under tool_models. Plain dump.
-        json_dump(rcell, f, pretty=True)
+    export_root.write_robot_cell(rcell, root)
     print(
         f"RSExportRobotCell: saved {out} "
         f"({n_rb} rigid_body_models, {n_tools} tool_models)."

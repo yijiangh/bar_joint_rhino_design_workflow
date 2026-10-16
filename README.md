@@ -54,6 +54,7 @@ Rhino all the way to a real robot:
 | Artifact | Produced by | Consumed by |
 |---|---|---|
 | `RobotCell.json` (robot + tools + all rigid bodies) | 1 · `RSExportRobotCell` / `RSExportAllBarActions` | 2 (scene rebuild), 3 |
+| `MoCapMarkers.json` (designed MoCap markers per bar; [format](docs/mocap_marker_export.md)) | 1 · `RSExportRobotCell` / `RSExportAllBarActions` | 3 (live marker comparison) |
 | `BarActions/<bar>.json` (M0–M4 movements) | 1 · `RSExportBarAction` / `RSExportAllBarActions` | 2 (solve input) |
 | `WalkableGround.json` (ground meshes) | 1 · `RSExportAllBarActions` | 2 (`--base sample` search) |
 | `<bar>.solved_keyframe.json` (base + IK keyframes) | 2 · `--solve-keyframes` | 2 (motion planning), 1 (viewer) |
@@ -226,6 +227,91 @@ rod-to-rod connectivity:
 
 With nothing moved between import and export, the exported file is
 identical to the imported one (covered by `tests/test_scaffold_json.py`).
+
+### MoCap joints: markers on the bars for debugging the robot assembly
+
+A **`T20_MoCap`** joint is a T20 Female with an OptiTrack marker plate: two
+spheres, **M1** and **M2**, 48.3 mm apart and 25.5 mm off the bar axis. It
+takes a male exactly like a Female (or sits alone on a bar), and the jig puts
+it on the bar exactly like a Female. Once the bars are in the robot cell,
+Motive sees where each MoCap joint really is, so you can check against the
+design whether a joint **rotated** on its bar, a bar **bent**, or a bar
+**moved** during insertion, retreat, the support robot's hold / release, or
+while the next bar is screwed in.
+
+What Rhino does for this today: place the MoCap joints, export where every
+marker should be, and label each marker so the Motive markers can be named to
+match. The comparison of measured against designed markers belongs to the
+teleop monitor and is not built yet (see the end of this section).
+
+**0. The marker plate is recorded once per joint type** (joint-library
+authors). **RSDefineJointHalf** on `T20_MoCap`: `CopyFromFemale` (its frames
+are the Female's), then pick each sphere and type its label, `M1`, `M2`.
+Already done for T20: `scripts/core/joint_pairs.json` › `T20_MoCap` ›
+`marker_points_mm`.
+
+**1. Place MoCap joints.** Put at least two on every bar you want to track (four
+markers fix a bar); spread them along the bar.
+
+- New pair: **RSJointPlace** › JointPairAndTool, and answer
+  `Receiving joint: Female | MoCap` with **MoCap**.
+- Existing pair: **RSJointEdit** › **ReplaceJoint**, click the receiver
+  (`J20-21_female` ↔ `J20-21_mocap`; id, bars and tool are kept).
+- A bar with no partner there: **RSJointPlace** › JointOnly › **MoCap**
+  (`M20-T20-0_mocap`; `Accept | Rotate` to aim the plate).
+
+**2. Check that every pair mates.** A T20 pair only nests when its two bar
+axes are exactly **36 mm** apart. If they are not, the placement prints
+`interface error too large … auto-flipping receiver side` and an
+`Interface origin err` above 0.05 mm, and it turns the receiver 180° even when
+that does not help: the pair looks loose, and **FlipJoint cannot fix it**. This
+is not MoCap-specific; a Female behaves the same. Fix the bar (move it, or
+**RSBarSnap** it onto its partner), then FlipJoint / MoveJoint once.
+**RSUpdatePreview** lists every pair that does not mate.
+
+**3. Export for the jig: RSExportPrefab** → `<doc>_prefab.json`. A MoCap joint
+goes out as `subtype: "MoCap"` with the usual `position_mm` / `rotation_deg` /
+`ori`, plus `mocap.markers_mm`: its M1 / M2 centres in the bar frame (origin
+at the bar start, z along the bar). The jig ignores that extra field.
+
+**4. Export for the robot and Motive: RSExportRobotCell** (or
+RSExportAllBarActions) writes **`MoCapMarkers.json`** next to `RobotCell.json`,
+and redraws the layer **MANAGED Scaffolding › MoCap Marker Labels**:
+
+- a text dot at every designed sphere, `B20 #3 M1` (bar, the marker's number on
+  that bar, its label). The dot's object name is the full marker name,
+  `J20-21_mocap_M1`;
+- a line through each joint's two spheres (its designed marker-pair line).
+
+What the file answers, per marker and per joint ([format](docs/mocap_marker_export.md)):
+
+| Question | Where in `MoCapMarkers.json` | Example |
+|---|---|---|
+| Which marker is this? | `markers[].name`, `label`, `index`, `joint_id`; the bar is the entry it sits in | `J20-22_mocap_M1`, `M1`, number 1 on `B20` |
+| Where is the joint? | `joints[].position_mm` (along the bar from `start_mm`), `frame_world_mm` (4×4, world mm) | `104.9` |
+| Where is the marker? | `markers[].world_mm` (Rhino world) and `bar_mm` (bar frame) | `[1240.83, -2250.59, 127.97]` |
+| How far is the joint from each end of the bar? | from the start: `position_mm`; from the end: `length_mm − position_mm` (not stored yet) | `104.9` and `1695.1` on an 1800 mm bar |
+| How far apart are the markers? | not stored yet: compute from `world_mm`; M1–M2 on one joint is always 48.3 mm | — |
+
+**5. In Motive**: make **one rigid body per instrumented bar** from its
+spheres, and name each marker after its Rhino dot (`J20-21_mocap_M1`, …).
+
+**Not available yet for `T20_MoCap` bars:**
+
+- **Reading the measured markers back into Rhino.** RSReadMoCapBar and
+  RSAlignModelThreeBars (RSMoCap tab) are for the older 4-marker bar rig: they
+  expect two marker pairs 70–90 mm apart whose centres lie on the bar axis. A
+  `T20_MoCap` pair is 48.3 mm long and its centre sits 25.5 mm off the axis,
+  so RSReadMoCapBar rejects the rigid body and RSAlignModelThreeBars would fit
+  the bar 25.5 mm off. Do not use them for MoCap-joint bars.
+- **The comparison itself** — which Motive rigid body is which bar, the bar's
+  placement error, each joint's rotation about the bar, the bending along the
+  bar, recorded automatically after each robot movement — is planned in
+  [husky-assembly-teleop] and will read `MoCapMarkers.json`. Until then,
+  compare by hand: a joint that **rotated** shows its M1–M2 line turned about
+  the bar axis; a bar that **bent** shows markers drifting off the straight
+  centre line in the middle of the bar while the ends stay; a bar that
+  **moved** shows every marker shifted the same way.
 
 ## Standalone Developer Tools
 

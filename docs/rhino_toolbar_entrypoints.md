@@ -44,7 +44,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSExportAllBarActions | `rs_export_all_bar_actions.py` | Right-click companion of RSExportBarAction (no standalone button). Exports EVERY bar (IK optional) + RobotCell.json + WalkableGround.json. Bars without IK are solved later by the headless base+IK sampler. | Planning/export users |
 | RSSetup | RSClearIKKeyframe | `rs_clear_ik_keyframe.py` | Left-click: pick ONE bar. Right-click (`rs_clear_ik_keyframe_all.py`): EVERY bar. Either way, then choose what to erase via two toggles — Keyframe (M1-M3 IK config + legacy blob) and BasePosition (mobile base) — both default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
 | RSSetup | RSLoadSolvedBarAction | `rs_load_solved_bar_action.py` | Left-click: pick a bar, load its `<bar>.solved_<kind>.json` (prompts keyframe/motion), sync IK to user-text, open RSShowBarActionPlan. Right-click, **RSLoadSolvedBarActionAll** (`rs_load_solved_bar_action_all.py`): load all solved bar actions in BarActions/ and draw every base frame. | Planning/export users |
-| RSSetup | RSExportRobotCell | `rs_export_robotcell.py` | Export robot cell configuration JSON | Planning/export users |
+| RSDesign | RSExportRobotCell | `rs_export_robotcell.py` | Export `RobotCell.json`, plus `MoCapMarkers.json` (designed MoCap markers) when any are placed | Planning/export users |
 | RSDesign | RSAssignAndShowWalkableGround | `rs_assign_and_show_walkable_ground.py` | Pick a bar; view its assigned WalkableGround(s) + the default mobile-base placement (half-transparent ghost robot), then optionally overwrite the assignment by selecting brep(s) — loops back to re-show. Auto-assigns nearest if none. Auto-assign also runs in RSRebuildRobotCell; use this to inspect/correct a specific bar. | Planning/export users |
 | RSMoCap | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one rigid body from Motive and bake markers | Mocap users |
 | RSMoCap | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit model bars to mocap bars and transform managed layers | Mocap users |
@@ -521,15 +521,27 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 ### RSExportRobotCell (`rs_export_robotcell.py`)
 
-- Exports robot cell/environment definition for external planners.
+- Exports the robot cell (robot, tools, every rigid body) to `<root>/RobotCell.json` for the
+  planner and the teleop monitor.
+- Also writes `<root>/MoCapMarkers.json`: every bar's designed centre line and its MoCap marker
+  spheres, numbered per bar and named `J20-21_mocap_M1`; and redraws the **MoCap Marker Labels**
+  layer — a dot at every designed sphere and a line through each joint's spheres — to name the
+  Motive markers by. Skipped when no MoCap joint with recorded markers is placed.
+  RSExportAllBarActions writes the same file. Format and the Motive setup:
+  [mocap_marker_export.md](mocap_marker_export.md).
 
 ### RSReadMoCapBar (`rs_read_mocap_bar.py`)
 
 - Reads one OptiTrack rigid body's marker set and bakes points in Rhino.
+- **Older 4-marker bar rig only.** It requires exactly 4 markers forming two pairs 70–90 mm
+  apart. A bar carrying `T20_MoCap` joints (48.3 mm pairs, usually 8 markers) is rejected.
 
 ### RSAlignModelThreeBars (`rs_align_model_three_bars.py`)
 
 - Fits model bars to three mocap bars and applies a rigid transform to managed geometry.
+- **Older 4-marker bar rig only.** It treats the line between the two pair centres as the bar
+  axis. On `T20_MoCap` joints the pair centre sits 25.5 mm off the axis, so it would fit the
+  bar 25.5 mm off; do not use it for MoCap-joint bars.
 
 ### RSImportScaffoldJSON (`rs_import_scaffold_json.py`)
 

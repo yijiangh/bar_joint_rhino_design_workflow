@@ -528,6 +528,12 @@ ARM_MOUNT_LINKS = {
 # would evict these markers as strays.
 LAYER_DIAGNOSTIC_MARKS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Diagnostic Marks"
 
+# Layer holding the numbered text dots + marker-pair lines that RSExportRobotCell
+# draws at every designed MoCap marker (core.rhino_mocap_markers), so the Motive
+# markers can be named to match.  Rebuilt by each export.  NOT in MANAGED_LAYERS,
+# for the same reason as LAYER_DIAGNOSTIC_MARKS.
+LAYER_MOCAP_MARKER_LABELS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "MoCap Marker Labels"
+
 MANAGED_LAYERS = (
     LAYER_BAR_CENTERLINES,
     LAYER_BAR_TUBE_PREVIEWS,

@@ -328,6 +328,16 @@ def split_object_name(name: str) -> tuple[str, str | None]:
     return str(name or ""), None
 
 
+def marker_name(jid: str, subtype: str, label: str) -> str:
+    """``("J20-21", MOCAP, "M1")`` -> ``"J20-21_mocap_M1"``: one marker sphere.
+
+    *label* is the sphere's label recorded by RSDefineJointHalf (``M1``,
+    ``M2``, ...).  The same name is what the Motive marker should carry, so
+    the export, Motive and the teleop monitor all say the same thing.
+    """
+    return f"{object_name(jid, subtype)}_{label}"
+
+
 #: PyBullet body-key prefixes.  Every cell -- the dual-arm assembly cell and the
 #: single-arm support cells -- uses the plain ones; ``obstacle_`` bodies come
 #: from the Environment layer.  The ``env_`` ones are LEGACY: support cells used

@@ -26,6 +26,7 @@ under ``<root>/BarActions/``:
   reported, not silently skipped.
 
 Plus the bundle files at the root: ``RobotCell.json`` (Cindy's cell),
+``MoCapMarkers.json`` (the designed MoCap markers, as RSExportRobotCell writes),
 ``RobotCell_<robot>.json`` for each support robot actually used,
 ``WalkableGround.json``, and ``ActionSchedule.json`` — the global interleaved
 action order across all robots with explicit robot assignments.
@@ -93,6 +94,8 @@ from core import hold_action_builder as _hold_action_builder_module
 from core import ik_collision_setup as _ik_collision_setup_module
 from core import robot_cell as _robot_cell_module
 from core import robot_cell_support as _robot_cell_support_module
+from core import mocap_markers as _mocap_markers_module
+from core import rhino_mocap_markers as _rhino_mocap_markers_module
 from core import robot_obstacles as _robot_obstacles_module
 from core.export_subset import (
     assert_states_match_cell,
@@ -188,6 +191,8 @@ def main() -> None:
     robot_cell_support = importlib.reload(_robot_cell_support_module)
     hold_action_builder = importlib.reload(_hold_action_builder_module)
     export_root = importlib.reload(_export_root_module)
+    importlib.reload(_mocap_markers_module)
+    rhino_mocap_markers = importlib.reload(_rhino_mocap_markers_module)
 
     if not robot_cell.is_pb_running():
         rs.MessageBox("PyBullet is not running. Click RSPBStart first.", 0, CALLER)
@@ -435,6 +440,9 @@ def main() -> None:
             f"  [OK] {cell_name} -> {cell_path} "
             f"({len(cell.rigid_body_models)} rigid bodies, {len(cell.tool_models)} tools)"
         )
+    # The designed MoCap markers of the whole design (every bar, also in a
+    # range export), next to the cell; labelled in Rhino.
+    rhino_mocap_markers.export_mocap_markers(collision_bodies or {}, root, f"  {CALLER}")
 
     # Dump the WalkableGround breps as meshed surfaces keyed by their stable
     # ids, so the headless base sampler can snap to them. Bars reference these

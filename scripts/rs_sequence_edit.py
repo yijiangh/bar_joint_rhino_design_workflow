@@ -69,7 +69,7 @@ from core.rhino_bar_registry import (
     show_sequence_colors,
     reset_sequence_colors,
 )
-from core.rhino_helpers import curve_endpoints, ensure_layer
+from core.rhino_helpers import curve_endpoints, ensure_layer, objects_on_layers
 
 # Reuse the tube-aware bar filter and tube->centerline resolver so clicking
 # the bar's tube preview works the same way it does in
@@ -106,11 +106,8 @@ def _sweep_sequence_dots():
     Safe to call when none exist, and safe to call on entry: the dots are pure
     UI, so there is nothing to preserve between runs.
     """
-    layer = config.LAYER_DIAGNOSTIC_MARKS
-    if not rs.IsLayer(layer):
-        return 0
     strays = [
-        oid for oid in (rs.ObjectsByLayer(layer) or [])
+        oid for oid in objects_on_layers(config.LAYER_DIAGNOSTIC_MARKS)
         if rs.GetUserText(oid, _SEQ_DOT_KEY)
     ]
     if strays:

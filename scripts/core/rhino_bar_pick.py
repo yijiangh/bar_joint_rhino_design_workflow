@@ -255,6 +255,34 @@ def pick_bar(prompt: str):
     return resolve_picked_to_bar_curve(picked_id)
 
 
+def pick_bar_among(bar_ids, prompt: str, also=None):
+    """Pick one of *bar_ids* by its centre line or tube; return its bar id.
+
+    Other bars are not selectable, so a wrong click is impossible rather than
+    rejected afterwards.  *also* optionally maps any other clicked object to a
+    bar id (``obj_id -> bar_id or ""``), making those objects pickable too --
+    e.g. a bar's base-frame marker.  ``None`` on Esc / Enter.
+    """
+    allowed = frozenset(bar_ids)
+
+    def _bar_id_of(rhino_object):
+        bar_id = _picked_bar_id(rhino_object)
+        if bar_id is None and also is not None:
+            bar_id = also(rhino_object.Id) or None
+        return bar_id
+
+    def _filter(rhino_object, geometry, component_index):
+        return _bar_id_of(rhino_object) in allowed
+
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt(prompt)
+    go.EnablePreSelect(False, False)
+    go.SetCustomGeometryFilter(_filter)
+    if go.Get() != Rhino.Input.GetResult.Object:
+        return None
+    return _bar_id_of(go.Object(0).Object())
+
+
 def pick_point_on_bar(bar_id, prompt: str):
     """Prompt for a point on the bar curve *bar_id*; numpy 3-vector or ``None``.
 

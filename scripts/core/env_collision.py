@@ -440,6 +440,7 @@ def collect_assembly_geometry(bar_seq_map):
         ``{rigid_body, frame_world_mm, kind, source_oid, parent_bar_id, ...}``.
     """
     import rhinoscriptsyntax as rs
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
     from core.rhino_bar_registry import get_fake_bar_ids
     from core.rhino_helpers import block_instance_xform_mm
 
@@ -478,9 +479,7 @@ def collect_assembly_geometry(bar_seq_map):
     # collision scene, so report them rather than dropping them silently.
     orphan_parents = []
     for layer in joint_layers:
-        if not rs.IsLayer(layer):
-            continue
-        for joint_oid in rs.ObjectsByLayer(layer) or []:
+        for joint_oid in objects_on_layers(layer):
             parent_bar = rs.GetUserText(joint_oid, jnc.UT_PARENT_BAR)
             # A half mounted on a fake bar (its female) goes out with the bar;
             # the real bar's male is parented to the REAL bar and stays.

@@ -29,7 +29,6 @@ import sys
 
 import numpy as np
 import rhinoscriptsyntax as rs
-import scriptcontext as sc
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,27 +39,14 @@ from core import config as _config_module
 from core import joint_name_conventions as jnc
 from core import env_collision as _env_collision_module
 from core import ik_collision_setup as _ik_collision_setup_module
+from core.export_root import prompt_export_root
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
 from core.rhino_helpers import block_instance_xform_mm
 from core.transforms import invert_transform
 
 
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
 TITLE = "RSExportBarTool0TF"
-
-
-def _prompt_export_root() -> str | None:
-    last = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-    chosen = rs.BrowseForFolder(
-        folder=last if last and os.path.isdir(last) else None,
-        message="Select export root folder",
-        title=TITLE,
-    )
-    if not chosen:
-        return None
-    sc.sticky[EXPORT_ROOT_STICKY_KEY] = chosen
-    return chosen
 
 
 def _mat_to_list(m) -> list:
@@ -136,7 +122,7 @@ def main() -> None:
         },
     }
 
-    root = _prompt_export_root()
+    root = prompt_export_root(TITLE)
     if not root:
         print(f"{TITLE}: cancelled.")
         return

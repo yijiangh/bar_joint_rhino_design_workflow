@@ -52,7 +52,13 @@ from core.rhino_block_import import (
     block_asset_stamp,
     update_block_definition_geometry,
 )
-from core.rhino_helpers import ensure_layer, set_object_color, suspend_redraw
+from core.rhino_helpers import (
+    ensure_layer,
+    objects_on_layers,
+    reset_object_color,
+    set_object_color,
+    suspend_redraw,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -60,23 +66,12 @@ from core.rhino_helpers import ensure_layer, set_object_color, suspend_redraw
 # ---------------------------------------------------------------------------
 
 
-def _layer_oids(layer):
-    """Return every object id on *layer* (empty when the layer does not exist)."""
-    if not rs.IsLayer(layer):
-        return []
-    return list(rs.ObjectsByLayer(layer) or [])
-
-
-def _reset_color(oid) -> None:
-    """Revert *oid*'s color override back to by-layer."""
-    if rs.IsObject(oid) and hasattr(rs, "ObjectColorSource"):
-        rs.ObjectColorSource(oid, 0)  # 0 == by layer
 
 
 def _joint_block_instances():
     """Yield ``(oid, layer, joint_id, block_name)`` per baked joint block."""
     for layer in jnc.JOINT_LAYERS:
-        for oid in _layer_oids(layer):
+        for oid in objects_on_layers(layer):
             # Stray non-block objects on a managed layer are not our business
             # (repair_on_entry evicts them).
             if not rs.IsBlockInstance(oid):
@@ -379,7 +374,7 @@ def find_broken_links() -> dict:
             (tool_oid, "tool", f"tool {label} ({joint_id or '<no joint>'}): {reason}")
         )
 
-    for tool_oid in _layer_oids(config.LAYER_TOOL_INSTANCES):
+    for tool_oid in objects_on_layers(config.LAYER_TOOL_INSTANCES):
         if tool_oid in reported_tools:
             continue
         joint_id = rs.GetUserText(tool_oid, jnc.UT_JOINT_ID) or ""
@@ -491,14 +486,14 @@ def clear_broken_link_marks() -> int:
             config.LAYER_BAR_CENTERLINES,
             config.LAYER_BAR_TUBE_PREVIEWS,
         ):
-            for oid in _layer_oids(layer):
-                _reset_color(oid)
+            for oid in objects_on_layers(layer):
+                reset_object_color(oid)
                 n += 1
         # Belt and braces: a registered bar that somehow sits off the managed
         # centre-line layer still gets reverted, tube included.
         for _bar_id, (oid, _seq) in get_bar_seq_map().items():
             reset_bar_color(oid)
-        for oid in _layer_oids(config.LAYER_DIAGNOSTIC_MARKS):
+        for oid in objects_on_layers(config.LAYER_DIAGNOSTIC_MARKS):
             if rs.GetUserText(oid, _MARK_KEY):
                 rs.DeleteObject(oid)
                 n += 1

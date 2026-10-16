@@ -35,6 +35,7 @@ from core.rhino_block_import import require_block_definition
 from core.rhino_helpers import (
     curve_endpoints,
     numpy_to_xform,
+    objects_on_layers,
     set_object_color,
     set_objects_layer,
     suspend_redraw,
@@ -46,12 +47,6 @@ from core.rhino_helpers import (
 # ---------------------------------------------------------------------------
 
 # Per-variant preview colors (cycled by variant index).
-PREVIEW_COLORS = [
-    (230, 80, 80),
-    (80, 80, 230),
-    (80, 200, 80),
-    (200, 160, 50),
-]
 
 # A solved variant is "acceptable" when the receiver/male screw frames
 # coincide within these tolerances.  Special joint geometries sometimes
@@ -435,9 +430,7 @@ def find_joint_blocks(joint_id, subtypes=jnc.SUBTYPES) -> list:
             if oid not in found:
                 found.append(oid)
         layer = jnc.joint_layer(subtype)
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             if oid not in found and rs.GetUserText(oid, jnc.UT_JOINT_ID) == joint_id:
                 found.append(oid)
     return found
@@ -455,7 +448,6 @@ def remove_joint_blocks(joint_id, subtypes=jnc.SUBTYPES) -> int:
 
 # Re-export what callers most commonly need.
 __all__ = [
-    "PREVIEW_COLORS",
     "RECOVER_SIDES",
     "VARIANT_OK_ORIGIN_TOL_MM",
     "VARIANT_OK_Z_AXIS_TOL_RAD",

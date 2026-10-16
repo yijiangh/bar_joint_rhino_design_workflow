@@ -47,12 +47,11 @@ if _TAMP_ROOT not in sys.path:
 
 # Solver tuning is owned by the solver package; re-imported here so Rhino-side
 # call sites keep reading `config.IK_*` with ONE definition project-wide. This
-# import is cheap (os/sys only -- no compas / pybullet).
+# import is cheap (os/sys only -- no compas / pybullet).  The base-search values
+# (IK_BASE_SAMPLE_*, IK_BASE_STANDOFF_MM) are NOT imported: Rhino keeps its own,
+# defined below.
 from husky_assembly_tamp.keyframe.config import (  # noqa: E402
     IK_BACKEND,
-    IK_BASE_SAMPLE_RADIUS,
-    IK_BASE_SAMPLE_MAX_ITER,
-    IK_BASE_STANDOFF_MM,
     IK_MAX_DESCEND_ITERATIONS,
     IK_MAX_RESTART_ITER,
     IK_TOLERANCE_POSITION,
@@ -84,6 +83,28 @@ BAR_RADIUS = 10.0
 # UI: color used to highlight bars the user has just picked, across all
 # interactive scripts that show selection feedback (snap, brace, …).
 SELECTED_BAR_COLOR = (30, 100, 220)  # blue
+
+# UI: preview colors shared by several commands -- one definition each, so a
+# color keeps one meaning everywhere (docs/color_preview_reference.md).
+#: The four solver variants of a joint pair or candidate bar, in variant order.
+VARIANT_PREVIEW_COLORS = (
+    (230, 80, 80),    # red
+    (80, 80, 230),    # blue
+    (80, 200, 80),    # green
+    (200, 160, 50),   # amber
+)
+#: RSJointPlace > JointOnly previews, by joint kind.
+GROUND_PREVIEW_COLOR = (180, 120, 60)
+MOCAP_PREVIEW_COLOR = (60, 150, 200)
+#: Walkable-ground breps assigned to a bar.
+WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
+#: Bodies reported in collision.
+COLLISION_COLOR = (255, 40, 40)
+#: Arm reach outline: clear, or touching an obstacle / the ground edge.
+REACH_CLEAR_COLOR = (100, 100, 220)
+REACH_TOUCH_COLOR = (255, 100, 100)
+#: Translucent robot that follows the cursor while a base is picked.
+GHOST_ROBOT_COLOR = (180, 180, 220)
 
 # UI: RSUpdatePreview paints broken model links so they are visible without
 # reading the command history. Neither case can be auto-repaired (the bar is
@@ -167,7 +188,8 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
-# IK base sampling fallback
+# IK base sampling fallback.  Rhino's own values (tamp's own defaults differ:
+# 20 iterations, 700 mm standoff); Rhino passes them to tamp explicitly.
 IK_BASE_SAMPLE_RADIUS = 1000.0  # mm
 IK_BASE_SAMPLE_MAX_ITER = 10
 # How far BEHIND the bar the SEED mobile base stands (mm). The seed is offset
@@ -227,11 +249,11 @@ INSERTION_DIR_CANCEL_TOL = 0.30      # |sum(unit axes)| / n
 # instance because re-placing a tool deletes and recreates the tool object.
 # Cleared by an explicit base Flip (that IS the user re-deciding the side).
 KEY_TOOL_SIDE_MANUAL = "tool_side_manual"
-# NOTE: the IK/base-search tuning constants (IK_BASE_SAMPLE_*, IK_BASE_STANDOFF_MM,
-# IK_MAX_DESCEND_ITERATIONS, IK_MAX_RESTART_ITER, IK_TOLERANCE_*, IK_BACKEND) and
-# the ssik sidecar wiring moved to `husky_assembly_tamp.keyframe.config` with the
-# solvers; they are re-imported near the top of this file so Rhino call sites keep
-# reading `config.IK_*`.
+# NOTE: the IK solver tuning constants (IK_MAX_DESCEND_ITERATIONS,
+# IK_MAX_RESTART_ITER, IK_TOLERANCE_*, IK_BACKEND) and the ssik sidecar wiring
+# live in `husky_assembly_tamp.keyframe.config` with the solvers; they are
+# re-imported near the top of this file so Rhino call sites keep reading
+# `config.IK_*`.  The base-search values are Rhino's own (see above).
 
 # IK solver tuning (compas_fab PyBullet planner)
 # How many candidate IK solutions the PyBullet planner generates in ONE
@@ -505,6 +527,12 @@ ARM_MOUNT_LINKS = {
 # actually shows. Deliberately NOT in MANAGED_LAYERS: the managed-layer enforcer
 # would evict these markers as strays.
 LAYER_DIAGNOSTIC_MARKS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Diagnostic Marks"
+
+# Layer holding the numbered text dots + marker-pair lines that RSExportRobotCell
+# draws at every designed MoCap marker (core.rhino_mocap_markers), so the Motive
+# markers can be named to match.  Rebuilt by each export.  NOT in MANAGED_LAYERS,
+# for the same reason as LAYER_DIAGNOSTIC_MARKS.
+LAYER_MOCAP_MARKER_LABELS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "MoCap Marker Labels"
 
 MANAGED_LAYERS = (
     LAYER_BAR_CENTERLINES,

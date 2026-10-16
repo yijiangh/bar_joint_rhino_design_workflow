@@ -37,7 +37,7 @@ from core import joint_name_conventions as jnc
 from core import marker_points
 from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
 from core.joint_placement import block_orientation_tag
-from core.rhino_helpers import block_instance_xform, curve_endpoints
+from core.rhino_helpers import block_instance_xform, curve_endpoints, objects_on_layers
 from core.rhino_bar_registry import (
     get_all_bars,
     is_fake_bar,
@@ -82,7 +82,7 @@ def _collect_joint_blocks():
     """Return list of (obj_id, flat_data_dict) for all placed joint blocks."""
     results = []
     for layer in jnc.JOINT_LAYERS:
-        objs = rs.ObjectsByLayer(layer) if rs.IsLayer(layer) else []
+        objs = objects_on_layers(layer)
         if not objs:
             continue
         for obj_id in objs:

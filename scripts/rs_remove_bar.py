@@ -38,6 +38,7 @@ from core.rhino_bar_registry import (
 )
 from core.joint_placement import remove_joint_blocks
 from core.rhino_tool_place import remove_tool_for_joint
+from core.rhino_helpers import objects_on_layers
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,9 +53,7 @@ def _find_joint_ids_for_bar(bar_id):
     """
     found = set()
     for layer in jnc.JOINT_LAYERS:
-        if not rs.IsLayer(layer):
-            continue
-        for oid in rs.ObjectsByLayer(layer) or []:
+        for oid in objects_on_layers(layer):
             fb = rs.GetUserText(oid, jnc.UT_RECEIVER_BAR)
             mb = rs.GetUserText(oid, jnc.UT_MALE_BAR)
             pb = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
@@ -67,11 +66,9 @@ def _find_joint_ids_for_bar(bar_id):
 
 def _remove_tube_preview(bar_id):
     """Delete tube preview cylinder(s) tagged with *bar_id*."""
-    if not rs.IsLayer(config.LAYER_BAR_TUBE_PREVIEWS):
-        return
     to_delete = [
         oid
-        for oid in rs.ObjectsByLayer(config.LAYER_BAR_TUBE_PREVIEWS) or []
+        for oid in objects_on_layers(config.LAYER_BAR_TUBE_PREVIEWS)
         if rs.GetUserText(oid, "tube_bar_id") == bar_id
     ]
     if to_delete:

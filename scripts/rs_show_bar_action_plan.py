@@ -89,7 +89,8 @@ from core.rhino_bar_registry import (
     set_build_stage,
     show_sequence_colors,
 )
-from core.rhino_helpers import block_instance_xform_mm, suspend_redraw
+from core.export_root import resolve_actions_root
+from core.rhino_helpers import block_instance_xform_mm, reset_object_color, suspend_redraw
 
 
 LEFT_TOOL0_LINK = "left_ur_arm_tool0"
@@ -99,7 +100,6 @@ RIGHT_TOOL0_LINK = "right_ur_arm_tool0"
 # the user can see which ground surface the robot base is allowed to stand on.
 # Reverted to ByLayer on bar switch / session cleanup (green, distinct from the
 # blue bar-selection color and the red collision highlight).
-WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 
 # Pose taxonomy -- TogglePose steps through the bar's timeline. Which poses a
 # bar gets depends on the hold plan (see _PreviewSession._rebuild_hold_context):
@@ -1130,7 +1130,7 @@ class _PreviewSession:
                     rb_names.add(name)
 
         rcell = robot_cell.get_or_load_robot_cell()
-        red = (255, 40, 40)
+        red = config.COLLISION_COLOR
         oids_to_highlight = []
 
         # Robot links on the currently-visible mode.
@@ -1235,12 +1235,7 @@ class _PreviewSession:
         if not self._highlight_oids:
             return
         with suspend_redraw():
-            for oid in self._highlight_oids:
-                try:
-                    # ColorSource 0 = ByLayer (restore default)
-                    rs.ObjectColorSource(oid, 0)
-                except Exception:
-                    continue
+            reset_object_color(self._highlight_oids)
         self._highlight_oids = []
 
     # ---- walkable-ground highlight -------------------------------------
@@ -1281,7 +1276,7 @@ class _PreviewSession:
                     )
                     continue
                 try:
-                    rs.ObjectColor(oid, WALKABLE_GROUND_HIGHLIGHT_COLOR)
+                    rs.ObjectColor(oid, config.WALKABLE_GROUND_HIGHLIGHT_COLOR)
                 except Exception:
                     continue
                 self._wg_highlight_oids.append(oid)
@@ -1296,12 +1291,7 @@ class _PreviewSession:
         if not self._wg_highlight_oids:
             return
         with suspend_redraw():
-            for oid in self._wg_highlight_oids:
-                try:
-                    # ColorSource 0 = ByLayer (restore default)
-                    rs.ObjectColorSource(oid, 0)
-                except Exception:
-                    continue
+            reset_object_color(self._wg_highlight_oids)
         self._wg_highlight_oids = []
 
     def cleanup(self):
@@ -1700,8 +1690,6 @@ def main() -> None:
         solved_action_cache.clear_loaded()
 
 
-EXPORT_ROOT_STICKY_KEY = "bar_joint:export_root_path"
-
 
 def _run_motion_command_loop(session):
     """Step through the active bar's trajectory from the Rhino COMMAND LINE.
@@ -1789,16 +1777,9 @@ def main_motion() -> None:
     loaded, kind = solved_action_cache.get_loaded()
     action = loaded.get(bar_id) if kind == "motion" else None
     if action is None:
-        root = sc.sticky.get(EXPORT_ROOT_STICKY_KEY)
-        if not root or not os.path.isdir(os.path.join(root, "BarActions")):
-            root = rs.BrowseForFolder(
-                folder=root if root and os.path.isdir(root) else None,
-                message="Select export root (folder that contains BarActions/)",
-                title="RSShowBarActionPlan",
-            )
-            if not root:
-                return
-            sc.sticky[EXPORT_ROOT_STICKY_KEY] = root
+        root = resolve_actions_root("RSShowBarActionPlan")
+        if not root:
+            return
         actions_dir = os.path.join(root, "BarActions")
         action = solved_action_cache.load_solved_action_file(actions_dir, bar_id, "motion")
         if action is None:

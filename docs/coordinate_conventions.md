@@ -27,7 +27,7 @@ Designers draw bars as Rhino line objects with a chosen **start point** and **en
 | **Z** | Unit vector from start → end |
 | **X** | `normalize(world_Z × bar_Z)`. Falls back to `normalize(world_X × bar_Z)` when `\|dot(bar_Z, world_Z)\| ≥ 0.95` (bar is nearly vertical) |
 | **Y** | `bar_Z × bar_X` (right-handed) |
-| **Origin** | Bar **midpoint** |
+| **Origin** | Bar **start** (the curve's start point) — as `joint_pair.canonical_bar_frame_from_line`, the prefab export and the RobotCell bar bodies |
 
 This construction gives a stable, consistent frame for any bar orientation.
 

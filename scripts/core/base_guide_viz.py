@@ -25,7 +25,7 @@ import numpy as np
 import rhinoscriptsyntax as rs
 
 from core import config
-from core.rhino_helpers import doc_unit_scale_to_mm
+from core.rhino_helpers import doc_unit_scale_to_mm, objects_on_layers
 
 
 # User-text key stamped on every guide object so a pick resolves to its bar.
@@ -50,10 +50,7 @@ def _ensure_guide_layer() -> str:
 
 def clear_base_guides() -> None:
     """Delete every baked guide line (all objects on the guide preview layer)."""
-    layer = config.LAYER_BASE_GUIDE_PREVIEW
-    if not rs.IsLayer(layer):
-        return
-    oids = rs.ObjectsByLayer(layer) or []
+    oids = objects_on_layers(config.LAYER_BASE_GUIDE_PREVIEW)
     if oids:
         rs.DeleteObjects(oids)
 

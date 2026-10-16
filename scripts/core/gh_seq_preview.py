@@ -429,9 +429,8 @@ def _render_support_robots(store, bar_id, pose, hold_plan, bar_map, notes):
     """
     entries = {}
     if hold_plan and bar_id in bar_map:
-        pose_cycle = viewer.poses_for_bar(bar_id, bar_map[bar_id][0], hold_plan, quiet=True)
         entries = viewer.support_presence_for_step(
-            bar_map, bar_id, pose, pose_cycle, hold_plan, label="RSGHSequencePreview",
+            bar_map, bar_id, pose, hold_plan, label="RSGHSequencePreview",
         )
 
     shown = set()

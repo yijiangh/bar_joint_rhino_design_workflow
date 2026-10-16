@@ -328,9 +328,11 @@ def split_object_name(name: str) -> tuple[str, str | None]:
     return str(name or ""), None
 
 
-#: PyBullet body-key prefixes.  The dual-arm assembly cell uses the plain ones;
-#: the single-arm support cell uses the ``env_`` ones; ``obstacle_`` bodies come
-#: from the Environment layer.  The namespaces never collide.
+#: PyBullet body-key prefixes.  Every cell -- the dual-arm assembly cell and the
+#: single-arm support cells -- uses the plain ones; ``obstacle_`` bodies come
+#: from the Environment layer.  The ``env_`` ones are LEGACY: support cells used
+#: them before the export fixes (issue D2); only stale-body cleanup still reads
+#: them (``core.env_collision._LEGACY_BODY_PREFIXES``).
 JOINT_KEY_PREFIX = "joint_"
 BAR_KEY_PREFIX = "bar_"
 OBSTACLE_KEY_PREFIX = "obstacle_"

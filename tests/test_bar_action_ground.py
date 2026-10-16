@@ -2,7 +2,8 @@
 
 A ground bar has no male joint halves: the arm tools grasp its GROUND joints
 directly, and the ground joints behave like female halves permanently bonded to
-the bar (ride with it while gripped, stay in world after release). These tests
+the bar (ride with it while gripped, stay in world after release). During the
+insert they may touch the floor slab. These tests
 drive the attachment / allowed-touch / retreat / approach logic with the
 classification dicts passed in directly, so no Rhino is needed (the Rhino-bound
 classifiers and the walkable-ground normal helper are verified manually in the
@@ -150,10 +151,44 @@ def test_touch_policy_ground_held_movements(state, movement):
     )
     assert state.rigid_body_states[GROUND_L].touch_bodies == sorted({"AT3L", BAR_KEY})
     assert state.rigid_body_states[GROUND_R].touch_bodies == sorted({"AT3R", BAR_KEY})
-    # No mate extras ever (the floor is not collision geometry today).
+    # No mate extras when the scene has no floor body.
     assert "obstacle" not in " ".join(state.rigid_body_states[GROUND_L].touch_bodies)
     # The bar whitelists both gripper tools while held.
     assert state.rigid_body_states[BAR_KEY].touch_bodies == ["AT3L", "AT3R"]
+
+
+# A scene that carries a floor slab (the walkable ground the bar stands on).
+FLOOR_KEY = "ground_WG0"
+ENV_GEOM_WITH_FLOOR = dict(ENV_GEOM)
+ENV_GEOM_WITH_FLOOR[FLOOR_KEY] = {"frame_world_mm": np.eye(4), "kind": "floor"}
+
+
+@pytest.mark.parametrize(
+    "movement,on_floor", [("M0", False), ("M1", False), ("M2", True), ("M3", False), ("M4", False)],
+)
+def test_touch_policy_ground_joint_floor_only_in_insert(movement, on_floor):
+    """Grasped ground joints may touch the floor only in the insert / fix step (M2)."""
+    st = _FakeState(set(ENV_GEOM_WITH_FLOOR))
+    bar_action._apply_movement_touch_policy(
+        st, movement, ACTIVE_KEYS, ENV_GEOM_WITH_FLOOR, {}, ARM_TO_GROUND, BAR_KEY, TOOL_IDS,
+    )
+    for ground in (GROUND_L, GROUND_R):
+        assert (FLOOR_KEY in st.rigid_body_states[ground].touch_bodies) is on_floor
+    # The bar itself never gets the floor.
+    assert FLOOR_KEY not in st.rigid_body_states[BAR_KEY].touch_bodies
+
+
+def test_touch_policy_toolless_ground_joint_floor_in_insert():
+    """A tool-less ground joint also gets the floor in M2 (and only the bar in M1)."""
+    st = _FakeState(set(ENV_GEOM_WITH_FLOOR))
+    bar_action._apply_movement_touch_policy(
+        st, "M2", ACTIVE_KEYS, ENV_GEOM_WITH_FLOOR, {}, {}, BAR_KEY, TOOL_IDS,
+    )
+    assert st.rigid_body_states[GROUND_L].touch_bodies == [BAR_KEY, FLOOR_KEY]
+    bar_action._apply_movement_touch_policy(
+        st, "M1", ACTIVE_KEYS, ENV_GEOM_WITH_FLOOR, {}, {}, BAR_KEY, TOOL_IDS,
+    )
+    assert st.rigid_body_states[GROUND_L].touch_bodies == [BAR_KEY]
 
 
 def test_touch_policy_ground_retreat(state):

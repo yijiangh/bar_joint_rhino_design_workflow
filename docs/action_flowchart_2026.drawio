@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="action_flowchart_2026">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="1754" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="leg1" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="0" width="300" height="122" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1.circle" value="" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fontStyle=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="112" y="10" width="22" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1.t1" value="Flow control (start / end)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="145" y="8" width="240" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1.rhombus" value="" style="rhombus;whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="108" y="44" width="30" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1.t2" value="Flow control (conditional / loop over holds)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="145" y="44" width="240" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1.box" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="84" width="26" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1.t3" value="High-level action (one robot, one bar)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="145" y="82" width="240" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="420" y="0" width="740" height="122" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s0" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;" vertex="1" parent="1">
+          <mxGeometry x="432" y="10" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t0" value="Free robotic movement (FM)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="482" y="6" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s1" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="1">
+          <mxGeometry x="432" y="40" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t1" value="Linear robotic movement (LM)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="482" y="36" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s2" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;gradientColor=#E6D0DE;gradientDirection=east;" vertex="1" parent="1">
+          <mxGeometry x="432" y="70" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t2" value="Constrained dual-arm FM (both arms hold one bar, fixed relative flanges)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="482" y="66" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s3" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#d5e8d4;strokeColor=#82b366;align=center;gradientColor=#E6D0DE;gradientDirection=east;" vertex="1" parent="1">
+          <mxGeometry x="432" y="100" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t3" value="Constrained dual-arm LM (same constraint, straight-line flanges)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="482" y="96" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s4" value="" style="rounded=1;whiteSpace=wrap;html=1;fontSize=10;fillColor=light-dark(#d0f0f0, #ededed);" vertex="1" parent="1">
+          <mxGeometry x="830" y="10" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t4" value="Manual movement (operator step, no planning)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="880" y="6" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s5" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="830" y="40" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t5" value="Tool movement (screws / gripper, no planning)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="880" y="36" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.s6" value="" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;dashed=1;dashPattern=5 3;" vertex="1" parent="1">
+          <mxGeometry x="830" y="70" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2.t6" value="Tool movement that keeps running through the NEXT movement" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="880" y="66" width="300" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="start" value="Process starts" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fontStyle=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="36" y="178" width="64" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="init" value="i = 0" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="140" y="195" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="loop" value="&lt;b&gt;i &amp;lt; N&lt;/b&gt;" style="rhombus;whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="250" y="170" width="100" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="done" value="Process complete" style="ellipse;whiteSpace=wrap;html=1;aspect=fixed;fontStyle=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1118" y="178" width="64" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="inc" value="Increment i" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="880" y="260" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_seq" value="Assembly sequence + supported_until lists come from the Rhino document" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="110" y="140" width="290" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="t_iN" value="i = index of the current bar in assembly_seq;  N = number of bars" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="560" y="176" width="420" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="t_no1" value="No" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="356" y="190" width="30" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="t_yes1" value="Yes" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="268" y="252" width="30" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="J" value="&lt;b&gt;Cindy: BarAssemblyJointingAction (bar i)&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fontSize=10;fontStyle=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fillColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="100" y="320" width="270" height="466" as="geometry" />
+        </mxCell>
+        <mxCell id="J.J_M0" value="&lt;b&gt;J_M0&lt;/b&gt;&lt;br&gt;Cindy's two arms travel from wherever they are to the bar loading pose (FM, arms independent, planned live)" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;" vertex="1" parent="1">
+          <mxGeometry x="120" y="350" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="J.J_M1" value="&lt;b&gt;J_M1&lt;/b&gt;&lt;br&gt;Operator mounts bar i, joint halves already installed, into Cindy's two end effectors (Manual)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=10;fillColor=light-dark(#d0f0f0, #ededed);" vertex="1" parent="1">
+          <mxGeometry x="120" y="422" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="J.J_M2" value="&lt;b&gt;J_M2&lt;/b&gt;&lt;br&gt;Both arm tools drive their grasping screws until they stall: the bar is clamped (TM)" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="120" y="494" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="J.J_M3" value="&lt;b&gt;J_M3&lt;/b&gt;&lt;br&gt;Cindy carries the bar to the approach pose, 15 mm off the assembled pose (constrained dual-arm FM)  ·  target = approach keyframe" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;gradientColor=#E6D0DE;gradientDirection=east;" vertex="1" parent="1">
+          <mxGeometry x="120" y="566" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="J.J_M4" value="&lt;b&gt;J_M4&lt;/b&gt;&lt;br&gt;Jointing screws tighten through J_M5 until they stall (TM, overlaps next). Ground bar: see note" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;dashed=1;dashPattern=5 3;" vertex="1" parent="1">
+          <mxGeometry x="120" y="638" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="J.J_M5" value="&lt;b&gt;J_M5&lt;/b&gt;&lt;br&gt;Straight-line insert, approach to assembled, on the Cartesian compliant controller; the screw stall ends it (constrained dual-arm LM)  ·  target = assembled keyframe" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#d5e8d4;strokeColor=#82b366;align=center;gradientColor=#E6D0DE;gradientDirection=east;" vertex="1" parent="1">
+          <mxGeometry x="120" y="710" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="q_hold" value="Does bar i need holding? (a bar in its supported_until list is assembled LATER)" style="rhombus;whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="115" y="826" width="240" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="t_yes2" value="Yes" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="363" y="864" width="30" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="t_no2" value="No" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="243" y="952" width="30" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="pick_x" value="Assign X = first free support robot (Alice before Belle); derived from the sequence, never stored" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="500" y="866" width="270" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="H" value="&lt;b&gt;X: BarHoldingAction (bar i)&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fontSize=10;fontStyle=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fillColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="500" y="936" width="270" height="322" as="geometry" />
+        </mxCell>
+        <mxCell id="H.H_M0" value="&lt;b&gt;H_M0&lt;/b&gt;&lt;br&gt;X's arm travels from wherever it is to the approach pose, 100 mm off the grasp along the gripper axis (single-arm FM, planned live)  ·  target = approach keyframe" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="966" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="H.H_M1" value="&lt;b&gt;H_M1&lt;/b&gt;&lt;br&gt;X's gripper opens to receive bar i (TM)" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1038" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="H.H_M2" value="&lt;b&gt;H_M2&lt;/b&gt;&lt;br&gt;Straight-line approach onto the hand-picked grasp pose on bar i (single-arm LM)  ·  target = held keyframe" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1110" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="H.H_M3" value="&lt;b&gt;H_M3&lt;/b&gt;&lt;br&gt;X's gripper closes: bar i is held. X stays frozen here until every bar in supported_until is built (TM)" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1182" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="R" value="&lt;b&gt;Cindy: BarAssemblyReleaseAction (bar i)&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fontSize=10;fontStyle=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fillColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1328" width="270" height="250" as="geometry" />
+        </mxCell>
+        <mxCell id="R.R_M0" value="&lt;b&gt;R_M0&lt;/b&gt;&lt;br&gt;Both tools run the grasping screws backwards: bar i becomes part of the structure (TM). The jointing screws are never reversed" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="120" y="1358" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="R.R_M1" value="&lt;b&gt;R_M1&lt;/b&gt;&lt;br&gt;Each arm retreats 50 mm along its joint's -Z axis, arms independent (LM)  ·  target = retreat keyframe" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="1">
+          <mxGeometry x="120" y="1430" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="R.R_M2" value="&lt;b&gt;R_M2&lt;/b&gt;&lt;br&gt;Both arms travel to the fixed dual-arm home configuration (FM, arms independent)" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;align=center;" vertex="1" parent="1">
+          <mxGeometry x="120" y="1502" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="t_wait" value="Cindy waits, still gripping bar i, until X has closed its gripper" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="300" y="1260" width="330" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="q_rel" value="Is there a hold h whose LAST stabilizing bar is bar i and that is not released yet? (hold-start order)" style="rhombus;whiteSpace=wrap;html=1;rounded=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1618" width="270" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="t_yes3" value="Yes" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="378" y="1661" width="30" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="t_no3" value="No (all released)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="243" y="1754" width="110" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="HR" value="&lt;b&gt;X_h: BarHoldingReleaseAction (bar h)&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fontSize=10;fontStyle=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fillColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="500" y="1594" width="270" height="178" as="geometry" />
+        </mxCell>
+        <mxCell id="HR.HR_M0" value="&lt;b&gt;HR_M0&lt;/b&gt;&lt;br&gt;X_h's gripper opens, letting go of the now stable bar h (TM)" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#f5f5f5;fontColor=#333333;strokeColor=#666666;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1624" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="HR.HR_M1" value="&lt;b&gt;HR_M1&lt;/b&gt;&lt;br&gt;X_h's arm retreats straight back to its approach pose, the approach line reversed (single-arm LM)  ·  target = approach keyframe" style="whiteSpace=wrap;html=1;rounded=1;fontSize=10;fillColor=#d5e8d4;strokeColor=#82b366;align=center;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1696" width="230" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="n_away" value="X_h then drives far away. Not a movement in the data model: X_h is simply dropped from every later planning scene." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="785" y="1653" width="180" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="note0" value="&lt;b&gt;Robot base pose&lt;/b&gt;&lt;br&gt;Every action is solved at one robot base frame per bar (saved on the bar as user text). Driving the base there is done by the live stack before the first movement; it is not a movement in the data model, so the draft's base-movement (BM) boxes are gone." style="whiteSpace=wrap;html=1;fontSize=9;align=left;verticalAlign=top;spacing=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="320" width="260" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="note1" value="&lt;b&gt;Start states and chaining&lt;/b&gt;&lt;br&gt;Every movement stores a full RobotCellState snapshot: base frame, arm configuration, which bodies are attached to which flange, and which contacts are allowed. Arm movements chain: one movement's target configuration is the next one's start. J_M0 and H_M0 start configurations are None and filled live." style="whiteSpace=wrap;html=1;fontSize=9;align=left;verticalAlign=top;spacing=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="440" width="260" height="128" as="geometry" />
+        </mxCell>
+        <mxCell id="note2" value="&lt;b&gt;Keyframes solved in Rhino (RSIKKeyframe)&lt;/b&gt;&lt;br&gt;Assembly flow: approach (J_M3 target), assembled (insert target) and retreat (R_M1 target), all at one base. Support flow: held (H_M2 target) and approach (H_M0 target, reused as HR_M1's target) at X's own base. Free-motion trajectories are left to the headless planner." style="whiteSpace=wrap;html=1;fontSize=9;align=left;verticalAlign=top;spacing=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="584" width="260" height="128" as="geometry" />
+        </mxCell>
+        <mxCell id="note3" value="&lt;b&gt;One planning scene per robot&lt;/b&gt;&lt;br&gt;Each robot plans in its own PyBullet session. The other robots stand frozen as obstacles: Cindy at her assembled pose while X grasps; every X still holding stands at its held pose during all later bars until its release." style="whiteSpace=wrap;html=1;fontSize=9;align=left;verticalAlign=top;spacing=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="728" width="260" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="note4" value="&lt;b&gt;Ground bars (foundation)&lt;/b&gt;&lt;br&gt;No jointing motor runs. J_M0 to J_M3 as shown; then J_M4 = the straight-line insert, ended when the target is reached, and J_M5 = the operator tapes / fixes the foundation to the ground while Cindy keeps holding the bar (Manual). The tools grasp the ground joints and the insert follows the walkable ground's normal. A bar mixing ground and male joints is refused." style="whiteSpace=wrap;html=1;fontSize=9;align=left;verticalAlign=top;spacing=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="848" width="260" height="152" as="geometry" />
+        </mxCell>
+        <mxCell id="note5" value="&lt;b&gt;Floor and allowed contacts&lt;/b&gt;&lt;br&gt;Every robot's scene carries one floor slab per walkable ground the bars use. The wheels and the frozen robots always touch it; a ground joint may touch it during its insert and the fix step only." style="whiteSpace=wrap;html=1;fontSize=9;align=left;verticalAlign=top;spacing=5;" vertex="1" parent="1">
+          <mxGeometry x="880" y="1016" width="260" height="104" as="geometry" />
+        </mxCell>
+        <mxCell id="e0" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="start" target="init">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="init" target="loop">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="loop" target="done">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="J.J_M0" target="J.J_M1">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="J.J_M1" target="J.J_M2">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="J.J_M2" target="J.J_M3">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="J.J_M3" target="J.J_M4">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="J.J_M4" target="J.J_M5">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="loop" target="J">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="290" />
+              <mxPoint x="235" y="290" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="J" target="q_hold">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="q_hold" target="pick_x">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="H.H_M0" target="H.H_M1">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="H.H_M1" target="H.H_M2">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="H.H_M2" target="H.H_M3">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pick_x" target="H">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="R.R_M0" target="R.R_M1">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="R.R_M1" target="R.R_M2">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="q_hold" target="R">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="H" target="R">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="635" y="1288" />
+              <mxPoint x="235" y="1288" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="R" target="q_rel">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="HR.HR_M0" target="HR.HR_M1">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e21" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="q_rel" target="HR">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="HR" target="q_rel">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="635" y="1812" />
+              <mxPoint x="420" y="1812" />
+              <mxPoint x="420" y="1715.5" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="q_rel" target="inc">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="235" y="1872" />
+              <mxPoint x="1200" y="1872" />
+              <mxPoint x="1200" y="275" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e24" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.75;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="inc" target="loop">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="325" y="275" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

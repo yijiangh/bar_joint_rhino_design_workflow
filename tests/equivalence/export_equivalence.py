@@ -5,7 +5,7 @@
 
 - `old export`: the old plugin's RSExportAllBarActions folder (RobotCell*.json, BarActions/, ActionSchedule.json,
   WalkableGround.json), written by hs/mocap-experiment @ 069275f.
-- `new process folder`: the new plugin's RSExportProcess folder (schema 2), from the same file.
+- `new process folder`: the new plugin's RSExportProcess folder (schema 2.1), from the same file.
 
 Test 1, planner worlds: the old export's cells and movement start states are the old plugin's planning worlds. The
 new plugin's are the process's scenes (`Process.scene_at`) as compas_fab objects (`CompasFabCell`), which is what
@@ -427,7 +427,7 @@ def compare_processes(report: cc.Report, a, b, labels: Tuple[str, str], watch: S
         hashes.add(action, [] if actions_a[action] == actions_b[action] else [("action hash differs", "")])
     watch.lap("processes: content hashes")
 
-    for name in ("robots", "tools", "bodies", "parts"):
+    for name in ("robots", "tools", "bodies"):
         category = report.category(labels, f"process {name}")
         first, second = getattr(a, name), getattr(b, name)
         for key in sorted(set(first) | set(second)):

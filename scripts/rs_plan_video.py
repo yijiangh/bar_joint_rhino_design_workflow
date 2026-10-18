@@ -248,9 +248,10 @@ def run_window(video: PlanVideo) -> None:
     layout.AddRow(label("Step"), step_slider)
     layout.AddRow(label("Camera"), camera_slider)
     layout.AddRow(label("Lens (mm)"), lens)
-    layout.AddRow(label("Frame size (px)"), forms.TableLayout.HorizontalScaled(width, height))
+    layout.AddRow(label("Width (px)"), width)
+    layout.AddRow(label("Height (px)"), height)
     layout.AddRow(None, move_camera)
-    layout.AddRow(None, forms.TableLayout.HorizontalScaled(export_button, close_button))
+    layout.AddRow(export_button, close_button)
     dialog.Content = layout
     dialog.AbortButton = close_button
     try:

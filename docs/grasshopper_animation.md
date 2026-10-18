@@ -33,6 +33,8 @@ geometry (`core.ik_viz`).
 
 All three are written in **SDK mode**: the component's inputs and outputs are generated
 from the `RunScript` signature, so pasting one file produces a fully wired component.
+They find the repo through Rhino's Search Paths, like the toolbar: `<repo>/scripts` must be
+listed there (README, Tools → Options → Files → Search Paths).
 
 1. Drop a **Python 3 Script** component on the canvas, open the Script Editor.
 2. Click **Convert To GH_ScriptInstance** on the editor dashboard.

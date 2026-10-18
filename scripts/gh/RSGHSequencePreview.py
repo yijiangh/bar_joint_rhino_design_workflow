@@ -40,14 +40,17 @@ NOTES
 """
 
 import importlib
+import os
 import sys
 
 import Grasshopper  # noqa: F401
+import Rhino
 import System  # noqa: F401  (type hints are converted to .NET types)
 
-# A GH component has no reliable ``__file__``, so the repo's ``scripts`` folder
-# is named outright. Change this one line if the repo moves.
-SCRIPTS = r"c:\Users\SU\Documents\GitHub\bar_joint_rhino_design_workflow\scripts"
+# A GH component has no reliable ``__file__``: the repo's ``scripts`` folder is the
+# Rhino Search Path that holds rhino_env.py, the one the toolbar commands use (README).
+SCRIPTS = next((p for p in Rhino.ApplicationSettings.FileSettings.GetSearchPaths() if os.path.isfile(os.path.join(p, "rhino_env.py"))), None)
+if SCRIPTS is None: raise ImportError("Add <repo>/scripts to Tools > Options > Files > Search Paths (README).")
 if SCRIPTS not in sys.path: sys.path.insert(0, SCRIPTS)
 
 import rhino_env  # noqa: E402  (before any package import: requirements-rhino.txt)

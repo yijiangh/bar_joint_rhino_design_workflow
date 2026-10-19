@@ -28,6 +28,21 @@ def bounding_box_centre(corners) -> np.ndarray:
     return (pts.min(axis=0) + pts.max(axis=0)) / 2.0
 
 
+def bounding_box_extents_mm(corners, scale_to_mm: float = 1.0) -> np.ndarray:
+    """Size of a bounding box along x, y, z in mm, from its corners.
+
+    For a sphere all three are its diameter; a difference between them means
+    the picked object is not a sphere (or its box was taken in a tilted frame).
+    """
+    pts = np.asarray(corners, dtype=float).reshape(-1, 3)
+    return (pts.max(axis=0) - pts.min(axis=0)) * float(scale_to_mm)
+
+
+def bounding_box_diameter_mm(corners, scale_to_mm: float = 1.0) -> float:
+    """Diameter of a sphere in mm: the mean of its bounding box's three extents."""
+    return float(np.mean(bounding_box_extents_mm(corners, scale_to_mm)))
+
+
 def to_block_local_mm(block_frame_mm, point_mm) -> tuple:
     """A world point (mm) in the block's own frame (mm), as a plain tuple."""
     local = transform_point(invert_transform(block_frame_mm), point_mm)
@@ -57,6 +72,8 @@ def next_default_label(used) -> str:
 
 __all__ = [
     "bounding_box_centre",
+    "bounding_box_diameter_mm",
+    "bounding_box_extents_mm",
     "to_block_local_mm",
     "markers_in_frame_mm",
     "next_default_label",

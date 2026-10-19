@@ -9,6 +9,7 @@ controller.
 A MoCap joint's entry additionally carries::
 
     "mocap": {"paired": true,                       # J... id; false for a standalone M...
+              "marker_diameter_mm": 19.0,            # the sphere size recorded on the block
               "markers_mm": {"M1": [x, y, z], ...}}  # sphere centres in the bar frame
 
 The bar frame is the one ``position_mm`` / ``rotation_deg`` are measured in,
@@ -43,7 +44,7 @@ from core import joint_name_conventions as jnc
 from core import marker_points
 from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
 from core.joint_placement import block_orientation_tag
-from core.rhino_helpers import block_instance_xform, curve_endpoints
+from core.rhino_helpers import block_instance_xform, curve_endpoints, objects_on_layers
 from core.rhino_bar_registry import (
     get_all_bars,
     is_fake_bar,
@@ -88,7 +89,7 @@ def _collect_joint_blocks():
     """Return list of (obj_id, flat_data_dict) for all placed joint blocks."""
     results = []
     for layer in jnc.JOINT_LAYERS:
-        objs = rs.ObjectsByLayer(layer) if rs.IsLayer(layer) else []
+        objs = objects_on_layers(layer)
         if not objs:
             continue
         for obj_id in objs:
@@ -110,15 +111,18 @@ def _collect_joint_blocks():
 
 
 def _mocap_entry(obj_id, joint_id, halves, block_world, bar_frame):
-    """``{"paired": ..., "markers_mm": {...}}`` for one placed MoCap block."""
+    """``{"paired": ..., "marker_diameter_mm": ..., "markers_mm": {...}}`` for one placed MoCap block."""
     half = halves.get(rs.BlockInstanceName(obj_id) or "")
     markers = {}
+    diameter = 0.0
     if half is not None and half.marker_points_mm:
         markers = marker_points.markers_in_frame_mm(
             block_world, half.marker_points_mm, bar_frame
         )
+        diameter = half.marker_diameter_mm
     return {
         "paired": jnc.is_paired_half(jnc.MOCAP, joint_id),
+        "marker_diameter_mm": diameter,
         "markers_mm": markers,
     }
 

@@ -283,6 +283,109 @@ prints, each prompt with the answer given, errors with their tracebacks, and whe
 waiting for the user, by step). The first command of a session prints the file's path; `RSShowLog` opens it.
 See [docs/session_log.md](docs/session_log.md).
 
+### MoCap joints: markers on the bars for debugging the robot assembly
+
+A **`T20_MoCap`** joint is a T20 Female with an OptiTrack marker plate: two
+spheres, **M1** and **M2**, 48.3 mm apart and 25.5 mm off the bar axis. It
+takes a male exactly like a Female (or sits alone on a bar), and the jig puts
+it on the bar exactly like a Female. Once the bars are in the robot cell,
+Motive sees where each MoCap joint really is, so you can check against the
+design whether a joint **rotated** on its bar, a bar **bent**, or a bar
+**moved** during insertion, retreat, the support robot's hold / release, or
+while the next bar is screwed in.
+
+What Rhino does for this today: place the MoCap joints and export where every
+marker sits, in the process's `process.json` (**RSExportProcess**). Fitting the
+measured markers to the design — the bar's 6-DoF pose — belongs to the teleop
+monitor and is planned in `tasks/mocap_bar_pose_monitor_handover.md`.
+
+**0. The marker plate is recorded once per joint type** (joint-library
+authors). **RSDefineJointHalf** on `T20_MoCap`: `CopyFromFemale` (its frames
+are the Female's), then pick each sphere and type its label, `M1`, `M2`; the
+sphere diameter is measured from the picks. Already done for T20:
+`scripts/core/joint_pairs.json` › `T20_MoCap` › `marker_points_mm`,
+`marker_diameter_mm` (19 mm).
+
+**1. Place MoCap joints: at least three per bar you want to track, not all
+facing the same way, not mirror-symmetric about the bar's middle.** Two joints
+are never enough (the set looks the same end for end), and joints that all face
+the same way are never enough (M1 and M2 swap) ([why](docs/mocap_marker_export.md)).
+Spread them along the bar and turn one or two about it.
+
+- New pair: **RSJointPlace** › JointPairAndTool, and answer
+  `Receiving joint: Female | MoCap` with **MoCap**.
+- Existing pair: **RSJointEdit** › **ReplaceJoint**, click the receiver
+  (`J20-21_female` ↔ `J20-21_mocap`; id, bars and tool are kept).
+- A bar with no partner there: **RSJointPlace** › JointOnly › **MoCap**
+  (`M20-T20-0_mocap`; `Accept | Rotate` to aim the plate).
+
+**2. Check that every pair mates.** A T20 pair only nests when its two bar
+axes are exactly **36 mm** apart. If they are not, the placement prints
+`interface error too large … auto-flipping receiver side` and an
+`Interface origin err` above 0.05 mm, and it turns the receiver 180° even when
+that does not help: the pair looks loose, and **FlipJoint cannot fix it**. This
+is not MoCap-specific; a Female behaves the same. Fix the bar (move it, or
+**RSBarSnap** it onto its partner), then FlipJoint / MoveJoint once.
+**RSUpdatePreview** lists every pair that does not mate.
+
+**3. Export for the jig: RSExportPrefab** → `<doc>_prefab.json`. A MoCap joint
+goes out as `subtype: "MoCap"` with the usual `position_mm` / `rotation_deg` /
+`ori`, plus `mocap.marker_diameter_mm` and `mocap.markers_mm`: its M1 / M2
+centres in the bar frame (origin at the bar start, z along the bar). The jig
+ignores those extra fields.
+
+**4. Export for the robot: RSExportProcess.** The markers travel in
+`process.json`: every MoCap half is a body `joints/<joint id>_mocap` with its
+`markers`, its `part` and the bar it is fixed to (`mount`). Positions are in
+**metres**, in the **half's own body frame**; the half's `assembly_pose` places
+them in the world, and since a half follows its bar, the half's offset on the
+bar (the two `assembly_pose`s) places them on the bar
+([process format](external/scaffolding_assembly_core/doc/process_format.md) §4.3):
+
+| Question | Where in `process.json` | Example |
+|---|---|---|
+| Which marker is this? | the half's body id and the marker's label | `joints/J20-22_mocap`, `M1` |
+| Which bar is it on? | the half's `mount` | `bars/B20` |
+| What kind of half is it? | the half's `part` | `T20/MoCap` |
+| Where is the marker on its half? | `bodies.<half>.markers.<label>` (half body frame, metres) | — |
+| Where is it in the world? | not stored: the half's `assembly_pose` @ the marker | — |
+| How big is the sphere? | not stored: `joint_pairs.json` › `T20_MoCap` › `marker_diameter_mm` | `19.0` |
+
+The bar body's frame in `process.json` is at the bar **midpoint**, z along the
+bar (not the bar start, as in the prefab export;
+[coordinate conventions](docs/coordinate_conventions.md)).
+
+Not in RSExportProcess yet (they ran in the retired RSExportRobotCell, whose
+`MoCapMarkers.json` is no longer written; the modules are kept,
+`core.mocap_layout_check` and `core.rhino_mocap_markers`):
+
+- the layout check that refused a bar the monitor could not read uniquely;
+- the layer **MANAGED Scaffolding › MoCap Marker Labels**: a text dot at every
+  designed sphere (`B20 #3 M1`) and a line through each joint's two spheres.
+
+**5. In Motive**: make **one rigid body per instrumented bar** from its
+spheres, named after the bar (`B20`); naming each marker after its half and
+label (`J20-21_mocap_M1`, …) helps reading the live view.
+
+**Not available yet for `T20_MoCap` bars:**
+
+- **Reading the measured markers back into Rhino.** RSReadMoCapBar and
+  RSAlignModelThreeBars (RSMoCap tab) are for the older 4-marker bar rig: they
+  expect two marker pairs 70–90 mm apart whose centres lie on the bar axis. A
+  `T20_MoCap` pair is 48.3 mm long and its centre sits 25.5 mm off the axis,
+  so RSReadMoCapBar rejects the rigid body and RSAlignModelThreeBars would fit
+  the bar 25.5 mm off. Do not use them for MoCap-joint bars.
+- **The fit itself** — matching the live Motive markers to the designed ones by
+  geometry (Motive's marker ids are not trusted), the bar's measured 6-DoF pose
+  and its error against the designed pose, per-marker residuals (bending, a
+  mislabelled or occluded marker), recorded after each robot movement — is
+  planned in [husky-assembly-teleop]; the hand-over note is
+  `tasks/mocap_bar_pose_monitor_handover.md`. Until then, compare by hand: a
+  joint that **rotated** shows its M1–M2 line turned about the bar axis; a bar
+  that **bent** shows markers drifting off the straight centre line in the
+  middle of the bar while the ends stay; a bar that **moved** shows every
+  marker shifted the same way.
+
 ## Standalone Developer Tools
 
 Most of these run from a terminal, not from Rhino buttons. The `T1-S2` case exporter below is the one Rhino-side debugging exception because it captures live Rhino picks and the current solver output.

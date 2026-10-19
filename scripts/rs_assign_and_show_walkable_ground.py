@@ -66,7 +66,7 @@ from core import process_display as _process_display_module
 from core import process_source as _process_source_module
 from core.rhino_bar_pick import pick_bar
 from core.rhino_bar_registry import BAR_ID_KEY, repair_on_entry
-from core.rhino_helpers import np_mm_to_xform
+from core.rhino_helpers import np_mm_to_xform, reset_object_color
 
 
 # Command name used in every command-line message + dialog title.
@@ -80,7 +80,6 @@ GHOST_ALPHA = 0.4
 
 # Temporary color painted on the assigned WalkableGround brep(s) during the
 # preview, reverted to ByLayer on exit (green, matching RSShowBarActionPlan).
-GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 
 
 def _reload():
@@ -175,7 +174,7 @@ def _highlight_grounds(ground_oids) -> list:
     colored = []
     for oid in ground_oids:
         try:
-            rs.ObjectColor(oid, GROUND_HIGHLIGHT_COLOR)
+            rs.ObjectColor(oid, config.WALKABLE_GROUND_HIGHLIGHT_COLOR)
             colored.append(oid)
         except Exception:
             continue
@@ -184,11 +183,7 @@ def _highlight_grounds(ground_oids) -> list:
 
 def _revert_grounds(ground_oids) -> None:
     """Restore the highlighted WalkableGround brep(s) to their ByLayer color."""
-    for oid in ground_oids:
-        try:
-            rs.ObjectColorSource(oid, 0)  # 0 = ByLayer
-        except Exception:
-            continue
+    reset_object_color(ground_oids)
 
 
 # ---------------------------------------------------------------------------

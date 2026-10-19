@@ -11,12 +11,23 @@ import pytest
 from core import rhino_tool_place
 
 
+def _fake_helpers(fake_rs, **extra):
+    """A stand-in for ``core.rhino_helpers`` driven by *fake_rs*."""
+    return SimpleNamespace(
+        objects_on_layers=lambda *layers: [
+            oid for layer in layers if fake_rs.IsLayer(layer)
+            for oid in (fake_rs.ObjectsByLayer(layer) or [])
+        ],
+        **extra,
+    )
+
+
 def test_replace_all_tool_instances_imports_pair_when_layer_is_missing(
     monkeypatch,
 ):
     """A separate IK document still gets both definitions without any picks."""
     fake_rs = SimpleNamespace(IsLayer=lambda _name: False)
-    fake_helpers = SimpleNamespace(suspend_redraw=contextlib.nullcontext)
+    fake_helpers = _fake_helpers(fake_rs, suspend_redraw=contextlib.nullcontext)
     monkeypatch.setitem(sys.modules, "rhinoscriptsyntax", fake_rs)
     monkeypatch.setitem(sys.modules, "core.rhino_helpers", fake_helpers)
 
@@ -87,6 +98,7 @@ def _side_fixture(monkeypatch, tool_by_joint):
         ),
     )
     monkeypatch.setitem(sys.modules, "rhinoscriptsyntax", fake_rs)
+    monkeypatch.setitem(sys.modules, "core.rhino_helpers", _fake_helpers(fake_rs))
 
     left = SimpleNamespace(name="AT4L")
     right = SimpleNamespace(name="AT4R")

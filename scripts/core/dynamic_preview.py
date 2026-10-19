@@ -19,6 +19,8 @@ import scriptcontext as sc
 import session_log
 from System.Drawing import Color as _SDColor
 
+from core import config
+
 
 def _color_from_rgb(r, g, b):
     return _SDColor.FromArgb(int(r), int(g), int(b))
@@ -45,8 +47,8 @@ def _force_redraw():
 
 # Shared reach-outline colors: clear (no contact) vs touching an obstacle or the
 # walkable-ground edge.
-_REACH_COLOR_CLEAR = _color_from_rgb(100, 100, 220)
-_REACH_COLOR_TOUCH = _color_from_rgb(255, 100, 100)
+_REACH_COLOR_CLEAR = _color_from_rgb(*config.REACH_CLEAR_COLOR)
+_REACH_COLOR_TOUCH = _color_from_rgb(*config.REACH_TOUCH_COLOR)
 
 
 def _ray_segment_t(cu, cv, dx, dy, ax, ay, bx, by):
@@ -189,7 +191,7 @@ class MeshPreviewConduit(Rhino.Display.DisplayConduit):
         self._meshes = list(meshes_at_identity)
         self._xform = Rhino.Geometry.Transform.Identity
         if color is None:
-            color = _color_from_rgb(180, 180, 220)
+            color = _color_from_rgb(*config.GHOST_ROBOT_COLOR)
         self._material = Rhino.Display.DisplayMaterial(color)
         self._material.Transparency = max(0.0, min(1.0, 1.0 - float(alpha)))
         # Optional SECOND mesh set drawn under the same model transform but with
@@ -315,7 +317,9 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
         super().__init__()
         self._robot_meshes = list(robot_meshes)
         self._robot_xform = None
-        self._robot_material = Rhino.Display.DisplayMaterial(_color_from_rgb(180, 180, 220))
+        self._robot_material = Rhino.Display.DisplayMaterial(
+            _color_from_rgb(*config.GHOST_ROBOT_COLOR)
+        )
         self._robot_material.Transparency = max(0.0, min(1.0, 1.0 - float(alpha)))
 
         self._seed_origin_doc = None
@@ -330,7 +334,7 @@ class IKSampleVizConduit(Rhino.Display.DisplayConduit):
         self._tried = []
 
         self._color_seed = _color_from_rgb(80, 200, 255)
-        self._color_circle = _color_from_rgb(100, 100, 220)
+        self._color_circle = _REACH_COLOR_CLEAR
         self._color_failed = _color_from_rgb(255, 100, 100)
         self._color_success = _color_from_rgb(100, 220, 100)
 

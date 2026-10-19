@@ -55,6 +55,7 @@ topic, ordered basic → advanced inside each group.
 | 19 | `pytest`, `assert`, `*args` |
 | 26 | `git add -p` and the everyday git commands |
 | 22 | `git reset --soft` — undoing a commit without losing work |
+| 31 | `git stash` / `git merge` / `git stash pop` — merging `main` while work is unfinished |
 
 **Working habits & project status**
 | § | topic |
@@ -2212,7 +2213,7 @@ is hand-written, about 20 lines, and there are **four different shapes**:
 
 | shape | how Enter behaves | where |
 |---|---|---|
-| Enter takes a default | `SetCommandPromptDefault` + `AcceptNothing(True)` | RSBarEdit, RSJointEdit, RSJointPlace, RSSelectBar |
+| Enter takes a default | `SetCommandPromptDefault` + `AcceptNothing(True)` | RSBarEdit, RSJointEdit, RSJointPlace, RSBarSelect |
 | must choose | `AcceptNothing(False)`, no default line | RSReorderBarID x2 |
 | default set but never *shown* | `AcceptNothing(True)` but **no** `SetCommandPromptDefault` | `rs_ik_keyframe._ask_reuse_saved_base` |
 | default, but Esc returns `"cancel"` not `None` | | `rs_ik_keyframe._ask_save_base_or_continue` |
@@ -2445,3 +2446,155 @@ Add the word to `SUBTYPES`, then to whichever of the four sets it genuinely belo
 layer, ids, object names and keys exist immediately; every module that loops over joint layers
 picks it up with no further edit. Name its block `<Type>_<NewSubtype>` and define it with
 RSDefineJointHalf.
+
+---
+
+## 31. Merging `main` into your branch while you have unfinished work — `git fetch`, `git stash`, `git merge`, `git stash pop`
+
+> ⚠️ **Real git behaviour**, not a repo convention. Builds on
+> [§22](#22-git-reset---soft-head1-orig_head--undoing-a-commit-without-losing-work) (working
+> tree / staging area / branch pointer). Every command below is the one actually run on
+> 2026-10-16.
+
+### The situation
+
+- My branch `hs/mocap-experiment` had 12 commits YH's `main` did not have, **plus** uncommitted
+  work: the MoCap marker export (11 edited files, 5 new files).
+- YH's `main` had 11 commits mine did not have (exporter fixes D1–D10, the From..Until range
+  export), some in the same files.
+- Rule: **YH's `main` wins every conflict**. Goal: bring it in without losing either side.
+
+### Step 0 — `main` vs `origin/main`, and `git fetch`
+
+`git branch -vv` printed `main 0f19518 [origin/main: behind 84]`. Two different things:
+
+| name | what it is | moves when |
+|---|---|---|
+| `main` | **my local copy** of the branch | only when I move it |
+| `origin/main` | git's record of **GitHub's** `main` | `git fetch` |
+
+So my local `main` was weeks old. Always compare and merge with **`origin/main`**, after
+`git fetch`.
+
+### Step 1 — a dry run: which files will conflict?
+
+```bash
+git merge-tree --write-tree --name-only origin/main HEAD
+```
+
+Touches nothing; prints the files that would conflict. Here: `env_collision.py`,
+`ik_collision_setup.py`, `robot_cell.py`.
+
+### Step 2 — put the unfinished work on a shelf: `git stash`
+
+A merge wants a clean working tree. `git stash` takes my edits **out** of the files, stores them
+as a hidden commit (the *stash*), and leaves the files as in the last commit.
+
+```bash
+git diff > mocap_wip_before_merge.patch          # extra safety copy (restore: git apply <file>)
+git stash push -m "mocap part A wip (before merging origin/main)" -- README.md scripts/rs_export_robotcell.py ...
+git stash list                                   # stash@{0}: On main: mocap part A wip ...
+git stash show --stat stash@{0}                  # which files are on the shelf
+git log -1 --oneline "stash@{0}^1"               # the commit it was taken from: 3543ad8
+```
+
+- `-- <files>` stashes only those files. Without it, every tracked edit goes on the shelf.
+- **New (untracked) files are not stashed**; they stay on disk. That was fine here because `main`
+  has no files with those names (`git cat-file -e origin/main:scripts/core/mocap_markers.py`
+  fails = not there).
+- The label said "On main" although I was on `hs/mocap-experiment`. The label is only text; the
+  base commit (`stash@{0}^1`) is what counts.
+- `stash@{1}` and `stash@{2}` are old (July / August) leftovers of VS Code's "auto stash before
+  merge". Harmless; `git stash drop stash@{1}` removes one when sure it is not needed.
+
+### Step 3 — merge, but stop before committing
+
+```bash
+git merge --no-ff --no-commit origin/main
+```
+
+`--no-commit` stops before the commit, so the tests can run first. `--no-ff` always makes a merge
+commit. `git merge --abort` undoes the whole attempt if it goes wrong.
+
+Git prints `CONFLICT (content): Merge conflict in scripts/core/robot_cell.py`, and `git status`
+shows those files as `UU` (unmerged). Inside each, every conflicting block looks like:
+
+```
+<<<<<<< HEAD
+    joint_oids = objects_on_layers(layer)            <- "ours": the branch I am on
+=======
+    if rs.IsLayer(layer):                            <- "theirs": what I am merging in (main)
+        joint_oids = rs.ObjectsByLayer(layer) or []
+>>>>>>> origin/main
+```
+
+Two ways to pick main's side:
+
+| command | takes main's text | keeps my other edits in that file? |
+|---|---|---|
+| `git checkout --theirs <file>` | for the **whole file** | no |
+| edit each block, keep the `=======` → `>>>>>>>` part | only **inside the conflict blocks** | yes |
+
+Here the second one was right: my clean-up stays everywhere git could merge it on its own.
+Then:
+
+```bash
+git add scripts/core/robot_cell.py               # "this file is resolved"
+git diff origin/main -- scripts/core/robot_cell.py   # what of mine is still in it
+```
+
+### Submodules in a merge
+
+`external/husky_assembly_tamp` and `external/rs_data_structure` are not folders of files to git:
+each is one **commit id** (a pointer). A merge changes the pointer in the staging area but **not**
+the checkout on disk, so `git status --short` shows `MM external/rs_data_structure`.
+
+- `git submodule update -- external/rs_data_structure` would check out the new pointer. Here it
+  failed: main points at `8244b39`, which is not on GitHub (`not our ref`); YH has to push it.
+  The checkout stayed at `8912325`, which has every class main's code imports.
+- `external/husky_assembly_tamp`: my checkout is my own branch; I leave it and never `git add` it.
+
+### Step 4 — test, then commit the merge
+
+Tests passed (395), then `git commit` made merge commit `d685645`. A merge commit has **two
+parents** (my branch and `origin/main`); `git log --graph --oneline -6` draws them.
+
+### Step 5 — move my local `main` without switching to it
+
+```bash
+git branch -f main origin/main
+```
+
+### Step 6 — take the shelf back: `git stash pop`
+
+`pop` = apply the stash onto the merged files, then delete it. When something conflicts it
+**keeps** the stash ("The stash entry is kept in case you need it again"). The markers are named
+differently:
+
+```
+<<<<<<< Updated upstream        <- the merged files (main's version won the merge)
+=======
+>>>>>>> Stashed changes          <- my shelf
+```
+
+Resolve, `git add` the file, then `git reset` (pop leaves the rest staged; I want to choose what
+goes in each commit), run the tests again (403 passed), and only then
+`git stash drop stash@{0}`. `git stash apply` is `pop` without the delete.
+
+### Cheat sheet
+
+| I want to | command |
+|---|---|
+| see GitHub's state | `git fetch`, then `git log --oneline HEAD..origin/main` |
+| preview conflicts | `git merge-tree --write-tree --name-only origin/main HEAD` |
+| park unfinished edits | `git stash push -m "<why>" -- <files>` |
+| merge but check first | `git merge --no-ff --no-commit origin/main` |
+| give up on the merge | `git merge --abort` |
+| list unresolved files | `git diff --name-only --diff-filter=U` |
+| take the shelf back | `git stash pop` (or `apply`, then `drop` later) |
+| move a branch I'm not on | `git branch -f main origin/main` |
+
+### 2026-10-19: merged main (021efef) into jg/rhino-new-core on yh/new-core-merge
+
+One merge commit on a local branch: Su's UI commands and the RSBarSelect / RSJointSelect renames now run on
+Jakob's shared core (with its session log); the old compas_fab exporter stays retired, RSExportProcess replaces it.

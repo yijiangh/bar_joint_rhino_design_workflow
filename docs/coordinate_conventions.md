@@ -27,9 +27,13 @@ Designers draw bars as Rhino line objects with a chosen **start point** and **en
 | **Z** | Unit vector from start → end |
 | **X** | `normalize(world_Z × bar_Z)`. Falls back to `normalize(world_X × bar_Z)` when `\|dot(bar_Z, world_Z)\| ≥ 0.95` (bar is nearly vertical) |
 | **Y** | `bar_Z × bar_X` (right-handed) |
-| **Origin** | Bar **midpoint** |
+| **Origin** | Bar **start** (the curve's start point) — as `joint_pair.canonical_bar_frame_from_line`, the prefab export and the RobotCell bar bodies |
 
 This construction gives a stable, consistent frame for any bar orientation.
+
+The process's bar bodies (`bars/<id>` in `process.json`, written by RSExportProcess) have the same axes, but their `assembly_pose` is at the bar **midpoint**.
+
+`MoCapMarkers.json` reports every MoCap marker sphere in this frame, in **metres** — the same frame the bar body has in `RobotCell.json` and in every BarAction `RigidBodyState.frame` — so a rigid fit of the measured markers onto those points is the measured bar pose ([format](mocap_marker_export.md)).
 
 ---
 
@@ -62,7 +66,7 @@ The Z-axes of a correctly assembled female–male pair are **parallel** and co-l
 `T20_MoCap` is a `T20_Female` with an OptiTrack marker plate bolted to its back. Its block frame follows the Female table above, so the plate faces along the block's **+Z** (the back, away from the male). A male screws into it exactly as into a Female.
 
 - It is placed either **paired** — the receiver of its Type's mate (`J40-53_mocap`, chosen at RSJointPlace's *Receiving joint* prompt) — or **standalone** on one bar (`M7-T20-0_mocap`, RSJointPlace › JointOnly). A standalone joint starts with its plate facing world +Z, or +X on a bar within 15° of vertical, and is turned about the bar with Rotate.
-- `marker_points_mm` in `joint_pairs.json` holds its marker-sphere centres, `{Motive label: [x, y, z]}`, in mm, in the **block's own frame**. A placed instance predicts them as `block_world @ point`; RSExportPrefab writes them in the bar frame of §5.
+- `marker_points_mm` in `joint_pairs.json` holds its marker-sphere centres, `{Motive label: [x, y, z]}`, in mm, in the **block's own frame**, and `marker_diameter_mm` the sphere size (19 mm on T20). A placed instance predicts the centres as `block_world @ point`; RSExportPrefab writes them in the bar frame of §5 (mm), `MoCapMarkers.json` in the bar body frame of §2 (metres).
 
 ### Where a joint's Z actually points in the world — and why it can cancel
 
@@ -165,10 +169,10 @@ Positive rotation is counter-clockwise about bar Z (right-hand rule).
 ### `mocap` (MoCap joints only)
 
 ```
-"mocap": {"paired": true, "markers_mm": {"M1": [x, y, z], ...}}
+"mocap": {"paired": true, "marker_diameter_mm": 19.0, "markers_mm": {"M1": [x, y, z], ...}}
 ```
 
-`paired` is false for a standalone MoCap joint. `markers_mm` are its marker-sphere centres in the bar frame used above — origin at `bar_start`, Z = `bar_Z`, X = `bar_X` (world Z × bar, or world X × bar for a near-vertical bar), Y = Z × X — rounded to 0.01 mm.
+`paired` is false for a standalone MoCap joint. `marker_diameter_mm` is the sphere size recorded on the block. `markers_mm` are its marker-sphere centres in the bar frame used above — origin at `bar_start`, Z = `bar_Z`, X = `bar_X` (world Z × bar, or world X × bar for a near-vertical bar), Y = Z × X — rounded to 0.01 mm.
 
 ---
 

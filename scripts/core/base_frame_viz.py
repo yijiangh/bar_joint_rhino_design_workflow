@@ -21,7 +21,7 @@ import rhinoscriptsyntax as rs
 import session_log
 
 from core import config
-from core.rhino_helpers import doc_unit_scale_to_mm
+from core.rhino_helpers import doc_unit_scale_to_mm, objects_on_layers
 
 
 # User-text key stamped on every marker object so a pick resolves to its bar.
@@ -33,7 +33,6 @@ _AXIS_COLORS = {
     "z": (40, 90, 220),    # blue
 }
 _FOOTPRINT_COLOR = (150, 150, 150)  # grey rectangle
-_REACH_CIRCLE_COLOR = (100, 100, 220)  # light blue -- matches the live reach circle
 
 
 def _ensure_preview_layer() -> str:
@@ -46,10 +45,7 @@ def _ensure_preview_layer() -> str:
 
 def clear_base_frames() -> None:
     """Delete every baked base-frame marker (all objects on the preview layer)."""
-    layer = config.LAYER_BASE_FRAME_PREVIEW
-    if not rs.IsLayer(layer):
-        return
-    oids = rs.ObjectsByLayer(layer) or []
+    oids = objects_on_layers(config.LAYER_BASE_FRAME_PREVIEW)
     if oids:
         rs.DeleteObjects(oids)
 
@@ -103,7 +99,7 @@ def draw_base_frame(bar_id: str, base_frame_mm, circle_radius_mm=None) -> list:
                                    [x_axis[0], x_axis[1], x_axis[2]])
         circle = rs.AddCircle(plane, float(circle_radius_mm) * scale_from_mm)
         if circle:
-            rs.ObjectColor(circle, _REACH_CIRCLE_COLOR)
+            rs.ObjectColor(circle, config.REACH_CLEAR_COLOR)  # as the live reach circle
             created.append(circle)
 
     # Ground footprint rectangle in the base XY plane (corners ordered CCW).

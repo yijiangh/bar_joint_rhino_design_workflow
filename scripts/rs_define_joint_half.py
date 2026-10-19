@@ -163,13 +163,23 @@ def _ask_copy_from_female(female_name: str) -> bool | None:
     return answer.strip().lower().startswith("c")
 
 
-def _pick_marker_points(block_frame_mm, scale_to_mm, selected):
-    """Pick a MoCap block's marker spheres; ``{label: block-local mm}``.
+#: How far the three box extents of one sphere, or the diameters of two
+#: spheres on the same block, may differ before we refuse the pick (mm).
+_MARKER_DIAMETER_TOL_MM = 0.5
 
-    Each sphere's centre is the centre of its bounding box.  The sphere being
-    labelled is selected so you can see which one the prompt means.  Returns
-    ``None`` when nothing is picked (or a label prompt is cancelled), which
-    keeps the markers already recorded.
+
+def _pick_marker_points(block_frame_mm, scale_to_mm, selected):
+    """Pick a MoCap block's marker spheres; ``({label: block-local mm}, diameter_mm)``.
+
+    Each sphere's centre is the centre of its bounding box, and its diameter
+    the mean of the box's three extents.  The sphere being labelled is
+    selected so you can see which one the prompt means.  Returns ``None``
+    when nothing is picked (or a label prompt is cancelled), which keeps the
+    markers already recorded.
+
+    Refuses (also ``None``) when a picked object is not a sphere -- its three
+    extents differ -- or when two spheres have different sizes: the registry
+    stores one diameter per block, and the monitor filters Motive markers by it.
     """
     with picks.temporarily_hidden(selected):
         sphere_ids = rs.GetObjects(
@@ -181,12 +191,23 @@ def _pick_marker_points(block_frame_mm, scale_to_mm, selected):
     if not sphere_ids:
         return None
     points: dict = {}
+    diameters: list = []
     for sphere_id in sphere_ids:
         corners = rs.BoundingBox(sphere_id)
         if not corners:
             print(f"{_DIALOG}: skipped an object with no bounding box.")
             continue
-        centre_doc = marker_points.bounding_box_centre([tuple(c) for c in corners])
+        corner_list = [tuple(c) for c in corners]
+        extents = marker_points.bounding_box_extents_mm(corner_list, scale_to_mm)
+        if extents.max() - extents.min() > _MARKER_DIAMETER_TOL_MM:
+            print(
+                f"{_DIALOG}: a picked object is not a sphere (box extents "
+                f"{extents[0]:.2f} x {extents[1]:.2f} x {extents[2]:.2f} mm); "
+                "pick only the marker spheres."
+            )
+            return None
+        diameters.append(marker_points.bounding_box_diameter_mm(corner_list, scale_to_mm))
+        centre_doc = marker_points.bounding_box_centre(corner_list)
         centre_mm = picks.vec_to_mm(centre_doc, scale_to_mm)
         default = marker_points.next_default_label(points)
         rs.SelectObject(sphere_id)
@@ -204,10 +225,19 @@ def _pick_marker_points(block_frame_mm, scale_to_mm, selected):
         points[label] = marker_points.to_block_local_mm(block_frame_mm, centre_mm)
         print(
             f"{_DIALOG}: marker {label} at block-local "
-            f"({points[label][0]:.2f}, {points[label][1]:.2f}, {points[label][2]:.2f}) mm"
+            f"({points[label][0]:.2f}, {points[label][1]:.2f}, {points[label][2]:.2f}) mm, "
+            f"diameter {diameters[-1]:.2f} mm"
         )
+    if not points:
+        return None
+    if max(diameters) - min(diameters) > _MARKER_DIAMETER_TOL_MM:
+        print(
+            f"{_DIALOG}: the picked spheres have different diameters "
+            f"({min(diameters):.2f} .. {max(diameters):.2f} mm); a block carries one marker size."
+        )
+        return None
     selected.extend(sphere_ids)
-    return points
+    return points, float(np.mean(diameters))
 
 
 def _project_screw_origin(screw_point, screw_axis_start, screw_axis_end):
@@ -516,10 +546,13 @@ def main() -> None:
     print(f"{_DIALOG}: collision meshes picked = {len(mesh_ids)}")
 
     markers = None
+    marker_diameter = None
     if subtype == jnc.MOCAP:
-        markers = _pick_marker_points(block_frame_mm, scale_to_mm, selected)
-        if markers is None:
+        picked_markers = _pick_marker_points(block_frame_mm, scale_to_mm, selected)
+        if picked_markers is None:
             print(f"{_DIALOG}: no markers picked; keeping the recorded ones.")
+        else:
+            markers, marker_diameter = picked_markers
 
     # Asset filenames
     asset_filename = f"{block_def_name}.3dm"
@@ -562,6 +595,10 @@ def main() -> None:
             marker_points_mm=(
                 markers if markers is not None
                 else (previous.marker_points_mm if previous else {})
+            ),
+            marker_diameter_mm=(
+                marker_diameter if marker_diameter is not None
+                else (previous.marker_diameter_mm if previous else 0.0)
             ),
         )
         jp_mod.save_joint_half(half)

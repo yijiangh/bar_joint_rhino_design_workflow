@@ -39,7 +39,7 @@ This is the canonical Rhino entrypoint reference for this repository.
 | RSSetup | RSInspectRoboticTool | `rs_inspect_robotic_tool.py` | PyBullet viewer for ALL tool candidates: a slider steps through L/R pairs (L at origin, R at +0.30 m), each showing its tool0 + TCP frame (`M_tcp_from_block`); a two-step GUI confirm deletes a whole candidate pair (registry entries + `.3dm`/`.obj`). Reads/edits `robotic_tools.json` only — no Rhino geometry. | Advanced IK users |
 | RSSetup | RSShowPlanningWorld | `rs_show_planning_world.py` | Debugging: open the assembly robot's planning world (what IK checks collisions against) in PyBullet's window. Changes nothing in the document. | Advanced IK users |
 | RSSetup | RSResetPlanning | `rs_reset_planning.py` | Close every planning world, forget the cached geometry and preview meshes, stop the ssik sidecar. Only when something looks stuck: the IK commands and viewers rebuild what they need. | Advanced IK users |
-| RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for a parent folder, then the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
+| RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the bars to export, Enter = all or a From..Until range, then a parent folder and the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
 | RSSetup | RSClearIKKeyframe | `rs_clear_ik_keyframe.py` | Left-click: pick ONE bar. Right-click (`rs_clear_ik_keyframe_all.py`): EVERY bar. Either way, then choose what to erase via two toggles — Keyframe (M1-M3 IK config + legacy blob) and BasePosition (mobile base) — both default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
 | RSSetup | RSLoadSolvedBarAction | `rs_load_solved_bar_action.py` | Left-click: pick a bar, write its solved keyframes from a process folder's `solutions/` onto its user text, then view its keyframes or motion (prompt). Right-click, **RSLoadSolvedBarActionAll** (`rs_load_solved_bar_action_all.py`): every solved bar, then the viewer with every base frame. | Planning/export users |
 | RSDesign | RSAssignAndShowWalkableGround | `rs_assign_and_show_walkable_ground.py` | Pick a bar; view its assigned WalkableGround(s) + the default mobile-base placement (half-transparent ghost robot), then optionally overwrite the assignment by selecting brep(s) — loops back to re-show. Auto-assigns nearest if none. Auto-assign also runs on entry to the IK, preview and export commands; use this to inspect/correct a specific bar. | Planning/export users |
@@ -491,21 +491,25 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 ### RSExportProcess (`rs_export_process.py`) / RSCheckProcess (`rs_check_process.py`)
 
-- **Left-click**: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for a
-  parent folder, then the folder name), then print the file checks (A) and plan checks (B). **Right-click**,
+- **Left-click**: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the
+  range, a parent folder, then the folder name), then print the file checks (A) and plan checks (B). **Right-click**,
   RSCheckProcess: read an existing process folder and print A and B. See `docs/schema2_integration.md`.
 - MoCap markers travel in `process.json`: every MoCap half `joints/<joint id>_mocap` carries its `markers` (label ->
   position in the half's body frame, metres) and its bar (`mount`); see the README, *MoCap joints*.
-- **Range (From .. Until)** (range export: coming). The retired RSExportAllBarActions could export a smaller bundle:
-  Enter for all bars, or `FromBar` / `UntilBar` (click a bar, or type its id `B5` or step number `5`; the scene built
-  up to that bar is shown for Accept / Repick; `All` resets). The bundle held:
-  - the actions of the bars From .. Until only; a hold when it starts in the range, its release when it releases
-    right after a bar of the range (the hold plan still comes from the whole sequence);
+- **Range (From .. Until)**: the command first asks which bars to export. Enter exports every bar; `FromBar` /
+  `UntilBar` pick a range (click a bar, or type its id `B5` or step number `5`; the scene built up to that bar is
+  shown for Accept / Repick; `All` resets). Picker: `core/rhino_export_range.py`; the cut:
+  `process_builder.cut_to_range`. A range export holds:
   - the bars up to Until and the joint halves mounted on them (a female half on an earlier bar stays); later bars,
-    their halves, and grounds no exported action stands on are left out;
-  - a sequence that ends at Until, the bars before From included.
-
-  RSExportProcess does not offer a range yet; the From / Until picker (`core/rhino_export_range.py`) is kept for it.
+    their halves and their mates are never read;
+  - the actions of the bars From .. Until: J, H, R, and each hold release right after one of these bars, also of a
+    hold that began before From. A hold still on at Until gets no release. The hold plan still comes from the whole
+    sequence. A release whose hold began before From has no hold action in the folder: the plan check warns (B12,
+    "no earlier bar_holding ...") and cannot check that hold's `supports_until`;
+  - a first state with the bars before From built, Cindy gone, the holds still open held by their support robot at
+    its hold base and joints (their actions run through the builder unrecorded);
+  - the range in `producer.command` (`RSExportProcess B20..B37`) and in the default folder name
+    (`<doc>_B20-B37_process`).
 
 ### RSAssignAndShowWalkableGround (`rs_assign_and_show_walkable_ground.py`)
 

@@ -1,5 +1,7 @@
 # Support Robot IK — Specification Report
 
+> Retired: describes the compas_fab actions; the drive rules D7/D9/D10 now live in scripts/core/process_builder.py (screwing_arms).
+
 **Goal.** Bring the support (holding) robots back into the IK keyframe workflow. Today only the dual-arm assembly robot has an action model (`BarAssemblyAction`); this work splits that model into a jointing half and a release half, adds two new holding actions for the single-arm support robots, and teaches the single `RSIKKeyframe` button to solve keyframes for both kinds of robot depending on the state of the bar you pick. A bar that is built but not yet stable (its `supported_until` list is not empty) must be held by a support robot until every bar in that list is built — only then may the assembly robot let go and, later, the support robot release. This pass changes only the Rhino side (`external\rs_data_structure` and `scripts\`); the headless planner in `husky_assembly_tamp` is a follow-up.
 
 ---
@@ -38,11 +40,11 @@ All four actions share the same base `Movement` and `Action` classes. The existi
 4. `EndEffectorConstrainedDualArmLinearMovement` — the same straight-line insertion; it ends when the arms reach the assembled target (`notes["ends_on"] == "target_reached"`).
 5. `ManualMovement` — a human operator tapes / fixes the foundation to the ground while the robot keeps holding the bar.
 
-A bar with one ground joint and one male joint is not a valid design; the tool gate and the export refuse it with a clear error. Movement ids are `<bar>_J_M<n>_<name>` (e.g. `B1_J_M4_LM_insert`); since the number depends on the bar kind, readers find a movement by its name.
+A bar with one ground joint and one male joint was refused by the old tool gate and export. Today the export reports it as a problem and applies the per-arm rule: only a male arm whose receiver is built tightens, and no foundation step follows (`scripts/core/process_builder.py`: `screwing_arms`, `drive_problems`). Movement ids are `<bar>_J_M<n>_<name>` (e.g. `B1_J_M4_LM_insert`); since the number depends on the bar kind, readers find a movement by its name.
 
 ### 2.2 `BarAssemblyReleaseAction` (assembly robot, 3 movements)
 
-1. `ScaffoldingToolMovement` — both tools drive their **grasping** screws back to let go of the bar (`tool_ungrasp_bar`). The **jointing** screws are never run backwards: the tightened screw is what keeps the joint.
+1. `ScaffoldingToolMovement` — both tools drive their **grasping** screws back to let go of the bar (`tool_ungrasp_bar`). The **jointing** screws are never run backwards: the tightened screw is what keeps the joint. Today: the ungrasp has no `loosen` drive (D7, `scripts/core/process_builder.py`, `Builder.release`).
 2. `IndependentDualArmLinearMovement` — both arms retreat in a straight line, each on its own (same as the old M3).
 3. `IndependentDualArmFreeMovement` — free travel to a given home pose (same as the old M4).
 

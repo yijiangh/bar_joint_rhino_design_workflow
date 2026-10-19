@@ -86,10 +86,39 @@ def test_document_becomes_a_valid_process(source, tmp_path):
     bar = process.bodies["bars/B1"]
     assert np.allclose(bar.assembly_pose.position, (0.5, 0.0, 0.05)) and bar.geometry.collision[0].height == pytest.approx(1)
     assert process.producer.command == "RSExportProcess"
-    insert = process.actions["B1_J"].movements[-1]
+    insert = next(m for m in process.actions["B1_J"].movements if m.id == "B1_J_insert")
     assert np.allclose(insert.line["robots/cindy/left_ur_arm_tool0"].direction, (0, 0, -1))
     report = check_plan(process)
     assert report.ok, report.errors
+
+
+def test_export_range_never_reads_the_later_bars(source, tmp_path):
+    """A range export B2..B2: B3 and its halves are never read (and not reported), B2's hold has no release, the
+    range is recorded in the producer; From B3 starts with B1 and B2 built and Alice holding B2."""
+    from scaffolding_assembly_core.process import write
+    from scaffolding_assembly_core.process.plan_check import check_plan
+
+    result = source.RhinoProcessSource("RSExportProcess").build(export_range=("B2", "B2"))
+    process = write(result.process, tmp_path / "until_B2", package_dirs=[PKG])
+    assert process.schedule == ("B2_J", "B2_H", "B2_R")
+    assert "bars/B3" not in process.bodies and not process.halves_of("bars/B3")
+    assert not any("no live parent bar" in p for p in result.problems), result.problems
+    assert process.actions["B2_H"].supports_until == ()
+    assert process.producer.command == "RSExportProcess B2..B2"
+    report = check_plan(process)
+    assert report.ok, report.errors
+
+    result = source.RhinoProcessSource("RSExportProcess").build(export_range=("B3", "B3"))
+    process = write(result.process, tmp_path / "from_B3", package_dirs=[PKG])
+    assert process.schedule == ("B3_J", "B3_R", "B2_HR")
+    first = process.actions["B3_J"].movements[0].start
+    assert first.built >= {"bars/B1", "bars/B2"}
+    assert [h.to for h in first.attached["bars/B2"]] == ["robots/alice/ur_arm_tool0"]
+    report = check_plan(process)
+    assert report.ok, report.errors
+    # * B2's hold began before From: its release has no bar_holding in the folder, a warning only.
+    assert [w for w in report.warnings if w.startswith("B12")] == [
+        "B12: B2_HR: no earlier bar_holding of bars/B2 by robots/alice"]
 
 
 def test_keyframe_groups_merge():

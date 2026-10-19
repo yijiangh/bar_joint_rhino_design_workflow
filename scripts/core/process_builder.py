@@ -4,9 +4,12 @@ Build a schema 2 process's actions from Rhino's per-bar keyframe records, with o
 Rhino-free (numpy and the core only), so pytest covers it. `core.process_source` reads the records from the document.
 Procedure per action (`docs/schema2_integration.md`):
 
-- J (Cindy): load, place_bar (the operator puts the bar into the tools), grasp, transfer, insert (one movement that drives `tighten`; the bar is built at its end);
-- R (Cindy), form B: ungrasp (drives `loosen`: the untighten folded in, the bar stays built), linear retreat, home;
-  then she drives away (absent until her next J);
+- J (Cindy): load, place_bar (the operator puts the bar into the tools), grasp, transfer, insert (one movement; the
+  bar is built at its end). Only the arms `screwing_arms` names drive `tighten`, and their stall ends the insert;
+- J of a ground bar (every tool on a ground half): the insert drives nothing and ends on reaching its target, then
+  fix_foundation: the operator fixes the foundation while Cindy keeps holding, and the bar is built at its end;
+- R (Cindy), form B: ungrasp (the grips open, no drive: the jointing screw is never backed off), linear retreat,
+  home; then she drives away (absent until her next J);
 - H (support robot): free approach, open, linear onto the bar, close (it now holds the built bar too);
 - HR: open, linear retreat, leave (free, planned live); then the robot drives away.
 
@@ -16,16 +19,28 @@ Robots arriving and driving away between actions stay changes of the running sta
 
 `poses_in_tcp` gives, per kind of half a tool acts on, the half's pose in the frame of the tool centre point on it
 (a body's `pose_in_tcp`, format §4.3).
+
+* The drive rules of the lab's monitor (the old exporter's D7, D9, D10):
+
+- D7: a release never untightens: the ungrasp only opens the grips.
+- D9: a ground bar gets no tighten: its insert ends on the target, then the operator fixes the foundation.
+- D10: an arm tightens only when its male half meets a receiver (a Female or MoCap half) on a bar already built. A
+  one-sided bar's other male, whose receiver sits on a fake bar, is only a grasp point. A bar mixing ground and male
+  halves is reported (`drive_problems`).
+- ! A bar where nothing tightens (not a ground bar, and no arm screws) is still exported, unlike in the old exporter,
+  which refused it: its insert builds it with no drive, it gets a "nothing tightens (D10)" problem line, and
+  `check_plan` fails it on B10 ("becomes built without an insert").
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
+from core.joint_name_conventions import GROUND, MALE, RECEIVER_SUBTYPES, split_object_name
 from scaffolding_assembly_core.process import (Action, Process, Holder, LineSpec, Movement, RobotState, State, Target,
                                       ToolState)
 from scaffolding_assembly_core.geometry import Pose, compose, invert
@@ -121,6 +136,65 @@ def grasp_of(tool0: Pose, body: Pose) -> Pose:
     return compose(invert(tool0), body)
 
 
+def half_subtype(half: str) -> Optional[str]:
+    """A half's subtype from its id by the joint naming rule ("joints/J1-2_male" -> "Male"); None for other bodies."""
+    return split_object_name(half.rpartition("/")[2])[1]
+
+
+def is_ground_bar(record: BarRecord) -> bool:
+    """Whether every tool is on a ground half: the bar stands on the ground and nothing is screwed (D9)."""
+    return all(half_subtype(half) == GROUND for half in record.on.values())
+
+
+def screwing_arms(process: Process, record: BarRecord, built: FrozenSet[str]) -> Tuple[str, ...]:
+    """The arms whose jointing screw runs in a bar's insert (D10), sorted.
+
+    An arm screws when its tool is on a male half that a mate pairs with a receiver (a Female or MoCap half) whose bar
+    is in `built` when the insert starts. A receiver on a fake bar is not in the process, so it drops out on its own:
+    that male is only a grasp point. A ground half never screws.
+
+    Args:
+        process: The process, for its bodies and mates.
+        record: The bar's keyframe record (`on`: flange link id -> the half its tool is on).
+        built: The bars built when the insert starts.
+
+    Returns:
+        tuple[str, ...]: Flange link ids.
+    """
+    def meets_built_receiver(half: str) -> bool:
+        return any(half_subtype(other) in RECEIVER_SUBTYPES and process.bodies[other].mount in built
+                   for mate in process.mates if half in mate for other in mate if other != half)
+
+    return tuple(arm for arm in sorted(record.on)
+                 if half_subtype(record.on[arm]) == MALE and meets_built_receiver(record.on[arm]))
+
+
+def drive_problems(record: BarRecord, screwing: Sequence[str]) -> List[str]:
+    """What the drive rules leave open for one jointing, one line each; empty for a sound bar.
+
+    - ! A bar where nothing tightens is not refused (the old exporter raised): it is built by its insert with no
+      drive, reported here, and `check_plan` also fails it on B10 ("becomes built without an insert"). So is a bar
+      mixing a ground and a male half whose receiver is not built.
+
+    Args:
+        record: The bar's keyframe record.
+        screwing: Its `screwing_arms`.
+
+    Returns:
+        list[str]: A line for a bar mixing ground and male halves (D9), and one for a bar other than a ground bar where
+        no arm screws (D10).
+    """
+    subtypes = {half_subtype(half) for half in record.on.values()}
+    lines = []
+    if GROUND in subtypes and subtypes != {GROUND}:
+        lines.append(f"{record.bar}: its tools are on a ground half and a male half (D9): only a male arm whose "
+                     f"receiver is built tightens, and no fix_foundation step follows")
+    if not screwing and subtypes != {GROUND}:
+        lines.append(f"{record.bar}: nothing tightens (D10): no male half under its tools meets a receiver (Female or "
+                     f"MoCap half) on a bar already built")
+    return lines
+
+
 class Builder:
     """One running state threaded through the schedule; each movement starts where the last one ended."""
 
@@ -133,6 +207,8 @@ class Builder:
         tools = {tool: None for robot in process.robots.values() for tool in robot.tools.values()}
         self.state = State(robots={robot: None for robot in process.robots}, present=grounds, tools=tools)
         self.movements: List[Movement] = []
+        #: Bar id -> the arms whose jointing screw ran in its insert (`screwing_arms`).
+        self.screwed: Dict[str, Tuple[str, ...]] = {}
 
     def emit(self, id_: str, label: str, target: Optional[Target] = None, **parts) -> None:
         """Add a movement starting at the running state, then advance the state to its end."""
@@ -176,7 +252,7 @@ class Builder:
             attached[bar] = rest
         return attached
 
-    # * Cindy: jointing (merged insert) and release (form B, no untighten).
+    # * Cindy: jointing (merged insert; a ground bar's foundation step) and release (form B, no untighten).
 
     def placing(self, bar: str) -> None:
         """A bar no robot handles: one manual step, the bar is in the structure at its end."""
@@ -184,7 +260,7 @@ class Builder:
                   target=Target(built=self.state.built | {bar}))
 
     def jointing(self, r: BarRecord) -> None:
-        """Load, place_bar, grasp, transfer, insert."""
+        """Load, place_bar, grasp, transfer, insert; a ground bar then fix_foundation."""
         p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
         tools = {r.tools[a]: ToolState("open", None) for a in arms}
         self.arrive(r.robot, r.base, tools)
@@ -202,16 +278,31 @@ class Builder:
         self.emit(f"{p}_J_grasp", "Grasp", ends_on="tools", target=Target(tools={r.tools[a]: "closed" for a in arms}))
         self.emit(f"{p}_J_transfer", "Transfer to the approach", arms=arms, path="free", coupled=True,
                   controller="position", target=Target.of(joints=joints(r.approach), link_poses=approach_links))
+        screwing = screwing_arms(self.process, r, self.state.built)
+        self.screwed[r.bar] = screwing
+        grounded = is_ground_bar(r)
+        built = self.state.built | {r.bar}
+        # * Only the screwing arms tighten, and their stall ends the insert (D10); with none it ends on its target.
+        #   The controller stays compliant either way, as in the old export: the monitor decides for a ground bar.
+        # ! A ground bar is built by the operator's foundation step, not by the insert: the plan check B10 lets a bar
+        #   become built only with a tighten drive on it or in a manual step.
         self.emit(f"{p}_J_insert", "Insert", arms=arms, path="linear", coupled=True, controller="compliant",
-                  ends_on="tools", drives={r.tools[a]: "tighten" for a in arms},
+                  ends_on="tools" if screwing else "target", drives={r.tools[a]: "tighten" for a in screwing},
                   line={a: LineSpec(r.insert_direction, self.insert_distance) for a in arms},
-                  target=Target.of(joints=joints(r.assembled), link_poses=dict(r.tool0), built=self.state.built | {r.bar}))
+                  target=Target.of(joints=joints(r.assembled), link_poses=dict(r.tool0),
+                                   built=None if grounded else built))
+        if grounded:
+            self.emit(f"{p}_J_fix_foundation", "Operator fixes the foundation", ends_on="operator",
+                      target=Target(built=built))
 
     def release(self, r: BarRecord) -> None:
-        """Ungrasp (form B, backing the jointing screw off), careful retreat, home; then the robot drives away."""
+        """Ungrasp (form B), careful retreat, home; then the robot drives away.
+
+        ! The ungrasp only opens the grips: no `loosen` drive (D7). Backing the jointing screw off could loosen the
+          joint just made; the monitor never sends it.
+        """
         p, arms = r.bar.split("/")[1], tuple(sorted(r.tool0))
         self.emit(f"{p}_R_ungrasp", "Ungrasp (form B)", ends_on="tools",
-                  drives={r.tools[a]: "loosen" for a in arms},
                   target=Target(tools={r.tools[a]: "open" for a in arms}, attached=self.without(r.bar, arms)))
         retreat_links = {a: shifted(r.tool0[a], r.retreat_direction[a], self.retreat_distance) for a in arms}
         self.emit(f"{p}_R_retreat", "Careful retreat", arms=arms, path="linear", controller="position",
@@ -269,7 +360,7 @@ class Builder:
 
 def build_actions(process: Process, schedule: Sequence[Tuple[str, str]], bars: Dict[str, BarRecord],
                   holds: Dict[str, HoldRecord], *, insert_distance: float = 0.015, retreat_distance: float = 0.05,
-                  support_distance: float = 0.1) -> BuildResult:
+                  support_distance: float = 0.1, record_from: int = 0) -> BuildResult:
     """Add the actions and the schedule to a process that holds its robots, tools, bodies and mates.
 
     Args:
@@ -279,29 +370,40 @@ def build_actions(process: Process, schedule: Sequence[Tuple[str, str]], bars: D
         holds: Held bar id -> its record, for H and HR.
         insert_distance, retreat_distance: Cindy's insert and retreat lengths, metres.
         support_distance: The support robot's linear approach and retreat length, metres.
+        record_from: Index of the first schedule entry whose action is kept (a range export's From bar).
 
     - ! A bar without a record has no robot action: it gets a `bar_placing` action at its place in the schedule (where
       its jointing would be), one manual step that ends with the bar built. It is absent before and an obstacle
       after, like any other bar, so the bars after it are planned around it. Reported, because a bar that merely
       lacks its tools looks the same.
+    - * The entries before `record_from` run through the builder as a silent prefix: their actions and notes are
+      left out, but the first kept movement starts in the state they leave (their bars built, Cindy gone, open holds
+      still held by their support robot at its hold base and joints, finished holds gone).
 
     Returns:
-        BuildResult: The process, and one line per bar placed by hand and per hold left out (no record).
+        BuildResult: The process, and one line per bar placed by hand, per hold left out (no record) and per bar the
+        drive rules leave open (`drive_problems`).
     """
     builder = Builder(process, insert_distance, retreat_distance, support_distance)
     actions: Dict[str, Action] = {}
     order: List[str] = []
     problems: List[str] = []
-    for kind, bar in schedule:
+
+    def keep(index: int, action: Action) -> None:
+        """Add an action to the process, unless it belongs to the silent prefix."""
+        if index >= record_from:
+            actions[action.id] = action
+            order.append(action.id)
+
+    for index, (kind, bar) in enumerate(schedule):
+        if index == record_from:
+            problems.clear()  # ? the prefix's notes are about actions this process leaves out
+        name, first = bar.split("/")[1], len(builder.movements)
         if kind in ("J", "R") and bar not in bars and bar in process.bodies:
             if kind == "J":
-                first = len(builder.movements)
                 builder.placing(bar)
-                action_id = f"{bar.split('/')[1]}_P"
-                actions[action_id] = Action(id=action_id, type="bar_placing", robot="", bar=bar,
-                                            movements=tuple(builder.movements[first:]),
-                                            label=f"{bar.split('/')[1]} placed by hand")
-                order.append(action_id)
+                keep(index, Action(id=f"{name}_P", type="bar_placing", robot="", bar=bar,
+                                   movements=tuple(builder.movements[first:]), label=f"{name} placed by hand"))
                 problems.append(f"{bar}: no robot action (no keyframe record); taken as placed by hand at its place "
                                 f"in the sequence")
             continue  # ? Nothing to release: no robot held it.
@@ -310,17 +412,51 @@ def build_actions(process: Process, schedule: Sequence[Tuple[str, str]], bars: D
             problems.append(f"{bar} {kind}: no {'keyframe' if kind in ('J', 'R') else 'hold'} record; "
                             f"action left out")
             continue
-        first = len(builder.movements)
         {"J": builder.jointing, "R": builder.release, "H": builder.holding,
          "HR": builder.holding_release}[kind](record)
+        if kind == "J":
+            problems += drive_problems(record, builder.screwed[bar])
         type_, suffix = KINDS[kind]
-        action_id = f"{bar.split('/')[1]}_{suffix}"
         supports = record.supports_until if kind == "H" else ()
-        actions[action_id] = Action(id=action_id, type=type_, robot=record.robot, bar=bar,
-                                    movements=tuple(builder.movements[first:]), ground=tuple(record.ground),
-                                    supports_until=tuple(supports), label=_label(kind, bar, record.robot))
-        order.append(action_id)
+        keep(index, Action(id=f"{name}_{suffix}", type=type_, robot=record.robot, bar=bar,
+                           movements=tuple(builder.movements[first:]), ground=tuple(record.ground),
+                           supports_until=tuple(supports), label=_label(kind, bar, record.robot)))
     return BuildResult(replace(process, actions=actions, schedule=tuple(order), folder=None), problems)
+
+
+def cut_to_range(process: Process, schedule: Sequence[Tuple[str, str]], holds: Dict[str, HoldRecord], first: str,
+                 last: str) -> Tuple[Process, List[Tuple[str, str]], Dict[str, HoldRecord], int]:
+    """Cut the whole sequence to a range export From..Until; the hold plan stays the whole sequence's.
+
+    - Bodies: the bars up to Until with their halves. Later bars, their halves and their mates go (a process read
+      for a range never has them: `process_source` does not read them).
+    - Holds: `supports_until` keeps only the bars still in the process.
+    - Schedule: every entry up to Until's last one (its J, H, R and the hold releases right after it, also of holds
+      that began before From). A hold still on at Until gets no release.
+    - * The entries before From's jointing stay in the schedule: `build_actions(record_from=...)` runs them as a
+      silent prefix, so the first kept movement starts with the earlier bars built and the open holds in place.
+    - ? A hold release whose hold began in the prefix has no `bar_holding` in the process: `check_plan` warns (B12,
+      "no earlier bar_holding ...") and cannot check its `supports_until`, which lives on the left-out hold.
+
+    Args:
+        process: The process without actions.
+        schedule: (kind, bar id) of the whole sequence, as for `build_actions`.
+        holds: Held bar id -> its record.
+        first, last: The From and Until bar ids, e.g. "bars/B20", "bars/B37".
+
+    Returns:
+        tuple: The process, the schedule, the holds, and the index of From's jointing in that schedule (`record_from`).
+    """
+    jointings = [i for i, (kind, _bar) in enumerate(schedule) if kind == "J"]
+    bars = [schedule[i][1] for i in jointings]
+    after = bars.index(last) + 1
+    later = set(bars[after:])
+    bodies = {k: v for k, v in process.bodies.items() if k not in later and v.mount not in later}
+    mates = frozenset(m for m in process.mates if all(side in bodies for side in m))
+    holds = {bar: replace(h, supports_until=tuple(b for b in h.supports_until if b in bodies))
+             for bar, h in holds.items() if bar in bodies}
+    end = jointings[after] if after < len(jointings) else len(schedule)
+    return replace(process, bodies=bodies, mates=mates), list(schedule[:end]), holds, jointings[bars.index(first)]
 
 
 def _label(kind: str, bar: str, robot: str) -> str:

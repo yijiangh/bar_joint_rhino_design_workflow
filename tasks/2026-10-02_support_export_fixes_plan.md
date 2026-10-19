@@ -1,5 +1,9 @@
 # Implementation plan: exporter fixes D1–D9 (`docs/support_export_issues_from_monitor.md`)
 
+> History: the compas_fab export this plan fixed is retired, and `tests/check_export_bundle.py`, used below, is
+> deleted. A process folder is checked with RSCheckProcess (file checks A, plan checks B); the drive rules D7, D9 and
+> D10 live in `scripts/core/process_builder.py`.
+
 ## Status (2026-10-02)
 
 - Phases 0-5 implemented on `hs/mocap-experiment` (uncommitted). Full test suite: 240 passed,

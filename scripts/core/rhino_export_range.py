@@ -1,8 +1,7 @@
 """Command-line prompt for the bar range of a partial export (From .. Until).
 
-Was used by the right-click of the RSExportBarAction button
-(``rs_export_all_bar_actions.py``, retired). Pressing Enter right away exports every
-bar, as before. The ``FromBar`` / ``UntilBar`` options let you pick the first
+RSExportProcess asks it first (``rs_export_process.py``). Pressing Enter right away
+exports every bar. The ``FromBar`` / ``UntilBar`` options let you pick the first
 and the last bar to export, in two steps each:
 
 1. click a bar in the viewport, or type its id (``B5``) or its step number
@@ -10,12 +9,9 @@ and the last bar to export, in two steps each:
 2. the viewport shows the scene built up to and including that bar (earlier
    bars green, the picked bar blue, later bars hidden); Accept it, or Repick.
 
-What a range meant for the exported files was decided by the retired
-exporter; this module only asks.
+What a range means for the process is ``process_builder.cut_to_range``; this
+module only asks.
 """
-
-# TODO(core-merge R3/R4): no caller since the compas_fab exporter was retired; the range export comes back
-#  under RSExportProcess.
 
 from __future__ import annotations
 

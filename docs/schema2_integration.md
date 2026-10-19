@@ -21,9 +21,9 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 
 | Piece | Where | State |
 | --- | --- | --- |
-| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `7ebd9c0`: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
+| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `c985034`, the commit the monitor uses: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
 | Document → `Process` | `core/process_source.py`, `RhinoProcessSource(command, cache).build()`; also records each body's Rhino object (`SourceResult.objects`) | tested on a fake document and on `YH_ik_test.3dm` and `examples/Example4_two_box.3dm` (rhino3dm) |
-| Keyframe records → actions | `core/process_builder.py` (Rhino-free): role-named ids, `on` in targets, `loosen` on the ungrasp, `pose_in_tcp` per kind of half (`poses_in_tcp`) | pytest: an unsolved three-bar process with a hold passes A and B, no B11 `on` errors |
+| Keyframe records → actions | `core/process_builder.py` (Rhino-free): role-named ids, `on` in targets, the monitor's drive rules D7/D9/D10 (`screwing_arms`: only arms whose male meets a built receiver tighten; a ground bar's fix_foundation step; no loosen on the ungrasp), `pose_in_tcp` per kind of half (`poses_in_tcp`) | pytest: an unsolved three-bar process with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the process on every command | |
 | `RSExportProcess`, `RSCheckProcess` | `rs_export_process.py`, `rs_check_process.py` | builds, writes, copies `source/`, prints A and B; run in Rhino 8 on 2026-10-13 (`261008_2ModulesDemo.3dm`, session logs): 204 bodies, 60 mates, 78 actions, 306 movements written in 2 to 4 s |
 | `RSIKKeyframe`, `RSIKKeyframeAll` | `core/process_planning.py` (`keyframe_movements`, `hold_solve_state`, `release_check`, `state_scene`), `core/support_ik.py`; previews by `core/ik_viz.py` | headless: tamp's `solve_keyframe_chain` and compas_fab support IK solve through the mirrors; run in Rhino 8 on 2026-10-13 (`261008_2ModulesDemo.3dm`, session logs), including the base search, the chain solve and the support re-solve pass |
@@ -55,8 +55,9 @@ compas, no PyBullet. Every core import needs yourdfpy (in `requirements-rhino.tx
 
 | Action | Movements |
 | --- | --- |
-| `B10_J` | `load` (free, target null), `place_bar` (operator; bar attached to both flanges; target puts the tools `on` their halves), `grasp` (grip closed), `transfer` (free, coupled), `insert` (linear, coupled, compliant, `drives: tighten`, `ends_on: tools`; bar built) |
-| `B10_R` | `ungrasp` (form B: grips open, `drives: loosen`, bar released, stays built), `retreat` (per-arm linear along each half's −z; target clears `on`), `home`; then Cindy drives away (`null` until her next J) |
+| `B10_J` | `load` (free, target null), `place_bar` (operator; bar attached to both flanges; target puts the tools `on` their halves), `grasp` (grip closed), `transfer` (free, coupled), `insert` (linear, coupled, compliant; `drives: tighten` on the arms `process_builder.screwing_arms` names, those whose male half meets a receiver (Female or MoCap half) on a bar already built, `ends_on: tools`; bar built) |
+| `B20_J` (ground bar: every tool on a ground half) | the same up to `transfer`, then `insert` (linear, coupled, compliant, no drives, `ends_on: target`; bar not yet built), `fix_foundation` (operator fixes the foundation while Cindy keeps holding; no arms, `ends_on: operator`; bar built at its end) |
+| `B10_R` | `ungrasp` (form B: grips open, no drives (D7: the jointing screw is never backed off), bar released, stays built), `retreat` (per-arm linear along each half's −z; target clears `on`), `home`; then Cindy drives away (`null` until her next J) |
 | `B3_H` | `approach` (free), `open`, `to_grasp` (linear along the flange z; target puts the gripper `on` the bar), `close` (Alice holds the built bar too) |
 | `B3_HR` | `open` (Alice lets go), `retreat` (linear; target clears `on`), `leave` (free, target null: planned live); then Alice drives away (`null`) |
 
@@ -167,7 +168,8 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
 | Home joints from `HUSKY_DUAL_ARM_HOME_CONF_12` | As before |
 | Bars without a left and a right tool get no J and R but a `bar_placing` action (`<bar>_P`, no robot, one manual step) at their place in the schedule, and are listed | They cannot be jointed, but the bars after them must be planned around them: absent before their place in the sequence, built after it |
 | Duplicate ids and scaled or mirrored joint blocks refuse the export | A dict would silently drop one body |
-| The ungrasp drives `loosen` on Cindy's tools; the bar stays built | Decision #5: the untighten is folded into the ungrasp |
+| Drives follow the halves (`process_builder.screwing_arms`): an arm tightens only when its male half meets a built receiver (D10); a ground bar's insert drives nothing and ends on its target, then `fix_foundation` (operator) builds it (D9); the ungrasp has no `loosen` (D7) | The lab's monitor relies on the old exporter's rules. Replaces decision #5 (untighten folded into the ungrasp). A ground bar is built in the operator step because B10 lets a bar become built only with a tighten drive on it or in a manual step |
+| A bar where nothing tightens (not a ground bar, and no male half under its tools meets a built receiver; also a bar mixing a ground and a male half whose receiver is not built) is exported, with a problem line "nothing tightens (D10)"; `check_plan` then also fails it on B10 ("becomes built without an insert") | The old exporter refused such a bar. Exported, it still shows in Rhino and in RSCheckProcess, twice: the note and the B10 error. A bar mixing a ground and a male half is also listed (D9), with the per-arm rule |
 | `on` in targets: the mount, the support's linear approach, the retreats | Decision #2; B11 refuses `on` changing between movements |
 | Hold releases get a `leave` movement (free, target null) before the robot drives away | The role table of the format (§3.1) |
 | A hold candidate must clear its release scene, during the solve (RSIKKeyframe) and the support pass (RSIKKeyframeAll) | Decision #4: the second hold scene; replaces the legacy partial release check |
@@ -213,12 +215,12 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
 **Setup** (once):
 
 1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/scaffolding_assembly_core
-   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `7ebd9c0`.
+   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `c985034`.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportProcess` and `RSCheckProcess` can be typed
    (both are also on the RSDesign toolbar: left- and right-click of one button).
 4. The first command installs `requirements-rhino.txt` (README, step 3): several minutes, pybullet is compiled and needs
-   Visual Studio Build Tools. yourdfpy is new in it: editing the file makes Rhino install a fresh environment. Without the ssik venv (`external/ssik_env`), IK uses the slow gradient backend: a warning on every run and a message box once per session. The solver modules themselves are committed in `asset/ssik/`.
+   Visual Studio Build Tools. yourdfpy is new in it: editing the file makes Rhino install a fresh environment. Without the ssik venv (`external/ssik_env`), IK uses the slow gradient backend: a warning on every run and a message box once per session. The solver modules live in tamp's `asset/ssik` (`external/husky_assembly_tamp/asset/ssik`), not in this repo.
 
 **Test 1: export** (`YH_ik_test.3dm`, in the repo; 4 bars, only B3 has a solved keyframe, and it is stale):
 `RSExportProcess` → `Wrote …: 13 bodies, 4 mates, 2 actions, 8 movements; 1/1 bars with IK`, `A (file checks): passed`,

@@ -96,7 +96,8 @@ def test_ik_backend_fallback_is_decided_again_once_ssik_is_set_up(env, monkeypat
     monkeypatch.setenv("HUSKY_SSIK_VENV_DIR", str(venv))
     monkeypatch.setenv("HUSKY_SSIK_ARTIFACT_DIR", str(artifacts))
     rhino_env.activate(force=True)
-    assert os.environ["HUSKY_IK_BACKEND"] == "gradient" and "no Python 3.11 environment" in rhino_env.ik_fallback_reason
+    assert os.environ["HUSKY_IK_BACKEND"] == "gradient"
+    assert "no ssik sidecar environment (Python 3.10 or newer, with ssik==4.1.0)" in rhino_env.ik_fallback_reason
     python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     python.parent.mkdir(parents=True)
     python.write_text("")

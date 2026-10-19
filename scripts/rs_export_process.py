@@ -6,6 +6,10 @@ The process comes from `core.process_source.RhinoProcessSource` (bars, halves, g
 and the actions built from each bar's keyframes) and is written by the core's `write`. Bars without IK are exported
 with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Needs no PyBullet,
 compas_fab or tamp. It is the only export command.
+
+First it asks which bars to export (`core.rhino_export_range`): Enter exports every bar; FromBar / UntilBar pick a
+range. A range export holds the bars up to Until and the actions of From..Until, the earlier bars built in its first
+state (`process_builder.cut_to_range`); the range goes into `producer.command` and the default folder name.
 """
 
 from __future__ import annotations
@@ -33,23 +37,32 @@ from core import config as _config_module  # noqa: E402
 from core import core_lib  # noqa: E402,F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_builder as _process_builder_module  # noqa: E402
 from core import process_source as _process_source_module  # noqa: E402
+from core import rhino_export_range as _export_range_module  # noqa: E402
 from core import rhino_walkable_ground as _walkable_module  # noqa: E402
 from core.ik_status import stale_from, stale_ik_lines  # noqa: E402
-from core.rhino_bar_registry import repair_on_entry  # noqa: E402
+from core.rhino_bar_registry import get_real_bar_seq_map, repair_on_entry  # noqa: E402
 from scaffolding_assembly_core.process import ProcessError, write  # noqa: E402
 from scaffolding_assembly_core.process.plan_check import check_plan  # noqa: E402
 from rs_check_process import PROCESS_FOLDER_STICKY_KEY, report_lines  # noqa: E402
 
 
-def _pick_folder(command: str):
-    """Ask for the parent folder and the process folder's name; None if cancelled or refused."""
+def _pick_folder(command: str, export_range=None):
+    """Ask for the parent folder and the process folder's name; None if cancelled or refused.
+
+    Args:
+        command: The command name, for the dialog titles.
+        export_range: (From, Until) bar ids of a range export, named in the default folder name; None: every bar.
+    """
     last = sc.sticky.get(PROCESS_FOLDER_STICKY_KEY)
     parent = rs.BrowseForFolder(folder=os.path.dirname(last) if last else None,
                                 message="Select the folder to write the process folder into", title=command)
     if not parent:
         return None
     doc_name = os.path.splitext(sc.doc.Name or "process")[0]
-    default = os.path.basename(last) if last else f"{doc_name}_process"
+    if export_range:
+        default = f"{doc_name}_{export_range[0]}-{export_range[1]}_process"
+    else:
+        default = os.path.basename(last) if last else f"{doc_name}_process"
     name = rs.StringBox("Process folder name", default, command)
     if not name:
         return None
@@ -81,17 +94,28 @@ def export(command: str = "RSExportProcess") -> None:
     config = importlib.reload(_config_module)
     importlib.reload(_process_builder_module)
     process_source = importlib.reload(_process_source_module)
+    export_range_prompt = importlib.reload(_export_range_module)
     repair_on_entry(float(config.BAR_RADIUS), command)
     importlib.reload(_walkable_module).ensure_ground_and_base(command)
 
-    folder = _pick_folder(command)
+    # ? The range is asked before the folder, so the default folder name can carry it.
+    seq_map = get_real_bar_seq_map()
+    export_range = None
+    if seq_map:
+        picked = export_range_prompt.prompt_export_range(seq_map, command)
+        if picked is None:
+            print(f"{command}: cancelled.")
+            return
+        ordered = sorted(seq_map, key=lambda bar: seq_map[bar][1])
+        export_range = None if picked == (ordered[0], ordered[-1]) else picked  # * every bar: no range
+    folder = _pick_folder(command, export_range)
     if not folder:
         print(f"{command}: cancelled.")
         return
     started = time.perf_counter()
     try:
         result = process_source.RhinoProcessSource(command, process_source.geometry_cache(sc.sticky),
-                                                 fresh_versions=True).build()
+                                                 fresh_versions=True).build(export_range=export_range)
     except ProcessError as exc:
         print(f"{command}: the document cannot be exported:\n  " + "\n  ".join(exc.problems))
         rs.MessageBox(f"Not exported: {len(exc.problems)} problem(s) in the document.\n\nDetails in the command "
@@ -118,7 +142,9 @@ def export(command: str = "RSExportProcess") -> None:
     # The core's verdict on the saved IK (B15), by bar: these bars export as solved, with poses that miss.
     stale = stale_from(report.unreached)
     n = sum(len(a.movements) for a in written.actions.values())
-    solved = sum(1 for a in written.actions.values() if a.type == "bar_jointing" and a.movements[-1].target.joints)
+    # ? By the insert, not the last movement: a ground bar's jointing ends with the operator's fix_foundation step.
+    solved = sum(1 for a in written.actions.values() if a.type == "bar_jointing"
+                 and any(m.id.endswith("_J_insert") and m.target.joints for m in a.movements))
     jointing = sum(1 for a in written.actions.values() if a.type == "bar_jointing")
     lines += [f"Wrote {folder} in {time.perf_counter() - built:.1f} s: {len(written.bodies)} bodies, "
               f"{len(written.mates)} mates, {len(written.actions)} actions, {n} movements; "

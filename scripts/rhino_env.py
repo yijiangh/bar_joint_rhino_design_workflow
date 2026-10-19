@@ -189,7 +189,8 @@ def _default_ik_backend() -> None:
         os.environ["HUSKY_IK_BACKEND"] = "gradient"
         os.environ[_AUTO_BACKEND_MARK] = "1"
         ik_fallback_reason = "; ".join(
-            [f"no Python 3.11 environment at {venv}"] * (not os.path.isfile(python))
+            [f"no ssik sidecar environment (Python 3.10 or newer, with ssik==4.1.0) at {venv}"]
+            * (not os.path.isfile(python))
             + [f"no solver modules at {artifacts}"] * (not os.path.isdir(artifacts)))
         _say("rhino_env: ssik is not set up (README, 'Analytical IK solver'); IK uses the gradient backend.")
 

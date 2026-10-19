@@ -3,7 +3,7 @@ Read the Rhino document into a schema 2 `Process` (scaffolding_assembly_core), f
 
 `RhinoProcessSource(command).build()` reads bars, halves, ground, obstacles, robots, tools, mates and the per-bar
 keyframe records, then `core.process_builder` adds the actions. Units are converted once, here: document units and
-mm to metres.
+mm to metres. `build(export_range=("B20", "B37"))` builds a range export From..Until (`process_builder.cut_to_range`).
 
 - ! Call it after `repair_on_entry` (it repairs sequences and migrates old joint names) and keep no `Process` between
   commands: the document may change in between.
@@ -30,7 +30,8 @@ import session_log
 from core import config
 from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
 from core import joint_name_conventions as jnc
-from core.process_builder import BarRecord, BuildResult, HoldRecord, build_actions, grasp_of, poses_in_tcp
+from core.process_builder import (BarRecord, BuildResult, HoldRecord, build_actions, cut_to_range, grasp_of,
+                                  poses_in_tcp)
 from scaffolding_assembly_core.process import BodySpec, Process, ProcessError, Producer, RobotSpec
 from scaffolding_assembly_core.process.version import writer_info
 from scaffolding_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
@@ -219,8 +220,12 @@ class RhinoProcessSource:
         self.tool_names: Dict[str, str] = {}
 
     @session_log.timed("process_source.build")
-    def build(self) -> SourceResult:
+    def build(self, export_range: Optional[Tuple[str, str]] = None) -> SourceResult:
         """Read the document and build the process with its actions.
+
+        Args:
+            export_range: (From, Until) bar ids, e.g. ("B20", "B37"): the bars up to Until with the actions of
+                From..Until (`process_builder.cut_to_range`), recorded in `producer.command`. None: every bar.
 
         Raises:
             ProcessSourceError: On duplicate ids or broken blocks, listing all of them.
@@ -236,9 +241,14 @@ class RhinoProcessSource:
         if fake:
             self.problems.append(f"fake bars left out with their halves: {', '.join(sorted(fake))}")
         order = [b for b, _ in sorted(bars.items(), key=lambda kv: kv[1][1])]
+        # * A range export never reads the bars after Until: their halves are skipped like a fake bar's, so they
+        #   form no mates either.
+        kept = order[:order.index(export_range[1]) + 1] if export_range else order
+        if export_range:
+            self.command = f"{self.command} {export_range[0]}..{export_range[1]}"
 
-        self._read_bars(bars)
-        halves = self._read_halves(rs, bars, fake)
+        self._read_bars({b: bars[b] for b in kept})
+        halves = self._read_halves(rs, {b: bars[b] for b in kept}, set(fake) | set(order[len(kept):]))
         grounds = self._read_ground(rs)
         self.ground_oids = grounds
         self._read_obstacles(rs)
@@ -248,7 +258,7 @@ class RhinoProcessSource:
         mates = self._mates(halves, grounds)
 
         with session_log.step("hold plan"):
-            bar_seq, supported = collect_hold_inputs(bars)
+            bar_seq, supported = collect_hold_inputs(bars)  # ? always the whole sequence, also for a range
             try:
                 hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
             except RuntimeError as exc:
@@ -273,11 +283,15 @@ class RhinoProcessSource:
                     self.bodies[key] = replace(body, pose_in_tcp=in_tcp[body.part])
         process = Process(folder=None, writer=writer, robots=robots, tools=tools, bodies=dict(self.bodies),
                         schedule=(), actions={}, mates=frozenset(mates), producer=made_by)
+        record_from = 0
+        if export_range:
+            process, schedule, holds, record_from = cut_to_range(process, schedule, holds,
+                                                                 *(f"bars/{b}" for b in export_range))
         with session_log.step("build_actions"):
             result: BuildResult = build_actions(
                 process, schedule, records, holds, insert_distance=config.LM_APPROACH_DISTANCE / 1000.0,
                 retreat_distance=config.LM_RETREAT_DISTANCE / 1000.0,
-                support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0)
+                support_distance=config.SUPPORT_LM_DISTANCE_MM / 1000.0, record_from=record_from)
         return SourceResult(result.process, self.problems + result.problems, dict(self.objects))
 
     def _versions(self):
@@ -354,8 +368,13 @@ class RhinoProcessSource:
         return cached(self.cache, (owner, "obj", path, scale, digest), lambda: Geometry((mesh,), (mesh,)))
 
     @session_log.timed()
-    def _read_halves(self, rs, bars, fake) -> Dict[str, Tuple[str, str, str]]:
-        """Every joint block on a real bar, with part, mount and markers.
+    def _read_halves(self, rs, bars, skipped) -> Dict[str, Tuple[str, str, str]]:
+        """Every joint block on a bar of `bars`, with part, mount and markers.
+
+        Args:
+            rs: rhinoscriptsyntax.
+            bars: Bar id -> (curve id, sequence number) of the bars read.
+            skipped: Bar ids whose blocks are left out without a word: fake bars, and a range export's later bars.
 
         Returns:
             dict: Half id -> (joint id, subtype, bar id).
@@ -373,7 +392,7 @@ class RhinoProcessSource:
                 parent = rs.GetUserText(oid, jnc.UT_PARENT_BAR)
                 jid = rs.GetUserText(oid, jnc.UT_JOINT_ID)
                 name = rs.ObjectName(oid) or str(oid)
-                if parent in fake:
+                if parent in skipped:
                     continue
                 if parent not in bars or not jid:
                     self.problems.append(f"joint block {name} has no live parent bar or no joint_id; left out")
@@ -617,6 +636,8 @@ class RhinoProcessSource:
                                  f"{len(tool0)}; no robot action for it")
             return None
         if ground_points:
+            # ? A bar mixing a ground half and a male half is inserted onto the ground too. It is not refused: the
+            #   builder reports it (D9) and tightens only a male arm whose receiver is built (`screwing_arms`).
             insert = self._ground_insert_direction(bar, ground_points)
         else:
             insert = unit(np.mean(z_axes, axis=0))  # * along the tools' z, into the joint

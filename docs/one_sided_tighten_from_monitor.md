@@ -85,7 +85,7 @@ is already there.
    (`:1466`); update the docstring at `:1412`.
 2. Optional, for a reader that looks at the insert alone: `notes["stall_tools"] = tighten_tools`
    on `LM_insert`. The monitor does not need it (it reads the tighten step).
-3. Checker rule in `tests/check_export_bundle.py`, in `check_movement_lists` (`:215-246`):
+3. Checker rule in `tests/check_export_bundle.py` (history: that checker is deleted; RSCheckProcess checks a process folder now), in `check_movement_lists` (`:215-246`):
    "D10 each tighten step names exactly the tools whose male has its female in the insert state".
    Reuse `ground_bars`' pattern (`:164-184`): per `__J`, take `LM_insert`'s start state, for each
    attached `joint_<jid>_male` map `attached_to_link` (`left_ur_arm_tool0` / `right_...`) to
@@ -112,5 +112,5 @@ is already there.
 
 - `external\husky_assembly_tamp\.venv\Scripts\python.exe -m pytest tests -v`.
 - RSExportAllBarActions into a **new local folder**, then
-  `python tests/check_export_bundle.py <folder>`: 0 failed rules, the new D10 rule included.
+  `python tests/check_export_bundle.py <folder>` (history: that checker is deleted; RSCheckProcess checks a process folder now): 0 failed rules, the new D10 rule included.
 - Tell the monitor side before overwriting a shared folder. Never touch `260929_phase1_retest`.

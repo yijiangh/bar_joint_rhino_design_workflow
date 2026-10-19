@@ -226,6 +226,7 @@ def test_plan_process_writes_solutions(setup, tmp_path):
     assert ungrasp.status == "solved" and ungrasp.trajectory is None and ungrasp.start == ungrasp.end
     # * The process wins: the last waypoint is the process's target.
     insert = solutions["B1_J"].movements["B1_J_insert"]
-    target = read(folder).actions["B1_J"].movements[-1].target.joints["robots/cindy"]
+    insert_movement = next(m for m in read(folder).actions["B1_J"].movements if m.id == "B1_J_insert")
+    target = insert_movement.target.joints["robots/cindy"]
     assert all(abs(insert.end["robots/cindy"][n] - v) < 1e-9 for n, v in target.items() if n in insert.end["robots/cindy"])
     print(statuses)

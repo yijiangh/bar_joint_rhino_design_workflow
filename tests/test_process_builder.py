@@ -13,7 +13,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from core import core_lib  # noqa: F401
-from core.process_builder import BarRecord, HoldRecord, build_actions, grasp_of, z_axis
+from core.process_builder import BarRecord, HoldRecord, build_actions, cut_to_range, grasp_of, z_axis
 from scaffolding_assembly_core.process import BodySpec, Process, RobotSpec, read, validate, write
 from scaffolding_assembly_core.process.plan_check import check_plan
 from scaffolding_assembly_core.process.version import writer_info
@@ -114,7 +114,7 @@ def test_unsolved_process_passes_file_and_plan_checks(tmp_path):
     process = _process()
     bars, holds = _records(process)
     result = build_actions(process, SCHEDULE, bars, holds)
-    assert not result.problems
+    assert len(result.problems) == 1 and result.problems[0].startswith("bars/B2: its tools are on a ground half")
     validate(result.process, check_robot_meshes=False)
     written = write(result.process, tmp_path / "process", package_dirs=[PKG])
     assert written.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B3_J", "B3_R", "B2_HR")
@@ -123,7 +123,8 @@ def test_unsolved_process_passes_file_and_plan_checks(tmp_path):
     assert [m.id for m in written.actions["B2_J"].movements] == [
         "B2_J_load", "B2_J_place_bar", "B2_J_grasp", "B2_J_transfer", "B2_J_insert"]
     insert = written.actions["B2_J"].movements[-1]
-    assert insert.drives == {"tools/cindy/AT3L": "tighten", "tools/cindy/AT3R": "tighten"} and insert.ends_on == "tools"
+    # * B2 mixes a male half (left, its female on the built B1) and a ground half (right): only the left arm screws.
+    assert insert.drives == {"tools/cindy/AT3L": "tighten"} and insert.ends_on == "tools"
     assert insert.target.built == {"bars/B1", "bars/B2"} and insert.coupled and insert.controller == "compliant"
     # * Alice holds B2 together with Cindy until Cindy lets go.
     close = written.actions["B2_H"].movements[-1]
@@ -148,7 +149,7 @@ def test_keyframe_joints_chain(tmp_path):
     result = build_actions(process, SCHEDULE, bars, holds)
     report = check_plan(result.process, geometry=False)
     assert report.ok, report.errors
-    insert = result.process.actions["B1_J"].movements[-1]
+    insert = next(m for m in result.process.actions["B1_J"].movements if m.id == "B1_J_insert")
     assert insert.start.robots[CINDY].joints == bars["bars/B1"].approach
     retreat = result.process.actions["B1_R"].movements[1]
     assert retreat.start.robots[CINDY].joints == bars["bars/B1"].assembled
@@ -161,7 +162,8 @@ def test_missing_records_are_reported():
     del holds["bars/B2"]
     result = build_actions(process, SCHEDULE, bars, holds)
     assert result.process.schedule == ("B1_J", "B1_R", "B2_J", "B2_R", "B3_J", "B3_R")
-    assert len(result.problems) == 2 and all("bars/B2" in p for p in result.problems)
+    # * The H and HR left out, and B2's mixed halves (D9).
+    assert len(result.problems) == 3 and all("bars/B2" in p for p in result.problems)
 
 
 def test_bars_without_a_record_are_placed_by_hand_at_their_place(tmp_path):
@@ -194,8 +196,8 @@ def test_bars_without_a_record_are_placed_by_hand_at_their_place(tmp_path):
 
 
 def test_on_lives_in_targets_and_halves_know_their_tool_pose():
-    """Decisions of 2026-10-09: `on` is set and cleared by targets only (B11), the ungrasp loosens, a hold release
-    leaves, and the joint registry gives the pose of each tool-carrying half in its tool's TCP frame."""
+    """Decisions of 2026-10-09: `on` is set and cleared by targets only (B11), a hold release leaves, and the joint
+    registry gives the pose of each tool-carrying half in its tool's TCP frame. The ungrasp no longer loosens (D7)."""
     from core.process_builder import poses_in_tcp
     from core.joint_pair import load_joint_registry
 
@@ -205,7 +207,7 @@ def test_on_lives_in_targets_and_halves_know_their_tool_pose():
     by_id = {m.id: m for _a, m in process.movements()}
     tools = {L: "tools/cindy/AT3L", R: "tools/cindy/AT3R"}
     assert by_id["B2_J_place_bar"].target.on == {tools[L]: "joints/J1-2_male", tools[R]: "joints/G2-T20-0_ground"}
-    assert by_id["B2_R_ungrasp"].drives == {"tools/cindy/AT3L": "loosen", "tools/cindy/AT3R": "loosen"}
+    assert by_id["B2_R_ungrasp"].drives == {}
     assert by_id["B2_R_retreat"].target.on == {"tools/cindy/AT3L": None, "tools/cindy/AT3R": None}
     assert by_id["B2_H_to_grasp"].target.on == {"tools/alice/SupportGripper": "bars/B2"}
     assert by_id["B2_HR_retreat"].target.on == {"tools/alice/SupportGripper": None}
@@ -220,3 +222,111 @@ def test_on_lives_in_targets_and_halves_know_their_tool_pose():
     expected = POSE_IN_TCP["T20/Ground"]
     assert np.allclose(turned.matrix(), expected.matrix(), atol=1e-9)
     assert all(v == 0.0 or abs(v) == 1.0 for v in turned.orientation), "a half turn is written exactly"
+
+
+def test_drives_follow_halves(tmp_path):
+    """The monitor's drive rules: a ground bar drives nothing and the operator fixes its foundation (D9), only arms
+    whose male meets a built receiver tighten (D10), and no release loosens (D7)."""
+    tools = {L: "tools/cindy/AT3L", R: "tools/cindy/AT3R"}
+    process = _process()
+    bars, holds = _records(process)
+    written = write(build_actions(process, SCHEDULE, bars, holds).process, tmp_path / "two_sided", package_dirs=[PKG])
+    by_id = {m.id: m for _a, m in written.movements()}
+    # * B1 stands on two ground halves: the insert ends on its target, then the operator's step builds the bar.
+    ids = [m.id for m in written.actions["B1_J"].movements]
+    assert ids[-2:] == ["B1_J_insert", "B1_J_fix_foundation"]
+    insert, fix = by_id["B1_J_insert"], by_id["B1_J_fix_foundation"]
+    assert insert.drives == {} and insert.ends_on == "target" and insert.controller == "compliant"
+    assert insert.target.built is None and fix.target.built == {"bars/B1"}
+    assert fix.ends_on == "operator" and not fix.arms and fix.label == "Operator fixes the foundation"
+    # * B2 mixes a male half and a ground half: the per-arm rule. B3's two males both meet a built female.
+    assert by_id["B2_J_insert"].drives == {tools[L]: "tighten"} and by_id["B2_J_insert"].ends_on == "tools"
+    assert by_id["B3_J_insert"].drives == {tools[L]: "tighten", tools[R]: "tighten"}
+    assert all(by_id[f"{bar}_R_ungrasp"].drives == {} for bar in ("B1", "B2", "B3"))
+    assert not any("loosen" in m.drives.values() for _a, m in written.movements())
+    report = check_plan(written)
+    assert report.ok, report.errors
+
+    # * One-sided B3: its right male's female is gone with its mate, as on a fake bar. Only the left arm screws.
+    bodies = {k: v for k, v in process.bodies.items() if k != "joints/J2-3_female"}
+    one_sided = replace(process, bodies=bodies,
+                        mates=frozenset(m for m in process.mates if "joints/J2-3_female" not in m))
+    result = build_actions(one_sided, SCHEDULE, bars, holds)
+    assert not any("nothing tightens" in p for p in result.problems)
+    written = write(result.process, tmp_path / "one_sided", package_dirs=[PKG])
+    insert = next(m for _a, m in written.movements() if m.id == "B3_J_insert")
+    assert insert.drives == {tools[L]: "tighten"} and insert.ends_on == "tools"
+    report = check_plan(written)
+    assert report.ok, report.errors
+
+    # * No receiver built at all: still exported, with a problem line (D10), and the plan check fails it on B10.
+    lonely = replace(process, mates=frozenset(m for m in process.mates if "joints/J1-3_male" not in m
+                                              and "joints/J2-3_male" not in m))
+    result = build_actions(lonely, SCHEDULE, bars, holds)
+    assert [p.split(":")[0] for p in result.problems if "nothing tightens (D10)" in p] == ["bars/B3"]
+    assert "B3_J" in result.process.schedule
+    report = check_plan(result.process, geometry=False)
+    assert "B10: B3_J_insert: bars/B3 becomes built without an insert (a tighten drive on its part)" in report.errors
+
+
+def test_screwing_needs_a_built_receiver_half():
+    """`screwing_arms`: the receiver's bar must be built when the insert starts, and the partner must be a receiver
+    (a Female or MoCap half), not any half on a built bar."""
+    tools = {L: "tools/cindy/AT3L", R: "tools/cindy/AT3R"}
+    process = _process()
+    bars, holds = _records(process)
+
+    def insert_drives(process, schedule):
+        built = build_actions(process, schedule, bars, holds).process
+        return next(m for _a, m in built.movements() if m.id == "B3_J_insert").drives
+
+    # * B3 before B2: its right male's female sits on B2, not built yet, so only the left arm screws.
+    early = (("J", "bars/B1"), ("R", "bars/B1"), ("J", "bars/B3"), ("R", "bars/B3"), ("J", "bars/B2"),
+             ("R", "bars/B2"))
+    assert insert_drives(process, early) == {tools[L]: "tighten"}
+    # * The right male mated with B2's ground half instead of its female: B2 is built, but a ground half receives
+    #   no screw.
+    mates = {m for m in process.mates if "joints/J2-3_female" not in m}
+    to_ground_half = replace(process, mates=frozenset(mates | {("joints/G2-T20-0_ground", "joints/J2-3_male")}))
+    assert insert_drives(to_ground_half, SCHEDULE) == {tools[L]: "tighten"}
+    # * A MoCap half receives like a Female.
+    bodies = {k: v for k, v in process.bodies.items() if k != "joints/J2-3_female"}
+    female = process.bodies["joints/J2-3_female"]
+    bodies["joints/J2-3_mocap"] = replace(female, id="joints/J2-3_mocap", part="T20/MoCap")
+    mocap = replace(process, bodies=bodies, mates=frozenset(mates | {("joints/J2-3_male", "joints/J2-3_mocap")}))
+    assert insert_drives(mocap, SCHEDULE) == {tools[L]: "tighten", tools[R]: "tighten"}
+
+
+def test_range_export_runs_the_earlier_bars_silently(tmp_path):
+    """A range export: the bars after Until are cut with their halves; the bars before From run as a silent prefix,
+    so the first kept movement starts with them built and Alice still holding B2 where her hold put her."""
+    process = _process()
+    bars, holds = _records(process)
+    alice_base = Pose((0.5, 1.0, 0.0))
+    holds["bars/B2"] = replace(holds["bars/B2"], base=alice_base)
+
+    # * Until = B2: B3 and its two males are gone; B2's hold is still on at the end, so it has no release.
+    cut, schedule, cut_holds, record_from = cut_to_range(process, SCHEDULE, holds, "bars/B2", "bars/B2")
+    result = build_actions(cut, schedule, bars, cut_holds, record_from=record_from)
+    assert result.process.schedule == ("B2_J", "B2_H", "B2_R")
+    assert "bars/B3" not in result.process.bodies and not result.process.halves_of("bars/B3")
+    assert "joints/J1-3_male" not in result.process.bodies and "joints/J2-3_male" not in result.process.bodies
+    assert result.process.actions["B2_H"].supports_until == ()
+    written = write(result.process, tmp_path / "until_B2", package_dirs=[PKG])
+    report = check_plan(written)
+    assert report.ok, report.errors
+
+    # * From = B3: B1 and B2 are built before the first movement; Alice holds B2 at her hold base.
+    cut, schedule, cut_holds, record_from = cut_to_range(process, SCHEDULE, holds, "bars/B3", "bars/B3")
+    result = build_actions(cut, schedule, bars, cut_holds, record_from=record_from)
+    assert result.process.schedule == ("B3_J", "B3_R", "B2_HR")
+    first = result.process.actions["B3_J"].movements[0].start
+    assert first.built >= {"bars/B1", "bars/B2"}
+    assert [h.to for h in first.attached["bars/B2"]] == [ALICE_FLANGE]
+    assert first.robots[ALICE].base == alice_base
+    # * The same state as in the whole sequence's export.
+    whole = build_actions(process, SCHEDULE, bars, holds).process
+    assert first == whole.actions["B3_J"].movements[0].start
+    written = write(result.process, tmp_path / "from_B3", package_dirs=[PKG])
+    report = check_plan(written)
+    assert report.ok, report.errors

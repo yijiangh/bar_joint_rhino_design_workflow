@@ -42,7 +42,7 @@ B7, B8, B9, B10, B12, B13, B15 ... B24, B23`); fake bars `B2, B6, B11, B14`; gro
 "Fixed in code" = implemented and unit-tested on `hs/mocap-experiment`, not committed, and NOT yet
 re-exported: the files in `260920_RobArch_demo_revamp` still show every issue. Re-export (Rhino:
 RSRebuildRobotCell, RSIKKeyframeAll for the four holds, RSExportAllBarActions into a new folder) and
-run `python tests/check_export_bundle.py <folder> --cells`; it must print 0 failed rules.
+run `python tests/check_export_bundle.py <folder> --cells` (history: that checker is deleted; RSCheckProcess checks a process folder now); it must print 0 failed rules.
 
 Implementation plan: `tasks/2026-10-02_support_export_fixes_plan.md`.
 

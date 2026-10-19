@@ -1414,7 +1414,9 @@ why it is always a square-ish number.
 `M1 IK failed` -> the whole chain fails -> the base sampler moves the robot and tries
 again -> `all samples exhausted`.
 
-`CC.x` is compas_fab's collision *category* (`pybullet_check_collision.py`):
+`CC.x` is compas_fab's collision *category* (`pybullet_check_collision.py`). CC.6 is not compas_fab's: the core's
+mirror adds it (`with_tool_pairs`), because compas_fab never checks a tool against a tool and another robot is one
+tool in the planning cell.
 
 | Code | Between | Plain English |
 |---|---|---|
@@ -1423,6 +1425,7 @@ again -> `all samples exhausted`.
 | CC.3 | robot link <-> rigid body | an arm hit a **bar / joint / ground** in the scene |
 | CC.4 | attached rigid body <-> rigid body | something the robot is **carrying** hit the scene |
 | CC.5 | tool <-> rigid body | a gripper hit the scene |
+| CC.6 | tool <-> other robot / own other tool | a tool hit a **support robot** or the robot's other tool |
 
 Now each line means something concrete:
 
@@ -1465,6 +1468,7 @@ into one that fails**. In the other screenshot the carried `joint_J49-51_male` h
 | CC.1 (link <-> link) | arm folds into the robot | `RetryNewBase`; if the base search keeps failing, raise `IK_BASE_SAMPLE_RADIUS` (1000 mm, the search circle) / `IK_BASE_SEARCH_MAX_PROPOSALS` (10), or set `IK_BASE_SEARCH = "sample"` with `IK_BASE_SAMPLE_MAX_ITER` (10), in `scripts/core/config.py` |
 | CC.3 / CC.5 vs `bar_*` | arm hits built structure | new base, from another side; check the assembly sequence -- should that bar already be up? |
 | CC.4 male <-> its own female at M1 | halves overlap before mating | check the approach offset, and whether the female block sits where the design says |
+| CC.6 tool <-> `robots/*` or the other tool | a tool hits a support robot, or the robot's two tools hit each other | support robot: move its grasp along the bar, away from the tools, or solve the hold again at another base; own tools: the two tool blocks sit too close, check where they are placed |
 | `0 analytical branches` | target out of reach for that arm | modelling problem: tool block pose or base frame, not a search problem |
 
 > Rule of thumb: read the `[Nx]` numbers first. If they add up to the candidate count, the

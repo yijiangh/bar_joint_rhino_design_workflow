@@ -15,8 +15,8 @@ With collisions, the export is also converted into a schema 2 process (`convert_
 `read`), and each movement's scene (`Process.scene_at`) goes through a `CompasFabMirror` for its acting robot; its
 colliding pairs are compared with the export's own ("new vs mirror"). Movements merged by the conversion (an insert
 run into its tighten) are compared under the first one's id; movements the conversion drops (the untighten opening
-each release) are not compared. Pairs that follow from schema 2's narrower allowed contacts are listed under their
-own kinds (`_narrower`).
+each release) are not compared. Pairs that follow from schema 2's narrower allowed contacts, and the mirror's tool
+against tool pairs (CC.6, which compas_fab's own check does not have), are listed under their own kinds (`_narrower`).
 
 Names are mapped to process ids before comparing (`bar_B1`, `env_bar_B1` -> `bars/B1`); the floors (old
 `obstacle_ground`, process `ground/*`) are compared on their own. Each difference kind is listed with its count
@@ -78,6 +78,8 @@ LOADERS = ("old", "new")
 #: Kinds of mirror-only (or export-only) pairs that follow from schema 2's narrower allowed contacts.
 NARROW_HELD, NARROW_MATE_BAR = "narrower contacts: tool with its half's bar", "narrower contacts: bar with mate's half"
 NARROW_MATE_TOOL, EXPORT_EARLY_BAR = "narrower contacts: tool with mate's half", "export shows a bar before its mount"
+#: Kind of mirror-only pairs of two tool models (a tool, another robot as one tool model): the core mirror's CC.6.
+MIRROR_TOOL_PAIR = "CC.6: tool against another robot's tool / the robot's other tool"
 PAIRS = (("old", "new"),)
 
 #: Difference kinds that are explained, with the reason and code reference. Any other kind is UNEXPECTED.
@@ -100,6 +102,9 @@ KNOWN = {
                       "body it is on",
     EXPORT_EARLY_BAR: "only the export: it shows a bar before the operator mounts it; schema 2 replays the schedule, "
                       "so the bar is not present yet",
+    MIRROR_TOOL_PAIR: "only the mirror: the plain compas_fab planner has no such check (it never pairs a tool with a "
+                      "tool); the core mirror adds CC.6, the acting robot's tools against other robots (one tool "
+                      "model each) and its own other tool (mirrors/compas_fab.py `with_tool_pairs`)",
 }
 
 
@@ -916,8 +921,8 @@ def compare_mirror(report: Report, export: dict, mirror: dict, allowed: dict, pr
                    pair: Tuple[str, str] = ("new", "mirror")) -> None:
     """The export's pairs against the mirror's, every pair listed.
 
-    Pairs only the mirror's static contacts hide, and pairs that follow from schema 2's narrower contacts
-    (`_narrower`), are told apart.
+    Pairs only the mirror's static contacts hide, pairs that follow from schema 2's narrower contacts and the
+    mirror's CC.6 tool pairs (`_narrower`) are told apart.
     """
     category = report.category(pair, "collision pairs")
     movements = {(action.id, movement.id): movement for action, movement in process.movements()}
@@ -950,6 +955,11 @@ def _narrower(process, state, pair: Tuple[str, str], only_export: bool) -> str:
                 if side.startswith(("bars/", "joints/"))]
         early = any(bar is not None and not is_present(process, state, bar) for bar in bars)
         return EXPORT_EARLY_BAR if early else "pairs only in the old export"
+    # * Both sides tool models (a tool id, or another robot's id, which is one tool model in the cell): only CC.6
+    #   pairs a tool with a tool.
+    tool_models = set(process.tools) | set(process.robots)
+    if a in tool_models and b in tool_models:
+        return MIRROR_TOOL_PAIR
     partner = {side: other for mate in process.mates for side, other in (mate, mate[::-1])}
     tool = next((side for side in pair if side.startswith("tools/")), None)
     body = b if tool == a else a

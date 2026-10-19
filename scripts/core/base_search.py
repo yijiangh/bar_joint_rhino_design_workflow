@@ -82,10 +82,13 @@ class HomeCheck:
         if not self._self_checked:
             # The robot against itself and its own tools (compas_fab's steps CC.1 and CC.2, about 570 link pairs)
             # does not depend on where the base stands: check that once, then only against the scene per base.
+            # ! Not CC.6 (the core mirror's check of this robot's tools against the other robots and its other tool):
+            # the other robots stand still while this base moves, so a once-only answer about them would be wrong.
+            # The per-base check skips CC.6 too (it goes with CC.2), so other robots are left to the keyframe IK.
             self._self_checked = True
             try:
-                self._planner.check_collision(
-                    self._state, options=dict(quiet, _skip_cc3=True, _skip_cc4=True, _skip_cc5=True))
+                self._planner.check_collision(self._state, options=dict(
+                    quiet, _skip_cc3=True, _skip_cc4=True, _skip_cc5=True, _skip_cc6=True))
             except CollisionCheckError as exc:
                 self._always_collides = True
                 self._log(f"base_search: the robot collides with itself at home, whatever the base: {exc}")

@@ -21,7 +21,7 @@ The legacy cell (`robot_cell`, `robot_cell_support`, `robot_obstacles`, `env_col
 
 | Piece | Where | State |
 | --- | --- | --- |
-| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `c985034`, the commit the monitor uses: the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
+| Core as a pinned submodule | `external/scaffolding_assembly_core` (yijiangh/scaffolding_assembly_core `439bc18`, branch yh/cc6-tool-pairs: `c985034`, the commit the monitor uses, plus CC.6, tools against tools; the decisions of 2026-10-09, URDFs read with yourdfpy, `scene_parts` for viewers, plan check B15); `scripts/core/core_lib.py` puts it and `external/compas_fab/src` on `sys.path` | imported once, never reloaded |
 | Document → `Process` | `core/process_source.py`, `RhinoProcessSource(command, cache).build()`; also records each body's Rhino object (`SourceResult.objects`) | tested on a fake document and on `YH_ik_test.3dm` and `examples/Example4_two_box.3dm` (rhino3dm) |
 | Keyframe records → actions | `core/process_builder.py` (Rhino-free): role-named ids, `on` in targets, the monitor's drive rules D7/D9/D10 (`screwing_arms`: only arms whose male meets a built receiver tighten; a ground bar's fix_foundation step; no loosen on the ungrasp), `pose_in_tcp` per kind of half (`poses_in_tcp`) | pytest: an unsolved three-bar process with a hold passes A and B, no B11 `on` errors |
 | Keyframes in user text | `core/keyframe_store.py`: the one persistent store of solved IK, read into the process on every command | |
@@ -149,6 +149,12 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
   - **#4 hold scenes**: `hold.hold_scenes`: solved at the start of the closing movement (Cindy still holds the bar
     at its assembled pose), checked at the start of the hold release. The old "bars until supported at their process
     pose, held bar hidden" rule is gone.
+- **CC.6, tools against tools** (core `7cd5a8a`): compas_fab never checks a tool against a tool, and another robot is
+  one tool in the mirror's cell, so the core mirror adds CC.6: the acting robot's tools against the other robots and
+  against its own other tool. It is in `collisions`, the lent planner (so the keyframe IK, the support IK and the
+  motion plans) and `SearchCheck`. IK and plans near holds may reject more than before: a support robot's gripper
+  holds the same bar close to Cindy's tools (at B36, 12 mm between AT3L and Belle's gripper). The base search leaves
+  other robots out (`docs/base_search.md`, Home check).
 - Robot files are resolved once per session (`package://` → relative copies in the temp folder): compas_fab cannot
   load the source URDFs from an in-memory process.
 
@@ -215,7 +221,7 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
 **Setup** (once):
 
 1. `git fetch && git checkout claude/schema2-core`, then `git submodule update --init external/scaffolding_assembly_core
-   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `c985034`.
+   external/compas_fab external/husky_assembly_tamp asset/husky_urdf`. The core is pinned at `439bc18`.
 2. Restart Rhino, or ScriptEditor → Tools → Reload Python 3 (CPython) Engine.
 3. Optional: run `scripts/register_command_aliases.py` once so `RSExportProcess` and `RSCheckProcess` can be typed
    (both are also on the RSDesign toolbar: left- and right-click of one button).

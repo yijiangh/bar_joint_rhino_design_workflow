@@ -126,9 +126,18 @@ The descent returns the cheapest base it evaluated. A descent whose start is alr
 start; for the seed's descent nothing is then proposed.
 
 **Home check** (`HomeCheck`). The robot with its arms at the home configuration, on the retreat scene (the new
-bar in place and let go). The robot against itself and its own tools does not depend on the base and is checked
-once; per base only the robot against the scene is checked. If the home pose collides with itself, every base is
-ruled out.
+bar in place and let go). Two checks:
+
+- **Once, at the first base**: the robot against itself and its own tools (compas_fab's CC.1 and CC.2). This does
+  not depend on the base. If the home pose collides here, every base is ruled out.
+- **Per base**: the robot and its tools against the scene's bodies: bars, joints, ground (CC.3 to CC.5).
+
+**Known limitation: other robots are not checked by the base search.** A support robot standing where this robot
+would stand, or in its tools' way, does not rule a base out here. Only the keyframe IK solved at the proposed base
+checks against other robots (CC.2 for the arms, CC.6 for the tools), and fails there. The once-only check skips
+CC.6 on purpose (`_skip_cc6`): the other robots stand still while the base moves, so one answer at the first base
+would be wrong for the rest. (Its CC.2 does pair the robot's links with the other robots too, but only as they
+stand from the first base: a link hitting another robot there rules out every base.)
 
 ## 6. Reading the debug trace
 

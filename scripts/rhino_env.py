@@ -148,6 +148,28 @@ SUBMODULE_PATHS = (os.path.join(REPO_ROOT, "external", "scaffolding_assembly_cor
                    os.path.join(REPO_ROOT, "external", "compas_fab", "src"))
 #: Why IK runs on the slow `gradient` backend although nobody asked for it ("" when it does not): what is missing.
 ik_fallback_reason = ""
+#: The ssik solver modules (one `<arm>_ik.py` per arm), committed in tamp and rebuilt there.
+TAMP_SSIK_DIR = os.path.join(REPO_ROOT, "external", "husky_assembly_tamp", "asset", "ssik")
+
+
+def _ssik_artifact_dir() -> Optional[str]:
+    """The folder tamp loads the ssik solver modules from, or None when tamp would find none.
+
+    ! The same lookup as tamp's `husky_assembly_tamp.keyframe.config.get_ssik_artifact_dir`; keep the two in step.
+    ! It cannot be imported here: `core.config` puts tamp on `sys.path` only after `activate()` has run.
+    Order: `HUSKY_SSIK_ARTIFACT_DIR` as given, else tamp's own `asset/ssik`, else this repo's `asset/ssik` (tamp's
+    fallback for the older layout, where the modules lived in the repo that vendors tamp).
+
+    Returns:
+        Optional[str]: The folder; None if the variable is unset and neither default folder exists.
+    """
+    given = os.environ.get("HUSKY_SSIK_ARTIFACT_DIR")
+    if given:
+        return given
+    for folder in (TAMP_SSIK_DIR, os.path.join(REPO_ROOT, "asset", "ssik")):
+        if os.path.isdir(folder):
+            return folder
+    return None
 
 
 def _default_ik_backend() -> None:
@@ -161,7 +183,8 @@ def _default_ik_backend() -> None:
         return
     venv = os.environ.get("HUSKY_SSIK_VENV_DIR") or os.path.join(REPO_ROOT, "external", "ssik_env")
     python = os.path.join(venv, "Scripts", "python.exe") if sys.platform == "win32" else os.path.join(venv, "bin", "python")
-    artifacts = os.environ.get("HUSKY_SSIK_ARTIFACT_DIR") or os.path.join(REPO_ROOT, "asset", "ssik")
+    # ? With nothing found, the message names tamp's folder: that is where the modules belong.
+    artifacts = _ssik_artifact_dir() or TAMP_SSIK_DIR
     if not (os.path.isfile(python) and os.path.isdir(artifacts)):
         os.environ["HUSKY_IK_BACKEND"] = "gradient"
         os.environ[_AUTO_BACKEND_MARK] = "1"

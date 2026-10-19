@@ -24,7 +24,9 @@ two exports of one `.3dm`: the old plugin's compas_fab export (hs/mocap-experime
 placement, colliding pairs) and that the old export, converted by the core, equals the new process. Every
 difference is counted under a kind; the explained ones are named in its `KNOWN`, any other fails the run. It needs
 about 4 GB and 6 minutes (2 with `--no-cells`), and prints the time of each step. `compas_compare.py` holds the
-measures.
+measures. Both scripts read the old export through the core's `legacy/` package, which needs the old action
+schema; it is no longer a submodule, so install it first:
+`pip install "git+https://github.com/yijiangh/rs_data_structure@8912325"`.
 
 `tests/captures/` holds JSON snapshots of the retired legacy planning cell (the capture / replay flow and its
 `core.capture_io` are gone); nothing reads them any more.

@@ -37,7 +37,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 for _path in (Path(__file__).resolve().parent, REPO / "external" / "scaffolding_assembly_core",
-              REPO / "external" / "compas_fab" / "src", REPO / "external" / "rs_data_structure"):
+              REPO / "external" / "compas_fab" / "src"):
     sys.path.insert(0, str(_path))
 import compas_compare as cc  # noqa: E402
 

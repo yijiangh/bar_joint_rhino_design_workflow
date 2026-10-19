@@ -172,19 +172,19 @@ The remaining dependencies (`compas`, `compas_robots`, `pybullet`,
 add `compas_fab` or `scaffolding_assembly_core` to it -- that would bypass the
 submodules and silently shadow them.
 
-`external/rs_data_structure` (the old `BarAssemblyAction` schema) is no longer
-imported by this plugin; only the core's optional `legacy/` converter (old
-exports -> schema 2) still needs it.
+The old `BarAssemblyAction` schema, `rs_data_structure`, is no longer a submodule: the plugin does not import
+it. Only the core's optional `legacy/` converter (old exports -> schema 2) and the equivalence scripts in
+`tests/equivalence/` need it, installed with pip (see [tests/README.md](tests/README.md)).
 
 A third submodule, [husky_assembly_tamp](https://github.com/yijiangh/husky_assembly_tamp) at `external/husky_assembly_tamp`, is the **offline planner** (module 2 of the pipeline above). It also hosts the code shared between Rhino and offline planning: the dual-arm IK solvers, the keyframe chain solve, the walkable-ground base search, and their tuning constants (`husky_assembly_tamp.keyframe`). `scripts/core/config.py` puts it on `sys.path`, so Rhino commands import the solvers from there — one implementation for both the quick in-Rhino IK check and the headless planner.
 
 ### Analytical IK solver (ssik) — one-time venv
 
-[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` (and the headless planner) — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It requires **Python 3.11** and ships compiled extensions, so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env`. The sidecar code and its path resolution live in the tamp submodule (`husky_assembly_tamp.keyframe.config`): the default is `<this repo>/external/ssik_env` + the per-arm solver modules at `<this repo>/asset/ssik`, overridable per machine with the `HUSKY_SSIK_VENV_DIR` / `HUSKY_SSIK_ARTIFACT_DIR` environment variables. The scripts start and talk to the sidecar automatically. (Offline planning in a Python 3.11 venv imports ssik **in-process** instead — no sidecar; the sidecar is a Rhino-only workaround.)
+[ssik](https://github.com/personalrobotics/ssik) is the analytical IK solver behind `RSIKKeyframe` (and the headless planner) — closed-form inverse kinematics generated straight from our calibrated URDF (no tuning constants). It needs **Python 3.10 or newer** and ships compiled extensions (ssik 4.1.0 has Windows wheels for Python 3.10, 3.11 and 3.12), so it can't load inside Rhino's CPython 3.9; instead it runs in a small Python 3.11 "sidecar" venv at `external/ssik_env`. The sidecar code and its path resolution live in the tamp submodule (`husky_assembly_tamp.keyframe.config`): the default is `<this repo>/external/ssik_env` + the per-arm solver modules in tamp's `asset/ssik` (`external/husky_assembly_tamp/asset/ssik`), overridable per machine with the `HUSKY_SSIK_VENV_DIR` / `HUSKY_SSIK_ARTIFACT_DIR` environment variables. The scripts start and talk to the sidecar automatically. (Offline planning in a Python 3.11 venv imports ssik **in-process** instead — no sidecar; the sidecar is a Rhino-only workaround.)
 
-**Until both exist, the Rhino commands use the `gradient` backend automatically** (`scripts/rhino_env.py` says so once per session). The built solver modules (`left_ur_arm_ik.py`, `right_ur_arm_ik.py`) are committed in this repo's `asset/ssik/`, so only the venv is missing on a fresh machine. `HUSKY_SSIK_ARTIFACT_DIR` points elsewhere if needed.
+**Until both exist, the Rhino commands use the `gradient` backend automatically** (`scripts/rhino_env.py` says so once per session). The built solver modules (Cindy's `left_ur_arm_ik.py` and `right_ur_arm_ik.py`, Alice's `alice_ur_arm_ik.py`, Belle's `belle_ur_arm_ik.py`) are committed in tamp's `asset/ssik/`, so only the venv is missing on a fresh machine. `HUSKY_SSIK_ARTIFACT_DIR` points elsewhere if needed.
 
-Or build them from this repo's own calibrated URDF (a few seconds per arm; install `"ssik[urdf]"` instead of `ssik` below, and see the sidecar README, step 2, for the two `ssik build` commands). Rebuild and commit `asset/ssik/` when the calibrated URDF changes.
+The modules are built, and rebuilt when a calibrated URDF changes, in tamp: see its [sidecar README](external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md), step 2. A module only loads with the ssik version that built it. Tamp's are built with ssik 4.1.0, so the venv below pins that version.
 
 Without ssik, `RSIKKeyframe` and `RSIKKeyframeAll` say so in a message box once per session and on every run in the command history: the `gradient` fallback takes about 20 s per failed robot base and offers no `InspectCandidates`. Either backend skips a base whose arms cannot reach the flange targets by distance alone (`scripts/core/reach_check.py`) without calling the solver.
 
@@ -197,12 +197,12 @@ You do **not** need Python 3.11 to be your system/default interpreter — your e
 
 ```bash
 uv venv --python 3.11 external/ssik_env
-uv pip install --python external/ssik_env ssik
+uv pip install --python external/ssik_env "ssik==4.1.0"
 ```
 
 That's the whole setup. Run `RSIKKeyframe` -- the sidecar spawns on the first solve and is shut down by `RSResetPlanning`.
 
-There is also a pure-PyBullet `gradient` backend that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. Select it with the `HUSKY_IK_BACKEND=gradient` environment variable (default is `ssik` when it is set up, else `gradient`; see `husky_assembly_tamp.keyframe.config` and `scripts/rhino_env.py`). To regenerate the solver modules after a URDF change, see [external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md](external/husky_assembly_tamp/husky_assembly_tamp/keyframe/ssik_sidecar/README.md).
+There is also a pure-PyBullet `gradient` backend that runs inside Rhino's own Python with no venv — slower, kept as a fallback for environments that can't host the 3.11 sidecar and for benchmarking against ssik. Select it with the `HUSKY_IK_BACKEND=gradient` environment variable (default is `ssik` when it is set up, else `gradient`; see `husky_assembly_tamp.keyframe.config` and `scripts/rhino_env.py`).
 
 ### Optional developer install
 
@@ -612,7 +612,6 @@ tests/
 external/
   scaffolding_assembly_core/                    # Shared core: process format, scenes, compas_fab cells (git submodule)
   compas_fab/                           # IK/planning dependency of the core (git submodule)
-  rs_data_structure/                    # Old BarAssemblyAction schema (only the core's legacy/ converter)
   husky_assembly_tamp/                  # Planner (git submodule): keyframe + motion solvers
 
 asset/

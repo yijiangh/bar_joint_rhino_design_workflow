@@ -107,6 +107,18 @@ def test_ik_backend_fallback_is_decided_again_once_ssik_is_set_up(env, monkeypat
     monkeypatch.delenv(rhino_env._AUTO_BACKEND_MARK, raising=False)
 
 
+def test_ssik_modules_are_looked_up_where_tamp_loads_them(monkeypatch):
+    """The ssik check finds the solver modules where tamp does: the variable, else tamp's own `asset/ssik`."""
+    monkeypatch.setattr(sys, "path", [os.path.dirname(os.path.dirname(rhino_env.TAMP_SSIK_DIR))] + sys.path)
+    # ? Imported here: tamp is on `sys.path` only from the line above (in Rhino, from `core.config`).
+    from husky_assembly_tamp.keyframe.config import get_ssik_artifact_dir
+
+    monkeypatch.delenv("HUSKY_SSIK_ARTIFACT_DIR", raising=False)
+    assert rhino_env._ssik_artifact_dir() == get_ssik_artifact_dir() == rhino_env.TAMP_SSIK_DIR
+    monkeypatch.setenv("HUSKY_SSIK_ARTIFACT_DIR", "elsewhere")
+    assert rhino_env._ssik_artifact_dir() == get_ssik_artifact_dir() == "elsewhere"
+
+
 def test_submodule_folders_are_put_back_on_the_path_every_time(env, monkeypatch):
     """`core.core_lib` adds them only at its first import; a command after a lost `sys.path` must still find them."""
     rhino_env.activate(force=True)

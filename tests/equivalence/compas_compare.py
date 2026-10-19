@@ -54,11 +54,11 @@ from scipy.spatial.transform import Rotation
 REPO = Path(__file__).resolve().parents[2]
 #: Holds `husky_urdf/` (the plugin's robot files).
 DATA = REPO / "asset"
-for _path in (REPO / "external" / "scaffolding_assembly_core", REPO / "external" / "compas_fab" / "src",
-              REPO / "external" / "rs_data_structure"):
+for _path in (REPO / "external" / "scaffolding_assembly_core", REPO / "external" / "compas_fab" / "src"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+# ! rs_data_structure is pip-installed, no longer a submodule: see tests/README.md.
 import rs_data_structure  # noqa: E402,F401  (registers the action dtypes for json_load)
 from scaffolding_assembly_core.process import read  # noqa: E402
 from scaffolding_assembly_core.process.relations import bar_of, is_present  # noqa: E402

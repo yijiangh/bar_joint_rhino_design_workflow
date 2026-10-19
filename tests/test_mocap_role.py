@@ -155,12 +155,28 @@ def test_old_registry_entry_without_marker_points_or_kind_loads():
 def test_registry_round_trip_keeps_marker_points(tmp_path, registry):
     pts = {"M1": (10.0, 0.0, 5.5), "M2": (-10.0, 0.0, 5.5)}
     halves = dict(registry.halves)
-    halves["T20_MoCap"] = _half("T20_MoCap", marker_points_mm=pts)
+    halves["T20_MoCap"] = _half("T20_MoCap", marker_points_mm=pts, marker_diameter_mm=19)
     path = str(tmp_path / "joint_pairs.json")
     save_joint_registry(JointRegistry(halves=halves, mates=registry.mates), path)
     loaded = load_joint_registry(path)
     assert loaded.halves["T20_MoCap"].marker_points_mm == pts
     assert loaded.halves["T20_MoCap"].kind == "mocap"
+    assert loaded.halves["T20_MoCap"].marker_diameter_mm == 19.0
+    assert type(loaded.halves["T20_MoCap"].marker_diameter_mm) is float
+
+
+def test_marker_diameter_defaults_to_not_recorded_and_rejects_negative():
+    assert _half("T20_MoCap").marker_diameter_mm == 0.0
+    data = _half("T20_MoCap").to_dict()
+    del data["marker_diameter_mm"]
+    assert JointHalfDef.from_dict(data).marker_diameter_mm == 0.0
+    with pytest.raises(ValueError, match="marker_diameter_mm"):
+        _half("T20_MoCap", marker_diameter_mm=-1.0)
+
+
+def test_shipped_t20_mocap_has_its_marker_diameter():
+    """The real joint_pairs.json (not the fixture above) records the 19 mm spheres."""
+    assert load_joint_registry().halves["T20_MoCap"].marker_diameter_mm == pytest.approx(19.0)
 
 
 # ---------------------------------------------------------------------------

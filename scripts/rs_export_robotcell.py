@@ -15,10 +15,11 @@ Writes the canonical layout under a user-chosen root folder:
     <root>/MoCapMarkers.json     (designed MoCap markers; only when any are placed)
     <root>/BarActions/           (created empty; populated by RSExportBarAction)
 
-``MoCapMarkers.json`` lists every bar's designed centre line and its MoCap
-marker spheres, numbered per bar and named ``J20-21_mocap_M1``; the same
-markers are labelled in Rhino on the "MoCap Marker Labels" layer, to name the
-Motive markers by.  See ``docs/mocap_marker_export.md``.
+``MoCapMarkers.json`` lists, per bar, its MoCap marker spheres in the bar
+body's own frame (metres), named ``J20-21_mocap_M1``; the same markers are
+labelled in Rhino on the "MoCap Marker Labels" layer, to name the Motive
+markers by.  A bar whose marker layout could be seen in two poses stops the
+export before anything is written.  See ``docs/mocap_marker_export.md``.
 
 Rigid-body names in the JSON are already state-independent (``bar_<bid>`` /
 ``joint_<jid>_<sub>`` / ``obstacle_<name>``) and tools live under
@@ -96,6 +97,15 @@ def main() -> None:
     else:
         print(f"RSExportRobotCell: cell carries {n_rb} rigid_body_models + {n_tools} tool_models.")
 
+    # The MoCap marker file is built BEFORE anything is written: its layout
+    # check may refuse the export, and then the folder must stay untouched.
+    try:
+        mocap_payload = rhino_mocap_markers.build_mocap_sidecar(bodies or {}, "RSExportRobotCell")
+    except RuntimeError as exc:
+        rs.MessageBox(f"Export stopped, nothing was written:\n\n{exc}", 0, "RSExportRobotCell")
+        print(f"RSExportRobotCell: stopped, nothing written ({exc}).")
+        return
+
     root = export_root.prompt_export_root("RSExportRobotCell")
     if not root:
         print("RSExportRobotCell: cancelled.")
@@ -120,7 +130,7 @@ def main() -> None:
         f"RSExportRobotCell: saved {out} "
         f"({n_rb} rigid_body_models, {n_tools} tool_models)."
     )
-    rhino_mocap_markers.export_mocap_markers(bodies or {}, root, "RSExportRobotCell")
+    rhino_mocap_markers.write_mocap_sidecar(mocap_payload, bodies or {}, root, "RSExportRobotCell")
 
 
 if __name__ == "__main__":

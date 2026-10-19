@@ -9,6 +9,7 @@ controller.
 A MoCap joint's entry additionally carries::
 
     "mocap": {"paired": true,                       # J... id; false for a standalone M...
+              "marker_diameter_mm": 19.0,            # the sphere size recorded on the block
               "markers_mm": {"M1": [x, y, z], ...}}  # sphere centres in the bar frame
 
 The bar frame is the one ``position_mm`` / ``rotation_deg`` are measured in,
@@ -104,15 +105,18 @@ def _collect_joint_blocks():
 
 
 def _mocap_entry(obj_id, joint_id, halves, block_world, bar_frame):
-    """``{"paired": ..., "markers_mm": {...}}`` for one placed MoCap block."""
+    """``{"paired": ..., "marker_diameter_mm": ..., "markers_mm": {...}}`` for one placed MoCap block."""
     half = halves.get(rs.BlockInstanceName(obj_id) or "")
     markers = {}
+    diameter = 0.0
     if half is not None and half.marker_points_mm:
         markers = marker_points.markers_in_frame_mm(
             block_world, half.marker_points_mm, bar_frame
         )
+        diameter = half.marker_diameter_mm
     return {
         "paired": jnc.is_paired_half(jnc.MOCAP, joint_id),
+        "marker_diameter_mm": diameter,
         "markers_mm": markers,
     }
 

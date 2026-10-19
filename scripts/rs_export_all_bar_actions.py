@@ -191,7 +191,7 @@ def main() -> None:
     robot_cell_support = importlib.reload(_robot_cell_support_module)
     hold_action_builder = importlib.reload(_hold_action_builder_module)
     export_root = importlib.reload(_export_root_module)
-    importlib.reload(_mocap_markers_module)
+    mocap_markers = importlib.reload(_mocap_markers_module)
     rhino_mocap_markers = importlib.reload(_rhino_mocap_markers_module)
 
     if not robot_cell.is_pb_running():
@@ -388,6 +388,11 @@ def main() -> None:
                 [a for _s, a, robot in outputs if robot == support_name],
                 cell_name,
             )
+        # The MoCap marker file, from the SAME cut body set as RobotCell.json.
+        # Its layout check may refuse the export; built here so nothing has
+        # been written yet when it does.
+        mocap_bodies = {k: v for k, v in (collision_bodies or {}).items() if k not in dropped}
+        mocap_payload = rhino_mocap_markers.build_mocap_sidecar(mocap_bodies, CALLER)
     except RuntimeError as exc:
         rs.MessageBox(f"Export stopped, nothing was written:\n\n{exc}", 0, CALLER)
         print(f"{CALLER}: stopped, nothing written ({exc}).")
@@ -401,6 +406,7 @@ def main() -> None:
     # * ---- Write the bundle.
     planned_files = {f"BarActions/{stem}.json" for stem, _a, _r in outputs}
     planned_files.update(cells_out)
+    planned_files.add(mocap_markers.FILE_NAME)
     leftovers_kept = _ask_remove_leftovers(root, planned_files)
 
     written_files = set()
@@ -440,9 +446,9 @@ def main() -> None:
             f"  [OK] {cell_name} -> {cell_path} "
             f"({len(cell.rigid_body_models)} rigid bodies, {len(cell.tool_models)} tools)"
         )
-    # The designed MoCap markers of the whole design (every bar, also in a
-    # range export), next to the cell; labelled in Rhino.
-    rhino_mocap_markers.export_mocap_markers(collision_bodies or {}, root, f"  {CALLER}")
+    # The designed MoCap markers of the bars in THIS export (the same cut as
+    # RobotCell.json), next to the cell; labelled in Rhino.
+    rhino_mocap_markers.write_mocap_sidecar(mocap_payload, mocap_bodies, root, f"  {CALLER}")
 
     # Dump the WalkableGround breps as meshed surfaces keyed by their stable
     # ids, so the headless base sampler can snap to them. Bars reference these

@@ -32,6 +32,14 @@ def test_bounding_box_centre_of_a_sphere():
     assert np.allclose(mp.bounding_box_centre(corners), (3, 4, 5))
 
 
+def test_bounding_box_diameter_of_a_19_mm_sphere_in_cm_document():
+    """A 1.9 cm box (document units cm, so scale 10 to mm) is a 19 mm sphere."""
+    corners = [(0, 0, 0), (1.9, 0, 0), (0, 1.9, 0), (1.9, 1.9, 1.9), (0, 0, 1.9)]
+    assert np.allclose(mp.bounding_box_extents_mm(corners, 10.0), (19.0, 19.0, 19.0))
+    assert mp.bounding_box_diameter_mm(corners, 10.0) == pytest.approx(19.0)
+    assert type(mp.bounding_box_diameter_mm(corners, 10.0)) is float
+
+
 def test_block_local_is_a_plain_float_tuple():
     local = mp.to_block_local_mm(_block_frame(), (130.0, -10.0, 45.0))
     assert isinstance(local, tuple) and all(type(c) is float for c in local)

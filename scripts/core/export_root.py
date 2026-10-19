@@ -5,7 +5,7 @@ that more than one command writes.
 
     <export root>/
         RobotCell.json        RSExportRobotCell, RSExportAllBarActions
-        MoCapMarkers.json     the same two (core.rhino_mocap_markers)
+        MoCapMarkers.json     the same two (core.rhino_mocap_markers); markers per bar, bar frame, metres
         ActionSchedule.json   RSExportAllBarActions, RSExportBarAction
         BarActions/           one file per bar action
         ...

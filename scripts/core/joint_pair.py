@@ -124,6 +124,12 @@ class JointHalfDef:
     # SHARED by every instance of this class.  Empty for every half carrying no
     # markers; registries written before this field existed omit it -> {}.
     marker_points_mm: dict = field(default_factory=dict)
+    # Diameter of those marker spheres in MILLIMETRES (one value: every sphere on
+    # a block is the same product).  Written into ``MoCapMarkers.json`` so the
+    # teleop monitor can drop Motive markers of another size before matching.
+    # ``0.0`` means "not recorded" -- registries written before this field
+    # existed omit it; RSDefineJointHalf measures it from the picked spheres.
+    marker_diameter_mm: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "M_block_from_bar", _as_4x4(self.M_block_from_bar))
@@ -159,6 +165,12 @@ class JointHalfDef:
                 )
             points[str(label)] = coords
         object.__setattr__(self, "marker_points_mm", points)
+        # Same float normalizing for the diameter; a negative value is a bug in
+        # the caller, not a size.
+        diameter = float(self.marker_diameter_mm)
+        if diameter < 0.0:
+            raise ValueError(f"marker_diameter_mm must be >= 0, got {diameter}")
+        object.__setattr__(self, "marker_diameter_mm", diameter)
 
     @property
     def subtype(self) -> str:
@@ -192,6 +204,7 @@ class JointHalfDef:
             "marker_points_mm": {
                 label: list(point) for label, point in self.marker_points_mm.items()
             },
+            "marker_diameter_mm": self.marker_diameter_mm,
             "M_block_from_bar": self.M_block_from_bar.tolist(),
             "M_screw_from_block": self.M_screw_from_block.tolist(),
         }
@@ -214,6 +227,9 @@ class JointHalfDef:
             # `__post_init__` does the float/length normalizing, so the raw dict
             # is handed straight through.
             marker_points_mm=dict(data.get("marker_points_mm", {})),
+            # Absent from registries written before the diameter was recorded -> 0.0
+            # ("not recorded"); the MoCap export refuses to write such a block.
+            marker_diameter_mm=float(data.get("marker_diameter_mm", 0.0)),
         )
 
 

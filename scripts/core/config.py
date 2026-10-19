@@ -96,6 +96,10 @@ VARIANT_PREVIEW_COLORS = (
 #: RSJointPlace > JointOnly previews, by joint kind.
 GROUND_PREVIEW_COLOR = (180, 120, 60)
 MOCAP_PREVIEW_COLOR = (60, 150, 200)
+#: How closely a bar's MoCap marker layout may map onto itself by some OTHER
+#: rigid motion before the export refuses it as ambiguous (mm).  About twice the
+#: Motive per-marker noise; see ``core.mocap_layout_check``.
+MOCAP_LAYOUT_TOL_MM = 2.0
 #: Walkable-ground breps assigned to a bar.
 WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 #: Bodies reported in collision.

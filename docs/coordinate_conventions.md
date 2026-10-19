@@ -33,7 +33,7 @@ This construction gives a stable, consistent frame for any bar orientation.
 
 The process's bar bodies (`bars/<id>` in `process.json`, written by RSExportProcess) have the same axes, but their `assembly_pose` is at the bar **midpoint**.
 
-`MoCapMarkers.json` is the retired compas_fab export ([format](mocap_marker_export.md)). Today the MoCap marker spheres travel in `process.json`, on the halves: a half's `markers` hold their centres in the half's own frame, in **metres**. A marker's point in the bar frame is `inv(bar.assembly_pose) ∘ half.assembly_pose ∘ marker`, with the bar frame of the process bar body, at the bar **midpoint**. A rigid fit of the measured markers onto those points is the measured bar pose.
+`MoCapMarkers.json` is the retired compas_fab export ([format](mocap_marker_export.md)). Today the MoCap marker spheres travel in `process.json`, on the halves: a half's `markers` hold their centres in the half's own frame, in **metres**. A marker's point in the bar frame is `inv(bar.assembly_pose) ∘ half.assembly_pose ∘ marker`, with the bar frame of the process bar body, at the bar **midpoint**; `core.process_markers.bar_markers` computes it as the monitor's `bar_markers` does, under the name `<half id>/<label>`. A rigid fit of the measured markers onto those points is the measured bar pose. The retired file's points were in the bar-**start** frame: `p_old = p_new + (0, 0, L/2)`, L the bar length.
 
 ---
 

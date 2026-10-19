@@ -40,12 +40,13 @@ for _path in (Path(__file__).resolve().parent, REPO / "external" / "scaffolding_
               REPO / "external" / "compas_fab" / "src"):
     sys.path.insert(0, str(_path))
 import compas_compare as cc  # noqa: E402
+from compare_processes import Tolerance, diff as process_diff, rotation_angle as _rotation_angle  # noqa: E402
 
 from scaffolding_assembly_core.process import read  # noqa: E402
 from scaffolding_assembly_core.process.write import process_hashes  # noqa: E402
 import trimesh  # noqa: E402
 from compas.geometry import Transformation  # noqa: E402
-from scaffolding_assembly_core.geometry import Geometry, Pose, TriMesh, compose, invert, shape_mesh  # noqa: E402
+from scaffolding_assembly_core.geometry import Pose, compose, invert, shape_mesh  # noqa: E402
 from scaffolding_assembly_core.legacy.conversion import SERIALS, robot_files  # noqa: E402
 from scaffolding_assembly_core.legacy.export import ACTION_CODES, ACTION_KINDS, from_export, load_export  # noqa: E402
 from scaffolding_assembly_core.legacy.timing import Stopwatch  # noqa: E402
@@ -56,6 +57,8 @@ PAIR = (OLD, CORE)
 #: Tolerance of the process diff: positions (m), angles (rad), other numbers.
 #: ? Angles: the old export stores frames as two axes, the process as a quaternion rounded to 12 decimals.
 POSE_TOL, ANGLE_TOL, VALUE_TOL = 1e-6, 1e-5, 1e-9
+#: The same, for `compare_processes.diff`; meshes by their vertices within POSE_TOL.
+TOLERANCE = Tolerance(POSE_TOL, ANGLE_TOL, VALUE_TOL, mesh=POSE_TOL)
 #: How far apart two shapes placed in the world may be (m), and a body's motion from its process placement (m, rad).
 SHAPE_TOL, MOTION_TOL, MOTION_ANGLE_TOL = 1e-4, 1e-4, 1e-5
 
@@ -329,53 +332,12 @@ def _kind(path: str) -> str:
     return _ID.sub("*", path)
 
 
-def _rotation_angle(a, b) -> float:
-    dot = abs(float(np.dot(np.asarray(a, float), np.asarray(b, float))))
-    return 2.0 * float(np.arccos(min(1.0, dot)))
-
-
 def diff(a, b, path: str, out: List[Tuple[str, str]]) -> None:
-    """Every difference between two values of a process, as (path, detail); floats within tolerance are equal."""
-    if isinstance(a, Pose) and isinstance(b, Pose):
-        distance = float(np.linalg.norm(np.subtract(a.position, b.position)))
-        angle = _rotation_angle(a.orientation, b.orientation)
-        if distance > POSE_TOL or angle > ANGLE_TOL:
-            out.append((path, f"pose differs by {distance * 1000:.4g} mm, {np.degrees(angle):.4g} deg"))
-    elif isinstance(a, TriMesh) and isinstance(b, TriMesh):
-        if a.vertices.shape != b.vertices.shape or a.faces.shape != b.faces.shape:
-            out.append((path, f"mesh {a.vertices.shape[0]} vertices / {a.faces.shape[0]} faces vs "
-                              f"{b.vertices.shape[0]} / {b.faces.shape[0]}"))
-        elif not np.allclose(a.vertices, b.vertices, atol=POSE_TOL) or not np.array_equal(a.faces, b.faces):
-            gap = float(np.abs(a.vertices - b.vertices).max())
-            out.append((path, f"mesh vertices differ by up to {gap * 1000:.4g} mm"))
-    elif isinstance(a, Geometry) and isinstance(b, Geometry):
-        diff(a.collision, b.collision, f"{path}.collision", out)
-        diff(a.visual, b.visual, f"{path}.visual", out)
-    elif dataclasses.is_dataclass(a) and type(a) is type(b):
-        for item in dataclasses.fields(a):
-            diff(getattr(a, item.name), getattr(b, item.name), f"{path}.{item.name}", out)
-    elif isinstance(a, dict) and isinstance(b, dict):
-        for key in sorted(set(a) | set(b), key=str):
-            if key not in a or key not in b:
-                out.append((f"{path}[{key}]", f"only in {'second' if key not in a else 'first'}"))
-            else:
-                diff(a[key], b[key], f"{path}[{key}]", out)
-    elif isinstance(a, (set, frozenset)) and isinstance(b, (set, frozenset)):
-        if a != b:
-            out.append((path, f"only first {sorted(a - b, key=str)[:8]} ({len(a - b)}), only second "
-                              f"{sorted(b - a, key=str)[:8]} ({len(b - a)})"))
-    elif isinstance(a, (tuple, list)) and isinstance(b, (tuple, list)):
-        if len(a) != len(b):
-            out.append((path, f"{len(a)} item(s) vs {len(b)}: {_short(a)} vs {_short(b)}"))
-        else:
-            for index, (x, y) in enumerate(zip(a, b)):
-                diff(x, y, f"{path}[{index}]", out)
-    elif isinstance(a, bool) or isinstance(b, bool) or not isinstance(a, (int, float)) \
-            or not isinstance(b, (int, float)):
-        if a != b:
-            out.append((path, f"{_short(a)} vs {_short(b)}"))
-    elif abs(a - b) > VALUE_TOL:
-        out.append((path, f"{a:.9g} vs {b:.9g} (differ by {abs(a - b):.3g})"))
+    """Every difference between two values of a process, as (path, detail), within this script's tolerances.
+
+    ? The field-by-field walk is `compare_processes.diff`, shared with that script; meshes compare by their vertices.
+    """
+    process_diff(a, b, path, out, TOLERANCE)
 
 
 def world_mesh(shapes, pose: Pose):
@@ -410,11 +372,6 @@ def motion(world: Pose, process: Pose) -> Pose:
     It does not depend on where the body's own frame sits, so two processes with different body frames compare.
     """
     return compose(world, invert(process))
-
-
-def _short(value, limit: int = 160) -> str:
-    text = repr(value)
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def compare_processes(report: cc.Report, a, b, labels: Tuple[str, str], watch: Stopwatch) -> None:

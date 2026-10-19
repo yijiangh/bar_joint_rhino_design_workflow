@@ -328,14 +328,15 @@ def split_object_name(name: str) -> tuple[str, str | None]:
     return str(name or ""), None
 
 
-def marker_name(jid: str, subtype: str, label: str) -> str:
-    """``("J20-21", MOCAP, "M1")`` -> ``"J20-21_mocap_M1"``: one marker sphere.
+def marker_name(half_id: str, label: str) -> str:
+    """``("joints/J20-21_mocap", "M1")`` -> ``"joints/J20-21_mocap/M1"``: one marker sphere.
 
-    *label* is the sphere's label recorded by RSDefineJointHalf (``M1``,
-    ``M2``, ...).  The same name is what the Motive marker should carry, so
-    the export, Motive and the teleop monitor all say the same thing.
+    *half_id* is the half's body id in the process, *label* the sphere's label
+    recorded by RSDefineJointHalf (``M1``, ``M2``, ...).  The teleop monitor
+    names its markers the same way (``world/marker_fit.py`` › ``bar_markers``),
+    so the Rhino labels and the monitor say the same thing.
     """
-    return f"{object_name(jid, subtype)}_{label}"
+    return f"{half_id}/{label}"
 
 
 #: PyBullet body-key prefixes.  Every cell -- the dual-arm assembly cell and the

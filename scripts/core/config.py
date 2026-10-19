@@ -580,9 +580,9 @@ DEBUG_BASE_SEARCH_GRID = False
 # would evict these markers as strays.
 LAYER_DIAGNOSTIC_MARKS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "Diagnostic Marks"
 
-# Layer holding the marker label dots (to be drawn from the process, R4): numbered
-# text dots + marker-pair lines at every designed MoCap marker
-# (core.rhino_mocap_markers), so the Motive markers can be named to match.
+# Layer holding the marker label dots, redrawn by RSExportProcess from the process:
+# numbered text dots + marker-pair lines at every designed MoCap marker, named
+# after the monitor's markers (core.rhino_mocap_markers, core.process_markers).
 # NOT in MANAGED_LAYERS, for the same reason as LAYER_DIAGNOSTIC_MARKS.
 LAYER_MOCAP_MARKER_LABELS = MANAGED_LAYER_ROOT + LAYER_PATH_SEP + "MoCap Marker Labels"
 

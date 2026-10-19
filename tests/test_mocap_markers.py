@@ -1,249 +1,179 @@
-"""``core.mocap_markers`` -- the ``MoCapMarkers.json`` payload (schema 2).
+"""`core.process_markers`: the MoCap markers of a process, as the monitor reads them, and the export's layout check.
 
-The real ``T20_MoCap`` registry points, placed on two synthetic bars the way
-the assembly cell describes them (bar bodies with their frames, joint bodies
-with their block transforms).  Pure numpy.
+The real `T20_MoCap` registry points on synthetic bars, as bodies the way `core.process_source` writes them: a bar at
+its midpoint frame (`bar_pose`), a MoCap half at its block transform (`pose_from_mm`) with the registry's markers in
+metres, mounted on its bar. Pure numpy and the core.
 """
 
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pytest
 
-from core import joint_name_conventions as jnc
-from core import mocap_markers as mm
-from core.joint_pair import JointHalfDef, canonical_bar_frame_from_line, load_joint_registry
-from core.mocap_layout_check import MoCapLayoutError
+from core import core_lib  # noqa: F401
+from core import config
+from core import process_markers as pm
+from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
+from core.marker_points import markers_in_frame_mm
+from core.process_source import bar_pose, pose_from_mm
 from core.single_sided_placement import fk_single_block_frame
-from core.transforms import transform_point
+from scaffolding_assembly_core.geometry import BoxShape, CylinderShape, Geometry
+from scaffolding_assembly_core.process import BodySpec, Process, Writer
 
-REGISTRY = load_joint_registry()
-HALVES = dict(REGISTRY.halves)
-T20_MOCAP = HALVES["T20_MoCap"]
+T20_MOCAP = load_joint_registry().halves["T20_MoCap"]
+TOL_MM = float(config.MOCAP_LAYOUT_TOL_MM)
+BOX = Geometry((BoxShape((0.02, 0.02, 0.02)),), (BoxShape((0.02, 0.02, 0.02)),))
 
-B20 = ((1325.0, -2250.0, 150.0), (-475.0, -2250.0, 150.0))   # horizontal, 1800 mm
-B21 = ((925.0, -2314.0, 50.0), (925.0, -2314.0, 1850.0))     # vertical, 1800 mm
-B22 = ((0.0, 0.0, 0.0), (0.0, 0.0, 1000.0))                   # no MoCap joints
+#: Bar id -> (start, end), mm.
+BARS = {
+    "B20": ((1325.0, -2250.0, 150.0), (-475.0, -2250.0, 150.0)),   # horizontal, 1800 mm
+    "B21": ((925.0, -2314.0, 50.0), (925.0, -2314.0, 1850.0)),     # vertical, 1800 mm
+    "B22": ((0.0, 0.0, 0.0), (0.0, 1000.0, 0.0)),                   # one MoCap half: too few markers
+    "B23": ((0.0, 0.0, 0.0), (1000.0, 0.0, 0.0)),                   # no MoCap half
+}
+#: MoCap halves: (joint id, bar, mm along the bar from its start, turn about the bar in degrees).
+#: B20's are listed out of order along the bar on purpose; three joints, mixed facing.
+MOCAP = [("J20-169", "B20", 1145.3, 0), ("J20-22", "B20", 84.9, 90), ("J20-21", "B20", 420.0, 180),
+         ("J21-37", "B21", 1471.9, 0), ("M21-T20-0", "B21", 396.0, 45), ("J21-26", "B21", 1080.0, 270),
+         ("M22-T20-0", "B22", 500.0, 0)]
 
 
-def _bar_body(bar_id, bar):
-    start, end = (np.asarray(p, dtype=float) for p in bar)
-    return {"kind": "bar", "parent_bar_id": bar_id, "frame_world_mm": canonical_bar_frame_from_line(start, end)}
+def _bar(bar: str) -> BodySpec:
+    """A bar body as `process_source` reads it: a cylinder at its midpoint frame."""
+    start, end = (np.asarray(p, dtype=float) for p in BARS[bar])
+    length_mm = float(np.linalg.norm(end - start))
+    cylinder = CylinderShape(0.01, length_mm / 1000.0)
+    return BodySpec(f"bars/{bar}", bar_pose(canonical_bar_frame_from_line(start, end), length_mm),
+                    Geometry((cylinder,), (cylinder,)))
 
 
-def _mocap_body(bar_id, bar, along_mm, spin_deg, block="T20_MoCap"):
-    """A MoCap block placed on *bar* the way RSJointPlace places it."""
-    start, end = (np.asarray(p, dtype=float) for p in bar)
-    world = fk_single_block_frame(start, end, along_mm, np.radians(spin_deg), T20_MOCAP)
-    return {"kind": "joint", "frame_world_mm": world, "block_name": block, "subtype": "MoCap",
-            "parent_bar_id": bar_id}
+def _block_mm(bar: str, along_mm: float, turn_deg: float) -> np.ndarray:
+    """A MoCap block's world transform (mm), placed on `bar` the way RSJointPlace places it."""
+    start, end = (np.asarray(p, dtype=float) for p in BARS[bar])
+    return fk_single_block_frame(start, end, along_mm, np.radians(turn_deg), T20_MOCAP)
+
+
+def _mocap_half(jid: str, bar: str, along_mm: float, turn_deg: float) -> BodySpec:
+    """A MoCap half body as `process_source` reads it: block transform, registry markers in metres, its bar."""
+    markers = {label: tuple(c / 1000.0 for c in point) for label, point in T20_MOCAP.marker_points_mm.items()}
+    return BodySpec(f"joints/{jid}_mocap", pose_from_mm(_block_mm(bar, along_mm, turn_deg)), BOX, part="T20/MoCap",
+                    markers=markers, mount=f"bars/{bar}")
+
+
+def _process(halves) -> Process:
+    """Every bar of `BARS`, the given halves, and a male half without markers on B20."""
+    bodies = {f"bars/{bar}": _bar(bar) for bar in BARS}
+    bodies.update({half.id: half for half in halves})
+    male = BodySpec("joints/J20-21_male", pose_from_mm(_block_mm("B20", 420.0, 0)), BOX, part="T20/Male",
+                    mount="bars/B20")
+    bodies[male.id] = male
+    return Process(None, Writer(2.1, "test", "0", False), {}, {}, bodies, (), {})
 
 
 @pytest.fixture
-def bodies():
-    out = {
-        "bar_B20": _bar_body("B20", B20),
-        "bar_B21": _bar_body("B21", B21),
-        "bar_B22": _bar_body("B22", B22),
-        # Listed out of order along B20 on purpose; three joints, mixed facing.
-        jnc.joint_key("J20-169", "MoCap"): _mocap_body("B20", B20, 1145.3, 0),
-        jnc.joint_key("J20-22", "MoCap"): _mocap_body("B20", B20, 84.9, 90),
-        jnc.joint_key("J20-21", "MoCap"): _mocap_body("B20", B20, 420.0, 180),
-        # Three on B21, one standalone.
-        jnc.joint_key("J21-37", "MoCap"): _mocap_body("B21", B21, 1471.9, 0),
-        jnc.joint_key("M21-T20-0", "MoCap"): _mocap_body("B21", B21, 396.0, 45),
-        jnc.joint_key("J21-26", "MoCap"): _mocap_body("B21", B21, 1080.0, 270),
-        # Not MoCap: ignored.
-        jnc.joint_key("J20-21", "Male"): _mocap_body("B20", B20, 420.0, 0, "T20_Male") | {"subtype": "Male"},
-    }
-    return out
+def process() -> Process:
+    return _process([_mocap_half(*half) for half in MOCAP])
 
 
-SEQ = {"B20": 3, "B21": 7, "B22": None}
+def _apply(pose, point) -> np.ndarray:
+    matrix = pose.matrix()
+    return matrix[:3, :3] @ np.asarray(point, dtype=float) + matrix[:3, 3]
 
 
-@pytest.fixture
-def payload(bodies):
-    return mm.build_payload(bodies, HALVES, SEQ, source="test.3dm")
+# * ---------------------------------------------------------------------------
+# * bar_markers: names, order and frame, as the monitor's
+# * ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Shape of the file
-# ---------------------------------------------------------------------------
+def test_names_and_order_follow_the_monitor(process):
+    """`<half id>/<label>`, halves by id then labels: the monitor's model order. Halves without markers add none."""
+    markers = pm.bar_markers(process)
+    assert list(markers) == ["bars/B20", "bars/B21", "bars/B22"]
+    assert [name for name, _ in markers["bars/B20"]] == [
+        "joints/J20-169_mocap/M1", "joints/J20-169_mocap/M2", "joints/J20-21_mocap/M1", "joints/J20-21_mocap/M2",
+        "joints/J20-22_mocap/M1", "joints/J20-22_mocap/M2"]
+    assert [name for name, _ in markers["bars/B21"]][::2] == [
+        "joints/J21-26_mocap/M1", "joints/J21-37_mocap/M1", "joints/M21-T20-0_mocap/M1"]
 
 
-def test_schema_header(payload):
-    assert payload["schema_version"] == 2
-    assert payload["units"] == "m"
-    assert payload["cell_file"] == "RobotCell.json"
-    assert payload["source"] == "test.3dm"
-    assert payload["layout_tolerance_m"] == pytest.approx(0.002)
+def test_points_are_in_the_bar_frame_at_its_midpoint(process):
+    """The bar pose, at the bar's middle, puts each point where the half pose puts its marker."""
+    for bar, markers in pm.bar_markers(process).items():
+        start, end = (np.asarray(p, dtype=float) for p in BARS[bar.rpartition("/")[2]])
+        assert process.bodies[bar].assembly_pose.position == pytest.approx((start + end) / 2000.0, abs=1e-9)
+        for name, point in markers:
+            half_id, _, label = name.rpartition("/")
+            half = process.bodies[half_id]
+            assert _apply(process.bodies[bar].assembly_pose, point) == pytest.approx(
+                _apply(half.assembly_pose, half.markers[label]), abs=1e-9)
 
 
-def test_marker_blocks_carry_the_registry_points_in_metres(payload):
-    block = payload["marker_blocks"]["T20_MoCap"]
-    assert block["marker_diameter_m"] == pytest.approx(0.019)
-    for label, point in T20_MOCAP.marker_points_mm.items():
-        assert block["points_block_m"][label] == pytest.approx(np.asarray(point) / 1000.0, abs=1e-5)
-    assert list(payload["marker_blocks"]) == ["T20_MoCap"]
+def test_old_bar_start_frame_is_half_a_bar_further(process):
+    """The retired `MoCapMarkers.json` had the bar START as origin: `p_old = p_new + (0, 0, L/2)`, for B20."""
+    start, end = (np.asarray(p, dtype=float) for p in BARS["B20"])
+    old_frame = canonical_bar_frame_from_line(start, end)
+    half_length = process.bodies["bars/B20"].geometry.collision[0].height / 2.0
+    for name, point in pm.bar_markers(process)["bars/B20"]:
+        jid = name.split("/")[1][:-len("_mocap")]
+        _, bar, along_mm, turn_deg = next(h for h in MOCAP if h[0] == jid)
+        old_mm = markers_in_frame_mm(_block_mm(bar, along_mm, turn_deg), T20_MOCAP.marker_points_mm, old_frame)
+        assert np.asarray(old_mm[name.rpartition("/")[2]]) / 1000.0 == pytest.approx(
+            point + (0.0, 0.0, half_length), abs=1e-5)
 
 
-def test_bars_are_keyed_by_body_name_in_assembly_order(payload):
-    assert list(payload["bars"]) == ["bar_B20", "bar_B21"]
-    assert payload["bars"]["bar_B20"]["bar_id"] == "B20"
-    assert payload["bars"]["bar_B20"]["assembly_seq"] == 3
-    assert payload["bars"]["bar_B21"]["assembly_seq"] == 7
-    assert payload["bars_without_markers"] == ["bar_B22"]
+def test_a_bar_with_too_few_markers_is_kept_and_refused(process):
+    """B22's one half gives 2 markers: listed, unlike the monitor, which drops it; the check names it."""
+    assert len(pm.bar_markers(process)["bars/B22"]) == 2
+    assert pm.check_layouts(process, TOL_MM) == [
+        "bars/B22: too few MoCap markers (2), the monitor fits a bar from 3 at least"]
 
 
-def test_bars_without_a_sequence_number_come_last(bodies):
-    bodies[jnc.joint_key("M22-T20-0", "MoCap")] = _mocap_body("B22", B22, 100.0, 0)
-    bodies[jnc.joint_key("M22-T20-1", "MoCap")] = _mocap_body("B22", B22, 500.0, 90)
-    bodies[jnc.joint_key("M22-T20-2", "MoCap")] = _mocap_body("B22", B22, 900.0, 0)
-    out = mm.build_payload(bodies, HALVES, SEQ)
-    assert list(out["bars"]) == ["bar_B20", "bar_B21", "bar_B22"]
-    assert out["bars"]["bar_B22"]["assembly_seq"] is None
-    assert out["bars_without_markers"] == []
+# * ---------------------------------------------------------------------------
+# * check_layouts: what RSExportProcess refuses
+# * ---------------------------------------------------------------------------
 
 
-def test_markers_ordered_along_the_bar_then_by_label(payload):
-    b20 = payload["bars"]["bar_B20"]["markers"]
-    assert [m["joint"] for m in b20[::2]] == [
-        jnc.joint_key("J20-22", "MoCap"), jnc.joint_key("J20-21", "MoCap"), jnc.joint_key("J20-169", "MoCap"),
-    ]
-    assert [m["label"] for m in b20] == ["M1", "M2"] * 3
-    assert [m["name"] for m in b20[:2]] == ["J20-22_mocap_M1", "J20-22_mocap_M2"]
-    assert all(m["block"] == "T20_MoCap" for m in b20)
-    along = [m["bar_m"][2] for m in b20[::2]]
-    assert along == sorted(along)
+def test_good_layouts_pass():
+    assert pm.check_layouts(_process([_mocap_half(*h) for h in MOCAP if h[1] != "B22"]), TOL_MM) == []
 
 
-def test_standalone_and_paired_joints_both_listed(payload):
-    b21 = payload["bars"]["bar_B21"]["markers"]
-    assert [m["joint"] for m in b21[::2]] == [
-        jnc.joint_key("M21-T20-0", "MoCap"), jnc.joint_key("J21-26", "MoCap"), jnc.joint_key("J21-37", "MoCap"),
-    ]
-    assert b21[0]["name"] == "M21-T20-0_mocap_M1"
+def test_joints_facing_one_way_are_refused_by_bar():
+    """B20's three joints turned alike: M1 and M2 swap under a half-turn, the layout fits itself twice."""
+    halves = [_mocap_half(jid, bar, along, 0 if bar == "B20" else turn) for jid, bar, along, turn in MOCAP
+              if bar != "B22"]
+    problems = pm.check_layouts(_process(halves), TOL_MM)
+    assert len(problems) == 1 and problems[0].startswith("bars/B20: MoCap marker layout is ambiguous -- ")
 
 
-# ---------------------------------------------------------------------------
-# The numbers
-# ---------------------------------------------------------------------------
+def test_two_joints_are_refused():
+    """Two joints are never enough, whatever their spacing and turn."""
+    halves = [_mocap_half(*h) for h in MOCAP if h[1] == "B21" and h[0] != "J21-26"]
+    problems = pm.check_layouts(_process(halves), TOL_MM)
+    assert len(problems) == 1 and "bars/B21: MoCap marker layout is ambiguous" in problems[0]
 
 
-def test_bar_frame_positions_agree_with_the_block_transform(payload, bodies):
-    """The invariant the monitor relies on: bar_frame @ bar_m == joint_frame @ block_point."""
-    for bar_key, bar in payload["bars"].items():
-        bar_frame = np.asarray(bodies[bar_key]["frame_world_mm"])
-        for marker in bar["markers"]:
-            joint_frame = np.asarray(bodies[marker["joint"]]["frame_world_mm"])
-            expected = transform_point(joint_frame, T20_MOCAP.marker_points_mm[marker["label"]])
-            got = transform_point(bar_frame, np.asarray(marker["bar_m"]) * 1000.0)
-            assert got == pytest.approx(expected, abs=0.02)
+def test_mocap_half_without_markers_is_refused():
+    """A MoCap block whose spheres were never picked: named by its half."""
+    bare = BodySpec("joints/J20-30_mocap", pose_from_mm(_block_mm("B20", 10.0, 0)), BOX, part="T40/MoCap",
+                    mount="bars/B20")
+    halves = [_mocap_half(*h) for h in MOCAP if h[1] != "B22"] + [bare]
+    assert pm.check_layouts(_process(halves), TOL_MM) == [
+        ("joints/J20-30_mocap: MoCap half (T40/MoCap) without markers; run RSDefineJointHalf on its block and pick "
+         "the marker spheres")]
 
 
-def test_world_points_match_the_same_invariant(payload, bodies):
-    world = mm.world_points_mm(payload, bodies)
-    assert len(world) == 12
-    joint = np.asarray(bodies[jnc.joint_key("J20-22", "MoCap")]["frame_world_mm"])
-    assert world["J20-22_mocap_M1"] == pytest.approx(
-        transform_point(joint, T20_MOCAP.marker_points_mm["M1"]), abs=0.02
-    )
+# * ---------------------------------------------------------------------------
+# * marker_labels: the Rhino dots
+# * ---------------------------------------------------------------------------
 
 
-def test_markers_sit_25_5_mm_off_the_bar_axis_and_48_3_mm_apart(payload):
-    for bar in payload["bars"].values():
-        pts = [np.asarray(m["bar_m"]) * 1000.0 for m in bar["markers"]]
-        for a, b in zip(pts[::2], pts[1::2]):
-            assert np.linalg.norm(a - b) == pytest.approx(48.3, abs=0.02)
-            assert np.linalg.norm(((a + b) / 2.0)[:2]) == pytest.approx(25.5, abs=0.02)
-
-
-def test_positions_are_rounded_to_five_decimals(payload):
-    for bar in payload["bars"].values():
-        for marker in bar["markers"]:
-            for c in marker["bar_m"]:
-                assert c == round(c, 5)
-
-
-# ---------------------------------------------------------------------------
-# A range export: the cut body set
-# ---------------------------------------------------------------------------
-
-
-def test_cut_body_set_drops_the_bar_and_its_joints_without_error(bodies):
-    cut = {k: v for k, v in bodies.items() if v.get("parent_bar_id") != "B21"}
-    out = mm.build_payload(cut, HALVES, SEQ)
-    assert list(out["bars"]) == ["bar_B20"]
-    assert out["bars_without_markers"] == ["bar_B22"]
-
-
-# ---------------------------------------------------------------------------
-# Refusals
-# ---------------------------------------------------------------------------
-
-
-def test_joint_whose_bar_is_missing_stops_the_export(bodies):
-    bodies[jnc.joint_key("J99-1", "MoCap")] = _mocap_body("B99", B20, 10.0, 0)
-    with pytest.raises(mm.MoCapExportError, match="B99"):
-        mm.build_payload(bodies, HALVES, SEQ)
-
-
-def test_block_without_marker_points_stops_the_export(bodies):
-    bodies[jnc.joint_key("J20-30", "MoCap")] = _mocap_body("B20", B20, 10.0, 0, "T40_MoCap")
-    with pytest.raises(mm.MoCapExportError, match="T40_MoCap"):
-        mm.build_payload(bodies, HALVES, SEQ)
-
-
-def test_block_without_marker_diameter_stops_the_export(bodies):
-    halves = dict(HALVES)
-    data = T20_MOCAP.to_dict()
-    data["marker_diameter_mm"] = 0.0
-    halves["T20_MoCap"] = JointHalfDef.from_dict(data)
-    with pytest.raises(mm.MoCapExportError, match="diameter"):
-        mm.build_payload(bodies, halves, SEQ)
-
-
-def test_two_joint_bar_is_refused_by_name(bodies):
-    del bodies[jnc.joint_key("J20-169", "MoCap")]
-    with pytest.raises(MoCapLayoutError, match="bar B20") as info:
-        mm.build_payload(bodies, HALVES, SEQ)
-    assert "three MoCap joints" in str(info.value)
-
-
-def test_three_same_facing_joints_are_refused(bodies):
-    # Turn B20's three joints to face the same way: the pair swap becomes a symmetry.
-    bodies[jnc.joint_key("J20-22", "MoCap")] = _mocap_body("B20", B20, 84.9, 0)
-    bodies[jnc.joint_key("J20-21", "MoCap")] = _mocap_body("B20", B20, 420.0, 0)
-    with pytest.raises(MoCapLayoutError, match="bar B20"):
-        mm.build_payload(bodies, HALVES, SEQ)
-
-
-# ---------------------------------------------------------------------------
-# Reading back
-# ---------------------------------------------------------------------------
-
-
-def test_label_order_is_numeric():
-    assert sorted(["M10", "M2", "M1"], key=mm.label_sort_key) == ["M1", "M2", "M10"]
-
-
-def test_payload_is_plain_json_and_summarises(payload):
-    text = json.dumps(payload)
-    back = json.loads(text)
-    assert back["bars"]["bar_B20"]["markers"][0]["name"] == "J20-22_mocap_M1"
-    assert mm.marker_count(payload) == 12
-    assert mm.summary(payload) == "B20: 6 markers on 3 joints; B21: 6 markers on 3 joints"
-
-
-def test_layout_notes_flag_a_narrow_pass():
-    """A bar whose nearest miss is under 3x the tolerance gets a note; a wide miss does not."""
-    narrow = {"layout_tolerance_m": 0.002, "bars": {
-        "bar_B1": {"bar_id": "B1", "layout": {"n_markers": 6, "nearest_miss_m": 0.004}},
-        "bar_B2": {"bar_id": "B2", "layout": {"n_markers": 6, "nearest_miss_m": 0.040}},
-        "bar_B3": {"bar_id": "B3", "layout": {"n_markers": 6, "nearest_miss_m": None}},
-    }}
-    notes = mm.layout_notes(narrow)
-    assert len(notes) == 1 and notes[0].startswith("B1:") and "4.0 mm" in notes[0]
+def test_labels_number_markers_per_bar_in_the_monitor_order(process):
+    """`B20 #3 M1`: the third marker of B20 in the monitor's order; the dot sits on the half's marker."""
+    labels = pm.marker_labels(process)
+    assert len(labels) == 14
+    third = labels[2]
+    assert (third.name, third.text, third.bar, third.number) == (
+        "joints/J20-21_mocap/M1", "B20 #3 M1", "bars/B20", 3)
+    assert [label.text for label in labels if label.bar == "bars/B22"] == ["B22 #1 M1", "B22 #2 M2"]
+    half = process.bodies["joints/J20-21_mocap"]
+    assert third.world == pytest.approx(_apply(half.assembly_pose, half.markers["M1"]), abs=1e-9)

@@ -28,5 +28,12 @@ measures. Both scripts read the old export through the core's `legacy/` package,
 schema; it is no longer a submodule, so install it first:
 `pip install "git+https://github.com/yijiangh/rs_data_structure@8912325"`.
 
+`compare_processes.py <folder A> <folder B>` diffs two schema 2.1 process folders field by field (bodies, tools,
+robots by file hash, mates, schedule, actions and every movement by id; poses within `--pos-tol` / `--rot-tol`,
+default 1e-9; meshes by content hash) and prints the differences grouped by kind, exit code 0 when equal. Its use:
+a headless build (`fake_rhino.doc_from_3dm` + `RhinoProcessSource`) against the RSExportProcess folder of the same
+`.3dm`; `--expect-headless-gaps` leaves out the walkable ground, the obstacles and `producer`, which a headless build
+cannot have. It needs only the core; `test_compare_processes.py` runs it. `export_equivalence.py` uses its `diff`.
+
 `tests/captures/` holds JSON snapshots of the retired legacy planning cell (the capture / replay flow and its
 `core.capture_io` are gone); nothing reads them any more.

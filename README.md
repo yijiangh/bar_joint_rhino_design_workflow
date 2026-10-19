@@ -294,10 +294,11 @@ design whether a joint **rotated** on its bar, a bar **bent**, or a bar
 **moved** during insertion, retreat, the support robot's hold / release, or
 while the next bar is screwed in.
 
-What Rhino does for this today: place the MoCap joints and export where every
-marker sits, in the process's `process.json` (**RSExportProcess**). Fitting the
+What Rhino does for this today: place the MoCap joints, export where every
+marker sits in the process's `process.json` (**RSExportProcess**), refuse a bar
+the monitor could not fit, and label every designed marker. Fitting the
 measured markers to the design — the bar's 6-DoF pose — belongs to the teleop
-monitor and is planned in `tasks/mocap_bar_pose_monitor_handover.md`.
+monitor (husky-assembly-teleop `world/marker_fit.py`).
 
 **0. The marker plate is recorded once per joint type** (joint-library
 authors). **RSDefineJointHalf** on `T20_MoCap`: `CopyFromFemale` (its frames
@@ -334,7 +335,8 @@ goes out as `subtype: "MoCap"` with the usual `position_mm` / `rotation_deg` /
 centres in the bar frame (origin at the bar start, z along the bar). The jig
 ignores those extra fields.
 
-**4. Export for the robot: RSExportProcess.** The markers travel in
+**4. Export for the robot: RSExportProcess.** There is no separate marker file
+(the retired `MoCapMarkers.json`). The markers travel in
 `process.json`: every MoCap half is a body `joints/<joint id>_mocap` with its
 `markers`, its `part` and the bar it is fixed to (`mount`). Positions are in
 **metres**, in the **half's own body frame**; the half's `assembly_pose` places
@@ -353,19 +355,31 @@ bar (the two `assembly_pose`s) places them on the bar
 
 The bar body's frame in `process.json` is at the bar **midpoint**, z along the
 bar (not the bar start, as in the prefab export;
-[coordinate conventions](docs/coordinate_conventions.md)).
+[coordinate conventions](docs/coordinate_conventions.md)). A marker's point on
+its bar is `inv(bar.assembly_pose) ∘ half.assembly_pose ∘ marker`, and its name
+is `<half id>/<label>`, e.g. `joints/J20-21_mocap/M1`: the monitor's
+`bar_markers` and `scripts/core/process_markers.py` compute both the same way.
 
-Not in RSExportProcess yet (they ran in the retired RSExportRobotCell, whose
-`MoCapMarkers.json` is no longer written; the modules are kept,
-`core.mocap_layout_check` and `core.rhino_mocap_markers`):
+RSExportProcess also, from `core.process_markers`:
 
-- the layout check that refused a bar the monitor could not read uniquely;
-- the layer **MANAGED Scaffolding › MoCap Marker Labels**: a text dot at every
-  designed sphere (`B20 #3 M1`) and a line through each joint's two spheres.
+- **checks the layouts before anything is written.** The export stops, with
+  `Export stopped, nothing was written:` and one line per fault, for a MoCap
+  half without markers, a bar with fewer than 3 markers, or a bar whose
+  markers another rigid motion maps onto themselves within
+  `config.MOCAP_LAYOUT_TOL_MM` (2 mm), e.g.
+  `bars/B20: MoCap marker layout is ambiguous -- 1 other rigid motion(s) map the
+  6 markers onto themselves within 2.0 mm; ...` (the rule:
+  [docs/mocap_marker_export.md](docs/mocap_marker_export.md));
+- **labels the markers after a successful write**, on the layer
+  **MANAGED Scaffolding › MoCap Marker Labels**: a text dot at every designed
+  sphere, `B20 #3 M1` (the bar, the marker's number on it in the monitor's
+  order, its label), named after the monitor's marker
+  (`joints/J20-21_mocap/M1`), and a line through each half's spheres.
 
 **5. In Motive**: make **one rigid body per instrumented bar** from its
-spheres, named after the bar (`B20`); naming each marker after its half and
-label (`J20-21_mocap_M1`, …) helps reading the live view.
+spheres, named after the bar (`B20`). The monitor matches the markers by
+geometry, not by their Motive names; naming each after its dot
+(`joints/J20-21_mocap/M1`, …) only helps reading the live view.
 
 **Not available yet for `T20_MoCap` bars:**
 
@@ -378,9 +392,11 @@ label (`J20-21_mocap_M1`, …) helps reading the live view.
 - **The fit itself** — matching the live Motive markers to the designed ones by
   geometry (Motive's marker ids are not trusted), the bar's measured 6-DoF pose
   and its error against the designed pose, per-marker residuals (bending, a
-  mislabelled or occluded marker), recorded after each robot movement — is
-  planned in [husky-assembly-teleop]; the hand-over note is
-  `tasks/mocap_bar_pose_monitor_handover.md`. Until then, compare by hand: a
+  mislabelled or occluded marker), recorded after each robot movement — is not
+  in Rhino: it is the new teleop monitor's experimental `mocap_bars` plugin
+  ([husky-assembly-teleop] `world/marker_fit.py`), which reads the markers from
+  `process.json` (the hand-over note `tasks/mocap_bar_pose_monitor_handover.md`
+  was written for the retired `MoCapMarkers.json`). Without it, compare by hand: a
   joint that **rotated** shows its M1–M2 line turned about the bar axis; a bar
   that **bent** shows markers drifting off the straight centre line in the
   middle of the bar while the ends stay; a bar that **moved** shows every
@@ -557,6 +573,7 @@ scripts/
     joint_placement.py                  # Joint pair placement computation and bake helpers
     single_sided_placement.py           # Ground / standalone MoCap placement on one bar
     marker_points.py                    # MoCap marker spheres between block / world / bar frames
+    process_markers.py                  # A process's MoCap markers per bar (as the monitor), layout check, labels
     process_source.py                    # Rhino document -> schema 2 process (scaffolding_assembly_core)
     process_builder.py                   # Keyframe records -> the process's actions (Rhino-free)
     process_planning.py                  # Process scenes -> the core's CompasFabMirror -> tamp / compas_fab solvers

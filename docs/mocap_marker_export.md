@@ -1,4 +1,8 @@
-> Retired: describes the compas_fab export that RSExportProcess replaced.
+> Retired: describes the compas_fab export that RSExportProcess replaced. `MoCapMarkers.json` is no longer written:
+> the markers travel in `process.json` on their halves, and `scripts/core/process_markers.py` computes each bar's
+> points as the monitor does (named `joints/J20-21_mocap/M1`, bar frame at the bar **midpoint**:
+> `p_old = p_new + (0, 0, L/2)`), runs the layout check below at RSExportProcess, and gives the label dots
+> (`B20 #3 M1`, numbered in the monitor's order). The layout rule (`mocap_layout_check.py`) still holds as written.
 
 # MoCap marker export — `MoCapMarkers.json` (schema 2)
 

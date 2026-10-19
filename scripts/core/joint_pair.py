@@ -125,8 +125,8 @@ class JointHalfDef:
     # markers; registries written before this field existed omit it -> {}.
     marker_points_mm: dict = field(default_factory=dict)
     # Diameter of those marker spheres in MILLIMETRES (one value: every sphere on
-    # a block is the same product).  Written into ``MoCapMarkers.json`` so the
-    # teleop monitor can drop Motive markers of another size before matching.
+    # a block is the same product).  Not in ``process.json`` (a body has no
+    # field for it); RSExportPrefab writes it as ``mocap.marker_diameter_mm``.
     # ``0.0`` means "not recorded" -- registries written before this field
     # existed omit it; RSDefineJointHalf measures it from the picked spheres.
     marker_diameter_mm: float = 0.0

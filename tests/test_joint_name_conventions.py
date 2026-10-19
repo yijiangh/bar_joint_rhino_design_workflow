@@ -211,6 +211,10 @@ def test_object_name_round_trip():
     assert jnc.split_object_name("B40") == ("B40", None)
 
 
+def test_marker_name_is_the_half_id_and_label_as_the_monitor_names_it():
+    assert jnc.marker_name("joints/J20-21_mocap", "M1") == "joints/J20-21_mocap/M1"
+
+
 def test_joint_key_round_trip_including_underscore_in_the_id():
     key = jnc.joint_key("J40-53", "MoCap")
     assert key == "joint_J40-53_mocap"

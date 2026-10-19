@@ -495,7 +495,10 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   range, a parent folder, then the folder name), then print the file checks (A) and plan checks (B). **Right-click**,
   RSCheckProcess: read an existing process folder and print A and B. See `docs/schema2_integration.md`.
 - MoCap markers travel in `process.json`: every MoCap half `joints/<joint id>_mocap` carries its `markers` (label ->
-  position in the half's body frame, metres) and its bar (`mount`); see the README, *MoCap joints*.
+  position in the half's body frame, metres) and its bar (`mount`); see the README, *MoCap joints*. Before writing,
+  a MoCap half without markers, or a bar the monitor could not fit (under 3 markers, or an ambiguous layout), stops the
+  export ("Export stopped, nothing was written"); after it, every marker gets a dot on *MoCap Marker Labels*
+  (`core.process_markers`, `core.rhino_mocap_markers`).
 - **Range (From .. Until)**: the command first asks which bars to export. Enter exports every bar; `FromBar` /
   `UntilBar` pick a range (click a bar, or type its id `B5` or step number `5`; the scene built up to that bar is
   shown for Accept / Repick; `All` resets). Picker: `core/rhino_export_range.py`; the cut:

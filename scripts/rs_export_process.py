@@ -10,6 +10,11 @@ compas_fab or tamp. It is the only export command.
 First it asks which bars to export (`core.rhino_export_range`): Enter exports every bar; FromBar / UntilBar pick a
 range. A range export holds the bars up to Until and the actions of From..Until, the earlier bars built in its first
 state (`process_builder.cut_to_range`); the range goes into `producer.command` and the default folder name.
+
+The MoCap markers travel in `process.json` on their halves. Before anything is written, `core.process_markers` checks
+them: a MoCap half without markers, or a bar the monitor could not fit uniquely (fewer than 3 markers, or a layout that
+fits itself in a second pose within `config.MOCAP_LAYOUT_TOL_MM`), stops the export with a message naming it. After
+the write, every designed marker is labelled on the layer "MoCap Marker Labels" (`core.rhino_mocap_markers`).
 """
 
 from __future__ import annotations
@@ -36,8 +41,10 @@ import session_log  # noqa: E402
 from core import config as _config_module  # noqa: E402
 from core import core_lib  # noqa: E402,F401  (puts scaffolding_assembly_core on sys.path; never reloaded)
 from core import process_builder as _process_builder_module  # noqa: E402
+from core import process_markers as _process_markers_module  # noqa: E402
 from core import process_source as _process_source_module  # noqa: E402
 from core import rhino_export_range as _export_range_module  # noqa: E402
+from core import rhino_mocap_markers as _rhino_mocap_markers_module  # noqa: E402
 from core import rhino_walkable_ground as _walkable_module  # noqa: E402
 from core.ik_status import stale_from, stale_ik_lines  # noqa: E402
 from core.rhino_bar_registry import get_real_bar_seq_map, repair_on_entry  # noqa: E402
@@ -94,6 +101,8 @@ def export(command: str = "RSExportProcess") -> None:
     config = importlib.reload(_config_module)
     importlib.reload(_process_builder_module)
     process_source = importlib.reload(_process_source_module)
+    process_markers = importlib.reload(_process_markers_module)
+    rhino_mocap_markers = importlib.reload(_rhino_mocap_markers_module)
     export_range_prompt = importlib.reload(_export_range_module)
     repair_on_entry(float(config.BAR_RADIUS), command)
     importlib.reload(_walkable_module).ensure_ground_and_base(command)
@@ -121,6 +130,14 @@ def export(command: str = "RSExportProcess") -> None:
         rs.MessageBox(f"Not exported: {len(exc.problems)} problem(s) in the document.\n\nDetails in the command "
                       "history.", 0, command)
         return
+    # ! The MoCap layout check runs before anything is written: a refused export leaves the folder untouched.
+    mocap_problems = process_markers.check_layouts(result.process, float(config.MOCAP_LAYOUT_TOL_MM))
+    if mocap_problems:
+        print(f"{command}: export stopped, nothing was written: the MoCap markers cannot be read by the monitor:\n  "
+              + "\n  ".join(mocap_problems) + f"\n  {process_markers.LAYOUT_HINT}")
+        rs.MessageBox("Export stopped, nothing was written:\n\n" + "\n\n".join(mocap_problems)
+                      + f"\n\n{process_markers.LAYOUT_HINT}", 0, command)
+        return
     built = time.perf_counter()
     lines = [f"{command}: built in {built - started:.1f} s"]
     if result.problems:
@@ -137,6 +154,8 @@ def export(command: str = "RSExportProcess") -> None:
         return
     with session_log.step("copy sources"):
         _copy_sources(folder, config)
+    with session_log.step("label MoCap markers"):
+        n_markers = rhino_mocap_markers.label_markers_in_rhino(written)
     with session_log.step("check plan (B)"):
         report = check_plan(written)
     # The core's verdict on the saved IK (B15), by bar: these bars export as solved, with poses that miss.
@@ -149,6 +168,8 @@ def export(command: str = "RSExportProcess") -> None:
     lines += [f"Wrote {folder} in {time.perf_counter() - built:.1f} s: {len(written.bodies)} bodies, "
               f"{len(written.mates)} mates, {len(written.actions)} actions, {n} movements; "
               f"{solved}/{jointing} bars with IK", "A (file checks): passed"] + report_lines(report)
+    if n_markers:
+        lines.append(f"MoCap: {n_markers} markers labelled on layer '{config.LAYER_MOCAP_MARKER_LABELS}'")
     lines += stale_ik_lines(stale)
     print("\n".join(lines))
     stale_note = (f"\n\nSTALE IK on {len(stale)} bar(s) (plan check B15): their saved robot poses no longer reach "

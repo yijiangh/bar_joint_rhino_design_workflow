@@ -37,9 +37,10 @@ Two exact ambiguities of the ``T20_MoCap`` plate (two markers, 48.3 mm apart,
 Rule of thumb: three or more MoCap joints per tracked bar, not all facing the
 same way, not mirror-symmetric about the bar's middle.
 
-Pure numpy, no Rhino.  Units are METRES, as in ``MoCapMarkers.json``; the Rhino
-caller divides by 1000.  :func:`match` is also the reference answer for the
-monitor's own matcher (same tolerance, same det = +1 rule).
+Pure numpy, no Rhino.  Units are METRES, as in ``process.json``;
+``core.process_markers.check_layouts`` converts the mm tolerance.  :func:`match`
+is also the reference answer for the monitor's own matcher (same tolerance,
+same det = +1 rule).
 """
 
 from __future__ import annotations

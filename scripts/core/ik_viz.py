@@ -18,7 +18,12 @@ How the meshes are drawn
 Every scene object is baked into the Rhino document ONCE, with both its display
 mesh (``draw_visual``) and its collision mesh (``draw_collision``). Switching
 between "show display mesh" and "show collision mesh" is then just hiding one set
-of Rhino objects and showing the other -- nothing is baked again.
+of Rhino objects and showing the other -- nothing is baked again. A rigid body
+whose two mesh sets are one mesh (every bar, joint, obstacle and floor slab from
+``core.env_collision``) is baked once and shows that copy in both modes.
+
+These meshes are for looking only: collision checks run on PyBullet's own copy
+of the bodies, and IK / exports read the compas ``RobotCell``.
 
 Session lifecycle
 -----------------
@@ -247,17 +252,40 @@ def _create_tool_so(tool_model, layer_name: str):
     )
 
 
+def _shares_one_mesh(rigid_body) -> bool:
+    """True when a rigid body's collision meshes ARE its display meshes.
+
+    ``core.env_collision`` builds every bar, joint, environment obstacle and
+    floor slab as ``RigidBody(visual_meshes=[mesh], collision_meshes=[mesh])``:
+    one mesh object in both lists. Baking it twice only gives two identical
+    copies in the document.
+    """
+    visual = list(rigid_body.visual_meshes or [])
+    collision = list(rigid_body.collision_meshes or [])
+    return bool(visual) and len(visual) == len(collision) and all(
+        v is c for v, c in zip(visual, collision)
+    )
+
+
 def _create_rb_so(rigid_body, layer_name: str):
-    """Build the drawing object for one rigid body (display + collision meshes)."""
+    """Build the drawing object for one rigid body.
+
+    A body whose display and collision meshes are the same mesh is baked once
+    (display copy only) and shows that copy in both mesh modes -- see
+    :func:`_rb_mode_guids`. Any other body bakes both sets, as before.
+    """
     SceneObject, _, RigidBodyObject = _import_rhino_scene_classes()
-    return SceneObject(
+    shared = _shares_one_mesh(rigid_body)
+    rb_so = SceneObject(
         item=rigid_body,
         sceneobject_type=RigidBodyObject,
         draw_visual=True,
-        draw_collision=True,
+        draw_collision=not shared,
         native_scale=_native_scale_for_doc(),
         layer=layer_name,
     )
+    rb_so._ikviz_shared_mesh = shared
+    return rb_so
 
 
 def _bundle_cache() -> dict:
@@ -500,9 +528,18 @@ def _iter_robot_tool_mode_guids(bundle: dict, mesh_mode: str):
                 yield g
 
 
+def _rb_is_shared(rb_so) -> bool:
+    """True for a rigid body baked once because both of its mesh sets are one mesh."""
+    return bool(getattr(rb_so, "_ikviz_shared_mesh", False))
+
+
 def _rb_mode_guids(rb_so, mesh_mode: str) -> list:
-    """Return one rigid body's baked Rhino object ids for a mesh mode (flat list)."""
-    if mesh_mode == MESH_MODE_VISUAL:
+    """Return one rigid body's baked Rhino object ids for a mesh mode (flat list).
+
+    A body baked once (:func:`_shares_one_mesh`) answers with its single copy in
+    both modes.
+    """
+    if mesh_mode == MESH_MODE_VISUAL or _rb_is_shared(rb_so):
         return list(rb_so._visual_mesh_native_geometry or [])
     return list(rb_so._collision_mesh_native_geometry or [])
 
@@ -535,7 +572,8 @@ def _set_visibility_for_mode(bundle: dict, mesh_mode: str) -> None:
     # Rigid bodies: a not-yet-built bar stays hidden in both modes; a bar that
     # exists at this step follows the mesh-mode toggle like everything else.
     for rb_id, rb_so in (bundle["rb_sos"] or {}).items():
-        hide.extend(_rb_mode_guids(rb_so, other))
+        if not _rb_is_shared(rb_so):  # a body baked once has no other-mode copy
+            hide.extend(_rb_mode_guids(rb_so, other))
         active_guids = _rb_mode_guids(rb_so, mesh_mode)
         if rb_id in hidden_rb_ids:
             hide.extend(active_guids)

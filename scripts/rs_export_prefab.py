@@ -14,9 +14,9 @@ A MoCap joint's entry additionally carries::
 
 The bar frame is the one ``position_mm`` / ``rotation_deg`` are measured in,
 ``joint_pair.canonical_bar_frame_from_line``: origin at the bar start, z along
-the bar, x = world Z x bar (world X x bar for a near-vertical bar).  Coordinates are document units, taken as mm like the rest
-of this export.  ``markers_mm`` is empty until the markers are recorded on the
-block with RSDefineJointHalf.
+the bar, x = world Z x bar (world X x bar for a near-vertical bar).  Every length
+in the file is in mm, whatever the document unit.  ``markers_mm`` is empty until
+the markers are recorded on the block with RSDefineJointHalf.
 """
 
 import importlib
@@ -24,6 +24,7 @@ import json
 import math
 import os
 import sys
+from collections import Counter
 
 import numpy as np
 import rhinoscriptsyntax as rs
@@ -38,7 +39,12 @@ from core import joint_name_conventions as jnc
 from core import marker_points
 from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
 from core.joint_placement import block_orientation_tag
-from core.rhino_helpers import block_instance_xform, curve_endpoints, objects_on_layers
+from core.rhino_helpers import (
+    block_instance_xform_mm,
+    curve_endpoints,
+    doc_unit_scale_to_mm,
+    objects_on_layers,
+)
 from core.rhino_bar_registry import (
     get_all_bars,
     is_fake_bar,
@@ -51,13 +57,13 @@ from core.rhino_bar_registry import (
 # ---------------------------------------------------------------------------
 
 
-def _bar_endpoints(curve_id):
+def _bar_endpoints_mm(curve_id, scale_to_mm):
+    """A bar curve's start and end points, in mm."""
     start, end = curve_endpoints(curve_id)
-    return np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+    return start * scale_to_mm, end * scale_to_mm
 
 
-def _bar_length(curve_id):
-    start, end = _bar_endpoints(curve_id)
+def _length_mm(start, end) -> float:
     return round(float(np.linalg.norm(end - start)), 2)
 
 
@@ -173,26 +179,25 @@ def main():
     errors = []
     bar_entries = []
     halves = load_joint_registry().halves  # for MoCap marker points
+    to_mm = doc_unit_scale_to_mm()
 
     for bid in sorted(joints_per_bar.keys(), key=jnc.bar_sort_key):
         if bid not in bars_by_id:
             errors.append(f"Bar {bid} referenced by joints but not found in document")
             continue
 
-        bar_curve_id = bars_by_id[bid]
-        bar_start, bar_end = _bar_endpoints(bar_curve_id)
+        bar_start, bar_end = _bar_endpoints_mm(bars_by_id[bid], to_mm)
         bar_frame = canonical_bar_frame_from_line(bar_start, bar_end)
         bar_dir = bar_frame[:3, 2]
-        bar_length = round(float(np.linalg.norm(bar_end - bar_start)), 2)
         joint_entries = []
 
         for data in joints_per_bar[bid]:
             obj_id = data["obj_id"]
             joint_id = data["joint_id"]
 
-            # All three exported quantities derived from world geometry
+            # All three exported quantities derived from world geometry (mm)
             try:
-                block_world = block_instance_xform(obj_id)
+                block_world = block_instance_xform_mm(obj_id)
             except Exception as exc:
                 errors.append(
                     f"Joint {joint_id} on {bid}: could not read transform ({exc})"
@@ -224,7 +229,7 @@ def main():
         bar_entries.append(
             {
                 "bar_id": bid,
-                "length_mm": bar_length,
+                "length_mm": _length_mm(bar_start, bar_end),
                 "joints": joint_entries,
             }
         )
@@ -235,7 +240,7 @@ def main():
             bar_entries.append(
                 {
                     "bar_id": bid,
-                    "length_mm": _bar_length(bars_by_id[bid]),
+                    "length_mm": _length_mm(*_bar_endpoints_mm(bars_by_id[bid], to_mm)),
                     "joints": [],
                 }
             )
@@ -265,8 +270,6 @@ def main():
     print("\n--- Bill of Materials ---")
 
     # Bar lengths: round to 0.1 mm
-    from collections import Counter
-
     bar_lengths = [round(b["length_mm"] / 0.1) * 0.1 for b in bar_entries]
     length_counts = Counter(bar_lengths)
     sorted_lengths = sorted(length_counts.keys())

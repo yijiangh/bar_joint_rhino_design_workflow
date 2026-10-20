@@ -20,6 +20,9 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000f" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000f</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000080" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000080</left_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000b" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000b</left_macro_id>
       </tool_bar_item>
@@ -394,6 +397,15 @@
         <locale_1033>Right-click companion of RSUpdatePreview: clear every color preview -- IK bar colors, broken-link colors, and the orange marker dots -- and unselect. Left-click RSUpdatePreview offers UpdatePreview (repair) and ShowColorsPreview (paint them again).</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_clear_color_preview.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000080">
+      <text>
+        <locale_1033>RSClearPreview</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Delete every baked robot preview -- the meshes on the IK Cache layers (hidden ones too), the base markers and base guides -- so the .3dm is small again; then save. Keeps bars, joints, tools, obstacles and the MoCap labels. Older files carry thousands of hidden preview meshes left behind by earlier versions.</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_clear_preview.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000023">
       <text>

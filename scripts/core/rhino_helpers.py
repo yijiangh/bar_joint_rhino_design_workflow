@@ -212,10 +212,44 @@ def reset_object_color(object_ids):
 
 
 def delete_objects(object_ids):
-    """Delete one or more Rhino objects (silently skips missing ones)."""
+    """Delete one or more Rhino objects (silently skips missing ones).
+
+    Like ``rs.DeleteObject``, this leaves hidden and locked objects in place;
+    use :func:`delete_objects_any_state` for those.
+    """
     for oid in as_object_id_list(object_ids):
         if rs.IsObject(oid):
             rs.DeleteObject(oid)
+
+
+def delete_objects_any_state(object_ids) -> int:
+    """Delete objects even when they are hidden or locked; return how many went.
+
+    ``rs.DeleteObject`` / ``rs.DeleteObjects`` call ``doc.Objects.Delete(id,
+    True)``, which refuses a hidden or locked object and reports nothing (a
+    hidden mesh stays in the file).  Previews hide their meshes, so they are
+    deleted here with Rhino's ``Delete(obj, quiet=True, ignoreModes=True)``.
+    Missing ids are skipped.
+    """
+    deleted = 0
+    for oid in as_object_id_list(object_ids):
+        guid = rs.coerceguid(oid)
+        obj = sc.doc.Objects.FindId(guid) if guid is not None else None
+        if obj is not None and sc.doc.Objects.Delete(obj, True, True):
+            deleted += 1
+    return deleted
+
+
+def layer_tree(layer_name: str) -> list:
+    """*layer_name* and every layer below it, parents first ([] if it does not exist)."""
+    if not rs.IsLayer(layer_name):
+        return []
+    layers = [layer_name]
+    i = 0
+    while i < len(layers):
+        layers.extend(rs.LayerChildren(layers[i]) or [])
+        i += 1
+    return layers
 
 
 # ---------------------------------------------------------------------------

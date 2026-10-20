@@ -46,7 +46,7 @@ import Rhino  # noqa: F401  (kept so other scripts can import Rhino through this
 
 from core import config
 from core import joint_name_conventions as jnc
-from core.rhino_helpers import ensure_layer
+from core.rhino_helpers import delete_objects_any_state, ensure_layer, layer_tree
 from core.robot_cell import default_cell_state, get_or_load_robot_cell, import_compas_stack
 
 
@@ -141,42 +141,43 @@ def _native_scale_for_doc() -> float:
 
 
 def _delete_layer_objects(layer_name: str, recursive: bool = True) -> int:
-    """Delete every Rhino object on a layer (and its sub-layers) and count them.
+    """Delete every Rhino object on a layer (and its sub-layers), hidden ones too.
 
-    ``rs.ObjectsByLayer`` only matches one exact layer path, so without walking
-    the sub-layers we would miss baked meshes that live on
-    ``LAYER_IK_CACHE::<layer_key>::<MeshMode>`` sub-layers.
+    ``rs.ObjectsByLayer`` only matches one exact layer path, so the sub-layers
+    are walked as well. The preview hides one mesh set and every not-yet-built
+    body object by object, and ``rs.DeleteObjects`` refuses hidden objects
+    without a word -- so the delete goes through
+    ``rhino_helpers.delete_objects_any_state``. Before that fix every clear left
+    the hidden meshes behind for good, and the .3dm grew by a preview set each
+    time.
 
     Args:
         layer_name (str): the layer to clear.
         recursive (bool): also clear every descendant sub-layer. Defaults to True.
 
     Returns:
-        int: how many Rhino objects were deleted.
+        int: how many Rhino objects were actually deleted.
     """
-    if not rs.IsLayer(layer_name):
-        return 0
-    layers = [layer_name]
-    if recursive:
-        i = 0
-        while i < len(layers):
-            kids = rs.LayerChildren(layers[i]) or []
-            layers.extend(kids)
-            i += 1
+    layers = layer_tree(layer_name) if recursive else (
+        [layer_name] if rs.IsLayer(layer_name) else []
+    )
     all_oids = []
     for lname in layers:
-        oids = rs.ObjectsByLayer(lname) or []
-        if oids:
-            all_oids.extend(oids)
+        all_oids.extend(rs.ObjectsByLayer(lname) or [])  # lists hidden objects too
     if not all_oids:
         return 0
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        rs.DeleteObjects(all_oids)
+        deleted = delete_objects_any_state(all_oids)
     finally:
         sc.doc.Views.RedrawEnabled = was
-    return len(all_oids)
+    if deleted < len(all_oids):
+        print(
+            f"ik_viz: {len(all_oids) - deleted} of {len(all_oids)} object(s) on "
+            f"'{layer_name}' could not be deleted."
+        )
+    return deleted
 
 
 def _ensure_compas_fab_rhino_registered() -> None:
@@ -338,14 +339,14 @@ def _rb_so_guids(rb_so) -> list:
 
 
 def _delete_rb_so_geometry(rb_so) -> None:
-    """Delete all Rhino objects a rigid body's drawing object baked."""
+    """Delete all Rhino objects a rigid body's drawing object baked (hidden ones too)."""
     guids = _rb_so_guids(rb_so)
     if not guids:
         return
     was = sc.doc.Views.RedrawEnabled
     try:
         sc.doc.Views.RedrawEnabled = False
-        rs.DeleteObjects(guids)
+        delete_objects_any_state(guids)
     finally:
         sc.doc.Views.RedrawEnabled = was
 

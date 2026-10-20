@@ -2140,6 +2140,18 @@ def _inspect_ssik_candidates(planner, movements, base_frame_mm, include_self, in
 SUPPORT_SOLVE_LAYER_KEY = "SupportSolve"
 
 
+def _support_flow_layer_keys() -> list:
+    """The ik_viz sub-layers only the support flow draws on (cleared when it ends)."""
+    return [
+        support_grasp_pick.DUAL_ARM_CONTEXT_LAYER_KEY,
+        SUPPORT_SOLVE_LAYER_KEY,
+        *(
+            f"{support_grasp_pick.SUPPORT_GHOST_LAYER_PREFIX} {name}"
+            for name in config.SUPPORT_ROBOT_NAMES
+        ),
+    ]
+
+
 def _ask_accept_support(prompt: str) -> bool:
     """Simple Accept/Reject prompt for the support flow."""
     answer = rs.GetString(prompt, "Accept", ["Accept", "Reject"])
@@ -2683,7 +2695,11 @@ def _run_support_flow(bar_id: str, bar_oid):
             gripper_ghost.Enabled = False
         if env_token is not None and not keep_highlight:
             highlight_env.revert_env_highlight(env_token)
-        ik_viz.clear_scene()
+        # Tidy away only the previews this flow drew for itself. Cindy's
+        # Assembly set, the holder sets and the plan-preview sets stay, so the
+        # next preview command does not rebuild them (about 21 s for Cindy).
+        ik_viz.end_session()
+        ik_viz.discard_layer_keys(_support_flow_layer_keys())
         # Restore the canvas: un-hide the other bars' tool blocks and drop the
         # sequence colors / hidden unbuilt bars. Own try/except so a failure
         # here can never mask the real outcome (same as the assembly flow).

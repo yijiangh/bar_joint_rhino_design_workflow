@@ -984,6 +984,34 @@ def discard_cache() -> None:
     sc.doc.Views.Redraw()
 
 
+def discard_layer_keys(layer_keys: Iterable[str]) -> int:
+    """Delete only the preview sets drawn on *layer_keys*; keep every other set.
+
+    For a command that baked previews of its own on private sub-layers and
+    should tidy just those away -- e.g. RSIKKeyframe's support flow, which must
+    not take Cindy's ``Assembly`` set with it (the next preview would rebuild it,
+    about 21 s). Objects on those sub-layers that no cached set knows about any
+    more (leftovers) go too.
+
+    Args:
+        layer_keys: the ``layer_key`` values to clear (not full layer paths).
+
+    Returns:
+        int: how many Rhino objects were deleted.
+    """
+    wanted = {key or "" for key in layer_keys}
+    cache = _bundle_cache()
+    for cache_key in [k for k, b in cache.items() if (b.get("layer_key") or "") in wanted]:
+        cache.pop(cache_key, None)
+    deleted = 0
+    for key in wanted:
+        layer_name = _resolve_layer(key)
+        if layer_name != config.LAYER_IK_CACHE:  # never the root: that is every set
+            deleted += _delete_layer_objects(layer_name)
+    sc.doc.Views.Redraw()
+    return deleted
+
+
 # ---------------------------------------------------------------------------
 # * Older single-shot API kept for existing callers
 # ---------------------------------------------------------------------------

@@ -432,7 +432,8 @@ def show_dual_arm_context(assembled: dict, mesh_mode):
     Drawn through ik_viz's cached bundle system on its OWN sub-layer
     (``DUAL_ARM_CONTEXT_LAYER_KEY``), so later ghost-mesh harvesting and
     support-pose previews never wipe or hide it. The flow's final
-    ``ik_viz.clear_scene()`` removes it with everything else.
+    ``ik_viz.discard_layer_keys(...)`` removes it with the flow's other
+    private sets (Cindy's own Assembly set stays).
 
     Purely visual — collision with the dual-arm robot is handled by its
     frozen ToolModel obstacle in the support cell.

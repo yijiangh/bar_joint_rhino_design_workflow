@@ -46,6 +46,7 @@ topic, ordered basic → advanced inside each group.
 | 30 | one naming rule — every joint name from `<Type>_<Subtype>` *(convention)* |
 | 24 | `BeginUndoRecord` — one Ctrl+Z for a whole command |
 | 23 | which module a preview belongs in (the four viz mechanisms) |
+| 32 | Rhino won't delete a hidden object — why files grew to 267 MB |
 | 25 | Grasshopper components vs Rhino commands |
 
 **Tooling (git, linter, tests)**
@@ -333,6 +334,14 @@ No change to the button itself was needed — it was already wired to `...017`.
    the file, restart Rhino or re-open the workspace so the change shows up. Rhino also
    caches a copy in its AppData — if an edit "doesn't take," make sure Rhino isn't
    overwriting the repo file on exit.
+
+4. Keep the buttons sorted: `python scripts/sort_toolbar_buttons.py` orders the
+   `<tool_bar_item>` blocks of each tab by their left-click command name (a repo
+   convention, so `RSBar*`, `RSExport*`, `RSJoint*` sit together); `--check` only reports.
+   **Run it with Rhino closed** — Rhino keeps the toolbar in memory and writes the whole
+   file back when it closes, so a sort made while Rhino is open is lost. That is also why
+   the `.rui` often shows as modified after a Rhino session with no button changed: Rhino
+   re-wrote the same buttons with its icon blocks in another order.
 
 > Rule of thumb: a **macro** is the command; a **tool_bar_item** is the button that
 > points at one or two macros (left / right). To add a right-click behavior, add the
@@ -2593,3 +2602,42 @@ goes in each commit), run the tests again (403 passed), and only then
 | list unresolved files | `git diff --name-only --diff-filter=U` |
 | take the shelf back | `git stash pop` (or `apply`, then `drop` later) |
 | move a branch I'm not on | `git branch -f main origin/main` |
+
+---
+
+## 32. Rhino won't delete a hidden object — why the demo file grew to 267 MB
+
+> ⚠️ **Real Rhino behaviour**, not a repo convention. Measured on 2026-10-18 in Rhino 8.
+
+### The behaviour
+
+| call | shown object | hidden object |
+|---|---|---|
+| `rs.DeleteObject(id)` / `rs.DeleteObjects(ids)` | deleted | **left in place**; `DeleteObjects` simply counts one fewer |
+| `sc.doc.Objects.Delete(id, True)` (what the two above call) | deleted, returns `True` | **left in place**, returns `False` |
+| `sc.doc.Objects.Delete(obj, True, True)` — the third argument is `ignoreModes` | deleted | deleted |
+| `rs.ObjectsByLayer(layer)` | listed | listed |
+
+"Hidden" here means the object itself (`rs.HideObject`), not its layer: an object on a hidden
+*layer* deletes fine. Locked objects behave like hidden ones. Nothing is printed when a delete is
+refused.
+
+### Where it bit us
+
+The IK and plan previews (`core/ik_viz.py`) bake the robots, tools, bars and joints as real mesh
+objects on "MANAGED Scaffolding › IK Cache", in two sets: display meshes and collision meshes.
+While a preview is up, the set you are not looking at, and every bar not built yet at the step
+shown, are hidden object by object. Every clear (the first preview after opening a file, the end
+of RSIKKeyframe's support flow, RSAssignAndShowWalkableGround, RSSwapRoboticTool) deleted with
+`rs.DeleteObjects`, so it removed only the shown meshes. The hidden ones stayed in the file,
+nobody pointed at them any more, and the next preview baked a full new set. In
+`261008_2ModulesDemo.3dm` that added up to 27,013 hidden meshes, 16.7 million vertices, most of the file's 267 MB.
+
+### The rule now
+
+To delete objects that might be hidden or locked, use
+`core.rhino_helpers.delete_objects_any_state(ids)`; it returns how many were really deleted.
+`rhino_helpers.delete_objects` keeps the plain behaviour for everything else. A file that grew
+before the fix is cleaned with **RSClearPreview**, then saved.
+
+Measured on a copy of `261008_2ModulesDemo.3dm`: RSClearPreview removed 27,686 preview meshes in 1.5 s, a save then wrote 26.8 MB instead of 267 MB, and looking up the bars went from 0.55–0.86 s to 0.01 s per call (every command does this about a dozen times).

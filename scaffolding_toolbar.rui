@@ -9,6 +9,9 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000031" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000031</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000081" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000081</left_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000030" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000030</left_macro_id>
       </tool_bar_item>
@@ -601,6 +604,15 @@
         <locale_1033>Align all managed-layer geometry by fitting three model bars to three baked mocap lines</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_align_model_three_bars.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000081">
+      <text>
+        <locale_1033>RSCheckMoCapLayout</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Find bars Motive could mix up: their MoCap marker spheres match by moving or turning one bar (the same placement, or the same placement end for end), within a typed tolerance (5 mm default). Each group of look-alikes gets its own colour and is selected; bars the export would refuse turn dark red. Prints how each pair matches. No PyBullet; changes only colours.</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_check_mocap_layout.py"</script>
     </macro_item>
     <macro_item guid="87856446-3dda-4fba-9033-a40435439586">
       <text>

@@ -57,6 +57,7 @@ Rhino closed after adding a button (see `docs/note.md` §8).
 | RSStability | RSImportScaffoldJSON | `rs_import_scaffold_json.py` | Import a `node_list`/`rod_list`/`coupler_list` layout JSON as registered bars (`bar_id` = `B<rod_id>`), sequenced by `layer_id` then `rod_id` | Workshop participants |
 | RSStability | RSSetRodLayer | `rs_set_rod_layer.py` | Select bars (centerlines or tube previews) and assign their `layer_id`: `0` also sets `grounded` true, `1`/`2`/... set it false. Both fields go straight into `rod_list` on the next RSExportScaffoldJSON | Workshop participants |
 | RSMoCap | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit model bars to mocap bars and transform managed layers | Mocap users |
+| RSMoCap | RSCheckMoCapLayout | `rs_check_mocap_layout.py` | Find bars Motive could mix up (their MoCap marker spheres match by moving/turning a bar, within a typed tolerance, 5 mm default) and bars the export would refuse; colours each group, selects them, prints how they match. No PyBullet. | Mocap users |
 | RSMoCap | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one rigid body from Motive and bake markers | Mocap users |
 
 ## Detailed behavior by entrypoint
@@ -564,6 +565,28 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - **Older 4-marker bar rig only.** It treats the line between the two pair centres as the bar
   axis. On `T20_MoCap` joints the pair centre sits 25.5 mm off the axis, so it would fit the
   bar 25.5 mm off; do not use it for MoCap-joint bars.
+
+### RSCheckMoCapLayout (`rs_check_mocap_layout.py`)
+
+- Motive tells tracked bars apart only by the shape their marker spheres form. This compares
+  every bar carrying MoCap joints with every other one and flags the look-alikes: two bars whose
+  spheres can be laid onto each other by moving and turning one bar, with every sphere within
+  the tolerance asked at the prompt (`config.MOCAP_SIMILAR_TOL_MM`, 5 mm). The same placement
+  turned end for end counts; a mirror image does not (a bar cannot become its mirror); bars with
+  different marker counts are not compared. Rule: `core/mocap_similarity.py`, built on
+  `mocap_layout_check.match`.
+- Also flags, in dark red, every bar the export would refuse (its own layout fits itself in two
+  poses), at the export's own 2 mm tolerance — so the problem shows up before RSExportRobotCell
+  stops on it.
+- Each group of look-alikes gets its own colour (bar centre-line, tube and MoCap joints), every
+  flagged object is left selected, and the command line says how each pair matches, e.g.
+  `B22 = B20 end for end, within 0.4 mm`. Fix one bar of a group by moving or turning a MoCap
+  joint, then run it again.
+- Marker positions come from the placed MoCap blocks and the spheres recorded on the block
+  (RSDefineJointHalf), each in its own bar frame — the numbers RSExportPrefab writes. A bar with
+  an unrecorded MoCap block is left out and named.
+- Changes nothing but colours. The next run puts back what this one painted over (unless
+  something else repainted it since); RSClearColorPreview clears them too.
 
 ### RSImportScaffoldJSON (`rs_import_scaffold_json.py`)
 

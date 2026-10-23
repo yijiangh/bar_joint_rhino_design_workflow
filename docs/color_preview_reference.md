@@ -91,6 +91,18 @@ colours — so the usual cleanup path covers them too.
 Marks are drawn by `rhino_joint_refresh.mark_broken_links`; tools get a text dot rather than a
 colour, because a block instance's colour does not reach sub-objects that carry baked colours.
 
+## RSCheckMoCapLayout — MoCap look-alikes
+
+Painted on the bar (centre-line + tube) and on its MoCap joints:
+
+| Colour | RGB | Meaning | Defined as |
+| --- | --- | --- | --- |
+| gold, magenta, cyan, lime, brown, navy | see `config` | one per group of bars Motive could mix up; the colour means "group N", not a state, and cycles past six groups | `config.MOCAP_SIMILAR_GROUP_COLORS` |
+| dark red | `170, 0, 0` | the export would refuse this bar (its own layout fits itself in two poses); wins over a group colour | `config.MOCAP_REFUSED_COLOR` |
+
+Undone rather than cleared: each run snapshots what it paints over and the next run puts it back,
+unless something else repainted the object in between. RSClearColorPreview clears it too.
+
 ## IK keyframe colours — RSIKKeyframe, RSIKKeyframeAll, RSShowIKColors
 
 | Colour | RGB | Meaning | Defined as |

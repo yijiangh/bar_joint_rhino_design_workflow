@@ -100,6 +100,23 @@ MOCAP_PREVIEW_COLOR = (60, 150, 200)
 #: rigid motion before the export refuses it as ambiguous (mm).  About twice the
 #: Motive per-marker noise; see ``core.mocap_layout_check``.
 MOCAP_LAYOUT_TOL_MM = 2.0
+#: RSCheckMoCapLayout: two bars whose marker layouts match within this (mm) are
+#: reported as ones Motive could mix up.  Wider than MOCAP_LAYOUT_TOL_MM on
+#: purpose -- it flags layouts that are merely CLOSE, not only identical.  The
+#: command asks for it each run, with this as the default.
+MOCAP_SIMILAR_TOL_MM = 5.0
+#: One colour per group of look-alike bars, as (name, rgb); the name is what the
+#: report prints.  Cycled when there are more groups than colours.
+MOCAP_SIMILAR_GROUP_COLORS = (
+    ("gold", (240, 190, 0)),
+    ("magenta", (220, 0, 180)),
+    ("cyan", (0, 200, 230)),
+    ("lime", (150, 220, 0)),
+    ("brown", (140, 90, 40)),
+    ("navy", (20, 40, 140)),
+)
+#: A bar the export would refuse: its own layout fits itself in two poses.
+MOCAP_REFUSED_COLOR = (170, 0, 0)  # dark red
 #: Walkable-ground breps assigned to a bar.
 WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 #: Bodies reported in collision.

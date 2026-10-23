@@ -266,6 +266,14 @@ turn one or two about it.
 - A bar with no partner there: **RSJointPlace** › JointOnly › **MoCap**
   (`M20-T20-0_mocap`; `Accept | Rotate` to aim the plate).
 
+Then click **RSCheckMoCapLayout** (RSMoCap tab). Motive tells bars apart only
+by the shape their spheres form, so two bars with the same MoCap placement —
+or the same placement end for end — look like one bar to it. The command
+colours and selects every group of such look-alikes (spheres matching within
+5 mm by default; it asks), marks in dark red any bar the export would refuse,
+and prints how each pair matches. Move or turn a MoCap joint on one bar of a
+group and run it again.
+
 **2. Check that every pair mates.** A T20 pair only nests when its two bar
 axes are exactly **36 mm** apart. If they are not, the placement prints
 `interface error too large … auto-flipping receiver side` and an
@@ -500,6 +508,8 @@ scripts/
     joint_placement.py                  # Joint pair placement computation and bake helpers
     single_sided_placement.py           # Ground / standalone MoCap placement on one bar
     marker_points.py                    # MoCap marker spheres between block / world / bar frames
+    mocap_layout_check.py               # Can ONE bar's marker layout give a unique pose? (export refusal)
+    mocap_similarity.py                 # Which bars' marker layouts could Motive mix up? (RSCheckMoCapLayout)
     robot_cell.py                       # Dual-arm robot cell bootstrap + planner access (IK solvers live in the tamp submodule)
     robot_cell_support.py               # Support-arm robot cell helpers
     env_collision.py                    # Environment collision geometry collection/registration
@@ -538,6 +548,7 @@ scripts/
   rs_export_robotcell.py
   rs_read_mocap_bar.py
   rs_align_model_three_bars.py
+  rs_check_mocap_layout.py              # bars Motive could mix up, and bars the export would refuse
 
   # RSStability toolbar: exchange with the stability simulation / layout generator
   rs_import_scaffold_json.py            # layout JSON -> registered bars (bar_id = B<rod_id>)

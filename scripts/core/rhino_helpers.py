@@ -211,6 +211,46 @@ def reset_object_color(object_ids):
             rs.ObjectColorSource(oid, COLOR_BY_LAYER)
 
 
+def paint_remembered(color_by_oid: dict, key: str) -> None:
+    """Paint each object once, remembering what it was so :func:`restore_painted` can undo it.
+
+    For a check command that flags objects by colour and runs again later: the
+    next run calls :func:`restore_painted` with the same *key* first, so a bar
+    flagged last time and fixed since does not stay flagged. Kept in
+    ``sc.sticky`` -- this Rhino session only; RSClearColorPreview clears what is
+    left after a restart.
+
+    Args:
+        color_by_oid (dict): ``{object id: rgb}``; paint each object once.
+        key (str): the ``sc.sticky`` key to remember under, one per command.
+    """
+    record = []
+    for oid, rgb in color_by_oid.items():
+        if oid is None or not rs.IsObject(oid):
+            continue
+        record.append((oid, rs.ObjectColorSource(oid), rs.ObjectColor(oid), tuple(rgb)))
+        set_object_color(oid, rgb)
+    sc.sticky[key] = record
+
+
+def restore_painted(key: str) -> None:
+    """Put back the colours :func:`paint_remembered` painted over, where they are still ours.
+
+    An object something else has repainted since (RSUpdatePreview, or
+    RSClearColorPreview back to by-layer) is left as it is now.
+    """
+    for oid, source, color, ours in sc.sticky.pop(key, None) or []:
+        if not rs.IsObject(oid) or rs.ObjectColorSource(oid) != COLOR_BY_OBJECT:
+            continue
+        now = rs.ObjectColor(oid)
+        if (now.R, now.G, now.B) != ours:
+            continue
+        # Colour first: setting it flips the source to by-object, so the source
+        # is written afterwards (see rhino_bar_registry.restore_object_colors).
+        rs.ObjectColor(oid, color)
+        rs.ObjectColorSource(oid, source)
+
+
 def delete_objects(object_ids):
     """Delete one or more Rhino objects (silently skips missing ones).
 

@@ -2,7 +2,7 @@
 
 Layouts are built from the real ``T20_MoCap`` registry points placed on a
 synthetic 1800 mm bar the way RSJointPlace places them, then divided by 1000
-(the module works in metres).  Pure numpy.
+(the module works in metres) -- see ``tests/mocap_layouts.py``.  Pure numpy.
 """
 
 from __future__ import annotations
@@ -13,44 +13,14 @@ import numpy as np
 import pytest
 
 from core import mocap_layout_check as lc
-from core.joint_pair import canonical_bar_frame_from_line, load_joint_registry
-from core.marker_points import markers_in_frame_mm
-from core.single_sided_placement import fk_single_block_frame
+from mocap_layouts import layout, rigid_motion
 
-T20_MOCAP = load_joint_registry().halves["T20_MoCap"]
-BAR = (np.array([0.0, 0.0, 0.0]), np.array([1800.0, 0.0, 0.0]))
 TOL = lc.DEFAULT_TOL_M
 
-
-def layout(joints) -> np.ndarray:
-    """``(2n, 3)`` marker centres in METRES, bar frame, for ``[(along_mm, turn_deg), ...]``.
-
-    Marker order: joint by joint as given, M1 then M2 -- the order the export
-    uses when the joints are already sorted along the bar.
-    """
-    start, end = BAR
-    bar_frame = canonical_bar_frame_from_line(start, end)
-    points = []
-    for along_mm, turn_deg in joints:
-        world = fk_single_block_frame(start, end, along_mm, np.radians(turn_deg), T20_MOCAP)
-        in_bar = markers_in_frame_mm(world, T20_MOCAP.marker_points_mm, bar_frame)
-        points.append(in_bar["M1"])
-        points.append(in_bar["M2"])
-    return np.asarray(points, dtype=float) / 1000.0
-
-
-def rigid_motion(seed: int):
-    """A random rotation and translation, as ``(R, t)``."""
-    rng = np.random.default_rng(seed)
-    q = rng.normal(size=4)
-    q /= np.linalg.norm(q)
-    w, x, y, z = q
-    rot = np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ])
-    return rot, rng.normal(scale=1.0, size=3)
+#: How exactly a half-turn's angle can be read back, in degrees.  The angle comes
+#: from arccos of a value next to -1, where rounding noise of 1e-13 in the matrix
+#: already moves it by about 1e-6 deg, so a 1e-6 tolerance fails on round-off.
+ANGLE_ABS_DEG = 1e-4
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +78,7 @@ def test_two_joints_same_facing_are_ambiguous():
     assert len(report.symmetries) >= 3
     for sym in report.symmetries:
         assert sym.max_residual_m <= 1e-6
-        assert sym.angle_deg == pytest.approx(180.0, abs=1e-6)
+        assert sym.angle_deg == pytest.approx(180.0, abs=ANGLE_ABS_DEG)
 
 
 def test_two_joints_are_never_enough_even_turned():
@@ -120,7 +90,7 @@ def test_two_joints_are_never_enough_even_turned():
     # misses within the tolerance may follow it; they do not matter here.
     sym = report.symmetries[0]
     assert set(sym.permutation[:2]) == {2, 3} and set(sym.permutation[2:]) == {0, 1}
-    assert sym.angle_deg == pytest.approx(180.0, abs=1e-6)
+    assert sym.angle_deg == pytest.approx(180.0, abs=ANGLE_ABS_DEG)
     assert sym.max_residual_m <= 1e-6
     assert "half-turn" in report.reason()
 

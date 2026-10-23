@@ -111,6 +111,11 @@ unless something else repainted the object in between. RSClearColorPreview clear
 | pink | `230, 115, 150` | IK attempted at the placed base and failed — and, by design, also the fake-bar tint | `COLOR_FAILED` = `SEQ_COLOR_FAKE` |
 | pink **(transient)** | `230, 115, 150` | RSIKKeyframe **rejected the bar you picked** — painted on its tool-bearing joint blocks (or on the bar, if it has none), cleared on the next pick and on exit | `COLOR_FAILED` |
 | red | `255, 40, 40` | collision highlight (RSIKKeyframe, RSShowBarActionPlan) | `config.COLLISION_COLOR` |
+| amber | `230, 160, 30` | RSIKMaintenance › CheckIK: the bar's saved IK no longer fits the model and must be recalculated. Undone by the next CheckIK, like the MoCap look-alike colours | `config.IK_STALE_COLOR` |
+
+Amber sits near the MoCap look-alike gold (`240, 190, 0`). Both stay on screen until cleared, so
+after running both checks the two can show at once; the command-line report of each says which
+bars it painted, and RSClearColorPreview clears both.
 
 ## Base placement — guides, frame marker, reach
 

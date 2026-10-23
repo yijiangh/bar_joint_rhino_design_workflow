@@ -3,8 +3,10 @@
 # r: numpy==1.24.4
 """RSClearIKKeyframe - Erase a bar's saved dual-arm IK data.
 
-Left-click (this script): pick ONE bar. Right-click
-(``rs_clear_ik_keyframe_all.py``): every registered bar.
+This script: pick ONE bar; ``rs_clear_ik_keyframe_all.py`` (RSClearIKKeyframeAll):
+every registered bar. Neither has a toolbar button of its own any more --
+RSIKMaintenance > ClearOneBar / ClearAllBars runs them -- and both can still be
+typed.
 
 Either way it then asks WHAT to erase via three toggles, all defaulting to Erase:
 
@@ -66,16 +68,18 @@ def _ask_what_to_erase(scope_label: str):
     return bool(choices[0]), bool(choices[1]), bool(choices[2])
 
 
-def clear_ik(all_bars: bool) -> None:
-    """Erase IK data on one picked bar (left-click) or every bar (right-click).
+def clear_ik(all_bars: bool, bar_ids=None) -> None:
+    """Erase IK data on one picked bar, every bar, or the bars given.
 
-    Picks the scope, then prompts a two-toggle choice of WHAT to erase
-    (``Keyframe`` / ``BasePosition``, both default Erase) and applies it to every
-    target bar.
+    Picks the scope, then prompts a three-toggle choice of WHAT to erase
+    (``Keyframe`` / ``BasePosition`` / ``Support``, all default Erase) and applies
+    it to every target bar.
 
     Args:
         all_bars (bool): False = pick one bar (left-click); True = every registered
-            bar (right-click).
+            bar (right-click). Ignored when *bar_ids* is given.
+        bar_ids (Iterable[str] | None): clear exactly these bars, no pick --
+            RSIKMaintenance passes the bars its check flagged.
 
     Returns:
         None.
@@ -83,11 +87,21 @@ def clear_ik(all_bars: bool) -> None:
     config = importlib.reload(_config_module)
     registry = importlib.reload(_registry_module)
 
-    title = "RSClearIKKeyframe" + (" (all bars)" if all_bars else "")
+    if bar_ids is not None:
+        title = "RSClearIKKeyframe (chosen bars)"
+    else:
+        title = "RSClearIKKeyframe" + (" (all bars)" if all_bars else "")
     repair_on_entry(float(config.BAR_RADIUS), title)
 
-    # 1) Scope: one picked bar, or every registered bar.
-    if all_bars:
+    # 1) Scope: the bars given, every registered bar, or one picked bar.
+    if bar_ids is not None:
+        seq_map = registry.get_bar_seq_map()  # {bar_id: (oid, seq)}
+        targets = [(bar_id, seq_map[bar_id][0]) for bar_id in bar_ids if bar_id in seq_map]
+        if not targets:
+            rs.MessageBox("None of the chosen bars is a registered bar.", 0, title)
+            return
+        scope_label = f"{len(targets)} chosen bar(s)"
+    elif all_bars:
         seq_map = registry.get_bar_seq_map()  # {bar_id: (oid, seq)}
         if not seq_map:
             rs.MessageBox("No registered bars in the document.", 0, title)

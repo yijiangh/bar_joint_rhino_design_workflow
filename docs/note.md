@@ -2680,3 +2680,39 @@ rotation of the fit says how bar B sits relative to bar A:
 A **mirror image** never counts: a rotation cannot turn a bar into its mirror, so Motive can tell
 them apart. Neither do bars with **different marker counts** — with every sphere in view, Motive
 does not confuse a 6-marker body with an 8-marker one.
+
+## 34. "Stale IK" — why RSIKMaintenance › CheckIK replays a keyframe instead of comparing it
+
+> ⚠️ **Repo convention** (the word "stale", the tolerances, the amber). The checks themselves are
+> **real robotics**: forward kinematics (FK — "where does the flange end up for these joint angles")
+> and a collision check, both done by PyBullet.
+
+### What it is
+
+A bar's IK keyframe is saved as user text on the bar: the robot base frame (a 4×4 matrix) and, per
+pose, the 6 joint angles of each arm. That is **all** — no copy of where the joints, tools or ground
+were when it was solved. So when you move a joint, the keyframe still says "solved", but the arm
+angles now point the flange at where the joint *used to be*. **Stale** = still saved, no longer right.
+
+### Where it lives
+
+- The rule: `scripts/core/ik_check.py`; the tolerances: `config.IK_CHECK_*`; the button:
+  **RSIKMaintenance** (`scripts/rs_ik_maintenance.py`), on RSDesign where RSClearIKKeyframe was.
+- What it replays against: `bar_action.build_split_assembly_movements` — the same function
+  RSIKKeyframe solves against, so "the same scene the solver saw" is literally the same code.
+
+### What sets it off — one real example per cause
+
+| You change… | The check says… | Because… |
+|---|---|---|
+| a joint, with RSJointEdit › MoveJoint 20 mm | `assembled: left tool 20.0 mm / 0.0 deg from its target` | the tool moved with the joint; FK of the saved angles did not |
+| the WalkableGround, raised 50 mm | `base 50 mm below the walkable ground -- did the ground move?` | the saved base is where the old ground was |
+| a held bar, moved | `support (Alice): grasp 35.0 mm / 0.0 deg off the bar -- the bar moved` | the support grasp is saved in world coordinates |
+| another bar's support IK, re-solved into the way | `retreat: collides -- <arm link> <-> <the holding robot's body>` | frozen holders are part of every step's scene |
+
+### Why the cell is rebuilt first
+
+PyBullet checks against the **collision cell**, a snapshot of the model taken by RSRebuildRobotCell.
+Its "is it out of date?" test (`robot_cell.prompt_if_cell_stale`) counts bars and sums bar end
+points — it does **not** see a joint that moved along its bar. A check that trusted the old snapshot
+would miss exactly the change it is meant to find, so CheckIK always rebuilds it.

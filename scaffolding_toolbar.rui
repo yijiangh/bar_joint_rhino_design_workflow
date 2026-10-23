@@ -111,10 +111,6 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000012" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000012</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000040" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000040</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000041</right_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000008" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000008</left_macro_id>
       </tool_bar_item>
@@ -128,6 +124,9 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000015" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000015</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000017</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000040" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000082</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000011" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000011</left_macro_id>
@@ -343,7 +342,7 @@
         <locale_1033>RSClearIKKeyframe</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Left-click: pick ONE bar, then choose what to erase via two toggles -- Keyframe (M1-M3 arm IK config) and BasePosition (mobile base), both default Erase. Untick one to keep it (e.g. keep the base to re-solve at the same spot). Right-click: same, but applies to EVERY bar. M4 home config is a constant, left untouched.</locale_1033>
+        <locale_1033>No button of its own (RSIKMaintenance > ClearOneBar runs it); typeable. Pick ONE bar, then choose what to erase via three toggles -- Keyframe (M1-M3 arm IK config), BasePosition (mobile base), Support (the support robot's hold) -- all default Erase. Untick one to keep it (e.g. keep the base to re-solve at the same spot). M4 home config is a constant, left untouched.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_clear_ik_keyframe.py"</script>
     </macro_item>
@@ -352,9 +351,18 @@
         <locale_1033>RSClearIKKeyframeAll</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Right-click companion of RSClearIKKeyframe: apply the clear to EVERY registered bar, then choose what to erase via the same two toggles (Keyframe / BasePosition, both default Erase).</locale_1033>
+        <locale_1033>No button of its own (RSIKMaintenance > ClearAllBars runs it); typeable. Apply the clear to EVERY registered bar, then choose what to erase via the same three toggles (Keyframe / BasePosition / Support, all default Erase).</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_clear_ik_keyframe_all.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000082">
+      <text>
+        <locale_1033>RSIKMaintenance</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Check or clear the saved IK. CheckIK (Enter, needs RSPBStart): rebuilds the collision cell, replays every saved assembly + support keyframe against the current model -- arms still reach the tools, no collision, base on the walkable ground, support grasp on its bar -- paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). ClearOneBar / ClearAllBars: erase the IK of one picked bar or every bar (Keyframe / BasePosition / Support toggles).</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_ik_maintenance.py"</script>
     </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000042">
       <text>

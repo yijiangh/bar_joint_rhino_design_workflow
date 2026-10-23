@@ -230,6 +230,24 @@ IK_BASE_STANDOFF_MM = 1000.0  # mm
 # RSIKKeyframe / RSIKKeyframeAll draw on the walkable ground.
 IK_BASE_STANDOFF_MULTIBAR_MM = 500.0  # mm
 
+# RSIKMaintenance > CheckIK: how far a saved IK keyframe may drift from today's
+# model before the bar is flagged for recalculation (core.ik_check).  The solver
+# reaches its targets to 1e-5 m / 1e-5 rad, so anything near these limits means
+# the model moved, not solver noise.
+#: Arm flange vs its target (a joint, the bar or a tool moved).
+IK_CHECK_TCP_TOL_MM = 1.0
+IK_CHECK_TCP_TOL_DEG = 0.5
+#: Robot base vs the walkable ground under it (the ground moved).  Looser than
+#: the flange: a base snapped onto a curved ground's brep sits a little off its
+#: tessellated mesh.
+IK_CHECK_BASE_GROUND_TOL_MM = 10.0
+IK_CHECK_BASE_TILT_TOL_DEG = 3.0
+#: A support grasp vs the held bar's centre line (the bar moved).
+IK_CHECK_GRASP_TOL_MM = 1.0
+IK_CHECK_GRASP_TOL_DEG = 0.5
+#: Bars whose saved IK must be recalculated.
+IK_STALE_COLOR = (230, 160, 30)  # amber
+
 # ---------------------------------------------------------------------------
 # Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)
 #

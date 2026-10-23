@@ -21,12 +21,13 @@ Rhino closed after adding a button (see `docs/note.md` §8).
 | RSDesign | RSBarSelect | `rs_bar_select.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: bars are colored and tagged by length; type a length to select that group, then optionally its **BearingJoints** or **PairedJoints**. The model is never edited. | Workshop participants |
 | RSDesign | RSBarSnap | `rs_bar_snap.py` | Snap a new bar to contact distance from an existing bar | Workshop participants |
 | RSDesign | RSBarSubfloor | `rs_bar_subfloor.py` | Add a subfloor bar between two existing bars, with independent left/right joint pairs | Workshop participants |
-| RSDesign | RSClearIKKeyframe | `rs_clear_ik_keyframe.py` | Left-click: pick ONE bar. Right-click (`rs_clear_ik_keyframe_all.py`): EVERY bar. Either way, then choose what to erase via two toggles — Keyframe (M1-M3 IK config + legacy blob) and BasePosition (mobile base) — both default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
+| RSDesign | ~~RSClearIKKeyframe~~ | `rs_clear_ik_keyframe.py` | **No button of its own any more — RSIKMaintenance › ClearOneBar / ClearAllBars runs it; still typeable**, as is **RSClearIKKeyframeAll** (`rs_clear_ik_keyframe_all.py`). Pick ONE bar (or take EVERY bar), then choose what to erase via three toggles — Keyframe (M1-M3 IK config + legacy blob), BasePosition (mobile base), Support (the support robot's hold) — all default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
 | RSDesign | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews | Workshop participants |
 | RSDesign | RSExportBarAction | `rs_export_bar_action.py` | Left-click: export ONE picked bar's action JSON. Right-click: batch-export ALL bars (runs `rs_export_all_bar_actions.py`). | Planning/export users |
 | RSDesign | RSExportAllBarActions | `rs_export_all_bar_actions.py` | Right-click companion of RSExportBarAction (no standalone button). Exports EVERY bar (IK optional) + RobotCell.json + WalkableGround.json. Bars without IK are solved later by the headless base+IK sampler. | Planning/export users |
 | RSDesign | RSExportRobotCell | `rs_export_robotcell.py` | Export `RobotCell.json`, plus `MoCapMarkers.json` (designed MoCap markers) when any are placed | Planning/export users |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
+| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK rebuilds the collision cell, replays every saved assembly + support keyframe against today's model (arms still reach the tools, no collision, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). Needs PyBullet for CheckIK. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
 | RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
 | RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
 | RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
@@ -515,15 +516,50 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - The ghost robot is FK-only (no PyBullet needed): its link meshes are harvested once at the home pose (`core.ik_viz.get_robot_link_meshes_at_state`, from a **bare** robot cell so only the robot is drawn) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.
 - Auto-assignment also runs inside RSRebuildRobotCell, so this command is for inspecting/correcting a specific bar. On the RSDesign toolbar.
 
+### RSIKMaintenance (`rs_ik_maintenance.py`)
+
+- One button for IK upkeep. It asks first: **CheckIK** (Enter), **ClearOneBar**, **ClearAllBars**.
+  The two Clear modes are RSClearIKKeyframe / RSClearIKKeyframeAll, unchanged (next section).
+- **Why a check is needed.** A saved keyframe is only joint angles and a base frame; nothing
+  records what it was solved against. When a joint or a bar moves, the walkable ground changes
+  height, or another bar's IK changes (a support robot now standing where this robot's arm goes),
+  the old keyframe silently stops fitting — and RSIKKeyframeAll skips "already solved" bars.
+- **What CheckIK does** (needs PyBullet, RSPBStart):
+  1. Rebuilds the collision cell from the current model, always: the cached cell's staleness
+     check does not notice a moved joint.
+  2. For every bar with a saved **assembly** keyframe, puts the robot at the saved base and, for
+     approach / assembled / retreat, at the saved configuration — in exactly the state the solver
+     used for that pose (`bar_action.build_split_assembly_movements`: the same attachments,
+     allowed contacts, bars built so far, and support robots frozen holding other bars) — and
+     flags the bar when an arm's flange is more than 1 mm / 0.5° from its target (a joint, the bar
+     or a tool moved), the pose collides (the pairs are named), or the base is more than 10 mm /
+     3° off the walkable ground under it.
+  3. For every bar with a saved **support** keyframe: flags a changed robot assignment in today's
+     hold plan, a grasp more than 1 mm / 0.5° off the bar's centre line, a pose that no longer
+     reaches its gripper target, a collision in the hold scene or the release scene (the two the
+     hold was accepted in), or a base off the ground.
+  4. Paints the flagged bars amber (`config.IK_STALE_COLOR`), selects them, and prints, per bar,
+     every reason. Re-solve them in assembly order: re-solving one bar changes the scene for the
+     bars after it.
+  5. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber ones),
+     then the usual three erase toggles.
+- Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`. The amber stays until the next
+  CheckIK (which puts back what it painted over), RSUpdatePreview or RSClearColorPreview.
+
 ### RSClearIKKeyframe (`rs_clear_ik_keyframe.py`) / RSClearIKKeyframeAll (`rs_clear_ik_keyframe_all.py`)
 
-- **Scope first**: **Left-click** (`rs_clear_ik_keyframe.py`) picks ONE bar; **Right-click** (`rs_clear_ik_keyframe_all.py`) targets EVERY registered bar.
-- **Then what to erase**: a two-toggle command-line prompt (`rs.GetBoolean`), both defaulting to **Erase**:
+- **No button of their own any more**: RSIKMaintenance › ClearOneBar / ClearAllBars runs them.
+  Both can still be typed (RSRegisterAliases).
+- **Scope first**: `rs_clear_ik_keyframe.py` picks ONE bar; `rs_clear_ik_keyframe_all.py`
+  targets EVERY registered bar; RSIKMaintenance's CleanAll / CleanSelected pass the bars its
+  check flagged.
+- **Then what to erase**: a three-toggle command-line prompt (`rs.GetBoolean`), all defaulting to **Erase**:
   - **Keyframe** — the approach/assembled/retreat per-arm configs (`KEY_ASSEMBLY_IK_APPROACH` / `IK_ASSEMBLED` / `IK_RETREAT`, the M1–M3 results).
   - **BasePosition** — the mobile base frame (`KEY_ASSEMBLY_BASE_FRAME`).
-  - Untick one to keep it — e.g. keep the base to re-solve at the same spot (RSIKKeyframe's "reuse saved base" path), or keep the keyframe and drop only the base. Both unticked = nothing to do.
-- Both clicks share `clear_ik(all_bars)`; the underlying helper is `rhino_bar_registry.clear_assembly_ik_keyframe(bar_oid, clear_keyframe=..., clear_base_frame=...)`.
-- The legacy `ik_assembly` blob bundles base + configs and can't be split, so it is removed whenever **either** toggle is on; the authoritative split keys carry whatever is kept. M4's home config is a constant (`config.HOME_CONF_*`), not stored per bar, so it is left untouched.
+  - **Support** — the support robot's hold keyframe (robot, base, grasp, approach + held configs).
+  - Untick one to keep it — e.g. keep the base to re-solve at the same spot (RSIKKeyframe's "reuse saved base" path), or keep the keyframe and drop only the base. All unticked = nothing to do.
+- Every scope shares `clear_ik(all_bars, bar_ids=None)`; the underlying helpers are `rhino_bar_registry.clear_assembly_ik_keyframe(bar_oid, clear_keyframe=..., clear_base_frame=...)` and `clear_support_ik_keyframe(bar_oid)`.
+- The legacy `ik_assembly` blob bundles base + configs and can't be split, so it is removed whenever **either** of the first two toggles is on; the authoritative split keys carry whatever is kept. M4's home config is a constant (`config.HOME_CONF_*`), not stored per bar, so it is left untouched.
 - Only edits user-text on the bar curves — no PyBullet required.
 
 ### RSClearPreview (`rs_clear_preview.py`)

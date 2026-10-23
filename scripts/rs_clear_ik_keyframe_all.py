@@ -3,11 +3,12 @@
 # r: numpy==1.24.4
 """RSClearIKKeyframeAll - Erase saved dual-arm IK data on EVERY bar.
 
-Right-click companion to ``RSClearIKKeyframe`` (left-click = one picked bar). This
-one applies the clear to every registered bar, then asks the same two-toggle
-choice of WHAT to erase (``Keyframe`` / ``BasePosition``, both default Erase).
-Shares the scope + prompt + clear + report logic with the left-click script via
-``clear_ik``.
+The every-bar companion of ``RSClearIKKeyframe`` (one picked bar). Both have no
+toolbar button of their own any more: RSIKMaintenance > ClearAllBars runs this,
+and the command can still be typed. It applies the clear to every registered
+bar, then asks the same three-toggle choice of WHAT to erase (``Keyframe`` /
+``BasePosition`` / ``Support``, all default Erase). Shares the scope + prompt +
+clear + report logic via ``clear_ik``.
 """
 
 from __future__ import annotations

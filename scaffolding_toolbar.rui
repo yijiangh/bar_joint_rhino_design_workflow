@@ -622,33 +622,6 @@
       </tooltip>
       <script>! _-ScriptEditor _R "rs_check_mocap_layout.py"</script>
     </macro_item>
-    <macro_item guid="87856446-3dda-4fba-9033-a40435439586">
-      <text>
-        <locale_1033>RSSequenceRenumber</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>renumber bar_id</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _Run "rs_sequence_renumber.py"</script>
-    </macro_item>
-    <macro_item guid="08f0999d-5d7c-4120-9244-85f08ff82f3c">
-      <text>
-        <locale_1033>RSSequencePreview</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>preview bar sequence</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_sequence_preview.py"</script>
-    </macro_item>
-    <macro_item guid="79dba12b-fb85-4168-a86c-796546386f74">
-      <text>
-        <locale_1033>RSSequenceRenumber</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>renumber bar sequence</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_sequence_renumber.py"</script>
-    </macro_item>
   </macros>
   <icons>
     <icon guid="352fc154-0f90-54b8-abe0-c6515c86f7cf" name="352fc154-0f90-54b8-abe0-c6515c86f7cf.svg">

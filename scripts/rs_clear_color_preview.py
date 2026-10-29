@@ -41,11 +41,11 @@ def main():
     reg = importlib.reload(_rhino_bar_registry_module)
     joint_refresh = importlib.reload(_rhino_joint_refresh_module)
 
-    # clear_broken_link_marks already reverts bars, joints, tools and dots; the
-    # bar-registry call is kept because it owns the IK overlay's bookkeeping and
-    # reports how many bars it touched.
-    n_bars = reg.clear_ik_preview()
+    # clear_broken_link_marks reverts EVERY bar, joint, tool and dot to by-layer,
+    # fake bars included; clear_ik_preview then repaints the fake bars pink. So
+    # this order, not the other: the other way round the reset wipes the pink.
     n_marks = joint_refresh.clear_broken_link_marks()
+    n_bars = reg.clear_ik_preview()
 
     print(
         f"RSClearColorPreview: reverted {n_bars} bar(s) and cleared {n_marks} "

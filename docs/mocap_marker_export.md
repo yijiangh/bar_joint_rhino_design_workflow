@@ -99,8 +99,8 @@ are listed, the rest of the export's bar bodies appear in `bars_without_markers`
   "layout_tolerance_m": 0.002,
   "marker_blocks": {
     "T20_MoCap": {
-      "marker_diameter_m": 0.019,
-      "points_block_m": {"M1": [-0.01, 0.02415, 0.0255], "M2": [-0.01, -0.02415, 0.0255]}
+      "marker_diameter_m": 0.02,
+      "points_block_m": {"M1": [-0.01, -0.02415, 0.026], "M2": [-0.01, 0.02415, 0.026]}
     }
   },
   "bars": {

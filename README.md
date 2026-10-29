@@ -250,7 +250,7 @@ authors). **RSDefineJointHalf** on `T20_MoCap`: `CopyFromFemale` (its frames
 are the Female's), then pick each sphere and type its label, `M1`, `M2`; the
 sphere diameter is measured from the picks. Already done for T20:
 `scripts/core/joint_pairs.json` › `T20_MoCap` › `marker_points_mm`,
-`marker_diameter_mm` (19 mm).
+`marker_diameter_mm` (20 mm).
 
 **1. Place MoCap joints: at least three per bar you want to track, not all
 facing the same way, not mirror-symmetric about the bar's middle.** Two joints
@@ -313,7 +313,7 @@ onto the measured markers is the measured bar pose:
 | Which marker is this? | `bars.<bar body>.markers[].name`, `label`, `joint`; its number on the bar is its position in the list | `J20-22_mocap_M1`, `M1`, `joint_J20-22_mocap`, number 1 on `bar_B20` |
 | Where is the marker on its bar? | `markers[].bar_m` (bar body frame, metres) | `[-0.0274, -0.022, 0.0849]` |
 | Where is it in the world? | not stored: `bar_state_frame @ bar_m`, with the bar's frame from the BarAction state | — |
-| How big is the sphere? | `marker_blocks.<block>.marker_diameter_m` | `0.019` |
+| How big is the sphere? | `marker_blocks.<block>.marker_diameter_m` | `0.02` |
 | Which bars are untracked? | `bars_without_markers` | `["bar_B22"]` |
 | How safely unique is the layout? | `bars.<bar body>.layout.nearest_miss_m` (how close another pose came; the export notes it when under 6 mm) | `0.0412` |
 

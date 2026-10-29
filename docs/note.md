@@ -247,7 +247,8 @@ exactly how `rs_ik_keyframe_all.py` imports `rs_ik_keyframe` to reuse its helper
 
 Before writing new code, look for an existing function/button that already does it:
 - IK solved-check → `has_ik_keyframe`
-- base placement geometry → `default_base_frame_for_bar` (+ `derive_seed_base`)
+- base placement geometry → `default_base_frame_for_bar` (the same steps as tamp's
+  `derive_seed_base`, taken in Rhino because that function always stands at tamp's 700 mm)
 - picking bars → `bar_or_tube_filter` + `resolve_picked_to_bar_curve`
 - the right-click "…All" script imports the left-click script and calls its helpers.
 
@@ -899,8 +900,8 @@ extension line, and it matters because the placed base origin always sits on it:
            the base origin sits HERE, at the offset matching the standoff
 ```
 
-So the default standoff is kept equal to the middle offset (500 mm): the auto-placed base
-lands exactly on a line you can see.
+So the default standoff, `config.IK_BASE_STANDOFF_MM`, is kept equal to the outer offset
+(625 mm): the auto-placed base lands exactly on a line you can see.
 
 ### "Robot left" — which end takes the L tool
 

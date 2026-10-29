@@ -207,7 +207,8 @@ def require_pair_names(command_name: str) -> list[str] | None:
     names = list_joint_pair_names()
     if not names:
         rs.MessageBox(
-            "No joint pairs are registered yet.  Run RSDefineJointPair first.",
+            "No joint pairs are registered yet.  Define the two halves with "
+            "RSDefineJointHalf, then their mate with RSDefineJointMate.",
             0,
             command_name,
         )

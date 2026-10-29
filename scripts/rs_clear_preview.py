@@ -72,12 +72,28 @@ def _count(layers):
     return total, hidden
 
 
-def _delete_empty_groups() -> int:
+def _groups_of(oids) -> set:
+    """Names of every group any of *oids* belongs to."""
+    names = set()
+    for oid in oids:
+        names.update(rs.ObjectGroups(oid) or [])
+    return names
+
+
+def _delete_emptied_groups(names) -> int:
+    """Delete those of *names* -- the preview objects' groups -- that are now empty.
+
+    Only these: an empty group elsewhere in the document is not ours to remove.
+    """
     groups = sc.doc.Groups
-    empty = [g.Index for g in groups if not g.IsDeleted and groups.GroupObjectCount(g.Index) == 0]
-    for index in empty:
-        groups.Delete(index)
-    return len(empty)
+    n = 0
+    for name in names:
+        group = groups.FindName(name)
+        if group is None or group.IsDeleted or groups.GroupObjectCount(group.Index):
+            continue
+        groups.Delete(group.Index)
+        n += 1
+    return n
 
 
 def main():
@@ -88,6 +104,11 @@ def main():
     layers = _preview_layers(helpers)
     before, hidden = _count(layers)
     print(f"{CALLER}: {before} preview object(s) on {len(layers)} layer(s), {hidden} of them hidden.")
+    # Read before anything is deleted: discard_cache below empties the IK Cache
+    # layers, and a deleted object no longer says which group it was in.
+    preview_groups = _groups_of(
+        oid for layer in layers for oid in (rs.ObjectsByLayer(layer) or [])
+    )
 
     undo_was = sc.doc.UndoRecordingEnabled
     try:
@@ -102,7 +123,7 @@ def main():
         oids = [oid for layer in layers for oid in (rs.ObjectsByLayer(layer) or [])]
         with helpers.suspend_redraw():
             helpers.delete_objects_any_state(oids)
-        n_groups = _delete_empty_groups()
+        n_groups = _delete_emptied_groups(preview_groups)
     finally:
         sc.doc.UndoRecordingEnabled = undo_was
 

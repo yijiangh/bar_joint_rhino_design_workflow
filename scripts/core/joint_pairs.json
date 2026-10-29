@@ -14,6 +14,7 @@
       "collision_filename": "T20Deck12_Male.obj",
       "bar_cradle": false,
       "marker_points_mm": {},
+      "marker_diameter_mm": 0.0,
       "M_block_from_bar": [
         [
           0.0,
@@ -81,6 +82,7 @@
       "collision_filename": "T20SubLeft_Female.obj",
       "bar_cradle": true,
       "marker_points_mm": {},
+      "marker_diameter_mm": 0.0,
       "M_block_from_bar": [
         [
           9.547918011776346e-15,
@@ -148,6 +150,7 @@
       "collision_filename": "T20SubRight_Female.obj",
       "bar_cradle": true,
       "marker_points_mm": {},
+      "marker_diameter_mm": 0.0,
       "M_block_from_bar": [
         [
           9.547918011776346e-15,
@@ -215,6 +218,7 @@
       "collision_filename": "T20_Female.obj",
       "bar_cradle": false,
       "marker_points_mm": {},
+      "marker_diameter_mm": 0.0,
       "M_block_from_bar": [
         [
           -2.886579864025407e-15,
@@ -282,6 +286,7 @@
       "collision_filename": "T20_Male.obj",
       "bar_cradle": false,
       "marker_points_mm": {},
+      "marker_diameter_mm": 0.0,
       "M_block_from_bar": [
         [
           -3.774758283725532e-15,
@@ -348,19 +353,19 @@
       "preferred_robotic_tool_name": "",
       "collision_filename": "T20_MoCap.obj",
       "bar_cradle": false,
-      "marker_diameter_mm": 19.0,
       "marker_points_mm": {
         "M1": [
           -9.999999999927478,
-          24.15000057220459,
-          25.500000000000043
+          -24.15000057220459,
+          26.000000000000107
         ],
         "M2": [
-          -9.999999999886786,
-          -24.15000057220459,
-          25.500000000000043
+          -9.999999999902073,
+          24.15000057220459,
+          26.000000000000107
         ]
       },
+      "marker_diameter_mm": 20.000000635839765,
       "M_block_from_bar": [
         [
           -2.886579864025407e-15,

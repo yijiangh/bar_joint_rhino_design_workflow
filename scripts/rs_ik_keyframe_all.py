@@ -23,7 +23,8 @@ Flow
 2. Select the bars to process (curve or tube; pre-selection honored). If any picked
    bar ALREADY has solved IK, a warning asks whether to recalculate (overwrite) it:
    Yes re-solves those bars too, No keeps their existing IK and skips them.
-3. Type the base standoff distance (mm), default 750.
+3. Type the base standoff distance (mm), default ``config.IK_BASE_STANDOFF_MM``
+   (625 mm, the outer base-guide line).
 4. For each bar being processed that IS IK-ready (exactly two tool-bearing L/R
    joints + an assigned WalkableGround), place a mobile base: stand ``standoff`` mm
    behind the GRABBED-JOINT CENTER (midpoint of the two held joints), on the ground,
@@ -529,12 +530,12 @@ def main():
             return
         recalc_solved = (resp == 6)  # 6 = Yes
 
-    # REQ2: standoff distance is user-typeable. The default is the MIDDLE base-guide
-    # offset (500 mm), so the auto-placed base lands on the middle guide line and
-    # 375 / 625 read as the two alternatives drawn either side of it.
+    # REQ2: standoff distance is user-typeable. The default is the OUTER base-guide
+    # offset (625 mm), so the auto-placed base lands on the outer guide line and
+    # 375 / 500 read as the closer alternatives drawn in front of it.
     standoff = rs.GetReal(
         "Robot base standoff from bar (mm)",
-        float(ikf.config.IK_BASE_STANDOFF_MULTIBAR_MM),
+        float(ikf.config.IK_BASE_STANDOFF_MM),
         0.0,
     )
     if standoff is None:

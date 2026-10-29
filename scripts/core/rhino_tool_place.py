@@ -1046,7 +1046,7 @@ def enforce_bar_tool_sides(verbose: bool = False) -> int:
                 continue
             diag = _rwg.resolve_bar_heading(
                 bar_oid, bar_id, soups, ground_point, ground_normal,
-                float(config.IK_BASE_STANDOFF_MULTIBAR_MM), verbose=False,
+                float(config.IK_BASE_STANDOFF_MM), verbose=False,
             )
             heading_done.add(bar_id)
             n_fixed += assign_tool_sides_from_heading(

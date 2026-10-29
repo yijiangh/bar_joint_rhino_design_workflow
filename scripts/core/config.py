@@ -209,26 +209,24 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
-# IK base sampling fallback.  Rhino's own values (tamp's own defaults differ:
-# 20 iterations, 700 mm standoff); Rhino passes them to tamp explicitly.
+# IK base sampling fallback.  Rhino's own values (tamp's own default differs:
+# 20 iterations); Rhino passes them to tamp explicitly.
 IK_BASE_SAMPLE_RADIUS = 1000.0  # mm
 IK_BASE_SAMPLE_MAX_ITER = 10
-# How far BEHIND the bar the SEED mobile base stands (mm). The seed is offset
-# from the bar's ground projection by this distance, OPPOSITE the average
-# male-joint insertion direction (the way the bar is pushed to mate), so the base
-# faces along the insertion direction and moving forward carries the bar into the
-# assembly. Only a starting point: the expanding-radius search samples around this
-# seed and IK validates each. Tunable.
-IK_BASE_STANDOFF_MM = 1000.0  # mm
-# Standoff used by the MULTI-bar IK command (RSIKKeyframeAll): the mobile base is
-# placed this far perpendicular from each bar, facing the center between the two
-# held joints. Shorter than the single-bar seed above by design (the user places
-# these deliberately, closer to the work). Tunable.
+# How far BEHIND the bar the mobile base stands (mm), for EVERY automatic base
+# placement in Rhino: RSIKKeyframeAll (its prompt default), RSIKKeyframe's Flip,
+# RSAssignAndShowWalkableGround, the RSRebuildRobotCell batch fill and the
+# RSUpdatePreview tool-side check.  The base is offset from the bar's ground
+# projection by this distance, OPPOSITE the average male-joint insertion direction
+# (the way the bar is pushed to mate), so it faces along the insertion direction
+# and moving forward carries the bar into the assembly.  Tunable.
 #
-# Kept equal to the MIDDLE entry of ``BASE_GUIDE_OFFSETS_MM`` below, so the
-# auto-placed base lands exactly on the middle base-guide line that
-# RSIKKeyframe / RSIKKeyframeAll draw on the walkable ground.
-IK_BASE_STANDOFF_MULTIBAR_MM = 500.0  # mm
+# Equal to the OUTER entry of ``BASE_GUIDE_OFFSETS_MM`` below, so an auto-placed
+# base lands on the outer base-guide line RSIKKeyframe / RSIKKeyframeAll draw.
+# Rhino takes this step itself (``rhino_walkable_ground.default_base_frame_for_bar``):
+# tamp's ``derive_seed_base`` always stands at tamp's own standoff (700 mm, used by
+# the offline planner's base search) and takes no argument for it.
+IK_BASE_STANDOFF_MM = 625.0  # mm
 
 # RSIKMaintenance > CheckIK: how far a saved IK keyframe may drift from today's
 # model before the bar is flagged for recalculation (core.ik_check).  The solver
@@ -258,7 +256,7 @@ IK_STALE_COLOR = (230, 160, 30)  # amber
 #   - that line offset AGAINST the assembly direction by each distance below;
 #   - the "extension line" joining all those lines' midpoints -- the line the
 #     placed base origin sits on.
-# The middle offset is the multi-bar default standoff (see above).
+# The outer offset is the default standoff, IK_BASE_STANDOFF_MM (see above).
 # ---------------------------------------------------------------------------
 BASE_GUIDE_OFFSETS_MM = (375.0, 500.0, 625.0)
 

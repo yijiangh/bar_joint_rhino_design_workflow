@@ -185,7 +185,7 @@ HUSKY_SRDF_REL_PATH = os.path.join("config", "dual_arm_husky.srdf")
 # ``-unit(avg(male z)) * LM_APPROACH_DISTANCE`` off the assembled pose -- one
 # shared axis, so the bar stays rigid between the arms
 # (`core.bar_action._compute_approach_targets_mm`).
-LM_APPROACH_DISTANCE = 15.0  # mm
+LM_APPROACH_DISTANCE = 30.0  # mm (15 mm until 2026-10-29)
 # Retreat (M3 target): bar released, so each arm pulls back INDEPENDENTLY along
 # its OWN male joint's world -Z by this distance
 # (`core.bar_action._retreat_tool0_target_mm`).

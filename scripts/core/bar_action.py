@@ -208,7 +208,7 @@ def _retreat_tool0_target_mm(tool0_assembled_mm, joint_world_mm, retreat_distanc
 # name, kept verbatim from origin/yh/support-ik-keyframe). EVERYWHERE ELSE the two
 # knobs are spelled out: `approach_distance_mm` in _build_m1/_build_m2 and
 # `retreat_distance_mm` in _build_m3/_retreat_tool0_target_mm, fed from
-# config.LM_APPROACH_DISTANCE (15 mm) / config.LM_RETREAT_DISTANCE (50 mm).
+# config.LM_APPROACH_DISTANCE (30 mm) / config.LM_RETREAT_DISTANCE (50 mm).
 # The value handed to THIS function is always the APPROACH distance; its one
 # caller (_build_m1) passes it positionally, so the stale name is cosmetic.
 # Rename it if you ever touch this signature.

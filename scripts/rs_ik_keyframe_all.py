@@ -23,8 +23,16 @@ Flow
    behind the GRABBED-JOINT CENTER (midpoint of the two held joints), on the ground,
    opposite the insertion direction, facing the bar. The base is written on the bar
    immediately.
-5. Choose Continue, FlipAll / FlipOne (stand on the other side of the bar), or
-   Save-base-and-exit (keep the placed bases, stop).
+   Which side of the bar it stands on is decided from the bar's anchor insertion
+   axes; when those say nothing (both anchors insert vertically, or they cancel),
+   the side comes from what the document already says: the tool sides the user
+   hand-picked in RSJointEdit, else the base saved on the bar (a Flip of an
+   earlier run), else the more open side of the bar.
+5. Walk through the bars whose side nothing decided, one by one: each is selected
+   and zoomed to, its base and the other side are marked on screen, and the
+   command line asks Keep / Flip / KeepRest. Then choose Continue, FlipAll /
+   FlipOne (stand on the other side of the bar), or Save-base-and-exit (keep the
+   placed bases, stop).
 6. On Continue: solve each bar's approach/assembled/retreat chain at its placed
    base. ``BaseSearch`` at the collision-options prompt (one answer for the whole batch,
    the same choice as RSIKKeyframe's) decides what a bar that fails there gets next,
@@ -38,14 +46,13 @@ Flow
    base; bars without picks are listed for the single-bar interactive flow
    (grasps are hand-picked, never auto-generated).
 
-Base guides + preview cleanup
------------------------------
-Each processed bar gets five guide lines on its walkable ground (see
-``core.base_guide_geom``): the line joining its two grabbed-joint centers projected
-onto the ground, three copies offset against the assembly direction by
-``config.BASE_GUIDE_OFFSETS_MM``, and the extension line through their midpoints --
-the line the placed base origin sits on. All of that, plus the base markers and
-reach circles, is transient: a ``try/finally`` removes it on EVERY exit path.
+No preview geometry
+-------------------
+The batch bakes no guide lines, base markers or reach circles: with thirty bars
+they are clutter, and baking them was the slow part of the command (about a
+second per bar). RSIKKeyframe is where one bar's guides are looked at. The two
+preview layers are still cleared on every exit path, so leftovers of an aborted
+single-bar run never survive a batch.
 
 Which end of a bar carries the LEFT tool follows from which side the base stands
 on, so the tool sides are re-derived from the resolved heading after every
@@ -84,7 +91,6 @@ import scriptcontext as sc
 # reuse its helpers (mirrors rs_clear_ik_keyframe_all -> rs_clear_ik_keyframe).
 import rs_ik_keyframe as ikf
 from core import base_frame_viz as _base_frame_viz_module
-from core import base_guide_geom as _base_guide_geom_module
 from core import base_guide_viz as _base_guide_viz_module
 from core import rhino_tool_place as _rhino_tool_place_module
 # The numpy half of WalkableGround lives in the husky_assembly_tamp submodule
@@ -97,7 +103,7 @@ from core.rhino_bar_pick import (
     pick_bar_among,
     resolve_picked_to_bar_curve,
 )
-from core.rhino_helpers import block_instance_xform_mm
+from core.rhino_helpers import block_instance_xform_mm, doc_unit_scale_to_mm
 # IK preview colors + the show helper live in rhino_bar_registry (single source of
 # truth, shared with RSUpdatePreview / RSClearColorPreview) -- see that module's
 # "IK color preview" section. This command paints the same COLOR_HAS_IK /
@@ -106,6 +112,7 @@ from core.rhino_bar_registry import (
     BAR_ID_KEY,
     COLOR_FAILED,
     COLOR_HAS_IK,
+    _find_existing_tube,
     find_stale_ik_bars,
     get_bar_seq_map,
     get_fake_bar_ids,
@@ -117,9 +124,14 @@ from core.ik_status import stale_ik_lines
 
 # Bound at import so the helpers below work even before main() runs; main()
 # rebinds them to freshly reloaded copies (the note.md 9 reload idiom).
-base_guide_geom = _base_guide_geom_module
+base_frame_viz = _base_frame_viz_module
 base_guide_viz = _base_guide_viz_module
 rhino_tool_place = _rhino_tool_place_module
+
+#: How far (mm) the heading arrow of a reviewed base reaches, and the colours of the review marks.
+_REVIEW_ARROW_MM = 400.0
+_REVIEW_BASE_COLOR = (220, 40, 40)      # the placed base, red as the base-frame X axis
+_REVIEW_OTHER_COLOR = (150, 150, 150)   # where the base would stand after a Flip
 
 
 def _preview_existing_ik():
@@ -234,16 +246,55 @@ def _grabbed_joint_center_mm(left, right):
     return 0.5 * (a_mm + b_mm)
 
 
+def _side_from_document(bar_id, heading, ground_normal, saved_base):
+    """What in the document says the base belongs on the OTHER side from ``heading``, if anything.
+
+    Looked at in this order, the more deliberate signal first:
+
+    1. tool sides the user hand-picked in RSJointEdit
+       (``rhino_tool_place.hand_picked_side_verdict``): the left arm reaches the
+       end on the robot's left, so hand-swapped tools mean the robot stands on
+       the other side;
+    2. the base saved on the bar facing the other way: a Flip of an earlier run,
+       or a base picked there in RSIKKeyframe. This is the rule RSIKKeyframe
+       itself applies on entry ("the base saved on this bar stands on the other
+       side; guides and tool sides follow it"), so a flip now sticks in the batch
+       instead of being undone on every run.
+
+    Args:
+        bar_id (str): the bar.
+        heading (np.ndarray): the automatic base heading (base +X).
+        ground_normal (np.ndarray): the ground normal at the base.
+        saved_base (np.ndarray | None): the base frame saved on the bar before
+            this run touched it.
+
+    Returns:
+        str | None: a short name of the signal that asks for the other side, or
+        None when the automatic side stands.
+    """
+    verdict = rhino_tool_place.hand_picked_side_verdict(bar_id, heading, ground_normal)
+    if verdict == "flipped":
+        return "the hand-picked tool sides"
+    if verdict is None and saved_base is not None:
+        saved_heading = np.asarray(saved_base, dtype=float)[:3, 0]
+        if float(np.dot(saved_heading, np.asarray(heading, dtype=float))) < 0.0:
+            return "the base saved on the bar"
+    return None
+
+
 @session_log.timed()
-def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
+def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=None,
                 soup_cache=None):
     """Place + persist a base on one bar. Return ``(ctx, None)`` on success or
     ``(None, reason)`` when the bar is not IK-ready / has no ground.
 
     ``ctx`` = ``(bar_id, curve, base_frame, left_tool_oid, right_tool_oid, diag)``,
-    where ``diag`` is the :func:`resolve_bar_heading` diagnosis plus the guide
-    lines under ``"guides"`` -- the caller uses it to draw the guides, correct the
-    bar's L/R tool sides, and report ambiguous headings.
+    where ``diag`` is the :func:`resolve_bar_heading` diagnosis plus
+    ``"ground_normal"`` (base +Z), ``"flipped"`` (is the base on the other side
+    from the automatic one) and ``"side_source"`` (what decided the side when it
+    was not the automatic rule: the document's hand-picked tools or saved base,
+    or the user's answer) -- the caller uses it to correct the bar's L/R tool
+    sides and to find the bars whose side is still undecided.
 
     Args:
         rwg: the reloaded ``core.rhino_walkable_ground`` module.
@@ -251,7 +302,9 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
         bar_id (str): the bar id.
         grounds (dict): ``{ground_id: oid}``.
         standoff_mm (float): how far behind the joints the base stands.
-        flip (bool): stand on the opposite side of the bar (the Flip option).
+        flip (bool | None): None = decide the side here (automatic rule, then
+            :func:`_side_from_document`); True / False = the user's explicit
+            side (a Flip option), taken as is.
         soup_cache (dict | None): shared ground-tessellation memo (see
             ``rhino_walkable_ground._bar_ground_soups``).
     """
@@ -260,28 +313,36 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=False,
         return None, err
     _bar_id, left, right = result  # left/right = (male_joint_oid, tool_oid)
 
-    joint_a_mm, joint_b_mm = _assembly_joint_centers_mm(left, right)
-    center_mm = 0.5 * (joint_a_mm + joint_b_mm)
-    diag = {}
-    base_frame = rwg.default_base_frame_for_bar(
-        curve, bar_id, grounds, standoff_mm=standoff_mm, center_mm=center_mm,
-        flip=flip, diag_out=diag, soup_cache=soup_cache, verbose=True,
-    )
-    if base_frame is None:
-        return None, "no base could be placed: no assigned/meshable WalkableGround, or see the command history."
-    ikf._write_assembly_base_frame(curve, base_frame)
+    center_mm = _grabbed_joint_center_mm(left, right)
+    # Read before the write below replaces it: the saved base is one of the signals.
+    saved_base = ikf._read_saved_assembly_base_frame(curve)
+    no_base = "no base could be placed: no assigned/meshable WalkableGround, or see the command history."
 
-    # Guide lines for this bar, built on the SAME heading the base just used, so
-    # the placed base sits on the yellow extension line by construction.
-    try:
-        soups = rwg._bar_ground_soups(curve, grounds, soup_cache=soup_cache)
-        diag["guides"] = base_guide_geom.build_base_guides(
-            soups, joint_a_mm, joint_b_mm, diag["heading"]
+    def place(flip_now):
+        """The base on one side of the bar, with the heading diagnosis."""
+        diag = {}
+        frame = rwg.default_base_frame_for_bar(
+            curve, bar_id, grounds, standoff_mm=standoff_mm, center_mm=center_mm,
+            flip=flip_now, diag_out=diag, soup_cache=soup_cache, verbose=True,
         )
-    except Exception as exc:  # noqa: BLE001 -- guides are an aid, never a blocker
-        session_log.caught(exc)
-        print(f"RSIKKeyframeAll: {bar_id}: guide lines unavailable ({exc}).")
-        diag["guides"] = None
+        return frame, diag
+
+    base_frame, diag = place(bool(flip))
+    if base_frame is None:
+        return None, no_base
+    if flip is None:
+        # * The automatic side was placed first; the document may know better.
+        source = _side_from_document(bar_id, diag["heading"], np.asarray(base_frame, dtype=float)[:3, 2],
+                                     saved_base)
+        if source is not None:
+            base_frame, diag = place(True)
+            if base_frame is None:
+                return None, no_base
+            diag["side_source"] = source
+            print(f"RSIKKeyframeAll: {bar_id}: base on the other side of the bar, as {source} say(s).")
+    else:
+        diag["side_source"] = "your Flip"
+    ikf._write_assembly_base_frame(curve, base_frame)
     # base +Z is the ground normal at the placed base -- what the L/R tool-side
     # rule needs alongside the heading.
     diag["ground_normal"] = np.asarray(base_frame, dtype=float)[:3, 2]
@@ -415,22 +476,29 @@ def _escape_pressed():
         return False
 
 
-def _ambiguous_ids(placed):
-    """Bar ids whose base side could not be derived with confidence.
+def _side_undecided(diag) -> bool:
+    """True when nothing decided which side of the bar the base stands on.
 
-    Either the anchor insertion axes cancelled (so the side came from the
-    open-ground fallback) or the base could not reach its guide line because the
-    walkable ground ran out. Both mean "look at this one before trusting it".
+    The anchor insertion axes said nothing (``ambiguous``), the document had no
+    hand-picked tool sides or saved base to go by, and the user has not answered
+    for this bar yet (``side_source`` empty) -- so the side is the open-ground
+    guess and worth a look.
     """
-    out = []
-    for ctx in placed:
-        diag = ctx[5] or {}
-        if diag.get("ambiguous") or float(diag.get("off_guide_mm", 0.0)) > 1.0:
-            out.append(ctx[0])
-    return sorted(out)
+    diag = diag or {}
+    return bool(diag.get("ambiguous")) and not diag.get("side_source")
 
 
-def _apply_tool_sides(placed, verbose=True):
+def _undecided_ids(placed):
+    """Bar ids whose side is still the open-ground guess (see :func:`_side_undecided`)."""
+    return sorted(ctx[0] for ctx in placed if _side_undecided(ctx[5]))
+
+
+def _off_guide_ids(placed):
+    """Bar ids whose base could not reach its guide line because the walkable ground ran out."""
+    return sorted(ctx[0] for ctx in placed if float((ctx[5] or {}).get("off_guide_mm", 0.0)) > 1.0)
+
+
+def _apply_tool_sides(placed, verbose=True, only=None):
     """Re-place each placed bar's tools so L/R matches where its base stands.
 
     Which end of a bar takes the LEFT tool follows from the approach, not from
@@ -442,11 +510,16 @@ def _apply_tool_sides(placed, verbose=True):
     tool oid captured before this call is dead. Every corrected bar therefore has
     its ctx refreshed in place -- without that, ``_solve_one`` later hands a stale
     guid to ``rs.coercerhinoobject`` and dies with "does not exist in ObjectTable".
+
+    Args:
+        placed (list): the placed contexts, updated in place.
+        verbose (bool): print a line per correction.
+        only (set | None): bar ids to look at; None = every placed bar.
     """
     n_fixed = 0
     for i, ctx in enumerate(placed):
         bar_id, curve, diag = ctx[0], ctx[1], (ctx[5] or {})
-        if diag.get("heading") is None:
+        if diag.get("heading") is None or (only is not None and bar_id not in only):
             continue
         try:
             changed = rhino_tool_place.assign_tool_sides_from_heading(
@@ -469,41 +542,159 @@ def _apply_tool_sides(placed, verbose=True):
     return n_fixed
 
 
-def _redraw_base_preview(base_frame_viz, placed):
-    """Re-bake the guide lines + base markers for every placed bar."""
-    base_guide_viz.draw_base_guides({ctx[0]: (ctx[5] or {}).get("guides")
-                                     for ctx in placed})
-    base_frame_viz.draw_base_frames(
-        {ctx[0]: ctx[2] for ctx in placed},
-        circle_radius_mm=float(ikf.config.IK_BASE_SAMPLE_RADIUS),
-    )
-    sc.doc.Views.Redraw()
+def _clear_base_preview():
+    """Delete whatever is left on the two base preview layers (guides, markers, circles).
 
-
-def _clear_base_preview(base_frame_viz):
-    """Delete every transient base preview object (guides, markers, circles).
-
-    Idempotent and never raises: it runs from a ``finally``, where an exception
-    would mask whatever actually went wrong.
+    This command bakes none of its own; the layers can still hold leftovers of
+    an aborted single-bar run. Idempotent and never raises: it runs from a
+    ``finally``, where an exception would mask whatever actually went wrong.
     """
     try:
         base_guide_viz.clear_base_guides()
         base_frame_viz.clear_base_frames()
-        sc.doc.Views.Redraw()
     except Exception as exc:  # noqa: BLE001
         session_log.caught(exc)
-        print(f"RSIKKeyframeAll: failed to clear the base preview ({exc}); continuing.")
+        print(f"RSIKKeyframeAll: failed to clear the base preview layers ({exc}); continuing.")
 
 
-def _ask_base_decision(n_ambiguous):
+def _review_marks(ctx, standoff_mm):
+    """The review marks of one placed bar, for ``dynamic_preview.MarkerConduit.set_markers``.
+
+    A labelled dot at the placed base with a line along its heading (where the
+    robot faces), and a dot where the base would stand after a Flip: the standoff
+    on the other side of the bar's ground point (not snapped to the ground; it
+    only shows which side that is).
+
+    Returns:
+        tuple: ``(markers, lines)`` in document units.
+    """
+    bar_id, base_frame, diag = ctx[0], np.asarray(ctx[2], dtype=float), (ctx[5] or {})
+    scale = 1.0 / doc_unit_scale_to_mm()
+
+    def point(xyz_mm):
+        p = np.asarray(xyz_mm, dtype=float) * scale
+        return Rhino.Geometry.Point3d(float(p[0]), float(p[1]), float(p[2]))
+
+    origin, heading = base_frame[:3, 3], base_frame[:3, 0]
+    markers = [(point(origin), f"{bar_id} base", _REVIEW_BASE_COLOR)]
+    lines = [(point(origin), point(origin + heading * _REVIEW_ARROW_MM), _REVIEW_BASE_COLOR)]
+    ground_point = diag.get("ground_point")
+    if ground_point is not None:
+        other = np.asarray(ground_point, dtype=float) + heading * float(standoff_mm)
+        markers.append((point(other), "other side", _REVIEW_OTHER_COLOR))
+    return markers, lines
+
+
+def _show_bar_for_review(ctx, standoff_mm, conduit, viewport):
+    """Select the bar (centre line + tube), mark its base, and zoom the viewport onto both."""
+    bar_id, curve = ctx[0], ctx[1]
+    rs.UnselectAllObjects()
+    targets = [curve]
+    tube = _find_existing_tube(curve)
+    if tube is not None:
+        targets.append(tube)
+    rs.SelectObjects(targets)
+    markers, lines = _review_marks(ctx, standoff_mm)
+    conduit.set_markers(markers, lines)
+    if viewport is not None:
+        box = rs.coercecurve(curve).GetBoundingBox(True)
+        for point, _label, _rgb in markers:
+            box.Union(point)
+        box.Inflate(0.25 * max(box.Diagonal.Length, 1.0))
+        viewport.ZoomBoundingBox(box)
+    sc.doc.Views.Redraw()
+    print(f"RSIKKeyframeAll: {bar_id}: {(ctx[5] or {}).get('detail', 'side undecided')}")
+
+
+def _ask_keep_or_flip(bar_id, index, total):
+    """One bar's question in the walk-through: ``"keep"`` / ``"flip"`` / ``"keep_rest"``, None on Esc."""
+    go = Rhino.Input.Custom.GetOption()
+    go.SetCommandPrompt(f"{bar_id} ({index}/{total}): base side undecided, standing on the more open side "
+                        "(selected, base marked in red). Keep this side or Flip?")
+    keep_idx = go.AddOption("Keep")
+    flip_idx = go.AddOption("Flip")
+    rest_idx = go.AddOption("KeepRest")
+    go.SetCommandPromptDefault("Keep")
+    go.AcceptNothing(True)
+    while True:
+        result = session_log.ask(go)
+        if result == Rhino.Input.GetResult.Nothing:
+            return "keep"
+        if result == Rhino.Input.GetResult.Option:
+            chosen = go.OptionIndex()
+            if chosen == keep_idx:
+                return "keep"
+            if chosen == flip_idx:
+                return "flip"
+            if chosen == rest_idx:
+                return "keep_rest"
+            continue
+        return None
+
+
+def _review_undecided(rwg, placed, flipped, standoff, grounds, soup_cache):
+    """Walk through the bars whose side nothing decided, one by one.
+
+    Each bar in turn is selected and zoomed to, its base and the other side are
+    marked by a display conduit (nothing baked), and the command line asks Keep /
+    Flip / KeepRest. Flip re-places the base on the other side (``_flip_bars``,
+    which also re-places the tools). KeepRest keeps every remaining bar as placed;
+    Esc stops the walk-through and leaves the remaining bars undecided, so the
+    summary still names them. The viewport is put back afterwards.
+
+    Returns:
+        list: the bar ids answered (kept or flipped).
+    """
+    todo = [ctx[0] for ctx in placed if _side_undecided(ctx[5])]
+    if not todo:
+        return []
+    print(f"RSIKKeyframeAll: {len(todo)} bar(s) have no side to go by (anchors insert vertically or cancel): "
+          f"{', '.join(todo)}. Walking through them; Enter keeps the placed side.")
+    view = sc.doc.Views.ActiveView
+    viewport = view.ActiveViewport if view is not None else None
+    if viewport is not None:
+        viewport.PushViewProjection()  # the zooms below are undone at the end
+    answered = []
+    try:
+        with ikf.dynamic_preview.marker_viz() as conduit:
+            for index, bar_id in enumerate(todo, start=1):
+                position = next(i for i, c in enumerate(placed) if c[0] == bar_id)
+                _show_bar_for_review(placed[position], standoff, conduit, viewport)
+                answer = _ask_keep_or_flip(bar_id, index, len(todo))
+                if answer is None:
+                    print(f"RSIKKeyframeAll: walk-through stopped; {len(todo) - index + 1} bar(s) left undecided.")
+                    break
+                if answer == "flip":
+                    _flip_bars(rwg, placed, flipped, {bar_id}, standoff, grounds, soup_cache)
+                    _apply_tool_sides(placed, only={bar_id})
+                    _show_bar_for_review(placed[position], standoff, conduit, viewport)
+                else:
+                    placed[position][5]["side_source"] = "your answer in the walk-through"
+                answered.append(bar_id)
+                if answer == "keep_rest":
+                    for other in todo[index:]:
+                        ctx = next(c for c in placed if c[0] == other)
+                        ctx[5]["side_source"] = "your answer in the walk-through"
+                        answered.append(other)
+                    break
+    finally:
+        rs.UnselectAllObjects()
+        if viewport is not None:
+            viewport.PopViewProjection()
+        sc.doc.Views.Redraw()
+    return answered
+
+
+def _ask_base_decision(note=""):
     """Off-ramp prompt with the Flip options; mirrors ``_ask_save_base_or_continue``.
 
     Returns ``"continue"`` / ``"save_and_exit"`` / ``"cancel"`` (the same strings
     the single-bar command uses) or ``"flip_all"`` / ``"flip_one"``, which the
     caller handles before re-prompting.
+
+    Args:
+        note (str): text shown after "Bases placed", e.g. how many bars are still undecided.
     """
-    note = (f" [{n_ambiguous} with an ambiguous side -- check them]"
-            if n_ambiguous else "")
     choice = rs.GetString(
         f"Bases placed{note}. Continue to solve, flip a side, or save and exit?",
         "Continue",
@@ -565,13 +756,27 @@ def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_
     if already_ids:
         lines.append(f"Already had IK (left untouched): {len(already_ids)}"
                      f"  {', '.join(already_ids)}")
-    ambiguous = _ambiguous_ids(placed)
-    if ambiguous:
+    undecided = _undecided_ids(placed)
+    if undecided:
         lines.append("")
-        lines.append(f"Ambiguous heading -- VERIFY THE SIDE: {len(ambiguous)}"
-                     f"  {', '.join(ambiguous)}")
-        lines.append("  (their anchor joints did not agree on a side, or the ground "
-                     "ran out before the standoff; see the command line for details.)")
+        lines.append(f"Side undecided -- VERIFY THE SIDE: {len(undecided)}  {', '.join(undecided)}")
+        lines.append("  (their anchor joints say nothing about a side and the walk-through did not "
+                     "answer for them; they stand on the more open side. FlipOne, or RSIKKeyframe > Flip.)")
+    off_guide = _off_guide_ids(placed)
+    if off_guide:
+        lines.append("")
+        lines.append(f"Base off its guide line (the ground ran out before the standoff): {len(off_guide)}"
+                     f"  {', '.join(off_guide)}")
+    # Sides that came from somewhere other than the automatic rule, grouped by what decided them.
+    by_source = {}
+    for ctx in placed:
+        source = (ctx[5] or {}).get("side_source")
+        if source:
+            by_source.setdefault(source, []).append(ctx[0])
+    if by_source:
+        lines.append("")
+        for source, ids in sorted(by_source.items()):
+            lines.append(f"Side decided by {source}: {len(ids)}  {', '.join(sorted(ids))}")
     if skipped:
         lines.append("")
         lines.append("Skipped:")
@@ -580,7 +785,7 @@ def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_
 
 
 def main():
-    global base_guide_geom, base_guide_viz, rhino_tool_place
+    global base_frame_viz, base_guide_viz, rhino_tool_place
 
     ikf._reload_runtime_modules()
     # Pick up the extended default_base_frame_for_bar(center_mm=, standoff_mm=) /
@@ -588,7 +793,6 @@ def main():
     importlib.reload(_wg_np_module)
     rwg = importlib.reload(_rwg_module)
     base_frame_viz = importlib.reload(_base_frame_viz_module)
-    base_guide_geom = importlib.reload(_base_guide_geom_module)
     base_guide_viz = importlib.reload(_base_guide_viz_module)
     rhino_tool_place = importlib.reload(_rhino_tool_place_module)
 
@@ -664,15 +868,15 @@ def main():
     soup_cache = {}
     placed = []   # (bar_id, curve, base_frame, left_tool, right_tool, diag)
     skipped = []  # (bar_id, reason)
-    flipped = {}  # bar_id -> is this base currently flipped?
+    flipped = {}  # bar_id -> is this base on the other side from the automatic one?
 
-    # ! Everything below bakes transient preview geometry (guide lines, base
-    # markers, reach circles). It MUST be gone on every exit path -- solved,
-    # ESC at any prompt, SaveAndExit, or an exception -- so the whole block is
-    # wrapped in try/finally. Before this guard existed, an ESC left the circles
-    # and triads in the document with nothing able to clear them (neither
-    # RSUpdatePreview nor RSClearColorPreview touches those layers).
+    # ! Nothing below bakes preview geometry any more, but the two preview layers
+    # are still cleared on every exit path (solved, ESC at any prompt,
+    # SaveAndExit, or an exception), so leftovers of an aborted single-bar run
+    # never survive a batch: neither RSUpdatePreview nor RSClearColorPreview
+    # touches those layers.
     try:
+        _clear_base_preview()
         for bar_id, curve in to_process:
             ctx, reason = _place_base(rwg, curve, bar_id, grounds, standoff,
                                       soup_cache=soup_cache)
@@ -680,6 +884,7 @@ def main():
                 skipped.append((bar_id, reason))
                 continue
             placed.append(ctx)
+            flipped[bar_id] = bool(ctx[5].get("flipped"))  # the side _place_base settled on
 
         if not placed:
             print("RSIKKeyframeAll: no processable bars (nothing to place).")
@@ -697,18 +902,18 @@ def main():
             print(f"RSIKKeyframeAll: {n_sides} tool(s) re-placed to match the "
                   "robot's approach side.")
 
-        # Show the guide lines + a static base marker and reach circle at every
-        # placed base, so the user can see where each robot will stand (and on
-        # which side) while deciding save-vs-continue and during the solve.
-        _redraw_base_preview(base_frame_viz, placed)
-
         print(f"RSIKKeyframeAll: placed base on {len(placed)} bar(s) "
               f"(standoff {standoff:.0f} mm).")
+
+        # The bars whose side nothing decided: look at each one in turn.
+        _review_undecided(rwg, placed, flipped, standoff, grounds, soup_cache)
 
         # Off-ramp: solve now, flip a base onto the other side of its bar, or keep
         # the placed bases and stop. Loops until the user continues or leaves.
         while True:
-            decision = _ask_base_decision(len(_ambiguous_ids(placed)))
+            undecided = _undecided_ids(placed)
+            note = f" [{len(undecided)} still undecided: {', '.join(undecided)}]" if undecided else ""
+            decision = _ask_base_decision(note)
             if decision == "flip_all":
                 _flip_bars(rwg, placed, flipped, {c[0] for c in placed},
                            standoff, grounds, soup_cache)
@@ -716,10 +921,7 @@ def main():
                 # pick_bar_among logs its prompt through session_log.ask.
                 bar_id = pick_bar_among(
                     [c[0] for c in placed],
-                    "Pick the bar whose base should flip to its other side "
-                    "(centre line, tube or base marker)",
-                    also=lambda oid: (base_frame_viz.bar_id_of_picked(oid)
-                                      or base_guide_viz.bar_id_of_picked(oid)),
+                    "Pick the bar whose base should flip to its other side (centre line or tube)",
                 )
                 if not bar_id:
                     print("RSIKKeyframeAll: no bar picked; nothing flipped.")
@@ -730,7 +932,6 @@ def main():
                 break
             # A flip re-decides the approach, so the tool sides follow it.
             _apply_tool_sides(placed)
-            _redraw_base_preview(base_frame_viz, placed)
 
         if decision != "continue":
             if decision == "cancel":
@@ -791,11 +992,11 @@ def main():
         support_resolved, support_need_pick, support_failed = (
             ([], [], []) if not_tried else _support_resolve_pass(include_self, include_env))
 
-        # Calculation finished: drop the transient preview BEFORE the modal summary
+        # Calculation finished: clear the preview layers BEFORE the modal summary
         # so the per-bar solved/failed colors are the only thing left on screen.
         # (The finally below repeats this for every other exit path; both are
-        # idempotent.) Only the preview goes -- the saved base frames stay.
-        _clear_base_preview(base_frame_viz)
+        # idempotent.) The saved base frames stay.
+        _clear_base_preview()
 
         msg = _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped,
                        solved_run=True, stale_ids=stale)
@@ -824,7 +1025,7 @@ def main():
                     + "\n".join(f"  {b}: moved {mm:.0f} mm, turned {deg:.0f} deg" for b, mm, deg in moved))
         rs.MessageBox(msg, 0, "RSIKKeyframeAll")
     finally:
-        _clear_base_preview(base_frame_viz)
+        _clear_base_preview()
         # The base search's DEBUG trace (BaseSearch=Optimised) of the last bar searched.
         ikf.base_search_viz.hide()
 

@@ -240,6 +240,41 @@ def arm_side_for_joint(joint_center_mm, bar_center_mm, heading_mm, ground_normal
     return "left" if projection > 0.0 else "right"
 
 
+def side_from_hand_picked(auto_sides: Sequence, picked_sides: Sequence) -> Optional[str]:
+    """Does the user's hand-picked tool layout agree with the automatic base side?
+
+    A tool side the user cycled by hand in RSJointEdit is a decision about which
+    side of the bar the robot stands on: the left arm reaches the end on the
+    robot's left, so swapping the tools means standing on the other side. When
+    every hand-picked joint contradicts what the automatic rule wants, the base
+    belongs on the other side, and RSIKKeyframeAll flips it there instead of
+    asking the user again.
+
+    Args:
+        auto_sides (Sequence): per anchor joint, the side the automatic rule wants
+            (``arm_side_for_joint``: ``"left"`` / ``"right"`` / ``None``).
+        picked_sides (Sequence): per anchor joint (same order), the side the user
+            hand-picked, or ``None`` when that joint was never hand-picked.
+
+    Returns:
+        str | None: ``"flipped"`` when every hand-picked joint wants the other
+        side, ``"same"`` when every hand-picked joint agrees with the automatic
+        side, ``None`` when no joint is hand-picked, the automatic side is
+        undefined for a hand-picked joint, or the hand-picked joints disagree
+        with each other.
+    """
+    verdicts = set()
+    for auto, picked in zip(auto_sides, picked_sides):
+        if picked is None:
+            continue
+        if auto is None:
+            return None  # the automatic rule has no side here: nothing to compare with
+        verdicts.add("same" if picked == auto else "flipped")
+    if len(verdicts) != 1:
+        return None  # nothing hand-picked, or the hand-picked joints contradict each other
+    return verdicts.pop()
+
+
 def build_base_guides(soups: Sequence, joint_a_mm, joint_b_mm, heading_mm,
                       offsets_mm=None) -> Optional[dict]:
     """Build the base-placement guide lines for one bar.

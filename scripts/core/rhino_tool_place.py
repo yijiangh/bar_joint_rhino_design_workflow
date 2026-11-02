@@ -1033,6 +1033,37 @@ def assign_tool_sides_from_heading(bar_id, heading_mm, ground_normal,
     return n_fixed
 
 
+def hand_picked_side_verdict(bar_id, heading_mm, ground_normal) -> str | None:
+    """Do the bar's hand-picked tool sides agree with standing along ``heading_mm``?
+
+    The Rhino half of ``core.base_guide_geom.side_from_hand_picked``: gathers the
+    bar's two anchor joints, the side the automatic rule wants for each
+    (``arm_side_for_joint``) and the side the user hand-picked in RSJointEdit
+    (``get_tool_side_override``), and compares them. RSIKKeyframeAll uses the
+    answer to put the base on the side the user already chose instead of asking.
+
+    Args:
+        bar_id (str): the bar.
+        heading_mm (np.ndarray): the automatic base heading (base +X).
+        ground_normal (np.ndarray): the ground normal at the base (base +Z).
+
+    Returns:
+        str | None: ``"flipped"`` (the hand-picked tools want the other side),
+        ``"same"``, or ``None`` when there is no hand-pick to go by, or the bar
+        has no two-anchor layout.
+    """
+    from core import base_guide_geom  # noqa: PLC0415  (pure numpy, no Rhino)
+
+    anchors = _bar_anchor_joints(bar_id)
+    if len(anchors) != 2:
+        return None
+    bar_center = 0.5 * (anchors[0][2] + anchors[1][2])
+    auto_sides = [base_guide_geom.arm_side_for_joint(center, bar_center, heading_mm, ground_normal)
+                  for _joint_id, _block_id, center in anchors]
+    picked_sides = [get_tool_side_override(block_id) for _joint_id, block_id, _center in anchors]
+    return base_guide_geom.side_from_hand_picked(auto_sides, picked_sides)
+
+
 @session_log.timed()
 def enforce_bar_tool_sides(verbose: bool = False) -> int:
     """Give each bar the L/R tool layout its robot approach implies.

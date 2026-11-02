@@ -288,6 +288,31 @@ def test_joint_on_the_fore_aft_axis_has_no_side():
 
 
 # ---------------------------------------------------------------------------
+# side_from_hand_picked -- hand-picked tool sides decide the base side
+# ---------------------------------------------------------------------------
+
+
+def test_hand_picked_sides_that_all_contradict_mean_flip():
+    """Both tools hand-swapped against the automatic layout: the user stands on the other side."""
+    assert bgg.side_from_hand_picked(["left", "right"], ["right", "left"]) == "flipped"
+    # One hand-picked joint is enough to say so.
+    assert bgg.side_from_hand_picked(["left", "right"], [None, "left"]) == "flipped"
+
+
+def test_hand_picked_sides_that_agree_mean_same_side():
+    assert bgg.side_from_hand_picked(["left", "right"], ["left", "right"]) == "same"
+    assert bgg.side_from_hand_picked(["left", "right"], ["left", None]) == "same"
+
+
+def test_no_hand_pick_or_a_contradiction_gives_no_verdict():
+    assert bgg.side_from_hand_picked(["left", "right"], [None, None]) is None
+    # The two hand-picked joints ask for different sides: not a side decision.
+    assert bgg.side_from_hand_picked(["left", "right"], ["left", "left"]) is None
+    # The automatic rule has no side for a hand-picked joint (bar seen end-on).
+    assert bgg.side_from_hand_picked([None, None], ["left", "right"]) is None
+
+
+# ---------------------------------------------------------------------------
 # build_base_guides -- the five lines
 # ---------------------------------------------------------------------------
 

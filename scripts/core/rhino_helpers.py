@@ -216,6 +216,52 @@ def objects_on_layers(*layer_names) -> list:
 COLOR_BY_LAYER = 0
 COLOR_BY_OBJECT = 1
 
+
+def preview_attributes(layer_name, color_rgb, user_text=None):
+    """Object attributes for baking many preview objects in one pass.
+
+    Going through ``rs.AddLine`` + ``rs.ObjectColor`` + ``rs.ObjectLayer`` +
+    ``rs.SetUserText`` redraws every viewport after each call (about 45 redraws
+    per bar for the base guides), which is what made the IK keyframe previews
+    slow. With the attributes prepared once, ``sc.doc.Objects.Add*(geometry,
+    attributes)`` sets the layer, the colour and the user text in the same call
+    and never redraws; the caller redraws once at the end.
+
+    Args:
+        layer_name (str): the layer the objects go on (created when missing).
+        color_rgb (tuple): the object colour as ``(r, g, b)``.
+        user_text (dict | None): ``{key: value}`` user-text to stamp on the objects.
+
+    Returns:
+        Rhino.DocObjects.ObjectAttributes: reusable for every object of that colour.
+    """
+    import Rhino  # noqa: PLC0415
+    from System.Drawing import Color  # noqa: PLC0415
+
+    if not rs.IsLayer(layer_name):
+        rs.AddLayer(layer_name)
+    layer_index = sc.doc.Layers.FindByFullPath(layer_name, -1)
+    if layer_index < 0:
+        # ! Say so instead of adding to layer -1 (Rhino would refuse every object, silently).
+        raise RuntimeError(f"preview_attributes: layer '{layer_name}' could not be created or found.")
+    attrs = Rhino.DocObjects.ObjectAttributes()
+    attrs.LayerIndex = layer_index
+    attrs.ColorSource = Rhino.DocObjects.ObjectColorSource.ColorFromObject
+    attrs.ObjectColor = Color.FromArgb(*[int(c) for c in color_rgb])
+    for key, value in (user_text or {}).items():
+        attrs.SetUserString(str(key), str(value))
+    return attrs
+
+
+def group_objects(object_ids) -> int:
+    """Put the objects in one new group (one call, no redraw); returns the group index, or -1 when empty."""
+    import System  # noqa: PLC0415
+
+    ids = [oid for oid in object_ids if oid is not None]
+    if not ids:
+        return -1
+    return sc.doc.Groups.Add(System.Array[System.Guid](ids))
+
 def apply_object_display(object_ids, label, color=None, layer_name=None):
     """Set name, color, layer, and reference_label user-text on objects."""
     baked_ids = as_object_id_list(object_ids)

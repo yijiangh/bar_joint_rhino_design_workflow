@@ -12,16 +12,29 @@ mobile base stands for a solved bar. This module bakes, per bar, a small marker 
 Every object is tagged with the bar id (user-text ``base_frame_bar_id``) so a
 click on a marker can activate that bar in the viewer's all-bars map. The whole
 preview layer is cleared on exit. Rhino-only (imports ``rhinoscriptsyntax``).
+
+The objects are added through RhinoCommon with their attributes prepared up front
+and the redraw suspended, so many markers cost one redraw (see
+``rhino_helpers.preview_attributes`` for why the ``rhinoscriptsyntax`` route was slow).
 """
 
 from __future__ import annotations
 
 import numpy as np
+import Rhino
 import rhinoscriptsyntax as rs
+import scriptcontext as sc
 import session_log
+import System
 
 from core import config
-from core.rhino_helpers import doc_unit_scale_to_mm, objects_on_layers
+from core.rhino_helpers import (
+    doc_unit_scale_to_mm,
+    group_objects,
+    objects_on_layers,
+    preview_attributes,
+    suspend_redraw,
+)
 
 
 # User-text key stamped on every marker object so a pick resolves to its bar.
@@ -35,14 +48,6 @@ _AXIS_COLORS = {
 _FOOTPRINT_COLOR = (150, 150, 150)  # grey rectangle
 
 
-def _ensure_preview_layer() -> str:
-    """Ensure the base-frame preview layer exists and return its name."""
-    layer = config.LAYER_BASE_FRAME_PREVIEW
-    if not rs.IsLayer(layer):
-        rs.AddLayer(layer)
-    return layer
-
-
 def clear_base_frames() -> None:
     """Delete every baked base-frame marker (all objects on the preview layer)."""
     oids = objects_on_layers(config.LAYER_BASE_FRAME_PREVIEW)
@@ -52,11 +57,16 @@ def clear_base_frames() -> None:
 
 def _pt(origin_doc, vec, dist):
     """Return a Rhino Point3d at ``origin_doc + vec * dist`` (all doc units)."""
-    return rs.CreatePoint(
-        origin_doc[0] + vec[0] * dist,
-        origin_doc[1] + vec[1] * dist,
-        origin_doc[2] + vec[2] * dist,
+    return Rhino.Geometry.Point3d(
+        float(origin_doc[0] + vec[0] * dist),
+        float(origin_doc[1] + vec[1] * dist),
+        float(origin_doc[2] + vec[2] * dist),
     )
+
+
+def _vec(xyz):
+    """A unit-ish numpy 3-vector as a Rhino ``Vector3d``."""
+    return Rhino.Geometry.Vector3d(float(xyz[0]), float(xyz[1]), float(xyz[2]))
 
 
 def draw_base_frame(bar_id: str, base_frame_mm, circle_radius_mm=None) -> list:
@@ -67,14 +77,13 @@ def draw_base_frame(bar_id: str, base_frame_mm, circle_radius_mm=None) -> list:
         base_frame_mm (np.ndarray): 4x4 mm base frame (X=heading, Z=up).
         circle_radius_mm (float | None): when set, also bake a reach circle of this
             radius (mm) centered at the base origin in the base XY plane. ``None``
-            (the default) draws no circle, so existing callers are unaffected. The
-            multi-bar IK command passes ``config.IK_BASE_SAMPLE_RADIUS`` to show the
-            static (non-draggable) base circle at each placed base.
+            (the default) draws no circle, so existing callers are unaffected.
 
     Returns:
         list: the created Rhino object ids (grouped + tagged with ``bar_id``).
     """
-    layer = _ensure_preview_layer()
+    layer = config.LAYER_BASE_FRAME_PREVIEW
+    tag = {BASE_FRAME_BAR_ID_KEY: bar_id}
     m = np.asarray(base_frame_mm, dtype=float)
     scale_from_mm = 1.0 / doc_unit_scale_to_mm()
 
@@ -84,52 +93,46 @@ def draw_base_frame(bar_id: str, base_frame_mm, circle_radius_mm=None) -> list:
     half_l = 0.5 * config.BASE_FOOTPRINT_LENGTH_MM * scale_from_mm
     half_w = 0.5 * config.BASE_FOOTPRINT_WIDTH_MM * scale_from_mm
 
-    origin_pt = rs.CreatePoint(origin[0], origin[1], origin[2])
+    origin_pt = Rhino.Geometry.Point3d(float(origin[0]), float(origin[1]), float(origin[2]))
     created = []
+
+    def _keep(oid):
+        """Collect an added object's id (Rhino returns an empty guid when it refuses)."""
+        if oid is not None and oid != System.Guid.Empty:
+            created.append(oid)
 
     # Axis triad: three colored lines from the origin.
     for key, axis in (("x", x_axis), ("y", y_axis), ("z", z_axis)):
-        line = rs.AddLine(origin_pt, _pt(origin, axis, axis_len))
-        rs.ObjectColor(line, _AXIS_COLORS[key])
-        created.append(line)
+        _keep(sc.doc.Objects.AddLine(Rhino.Geometry.Line(origin_pt, _pt(origin, axis, axis_len)),
+                                     preview_attributes(layer, _AXIS_COLORS[key], tag)))
 
     # Optional reach circle in the base XY plane (base +Z is the plane normal).
     if circle_radius_mm:
-        plane = rs.PlaneFromNormal(origin_pt, [z_axis[0], z_axis[1], z_axis[2]],
-                                   [x_axis[0], x_axis[1], x_axis[2]])
-        circle = rs.AddCircle(plane, float(circle_radius_mm) * scale_from_mm)
-        if circle:
-            rs.ObjectColor(circle, config.REACH_CLEAR_COLOR)  # as the live reach circle
-            created.append(circle)
+        plane = Rhino.Geometry.Plane(origin_pt, _vec(x_axis), _vec(y_axis))
+        circle = Rhino.Geometry.Circle(plane, float(circle_radius_mm) * scale_from_mm)
+        _keep(sc.doc.Objects.AddCircle(circle, preview_attributes(layer, config.REACH_CLEAR_COLOR, tag)))
 
     # Ground footprint rectangle in the base XY plane (corners ordered CCW).
+    footprint_attrs = preview_attributes(layer, _FOOTPRINT_COLOR, tag)
     corners = [
         _pt(origin, x_axis * a + y_axis * b, 1.0)
         for a, b in ((half_l, half_w), (half_l, -half_w),
                      (-half_l, -half_w), (-half_l, half_w))
     ]
-    rect = rs.AddPolyline(corners + [corners[0]])
-    if rect:
-        rs.ObjectColor(rect, _FOOTPRINT_COLOR)
-        created.append(rect)
+    rectangle = Rhino.Geometry.Polyline()
+    for corner in corners + [corners[0]]:
+        rectangle.Add(corner)
+    _keep(sc.doc.Objects.AddPolyline(rectangle, footprint_attrs))
 
     # Origin dot.
-    dot = rs.AddPoint(origin_pt)
-    if dot:
-        created.append(dot)
+    _keep(sc.doc.Objects.AddPoint(origin_pt, footprint_attrs))
 
-    # Layer + bar-id tag on every object, then group them so a pick highlights all.
-    for oid in created:
-        rs.ObjectLayer(oid, layer)
-        rs.SetUserText(oid, BASE_FRAME_BAR_ID_KEY, bar_id)
-    if created:
-        grp = rs.AddGroup()
-        rs.AddObjectsToGroup(created, grp)
+    group_objects(created)
     return created
 
 
 def draw_base_frames(frames_by_bar: dict, circle_radius_mm=None) -> None:
-    """Clear then bake base-frame markers for many bars.
+    """Clear then bake base-frame markers for many bars, with one redraw at the end.
 
     Args:
         frames_by_bar (dict): ``{bar_id: base_frame_mm (4x4)}``.
@@ -139,13 +142,14 @@ def draw_base_frames(frames_by_bar: dict, circle_radius_mm=None) -> None:
     Returns:
         None.
     """
-    clear_base_frames()
-    for bar_id, base_mm in frames_by_bar.items():
-        try:
-            draw_base_frame(bar_id, base_mm, circle_radius_mm=circle_radius_mm)
-        except Exception as exc:  # one bad frame must not abort the rest
-            session_log.caught(exc)
-            print(f"core.base_frame_viz.draw_base_frames: bar '{bar_id}' skipped ({exc}).")
+    with session_log.step("draw base frames"), suspend_redraw():
+        clear_base_frames()
+        for bar_id, base_mm in frames_by_bar.items():
+            try:
+                draw_base_frame(bar_id, base_mm, circle_radius_mm=circle_radius_mm)
+            except Exception as exc:  # one bad frame must not abort the rest
+                session_log.caught(exc)
+                print(f"core.base_frame_viz.draw_base_frames: bar '{bar_id}' skipped ({exc}).")
 
 
 def bar_id_of_picked(oid) -> str:

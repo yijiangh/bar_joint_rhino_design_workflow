@@ -247,6 +247,7 @@ def _show_and_ask_change(bar_id, bar_oid, ground_ids, grounds_map, robot_meshes)
                 f"({origin[0]:.0f}, {origin[1]:.0f}, {origin[2]:.0f}) mm."
             )
             base_frame_viz.draw_base_frame(bar_id, base_mm)
+            rs.Redraw()  # the marker is baked without a redraw of its own
             baked_base = True
             base_xform = np_mm_to_xform(base_mm)
 

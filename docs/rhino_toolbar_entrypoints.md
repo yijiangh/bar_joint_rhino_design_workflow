@@ -9,47 +9,55 @@ This is the canonical Rhino entrypoint reference for this repository.
 
 ## Canonical entrypoint table
 
+Rows follow the toolbar: per tab, buttons by name (a right-click companion sits under its
+button). The toolbar keeps that order through `scripts/sort_toolbar_buttons.py`; run it with
+Rhino closed after adding a button (see `docs/note.md` §8).
+
 | Toolbar | Button | Script | Primary use | Typical users |
 |---|---|---|---|---|
-| RSDesign | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews | Workshop participants |
-| RSDesign | RSRemoveBar | `rs_remove_bar.py` | Remove selected bar(s) and clean up all associated joint and tool instances | Workshop participants |
-| RSDesign | RSBarSnap | `rs_bar_snap.py` | Snap a new bar to contact distance from an existing bar | Workshop participants |
+| RSDesign | RSAssignAndShowWalkableGround | `rs_assign_and_show_walkable_ground.py` | Pick a bar; view its assigned WalkableGround(s) + the default mobile-base placement (half-transparent ghost robot), then optionally overwrite the assignment by selecting brep(s) — loops back to re-show. Auto-assigns nearest if none. Auto-assign also runs on entry to the IK, preview and export commands; use this to inspect/correct a specific bar. | Planning/export users |
 | RSDesign | RSBarBrace | `rs_bar_brace.py` | Solve and pick brace-bar candidates between two bars | Workshop participants |
-| RSDesign | RSBarSubfloor | `rs_bar_subfloor.py` | Add a subfloor bar between two existing bars, with independent left/right joint pairs | Workshop participants |
-| RSDesign | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer/editor | Workshop participants |
-| RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
-| RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
 | RSDesign | RSBarEdit | `rs_bar_edit.py` | **BarLength**: color bars by length and resize the selected bars about their midpoints. **FakeBar**: mark staging bars | Workshop participants |
 | RSDesign | RSBarSelect | `rs_bar_select.py` | **SelectByName**: type a bar id (e.g. `B4`) to select + zoom to that bar; comma-separated ids select several. **SelectByLength**: bars are colored and tagged by length; type a length to select that group, then optionally its **BearingJoints** or **PairedJoints**. The model is never edited. | Workshop participants |
-| RSDesign | RSJointSelect | `rs_joint_select.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
+| RSDesign | RSBarSnap | `rs_bar_snap.py` | Snap a new bar to contact distance from an existing bar | Workshop participants |
+| RSDesign | RSBarSubfloor | `rs_bar_subfloor.py` | Add a subfloor bar between two existing bars, with independent left/right joint pairs | Workshop participants |
+| RSDesign | ~~RSClearIKKeyframe~~ | `rs_clear_ik_keyframe.py` | **No button of its own any more — RSIKMaintenance › ClearOneBar / ClearAllBars runs it; still typeable**, as is **RSClearIKKeyframeAll** (`rs_clear_ik_keyframe_all.py`). Pick ONE bar (or take EVERY bar), then choose what to erase via three toggles — Keyframe (M1-M3 IK config + legacy blob), BasePosition (mobile base), Support (the support robot's hold) — all default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
+| RSDesign | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews | Workshop participants |
+| RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the bars to export, Enter = all or a From..Until range, then a parent folder and the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
+| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
+| RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
+| RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
+| RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
+| RSDesign | RSJointSelect | `rs_joint_select.py` | Type a joint id (e.g. `J40-53_female`, or `J40-53` for both halves) to select + zoom to that placed joint block; comma-separated ids select several; loops. Read-only. | Workshop participants |
+| RSDesign | RSLoadSolvedBarAction | `rs_load_solved_bar_action.py` | Left-click: pick a bar, write its solved keyframes from a process folder's `solutions/` onto its user text, then view its keyframes or motion (prompt). Right-click, **RSLoadSolvedBarActionAll** (`rs_load_solved_bar_action_all.py`): every solved bar, then the viewer with every base frame. | Planning/export users |
+| RSDesign | RSRemoveBar | `rs_remove_bar.py` | Remove selected bar(s) and clean up all associated joint and tool instances | Workshop participants |
+| RSDesign | RSSequenceEdit | `rs_sequence_edit.py` | Interactive assembly sequence viewer/editor | Workshop participants |
 | RSDesign | RSShowAssemblyPlan | `rs_show_assembly_plan.py` | Step through the WHOLE assembly pose by pose: every bar's poses concatenated in the process's schedule order, each the process's scene at that moment (support robots arriving/leaving per the schedule). Enter=next, Prev/Jump/GoToBar, or click a bar to jump there. | Advanced IK users |
 | RSDesign | RSShowBarActionPlan | `rs_show_bar_action_plan.py` | Left-click: view a bar's timeline (approach / assembled / hold / retreat / home + base frame) as moments of the document's process, with support robots exactly where the schedule has them; the last stabilizer of a hold also plays that hold's release pose. Right-click (`rs_show_bar_action_plan_motion.py`): scrub a bar's planned trajectories from a process folder's `solutions/`. | Advanced IK users |
-| RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
+| RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
+| RSSetup | RSClearPreview | `rs_clear_preview.py` | Delete every baked robot preview (IK Cache layers, hidden meshes included; base markers and guides; their empty groups) so the .3dm is small again, then save. Keeps all design objects. | Advanced IK users |
 | RSSetup | RSDefineJointHalf | `rs_define_joint_half.py` | Define one joint block (Female / Male / Ground / MoCap, read from its `<Type>_<Subtype>` name), its collision mesh, and a MoCap block's marker spheres | Joint-library authors |
 | RSSetup | RSDefineJointMate | `rs_define_joint_mate.py` | Define the mate between an existing Female and Male half (a MoCap half needs none) | Joint-library authors |
-| RSSetup | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite lines | Workshop participants |
-| RSSetup | RSUpdatePreview | `rs_update_preview.py` | Left-click: one idempotent repair pass -- rebuild stale/missing bar tube previews, reload joint blocks whose `asset/*.3dm` changed (in place), restore/re-side/re-snap robotic tools, then report unmated joint pairs and broken bar/joint/tool links. Never moves a joint. Then paints the IK + broken-link overlay and pops up a tally — there is no longer a job prompt, the overlay is always painted. Right-click, **RSClearColorPreview** (`rs_clear_color_preview.py`): clear every color preview. | Workshop participants |
-| RSSetup | RSReorderBarID | `rs_reorder_bar_id.py` | Renumber bars to match sequence and cascade IDs | Workshop participants |
-| RSSetup | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication JSON; MoCap joints also carry `paired` and their marker positions in the bar frame | Workshop participants |
-| RSSetup | RSExportBarTool0TF | `rs_export_bar_tool0_tf.py` | Pick a bar; export its bar-OCF -> `tool0_left` / `tool0_right` transforms to `<root>/BarTool0TF/<bar_id>.json` | Advanced IK users |
-| RSSetup | RSBakeFrame | `rs_bake_frame.py` | Bake right-handed frame group from picked points | Joint-library authors |
 | RSSetup | RSDefineRoboticTool | `rs_define_robotic_tool.py` | AssemblyTool mode: define a tool candidate (block + TCP points + picked collision meshes, exports `.3dm` + `.obj`). SupportGripper mode: export bar-grasp -> tool0 transform | Advanced IK users |
-| RSSetup | RSSwapRoboticTool | `rs_swap_robotic_tool.py` | Prints registered tool names; type either L/R member to make its pair ACTIVE (registry updated, all placed tools re-placed, block geometry refreshed) | Advanced IK users |
+| RSSetup | RSExportBarTool0TF | `rs_export_bar_tool0_tf.py` | Pick a bar; export its bar-OCF -> `tool0_left` / `tool0_right` transforms to `<root>/BarTool0TF/<bar_id>.json` | Advanced IK users |
+| RSSetup | RSExportPrefab | `rs_export_prefab.py` | Export bar/joint prefabrication JSON; MoCap joints also carry `paired` and their marker positions in the bar frame | Workshop participants |
 | RSSetup | RSInspectRoboticTool | `rs_inspect_robotic_tool.py` | PyBullet viewer for ALL tool candidates: a slider steps through L/R pairs (L at origin, R at +0.30 m), each showing its tool0 + TCP frame (`M_tcp_from_block`); a two-step GUI confirm deletes a whole candidate pair (registry entries + `.3dm`/`.obj`). Reads/edits `robotic_tools.json` only — no Rhino geometry. | Advanced IK users |
-| RSSetup | RSShowPlanningWorld | `rs_show_planning_world.py` | Debugging: open the assembly robot's planning world (what IK checks collisions against) in PyBullet's window. Changes nothing in the document. | Advanced IK users |
-| RSSetup | RSResetPlanning | `rs_reset_planning.py` | Close every planning world, forget the cached geometry and preview meshes, stop the ssik sidecar. Only when something looks stuck: the IK commands and viewers rebuild what they need. | Advanced IK users |
-| RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the bars to export, Enter = all or a From..Until range, then a parent folder and the folder name), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
-| RSSetup | RSClearIKKeyframe | `rs_clear_ik_keyframe.py` | Left-click: pick ONE bar. Right-click (`rs_clear_ik_keyframe_all.py`): EVERY bar. Either way, then choose what to erase via two toggles — Keyframe (M1-M3 IK config + legacy blob) and BasePosition (mobile base) — both default Erase. M4 home is a constant, left untouched. No PyBullet needed. | Planning/export users |
-| RSSetup | RSLoadSolvedBarAction | `rs_load_solved_bar_action.py` | Left-click: pick a bar, write its solved keyframes from a process folder's `solutions/` onto its user text, then view its keyframes or motion (prompt). Right-click, **RSLoadSolvedBarActionAll** (`rs_load_solved_bar_action_all.py`): every solved bar, then the viewer with every base frame. | Planning/export users |
-| RSDesign | RSAssignAndShowWalkableGround | `rs_assign_and_show_walkable_ground.py` | Pick a bar; view its assigned WalkableGround(s) + the default mobile-base placement (half-transparent ghost robot), then optionally overwrite the assignment by selecting brep(s) — loops back to re-show. Auto-assigns nearest if none. Auto-assign also runs on entry to the IK, preview and export commands; use this to inspect/correct a specific bar. | Planning/export users |
-| RSMoCap | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one rigid body from Motive and bake markers | Mocap users |
-| RSMoCap | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit model bars to mocap bars and transform managed layers | Mocap users |
+| RSSetup | RSLamcpBridgeStart | `rs_lamcp_bridge_start.py` | Left-click: start the LAMCP bridge, a local server (`http://127.0.0.1:8765`) inside Rhino that lets Claude Code run Python in this session. Right-click, **RSLamcpBridgeStop** (`rs_lamcp_bridge_stop.py`): stop it | Developers |
+| RSSetup | RSMeasureGap | `rs_measure_gap.py` | Measure closest segment between two finite lines | Workshop participants |
 | RSSetup | RSRegisterAliases | `register_command_aliases.py` | Register a typeable command alias for every RS\* toolbar macro, so you can **type** `RSJointEdit` in the command line instead of hunting for its button. Run once per machine; re-run after macro changes. Aliases persist across Rhino sessions. | Workshop participants |
-| (no button) | RSShowLog | `rs_show_log.py` | Print the path of this Rhino session's log and open it: every command run, its prompts and answers, errors with tracebacks, and where the time went. Type `RSShowLog` (after RSRegisterAliases) or run `_-ScriptEditor _R "rs_show_log.py"`. See `docs/session_log.md`. | Everyone |
-| RSStability | RSSetRodLayer | `rs_set_rod_layer.py` | Select bars (centerlines or tube previews) and assign their `layer_id`: `0` also sets `grounded` true, `1`/`2`/... set it false. Both fields go straight into `rod_list` on the next RSExportScaffoldJSON | Workshop participants |
-| RSStability | RSImportScaffoldJSON | `rs_import_scaffold_json.py` | Import a `node_list`/`rod_list`/`coupler_list` layout JSON as registered bars (`bar_id` = `B<rod_id>`), sequenced by `layer_id` then `rod_id` | Workshop participants |
+| RSSetup | RSReorderBarID | `rs_reorder_bar_id.py` | Renumber bars to match sequence and cascade IDs | Workshop participants |
+| RSSetup | RSResetPlanning | `rs_reset_planning.py` | Close every planning world, forget the cached geometry and preview meshes, stop the ssik sidecar. Only when something looks stuck: the IK commands and viewers rebuild what they need. | Advanced IK users |
+| RSSetup | RSShowPlanningWorld | `rs_show_planning_world.py` | Debugging: open the assembly robot's planning world (what IK checks collisions against) in PyBullet's window. Changes nothing in the document. | Advanced IK users |
+| RSSetup | RSSwapRoboticTool | `rs_swap_robotic_tool.py` | Prints registered tool names; type either L/R member to make its pair ACTIVE (registry updated, all placed tools re-placed, block geometry refreshed) | Advanced IK users |
+| RSSetup | RSUpdatePreview | `rs_update_preview.py` | Left-click: one idempotent repair pass -- rebuild stale/missing bar tube previews, reload joint blocks whose `asset/*.3dm` changed (in place), restore/re-side/re-snap robotic tools, then report unmated joint pairs and broken bar/joint/tool links. Never moves a joint. Then paints the IK + broken-link overlay and pops up a tally — there is no longer a job prompt, the overlay is always painted. Right-click, **RSClearColorPreview** (`rs_clear_color_preview.py`): clear every color preview. | Workshop participants |
 | RSStability | RSExportScaffoldJSON | `rs_export_scaffold_json.py` | Export the current bars back to the same JSON schema, with node positions taken from the snapped geometry | Workshop participants |
+| RSStability | RSImportScaffoldJSON | `rs_import_scaffold_json.py` | Import a `node_list`/`rod_list`/`coupler_list` layout JSON as registered bars (`bar_id` = `B<rod_id>`), sequenced by `layer_id` then `rod_id` | Workshop participants |
+| RSStability | RSSetRodLayer | `rs_set_rod_layer.py` | Select bars (centerlines or tube previews) and assign their `layer_id`: `0` also sets `grounded` true, `1`/`2`/... set it false. Both fields go straight into `rod_list` on the next RSExportScaffoldJSON | Workshop participants |
+| RSMoCap | RSAlignModelThreeBars | `rs_align_model_three_bars.py` | Fit model bars to mocap bars and transform managed layers | Mocap users |
+| RSMoCap | RSCheckMoCapLayout | `rs_check_mocap_layout.py` | Find bars Motive could mix up (their MoCap marker spheres match by moving/turning a bar, within a typed tolerance, 5 mm default) and bars the export would refuse; colours each group, selects them, prints how they match. No PyBullet. | Mocap users |
+| RSMoCap | RSReadMoCapBar | `rs_read_mocap_bar.py` | Read one rigid body from Motive and bake markers | Mocap users |
+| (no button) | RSShowLog | `rs_show_log.py` | Print the path of this Rhino session's log and open it: every command run, its prompts and answers, errors with tracebacks, and where the time went. Type `RSShowLog` (after RSRegisterAliases) or run `_-ScriptEditor _R "rs_show_log.py"`. See `docs/session_log.md`. | Everyone |
 
 ## Detailed behavior by entrypoint
 
@@ -447,7 +455,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 ### RSIKKeyframeAll (`rs_ik_keyframe_all.py`) — right-click on the RSIKKeyframe button
 
 - Multi-select bars, or take `AllBars` / `UnsolvedBars` from the prompt; places a mobile base on each and optionally solves them all in one batch. A bar with stale IK (plan check B15) is yellow on entry and is solved again without the overwrite question.
-- **Standoff** is typed at the prompt, defaulting to `config.IK_BASE_STANDOFF_MULTIBAR_MM` = **500 mm** — deliberately the *middle* base-guide offset, so the auto-placed base lands exactly on the middle guide line and 375 / 625 read as the two alternatives either side of it.
+- **Standoff** is typed at the prompt, defaulting to `config.IK_BASE_STANDOFF_MM` = **625 mm** — the *outer* base-guide offset, the one every automatic base placement uses, so the auto-placed base lands exactly on the outer guide line and 375 / 500 read as the closer alternatives drawn in front of it.
 - Each processed bar gets its own guide-line set plus a base marker and reach circle.
 - **FlipAll / FlipOne** at the off-ramp prompt move bases to the other side of their bar (FlipOne asks for the bar: click its centre line, tube or base marker; only bars with a placed base are pickable). The guides, the saved base frame, and the L/R tool sides all follow the flip; a flip also clears any hand-picked tool side, since it is you re-deciding the approach.
 - **BaseSearch** at the collision-options prompt (one answer for the whole batch, remembered for the session; RSIKKeyframe asks the same question and does the same with it) decides what a bar that fails at its placed base gets next: **Single** nothing; **Random** up to `IK_BASE_SAMPLE_MAX_ITER` random bases within `IK_BASE_SAMPLE_RADIUS`, same heading; **Optimised** (the default, `config.IK_BASE_SEARCH`) up to `IK_BASE_SEARCH_MAX_PROPOSALS` bases from the base search (`core.base_search`). Each base is confirmed by the IK chain; the summary lists every bar solved at a base other than the placed one.
@@ -523,16 +531,64 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - The ghost robot is FK-only (no PyBullet needed): its link and tool meshes are copied once at the home pose (`core.ik_viz.robot_meshes` of the robot alone, `core.process_display.robot_scene`) and rendered translucent via `core.dynamic_preview.mesh_preview` — the same style as the IK base-sampling ghost — rigidly placed on each computed base frame. Loading the robot URDF on first use can take a moment.
 - Auto-assignment also runs on entry to RSIKKeyframe, RSIKKeyframeAll, RSUpdatePreview and RSExportProcess, so this command is for inspecting/correcting a specific bar. On the RSDesign toolbar.
 
+### RSIKMaintenance (`rs_ik_maintenance.py`)
+
+- One button for IK upkeep. It asks first: **CheckIK** (Enter), **ClearOneBar**, **ClearAllBars**.
+  The two Clear modes are RSClearIKKeyframe / RSClearIKKeyframeAll, unchanged (next section).
+- **Why a check is needed.** A saved keyframe is only joint angles and a base frame; nothing
+  records what it was solved against. When a joint or a bar moves, the walkable ground changes
+  height, or another bar's IK changes (a support robot now standing where this robot's arm goes),
+  the old keyframe silently stops fitting — and RSIKKeyframeAll skips "already solved" bars.
+- **What CheckIK does** (the planning worlds are built on first use; nothing to start by hand):
+  1. Reads the document as a process, fresh (`core.process_source`, the read RSExportProcess does),
+     so a moved joint moves the targets the saved poses are checked against.
+  2. **Reach**: the core's plan check B15 compares every saved pose — the assembly robot's and the
+     support robots' — with the flange targets the tools give today, and names the worst miss
+     (`core.ik_status`, the same STALE IK that RSExportProcess and RSIKKeyframeAll report).
+  3. **Collision**: every pose of the bar in the process (approach, assembled, hold, retreat, home,
+     and the releases after it; `core.plan_steps`) is checked on the robots' planning worlds
+     (`process_planning.scene_collisions`, the viewers' CheckCollision) — with the bars built so
+     far and the support robots where the schedule has them, so another bar's changed hold shows
+     up here. A collision at a release step is charged to the held bar's support keyframe.
+  4. **Ground and grasp**: the saved base more than 10 mm / 3° off the walkable ground under it; a
+     support keyframe whose robot is not the one today's hold plan gives the bar to, or whose grasp
+     is more than 1 mm / 0.5° off the bar's centre line.
+  6. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber ones),
+     then the usual three erase toggles.
+- Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`. The amber stays until the next
+  CheckIK (which puts back what it painted over), RSUpdatePreview or RSClearColorPreview.
+
 ### RSClearIKKeyframe (`rs_clear_ik_keyframe.py`) / RSClearIKKeyframeAll (`rs_clear_ik_keyframe_all.py`)
 
-- **Scope first**: **Left-click** (`rs_clear_ik_keyframe.py`) picks ONE bar; **Right-click** (`rs_clear_ik_keyframe_all.py`) targets EVERY registered bar.
-- **Then what to erase**: a two-toggle command-line prompt (`rs.GetBoolean`), both defaulting to **Erase**:
+- **No button of their own any more**: RSIKMaintenance › ClearOneBar / ClearAllBars runs them.
+  Both can still be typed (RSRegisterAliases).
+- **Scope first**: `rs_clear_ik_keyframe.py` picks ONE bar; `rs_clear_ik_keyframe_all.py`
+  targets EVERY registered bar; RSIKMaintenance's CleanAll / CleanSelected pass the bars its
+  check flagged.
+- **Then what to erase**: a three-toggle command-line prompt (`rs.GetBoolean`), all defaulting to **Erase**:
   - **Keyframe** — the approach/assembled/retreat per-arm configs (`KEY_ASSEMBLY_IK_APPROACH` / `IK_ASSEMBLED` / `IK_RETREAT`, the M1–M3 results).
   - **BasePosition** — the mobile base frame (`KEY_ASSEMBLY_BASE_FRAME`).
-  - Untick one to keep it — e.g. keep the base to re-solve at the same spot (RSIKKeyframe's "reuse saved base" path), or keep the keyframe and drop only the base. Both unticked = nothing to do.
-- Both clicks share `clear_ik(all_bars)`; the underlying helper is `rhino_bar_registry.clear_assembly_ik_keyframe(bar_oid, clear_keyframe=..., clear_base_frame=...)`.
-- The legacy `ik_assembly` blob bundles base + configs and can't be split, so it is removed whenever **either** toggle is on; the authoritative split keys carry whatever is kept. M4's home config is a constant (`config.HOME_CONF_*`), not stored per bar, so it is left untouched.
+  - **Support** — the support robot's hold keyframe (robot, base, grasp, approach + held configs).
+  - Untick one to keep it — e.g. keep the base to re-solve at the same spot (RSIKKeyframe's "reuse saved base" path), or keep the keyframe and drop only the base. All unticked = nothing to do.
+- Every scope shares `clear_ik(all_bars, bar_ids=None)`; the underlying helpers are `rhino_bar_registry.clear_assembly_ik_keyframe(bar_oid, clear_keyframe=..., clear_base_frame=...)` and `clear_support_ik_keyframe(bar_oid)`.
+- The legacy `ik_assembly` blob bundles base + configs and can't be split, so it is removed whenever **either** of the first two toggles is on; the authoritative split keys carry whatever is kept. M4's home config is a constant (`config.HOME_CONF_*`), not stored per bar, so it is left untouched.
 - Only edits user-text on the bar curves — no PyBullet required.
+
+### RSClearPreview (`rs_clear_preview.py`)
+
+- The IK and plan previews draw the robots, tools, bars and joints as real mesh objects on the
+  "MANAGED Scaffolding › IK Cache" sub-layers, and hide some of them (the mesh set not shown, and
+  bars not built yet at the step shown). Until 2026-10 the preview's clean-up used Rhino's plain
+  delete, which refuses hidden objects, so every clear left those meshes in the file
+  (27,013 of them in `261008_2ModulesDemo.3dm`, 267 MB).
+- Deletes, hidden or not: everything on IK Cache and its sub-layers, Base Frame Preview, Base
+  Guide Preview, the old `IKSupportPreview` / `IKPineapplePreview` layers, and the groups the base
+  markers leave empty. Ends any open preview session first and forgets the preview cache, so the
+  next preview bakes once, as after opening a file.
+- Keeps every design object (bars, joints, tools, walkable ground, obstacles) and the MoCap marker
+  labels; colours are RSClearColorPreview's job. Collision checks are unaffected: PyBullet keeps its
+  own copy of the bodies.
+- Not recorded for Undo, so the removed meshes do not stay in memory. Save afterwards to shrink the file.
 
 ### RSReadMoCapBar (`rs_read_mocap_bar.py`)
 
@@ -546,6 +602,28 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - **Older 4-marker bar rig only.** It treats the line between the two pair centres as the bar
   axis. On `T20_MoCap` joints the pair centre sits 25.5 mm off the axis, so it would fit the
   bar 25.5 mm off; do not use it for MoCap-joint bars.
+
+### RSCheckMoCapLayout (`rs_check_mocap_layout.py`)
+
+- Motive tells tracked bars apart only by the shape their marker spheres form. This compares
+  every bar carrying MoCap joints with every other one and flags the look-alikes: two bars whose
+  spheres can be laid onto each other by moving and turning one bar, with every sphere within
+  the tolerance asked at the prompt (`config.MOCAP_SIMILAR_TOL_MM`, 5 mm). The same placement
+  turned end for end counts; a mirror image does not (a bar cannot become its mirror); bars with
+  different marker counts are not compared. Rule: `core/mocap_similarity.py`, built on
+  `mocap_layout_check.match`.
+- Also flags, in dark red, every bar the export would refuse (its own layout fits itself in two
+  poses), at the export's own 2 mm tolerance — so the problem shows up before RSExportProcess
+  stops on it.
+- Each group of look-alikes gets its own colour (bar centre-line, tube and MoCap joints), every
+  flagged object is left selected, and the command line says how each pair matches, e.g.
+  `B22 = B20 end for end, within 0.4 mm`. Fix one bar of a group by moving or turning a MoCap
+  joint, then run it again.
+- Marker positions come from the placed MoCap blocks and the spheres recorded on the block
+  (RSDefineJointHalf), each in its own bar frame — the numbers RSExportPrefab writes. A bar with
+  an unrecorded MoCap block is left out and named.
+- Changes nothing but colours. The next run puts back what this one painted over (unless
+  something else repainted it since); RSClearColorPreview clears them too.
 
 ### RSImportScaffoldJSON (`rs_import_scaffold_json.py`)
 

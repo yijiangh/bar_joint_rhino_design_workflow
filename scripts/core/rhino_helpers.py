@@ -249,11 +249,85 @@ def reset_object_color(object_ids):
             rs.ObjectColorSource(oid, COLOR_BY_LAYER)
 
 
+def paint_remembered(color_by_oid: dict, key: str) -> None:
+    """Paint each object once, remembering what it was so :func:`restore_painted` can undo it.
+
+    For a check command that flags objects by colour and runs again later: the
+    next run calls :func:`restore_painted` with the same *key* first, so a bar
+    flagged last time and fixed since does not stay flagged. Kept in
+    ``sc.sticky`` -- this Rhino session only; RSClearColorPreview clears what is
+    left after a restart.
+
+    Args:
+        color_by_oid (dict): ``{object id: rgb}``; paint each object once.
+        key (str): the ``sc.sticky`` key to remember under, one per command.
+    """
+    record = []
+    for oid, rgb in color_by_oid.items():
+        if oid is None or not rs.IsObject(oid):
+            continue
+        record.append((oid, rs.ObjectColorSource(oid), rs.ObjectColor(oid), tuple(rgb)))
+        set_object_color(oid, rgb)
+    sc.sticky[key] = record
+
+
+def restore_painted(key: str) -> None:
+    """Put back the colours :func:`paint_remembered` painted over, where they are still ours.
+
+    An object something else has repainted since (RSUpdatePreview, or
+    RSClearColorPreview back to by-layer) is left as it is now.
+    """
+    for oid, source, color, ours in sc.sticky.pop(key, None) or []:
+        if not rs.IsObject(oid) or rs.ObjectColorSource(oid) != COLOR_BY_OBJECT:
+            continue
+        now = rs.ObjectColor(oid)
+        if (now.R, now.G, now.B) != ours:
+            continue
+        # Colour first: setting it flips the source to by-object, so the source
+        # is written afterwards (see rhino_bar_registry.restore_object_colors).
+        rs.ObjectColor(oid, color)
+        rs.ObjectColorSource(oid, source)
+
+
 def delete_objects(object_ids):
-    """Delete one or more Rhino objects (silently skips missing ones)."""
+    """Delete one or more Rhino objects (silently skips missing ones).
+
+    Like ``rs.DeleteObject``, this leaves hidden and locked objects in place;
+    use :func:`delete_objects_any_state` for those.
+    """
     for oid in as_object_id_list(object_ids):
         if rs.IsObject(oid):
             rs.DeleteObject(oid)
+
+
+def delete_objects_any_state(object_ids) -> int:
+    """Delete objects even when they are hidden or locked; return how many went.
+
+    ``rs.DeleteObject`` / ``rs.DeleteObjects`` call ``doc.Objects.Delete(id,
+    True)``, which refuses a hidden or locked object and reports nothing (a
+    hidden mesh stays in the file).  Previews hide their meshes, so they are
+    deleted here with Rhino's ``Delete(obj, quiet=True, ignoreModes=True)``.
+    Missing ids are skipped.
+    """
+    deleted = 0
+    for oid in as_object_id_list(object_ids):
+        guid = rs.coerceguid(oid)
+        obj = sc.doc.Objects.FindId(guid) if guid is not None else None
+        if obj is not None and sc.doc.Objects.Delete(obj, True, True):
+            deleted += 1
+    return deleted
+
+
+def layer_tree(layer_name: str) -> list:
+    """*layer_name* and every layer below it, parents first ([] if it does not exist)."""
+    if not rs.IsLayer(layer_name):
+        return []
+    layers = [layer_name]
+    i = 0
+    while i < len(layers):
+        layers.extend(rs.LayerChildren(layers[i]) or [])
+        i += 1
+    return layers
 
 
 # ---------------------------------------------------------------------------

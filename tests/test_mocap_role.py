@@ -175,8 +175,8 @@ def test_marker_diameter_defaults_to_not_recorded_and_rejects_negative():
 
 
 def test_shipped_t20_mocap_has_its_marker_diameter():
-    """The real joint_pairs.json (not the fixture above) records the 19 mm spheres."""
-    assert load_joint_registry().halves["T20_MoCap"].marker_diameter_mm == pytest.approx(19.0)
+    """The real joint_pairs.json (not the fixture above) records the 20 mm spheres (T20_MoCap re-recorded 2026-10)."""
+    assert load_joint_registry().halves["T20_MoCap"].marker_diameter_mm == pytest.approx(20.0, abs=1e-3)
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ topic, ordered basic → advanced inside each group.
 | 30 | one naming rule — every joint name from `<Type>_<Subtype>` *(convention)* |
 | 24 | `BeginUndoRecord` — one Ctrl+Z for a whole command |
 | 23 | which module a preview belongs in (the four viz mechanisms) |
+| 32 | Rhino won't delete a hidden object — why files grew to 267 MB |
 | 25 | Grasshopper components vs Rhino commands |
 
 **Tooling (git, linter, tests)**
@@ -333,6 +334,14 @@ No change to the button itself was needed — it was already wired to `...017`.
    the file, restart Rhino or re-open the workspace so the change shows up. Rhino also
    caches a copy in its AppData — if an edit "doesn't take," make sure Rhino isn't
    overwriting the repo file on exit.
+
+4. Keep the buttons sorted: `python scripts/sort_toolbar_buttons.py` orders the
+   `<tool_bar_item>` blocks of each tab by their left-click command name (a repo
+   convention, so `RSBar*`, `RSExport*`, `RSJoint*` sit together); `--check` only reports.
+   **Run it with Rhino closed** — Rhino keeps the toolbar in memory and writes the whole
+   file back when it closes, so a sort made while Rhino is open is lost. That is also why
+   the `.rui` often shows as modified after a Rhino session with no button changed: Rhino
+   re-wrote the same buttons with its icon blocks in another order.
 
 > Rule of thumb: a **macro** is the command; a **tool_bar_item** is the button that
 > points at one or two macros (left / right). To add a right-click behavior, add the
@@ -2524,9 +2533,8 @@ Git prints `CONFLICT (content): Merge conflict in scripts/core/robot_cell.py`, a
 shows those files as `UU` (unmerged). Inside each, every conflicting block looks like:
 
 ```
-<<<<<<< HEAD
     joint_oids = objects_on_layers(layer)            <- "ours": the branch I am on
-=======
+
     if rs.IsLayer(layer):                            <- "theirs": what I am merging in (main)
         joint_oids = rs.ObjectsByLayer(layer) or []
 >>>>>>> origin/main
@@ -2598,7 +2606,126 @@ goes in each commit), run the tests again (403 passed), and only then
 | take the shelf back | `git stash pop` (or `apply`, then `drop` later) |
 | move a branch I'm not on | `git branch -f main origin/main` |
 
+<<<<<<< HEAD
 ### 2026-10-19: merged main (021efef) into jg/rhino-new-core on yh/new-core-merge
 
 One merge commit on a local branch: Su's UI commands and the RSBarSelect / RSJointSelect renames now run on
 Jakob's shared core (with its session log); the old compas_fab exporter stays retired, RSExportProcess replaces it.
+=======
+---
+
+## 32. Rhino won't delete a hidden object — why the demo file grew to 267 MB
+
+> ⚠️ **Real Rhino behaviour**, not a repo convention. Measured on 2026-10-18 in Rhino 8.
+
+### The behaviour
+
+| call | shown object | hidden object |
+|---|---|---|
+| `rs.DeleteObject(id)` / `rs.DeleteObjects(ids)` | deleted | **left in place**; `DeleteObjects` simply counts one fewer |
+| `sc.doc.Objects.Delete(id, True)` (what the two above call) | deleted, returns `True` | **left in place**, returns `False` |
+| `sc.doc.Objects.Delete(obj, True, True)` — the third argument is `ignoreModes` | deleted | deleted |
+| `rs.ObjectsByLayer(layer)` | listed | listed |
+
+"Hidden" here means the object itself (`rs.HideObject`), not its layer: an object on a hidden
+*layer* deletes fine. Locked objects behave like hidden ones. Nothing is printed when a delete is
+refused.
+
+### Where it bit us
+
+The IK and plan previews (`core/ik_viz.py`) bake the robots, tools, bars and joints as real mesh
+objects on "MANAGED Scaffolding › IK Cache", in two sets: display meshes and collision meshes.
+While a preview is up, the set you are not looking at, and every bar not built yet at the step
+shown, are hidden object by object. Every clear (the first preview after opening a file, the end
+of RSIKKeyframe's support flow, RSAssignAndShowWalkableGround, RSSwapRoboticTool) deleted with
+`rs.DeleteObjects`, so it removed only the shown meshes. The hidden ones stayed in the file,
+nobody pointed at them any more, and the next preview baked a full new set. In
+`261008_2ModulesDemo.3dm` that added up to 27,013 hidden meshes, 16.7 million vertices, most of the file's 267 MB.
+
+### The rule now
+
+To delete objects that might be hidden or locked, use
+`core.rhino_helpers.delete_objects_any_state(ids)`; it returns how many were really deleted.
+`rhino_helpers.delete_objects` keeps the plain behaviour for everything else. A file that grew
+before the fix is cleaned with **RSClearPreview**, then saved.
+
+Measured on a copy of `261008_2ModulesDemo.3dm`: RSClearPreview removed 27,686 preview meshes in 1.5 s, a save then wrote 26.8 MB instead of 267 MB, and looking up the bars went from 0.55–0.86 s to 0.01 s per call (every command does this about a dozen times).
+
+## 33. Two bars Motive could mix up — "rigid match" and "end for end"
+
+> ⚠️ The fit is **real maths** (the Kabsch rigid fit in `core.mocap_layout_check.fit_rigid`). The 5 mm
+> tolerance and the words "look-alike", "same placement", "end for end" are **repo conventions**,
+> chosen for RSCheckMoCapLayout.
+
+### What it is
+
+Motive identifies a tracked bar only by the shape its marker spheres form; the marker ids it
+reports shuffle, so they are not trusted. Two bars are **look-alikes** when one bar's spheres can
+be laid onto the other's by moving and turning the bar — a *rigid motion*: a rotation plus a shift,
+nothing stretched, nothing mirrored — with every sphere landing within the tolerance. To Motive the
+two are the same object.
+
+### Where it lives
+
+- The rule: `scripts/core/mocap_similarity.py` → `compare_bars`. It calls
+  `core.mocap_layout_check.match(bar A, bar B, tol)`, the same function that matches a measured
+  marker set to the design, so "same shape" means one thing everywhere.
+- The button: **RSCheckMoCapLayout** (`scripts/rs_check_mocap_layout.py`), RSMoCap tab.
+- The tolerance: asked each run, default `config.MOCAP_SIMILAR_TOL_MM` (5 mm). The export's own
+  per-bar check uses `config.MOCAP_LAYOUT_TOL_MM` (2 mm), about twice Motive's marker noise; 5 mm
+  is wider on purpose, to flag layouts that are close, not only identical.
+
+### How each pair is described
+
+Both layouts are in their own bar frame (origin at the bar start, z along the bar), so the
+rotation of the fit says how bar B sits relative to bar A:
+
+| fit rotation | printed as | example |
+|---|---|---|
+| none (under 5°) | `same placement` | B20 and B22 carry MoCap joints at the same distances from their start, turned the same way |
+| a half-turn about an axis across the bar | `end for end` | B22's joints sit at `L − d` where B20's sit at `d`: pick B22 up, swap its ends, and it is B20 |
+| a turn about the bar itself | `turned 90 deg about the bar` | every joint on B22 is rotated 90° about the bar compared with B20 |
+
+A **mirror image** never counts: a rotation cannot turn a bar into its mirror, so Motive can tell
+them apart. Neither do bars with **different marker counts** — with every sphere in view, Motive
+does not confuse a 6-marker body with an 8-marker one.
+
+## 34. "Stale IK" — why RSIKMaintenance › CheckIK replays a keyframe instead of comparing it
+
+> ⚠️ **Repo convention** (the word "stale", the tolerances, the amber). The checks themselves are
+> **real robotics**: forward kinematics (FK — "where does the flange end up for these joint angles")
+> and a collision check, both done by the shared core on its PyBullet planning worlds.
+
+### What it is
+
+A bar's IK keyframe is saved as user text on the bar: the robot base frame (a 4×4 matrix) and, per
+pose, the 6 joint angles of each arm. That is **all** — no copy of where the joints, tools or ground
+were when it was solved. So when you move a joint, the keyframe still says "solved", but the arm
+angles now point the flange at where the joint *used to be*. **Stale** = still saved, no longer right.
+
+### Where it lives
+
+- The rule: `scripts/core/ik_check.py`; the tolerances: `config.IK_CHECK_*`; the button:
+  **RSIKMaintenance** (`scripts/rs_ik_maintenance.py`), on RSDesign where RSClearIKKeyframe was.
+- What it replays against: the document read as a process (`core.process_source`), the same read
+  RSExportProcess and the viewers do. Reach is the core's plan check B15 (`core.ik_status`, what
+  RSExportProcess and RSIKKeyframeAll report as STALE IK); collision is checked at every pose of the
+  bar (`core.plan_steps.bar_steps`) with `process_planning.scene_collisions`, what the viewers'
+  CheckCollision runs; ground and grasp are numpy against the walkable grounds and the bar line.
+
+### What sets it off — one real example per cause
+
+| You change… | The check says… | Because… |
+|---|---|---|
+| a joint, with RSJointEdit › MoveJoint 20 mm | `assembly pose misses its target by 20.0 mm` | the tool moved with the joint; FK of the saved angles did not |
+| the WalkableGround, raised 50 mm | `base 50 mm below the walkable ground -- did the ground move?` | the saved base is where the old ground was |
+| a held bar, moved | `support (Alice): grasp 35.0 mm / 0.0 deg off the bar -- the bar moved` | the support grasp is saved in world coordinates |
+| another bar's support IK, re-solved into the way | `B22 retreat: collides -- robots/cindy/<link> x robots/alice/<link>` | the holders are part of every step's scene |
+
+### Why the process is read fresh
+
+The process is built from the document on every CheckIK (the geometry cache only skips re-meshing
+objects that did not change), so a joint moved along its bar changes the targets the saved poses
+are checked against. The planning worlds (one PyBullet world per robot, kept between commands) are
+synced from the process's scenes before each check, so they see the change too; nothing has to be
+rebuilt by hand, and there is no RSPBStart any more.

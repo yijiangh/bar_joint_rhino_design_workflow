@@ -809,10 +809,12 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
 
     Projects the reference point onto the bar's assigned WalkableGround(s), steps
     the standoff distance AGAINST the resolved heading, and re-snaps that point
-    onto the ground -- the shared ``keyframe.walkable_ground.derive_seed_base``
-    heuristic. The base therefore faces along the heading, so driving forward
-    (+X) carries the bar into the assembly. Returns ``None`` when the bar has no
-    assigned / meshable ground or its curve is unreadable.
+    onto the ground -- the same steps as tamp's
+    ``keyframe.walkable_ground.derive_seed_base``, taken here because that
+    function always stands at tamp's own standoff (700 mm) and Rhino's is
+    ``config.IK_BASE_STANDOFF_MM``. The base therefore faces along the heading, so
+    driving forward (+X) carries the bar into the assembly. Returns ``None`` when
+    the bar has no assigned / meshable ground or its curve is unreadable.
 
     The heading comes from :func:`resolve_bar_heading`, which averages the bar's
     anchor-joint insertion axes and falls back to the open side of the bar when
@@ -824,10 +826,9 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
         grounds_map (dict | None): ``{ground_id: oid}``; scanned via
             :func:`get_all_walkable_grounds` when ``None``.
         standoff_mm (float | None): how far to stand behind the bar, in mm.
-            ``None`` -> ``config.IK_BASE_STANDOFF_MM`` (the default single-bar seed).
-            The multi-bar IK command (RSIKKeyframeAll) passes
-            ``config.IK_BASE_STANDOFF_MULTIBAR_MM`` (500 mm, the middle base-guide
-            line).
+            ``None`` -> ``config.IK_BASE_STANDOFF_MM`` (625 mm, the outer
+            base-guide line). RSIKKeyframeAll passes the distance typed at its
+            prompt, which defaults to the same value.
         center_mm (np.ndarray | None): the ground-projection reference point (mm)
             the base stands behind of. ``None`` -> the bar centerline midpoint
             (:func:`_bar_center_mm`). The multi-bar IK command passes the grabbed-
@@ -883,10 +884,13 @@ def default_base_frame_for_bar(bar_oid, bar_id, grounds_map: Dict[str, object] =
         return None
 
     if diag_out is not None:
-        # derive_seed_base silently stands UNDER the bar when the offset point
-        # misses the ground; surface that instead of letting the base drift off
-        # the guide line unannounced.
-        ideal = np.asarray(ground_point, dtype=float) - diag["heading"] * standoff
+        # The snap can stand the base UNDER the bar when the offset point misses
+        # the ground; surface that instead of letting the base drift off the
+        # guide line unannounced. The ideal point is the one `_seed_base` aimed
+        # for: the standoff behind the ground point, along the heading flattened
+        # onto the ground.
+        flat_heading = _walkable_np._ground_heading_direction(diag["heading"], ground_normal)
+        ideal = np.asarray(ground_point, dtype=float) - flat_heading * standoff
         diag_out["off_guide_mm"] = float(np.linalg.norm(origin - ideal))
     return frame
 

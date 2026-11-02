@@ -91,6 +91,18 @@ colours — so the usual cleanup path covers them too.
 Marks are drawn by `rhino_joint_refresh.mark_broken_links`; tools get a text dot rather than a
 colour, because a block instance's colour does not reach sub-objects that carry baked colours.
 
+## RSCheckMoCapLayout — MoCap look-alikes
+
+Painted on the bar (centre-line + tube) and on its MoCap joints:
+
+| Colour | RGB | Meaning | Defined as |
+| --- | --- | --- | --- |
+| gold, magenta, cyan, lime, brown, navy | see `config` | one per group of bars Motive could mix up; the colour means "group N", not a state, and cycles past six groups | `config.MOCAP_SIMILAR_GROUP_COLORS` |
+| dark red | `170, 0, 0` | the export would refuse this bar (its own layout fits itself in two poses); wins over a group colour | `config.MOCAP_REFUSED_COLOR` |
+
+Undone rather than cleared: each run snapshots what it paints over and the next run puts it back,
+unless something else repainted the object in between. RSClearColorPreview clears it too.
+
 ## IK keyframe colours — RSIKKeyframe, RSIKKeyframeAll, RSShowIKColors
 
 | Colour | RGB | Meaning | Defined as |
@@ -100,6 +112,11 @@ colour, because a block instance's colour does not reach sub-objects that carry 
 | pink | `230, 115, 150` | IK attempted at the placed base and failed — and, by design, also the fake-bar tint | `COLOR_FAILED` = `SEQ_COLOR_FAKE` |
 | pink **(transient)** | `230, 115, 150` | RSIKKeyframe **rejected the bar you picked** — painted on its tool-bearing joint blocks (or on the bar, if it has none), cleared on the next pick and on exit | `COLOR_FAILED` |
 | red | `255, 40, 40` | collision highlight (RSIKKeyframe, RSShowBarActionPlan) | `config.COLLISION_COLOR`; RSShowBarActionPlan keeps its own `COLLISION_COLOR`, same value |
+| amber | `230, 160, 30` | RSIKMaintenance › CheckIK: the bar's saved IK no longer fits the model and must be recalculated. Undone by the next CheckIK, like the MoCap look-alike colours | `config.IK_STALE_COLOR` |
+
+Amber sits near the MoCap look-alike gold (`240, 190, 0`). Both stay on screen until cleared, so
+after running both checks the two can show at once; the command-line report of each says which
+bars it painted, and RSClearColorPreview clears both.
 
 ## Base placement — guides, frame marker, reach
 

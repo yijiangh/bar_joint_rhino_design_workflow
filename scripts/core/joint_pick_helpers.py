@@ -61,11 +61,11 @@ def temporarily_hidden(object_ids):
 # ---------------------------------------------------------------------------
 
 
-def pick_block_instance(prompt: str, dialog_title: str = "RSDefineJoint"):
+def pick_block_instance(prompt: str, dialog_title: str = "RSDefineJointHalf"):
     return rs.GetObject(prompt, filter=4096, preselect=False, select=False)
 
 
-def pick_line(prompt: str, dialog_title: str = "RSDefineJoint"):
+def pick_line(prompt: str, dialog_title: str = "RSDefineJointHalf"):
     object_id = rs.GetObject(prompt, filter=4, preselect=False, select=False)
     if object_id is None:
         return None

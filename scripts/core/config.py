@@ -104,6 +104,23 @@ MOCAP_PREVIEW_COLOR = (60, 150, 200)
 #: rigid motion before the export refuses it as ambiguous (mm).  About twice the
 #: Motive per-marker noise; see ``core.mocap_layout_check``.
 MOCAP_LAYOUT_TOL_MM = 2.0
+#: RSCheckMoCapLayout: two bars whose marker layouts match within this (mm) are
+#: reported as ones Motive could mix up.  Wider than MOCAP_LAYOUT_TOL_MM on
+#: purpose -- it flags layouts that are merely CLOSE, not only identical.  The
+#: command asks for it each run, with this as the default.
+MOCAP_SIMILAR_TOL_MM = 5.0
+#: One colour per group of look-alike bars, as (name, rgb); the name is what the
+#: report prints.  Cycled when there are more groups than colours.
+MOCAP_SIMILAR_GROUP_COLORS = (
+    ("gold", (240, 190, 0)),
+    ("magenta", (220, 0, 180)),
+    ("cyan", (0, 200, 230)),
+    ("lime", (150, 220, 0)),
+    ("brown", (140, 90, 40)),
+    ("navy", (20, 40, 140)),
+)
+#: A bar the export would refuse: its own layout fits itself in two poses.
+MOCAP_REFUSED_COLOR = (170, 0, 0)  # dark red
 #: Walkable-ground breps assigned to a bar.
 WALKABLE_GROUND_HIGHLIGHT_COLOR = (60, 200, 90)
 #: Bodies reported in collision.
@@ -195,26 +212,43 @@ HUSKY_DUAL_ARM_HOME_CONF_12 = np.array([
 HOME_CONF_LEFT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[:6].tolist()
 HOME_CONF_RIGHT_6 = HUSKY_DUAL_ARM_HOME_CONF_12[6:].tolist()
 
-# IK base sampling fallback.  Rhino's own values (tamp's own defaults differ:
-# 20 iterations, 700 mm standoff); Rhino passes them to tamp explicitly.
+# IK base sampling fallback.  Rhino's own values (tamp's own default differs:
+# 20 iterations); Rhino passes them to tamp explicitly.
 IK_BASE_SAMPLE_RADIUS = 1000.0  # mm
 IK_BASE_SAMPLE_MAX_ITER = 10
-# How far BEHIND the bar the SEED mobile base stands (mm). The seed is offset
-# from the bar's ground projection by this distance, OPPOSITE the average
-# male-joint insertion direction (the way the bar is pushed to mate), so the base
-# faces along the insertion direction and moving forward carries the bar into the
-# assembly. Only a starting point: the expanding-radius search samples around this
-# seed and IK validates each. Tunable.
-IK_BASE_STANDOFF_MM = 1000.0  # mm
-# Standoff used by the MULTI-bar IK command (RSIKKeyframeAll): the mobile base is
-# placed this far perpendicular from each bar, facing the center between the two
-# held joints. Shorter than the single-bar seed above by design (the user places
-# these deliberately, closer to the work). Tunable.
+# How far BEHIND the bar the mobile base stands (mm), for EVERY automatic base
+# placement in Rhino: RSIKKeyframeAll (its prompt default), RSIKKeyframe's Flip,
+# RSAssignAndShowWalkableGround, the batch fill on entry to the IK, preview and
+# export commands (``rhino_walkable_ground.ensure_ground_and_base``) and the
+# RSUpdatePreview tool-side check.  The base is offset from the bar's ground
+# projection by this distance, OPPOSITE the average male-joint insertion direction
+# (the way the bar is pushed to mate), so it faces along the insertion direction
+# and moving forward carries the bar into the assembly.  Tunable.
 #
-# Kept equal to the MIDDLE entry of ``BASE_GUIDE_OFFSETS_MM`` below, so the
-# auto-placed base lands exactly on the middle base-guide line that
-# RSIKKeyframe / RSIKKeyframeAll draw on the walkable ground.
-IK_BASE_STANDOFF_MULTIBAR_MM = 500.0  # mm
+# Equal to the OUTER entry of ``BASE_GUIDE_OFFSETS_MM`` below, so an auto-placed
+# base lands on the outer base-guide line RSIKKeyframe / RSIKKeyframeAll draw.
+# Rhino takes this step itself (``rhino_walkable_ground.default_base_frame_for_bar``):
+# tamp's ``derive_seed_base`` always stands at tamp's own standoff (700 mm, used by
+# the offline planner's base search) and takes no argument for it.
+IK_BASE_STANDOFF_MM = 625.0  # mm
+
+# RSIKMaintenance > CheckIK: how far a saved IK keyframe may drift from today's
+# model before the bar is flagged for recalculation (core.ik_check).  The solver
+# reaches its targets to 1e-5 m / 1e-5 rad, so anything near these limits means
+# the model moved, not solver noise.
+#: Arm flange vs its target (a joint, the bar or a tool moved).
+IK_CHECK_TCP_TOL_MM = 1.0
+IK_CHECK_TCP_TOL_DEG = 0.5
+#: Robot base vs the walkable ground under it (the ground moved).  Looser than
+#: the flange: a base snapped onto a curved ground's brep sits a little off its
+#: tessellated mesh.
+IK_CHECK_BASE_GROUND_TOL_MM = 10.0
+IK_CHECK_BASE_TILT_TOL_DEG = 3.0
+#: A support grasp vs the held bar's centre line (the bar moved).
+IK_CHECK_GRASP_TOL_MM = 1.0
+IK_CHECK_GRASP_TOL_DEG = 0.5
+#: Bars whose saved IK must be recalculated.
+IK_STALE_COLOR = (230, 160, 30)  # amber
 
 # ---------------------------------------------------------------------------
 # Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)
@@ -226,7 +260,7 @@ IK_BASE_STANDOFF_MULTIBAR_MM = 500.0  # mm
 #   - that line offset AGAINST the assembly direction by each distance below;
 #   - the "extension line" joining all those lines' midpoints -- the line the
 #     placed base origin sits on.
-# The middle offset is the multi-bar default standoff (see above).
+# The outer offset is the default standoff, IK_BASE_STANDOFF_MM (see above).
 # ---------------------------------------------------------------------------
 BASE_GUIDE_OFFSETS_MM = (375.0, 500.0, 625.0)
 

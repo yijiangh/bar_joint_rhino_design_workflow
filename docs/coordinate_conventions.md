@@ -264,8 +264,8 @@ Both IK keyframe commands draw five lines on the walkable ground
 
 Every endpoint is re-snapped onto the ground, so the guides follow a stepped or sloped
 surface. The placed base origin lies **on the extension line**, at the offset line
-matching the standoff — `config.IK_BASE_STANDOFF_MULTIBAR_MM` is kept equal to the middle
-offset so the default auto-placement lands on a drawn line.
+matching the standoff — `config.IK_BASE_STANDOFF_MM` is kept equal to the outer
+offset (625 mm) so the default auto-placement lands on a drawn line.
 
 All of this is transient preview geometry on `config.LAYER_BASE_GUIDE_PREVIEW`, removed on
 every exit path.

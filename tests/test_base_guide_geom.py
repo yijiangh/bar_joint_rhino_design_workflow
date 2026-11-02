@@ -360,11 +360,9 @@ def test_default_offsets_come_from_config():
     assert guides["offsets"] == [0.0] + list(config.BASE_GUIDE_OFFSETS_MM)
 
 
-def test_the_middle_guide_is_the_multibar_standoff():
-    """The default auto-placed base must land ON a drawn guide line."""
-    assert float(config.IK_BASE_STANDOFF_MULTIBAR_MM) in tuple(
-        float(offset) for offset in config.BASE_GUIDE_OFFSETS_MM
-    )
+def test_the_outer_guide_is_the_default_standoff():
+    """The default auto-placed base must land ON a drawn guide line -- the outer one."""
+    assert float(config.IK_BASE_STANDOFF_MM) == float(max(config.BASE_GUIDE_OFFSETS_MM))
 
 
 @needs_compas

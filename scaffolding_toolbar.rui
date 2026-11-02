@@ -6,26 +6,25 @@
       <text>
         <locale_1033>RSMoCap</locale_1033>
       </text>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000030" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000030</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000031" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000031</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000081" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000081</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000030" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000030</left_macro_id>
       </tool_bar_item>
     </tool_bar>
     <tool_bar guid="c5d6e7f8-3333-4bbb-b333-000000000001" bitmap_id="b459c6e3-975c-5cc2-b963-553db059457b">
       <text>
         <locale_1033>RSSetup</locale_1033>
       </text>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000006" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000006</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000f" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000f</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000009" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000009</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000045</right_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000a" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000a</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000080" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000080</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000b" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000b</left_macro_id>
@@ -36,44 +35,51 @@
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000c" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000c</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000d" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000d</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000f" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000f</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000018" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000018</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000019" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002b</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000023" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000023</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001e" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001e</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000a" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000a</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000052" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000052</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000060" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000060</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000061" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000061</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000062</right_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000006" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000006</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000060" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000060</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000023" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000023</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000000d" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000000d</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000019" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000002b</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000018" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000018</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000009" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000009</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000045</right_macro_id>
       </tool_bar_item>
     </tool_bar>
     <tool_bar guid="e9f0a1b2-5555-4ddd-b555-000000000001" bitmap_id="352fc154-0f90-54b8-abe0-c6515c86f7cf">
       <text>
         <locale_1033>RSStability</locale_1033>
       </text>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000070" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000070</left_macro_id>
-      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000071" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000071</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000070" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000070</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000072" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000072</left_macro_id>
@@ -83,64 +89,63 @@
       <text>
         <locale_1033>RSDesign</locale_1033>
       </text>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000008" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000008</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001a" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001a</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000001" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000001</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000050" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000050</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000002" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000002</left_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000022" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000022</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000051" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000051</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000001" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000001</left_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000012" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000012</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="1ab1a2c1-cb72-43df-8dd7-372799ef187b" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000010</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000003" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000003</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000011" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000011</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000015" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000015</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000017</right_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000016" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000016</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000044</right_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000046" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000046</left_macro_id>
-      </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000022" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000022</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000008" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000008</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-0000000000a0" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-0000000000a0</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-0000000000a1</right_macro_id>
       </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000015" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000015</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000017</right_macro_id>
+      </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000040" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000040</left_macro_id>
-        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000041</right_macro_id>
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000082</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000011" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000011</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000003" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000003</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000053" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000053</left_macro_id>
       </tool_bar_item>
       <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000042" button_display_mode="text_only" display_style_from_parent="False">
         <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000042</left_macro_id>
         <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000043</right_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000050" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000050</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-00000000001a" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-00000000001a</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000051" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000051</left_macro_id>
+      <tool_bar_item guid="1ab1a2c1-cb72-43df-8dd7-372799ef187b" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000010</left_macro_id>
       </tool_bar_item>
-      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000053" button_display_mode="text_only" display_style_from_parent="False">
-        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000053</left_macro_id>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000046" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000046</left_macro_id>
+      </tool_bar_item>
+      <tool_bar_item guid="a1b2c3d4-1111-4aaa-b111-000000000016" button_display_mode="text_only" display_style_from_parent="False">
+        <left_macro_id>a1b2c3d4-2222-4aaa-b222-000000000016</left_macro_id>
+        <right_macro_id>a1b2c3d4-2222-4aaa-b222-000000000044</right_macro_id>
       </tool_bar_item>
     </tool_bar>
   </tool_bars>
@@ -303,7 +308,7 @@
         <locale_1033>RSClearIKKeyframe</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Left-click: pick ONE bar, then choose what to erase via two toggles -- Keyframe (M1-M3 arm IK config) and BasePosition (mobile base), both default Erase. Untick one to keep it (e.g. keep the base to re-solve at the same spot). Right-click: same, but applies to EVERY bar. M4 home config is a constant, left untouched.</locale_1033>
+        <locale_1033>No button of its own (RSIKMaintenance > ClearOneBar runs it); typeable. Pick ONE bar, then choose what to erase via three toggles -- Keyframe (M1-M3 arm IK config), BasePosition (mobile base), Support (the support robot's hold) -- all default Erase. Untick one to keep it (e.g. keep the base to re-solve at the same spot). M4 home config is a constant, left untouched.</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_clear_ik_keyframe.py"</script>
     </macro_item>
@@ -312,7 +317,7 @@
         <locale_1033>RSClearIKKeyframeAll</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Right-click companion of RSClearIKKeyframe: apply the clear to EVERY registered bar, then choose what to erase via the same two toggles (Keyframe / BasePosition, both default Erase).</locale_1033>
+        <locale_1033>No button of its own (RSIKMaintenance > ClearAllBars runs it); typeable. Apply the clear to EVERY registered bar, then choose what to erase via the same three toggles (Keyframe / BasePosition / Support, all default Erase).</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_clear_ik_keyframe_all.py"</script>
     </macro_item>
@@ -538,33 +543,6 @@
       </tooltip>
       <script>! _-ScriptEditor _R "rs_align_model_three_bars.py"</script>
     </macro_item>
-    <macro_item guid="87856446-3dda-4fba-9033-a40435439586">
-      <text>
-        <locale_1033>RSSequenceRenumber</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>renumber bar_id</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _Run "rs_sequence_renumber.py"</script>
-    </macro_item>
-    <macro_item guid="08f0999d-5d7c-4120-9244-85f08ff82f3c">
-      <text>
-        <locale_1033>RSSequencePreview</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>preview bar sequence</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_sequence_preview.py"</script>
-    </macro_item>
-    <macro_item guid="79dba12b-fb85-4168-a86c-796546386f74">
-      <text>
-        <locale_1033>RSSequenceRenumber</locale_1033>
-      </text>
-      <tooltip>
-        <locale_1033>renumber bar sequence</locale_1033>
-      </tooltip>
-      <script>! _-ScriptEditor _R "rs_sequence_renumber.py"</script>
-    </macro_item>
     <macro_item guid="a1b2c3d4-2222-4aaa-b222-0000000000a0">
       <text>
         <locale_1033>RSExportProcess</locale_1033>
@@ -582,6 +560,33 @@
         <locale_1033>Read a schema 2 process folder and print its file checks (A) and plan checks (B).</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_check_process.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000080">
+      <text>
+        <locale_1033>RSClearPreview</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Delete every baked robot preview -- the meshes on the IK Cache layers (hidden ones too), the base markers and base guides -- so the .3dm is small again; then save. Keeps bars, joints, tools, obstacles and the MoCap labels. Older files carry thousands of hidden preview meshes left behind by earlier versions.</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_clear_preview.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000081">
+      <text>
+        <locale_1033>RSCheckMoCapLayout</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Find bars Motive could mix up: their MoCap marker spheres match by moving or turning one bar (the same placement, or the same placement end for end), within a typed tolerance (5 mm default). Each group of look-alikes gets its own colour and is selected; bars the export would refuse turn dark red. Prints how each pair matches. No PyBullet; changes only colours.</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_check_mocap_layout.py"</script>
+    </macro_item>
+    <macro_item guid="a1b2c3d4-2222-4aaa-b222-000000000082">
+      <text>
+        <locale_1033>RSIKMaintenance</locale_1033>
+      </text>
+      <tooltip>
+        <locale_1033>Check or clear the saved IK. CheckIK (Enter): reads the document as a process and replays every saved assembly + support keyframe against it -- arms still reach the tools (plan check B15), no collision at any of the bar's poses on the robots' planning worlds, base on the walkable ground, support grasp on its bar -- paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). ClearOneBar / ClearAllBars: the old RSClearIKKeyframe / RSClearIKKeyframeAll (no planning world needed).</locale_1033>
+      </tooltip>
+      <script>! _-ScriptEditor _R "rs_ik_maintenance.py"</script>
     </macro_item>
   </macros>
   <icons>

@@ -6,10 +6,12 @@
 <locale_1033>RSBarSelect</locale_1033>
 <locale_1033>RSBarSnap</locale_1033>
 <locale_1033>RSBarSubfloor</locale_1033>
+<locale_1033>RSCheckMoCapLayout</locale_1033>
 <locale_1033>RSCheckProcess</locale_1033>
 <locale_1033>RSClearColorPreview</locale_1033>
 <locale_1033>RSClearIKKeyframe</locale_1033>
 <locale_1033>RSClearIKKeyframeAll</locale_1033>
+<locale_1033>RSClearPreview</locale_1033>
 <locale_1033>RSCreateBar</locale_1033>
 <locale_1033>RSDefineJointHalf</locale_1033>
 <locale_1033>RSDefineJointMate</locale_1033>
@@ -21,6 +23,7 @@
 <locale_1033>RSExportScaffoldJSON</locale_1033>
 <locale_1033>RSIKKeyframe</locale_1033>
 <locale_1033>RSIKKeyframeAll</locale_1033>
+<locale_1033>RSIKMaintenance</locale_1033>
 <locale_1033>RSImportScaffoldJSON</locale_1033>
 <locale_1033>RSInspectRoboticTool</locale_1033>
 <locale_1033>RSJointEdit</locale_1033>
@@ -38,8 +41,6 @@
 <locale_1033>RSReorderBarID</locale_1033>
 <locale_1033>RSResetPlanning</locale_1033>
 <locale_1033>RSSequenceEdit</locale_1033>
-<locale_1033>RSSequencePreview</locale_1033>
-<locale_1033>RSSequenceRenumber</locale_1033>
 <locale_1033>RSSetRodLayer</locale_1033>
 <locale_1033>RSSetup</locale_1033>
 <locale_1033>RSShowAssemblyPlan</locale_1033>

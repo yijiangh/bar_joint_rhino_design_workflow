@@ -2534,8 +2534,9 @@ Git prints `CONFLICT (content): Merge conflict in scripts/core/robot_cell.py`, a
 shows those files as `UU` (unmerged). Inside each, every conflicting block looks like:
 
 ```
+<<<<<<< HEAD
     joint_oids = objects_on_layers(layer)            <- "ours": the branch I am on
-
+=======
     if rs.IsLayer(layer):                            <- "theirs": what I am merging in (main)
         joint_oids = rs.ObjectsByLayer(layer) or []
 >>>>>>> origin/main
@@ -2607,12 +2608,11 @@ goes in each commit), run the tests again (403 passed), and only then
 | take the shelf back | `git stash pop` (or `apply`, then `drop` later) |
 | move a branch I'm not on | `git branch -f main origin/main` |
 
-<<<<<<< HEAD
 ### 2026-10-19: merged main (021efef) into jg/rhino-new-core on yh/new-core-merge
 
 One merge commit on a local branch: Su's UI commands and the RSBarSelect / RSJointSelect renames now run on
 Jakob's shared core (with its session log); the old compas_fab exporter stays retired, RSExportProcess replaces it.
-=======
+
 ---
 
 ## 32. Rhino won't delete a hidden object — why the demo file grew to 267 MB

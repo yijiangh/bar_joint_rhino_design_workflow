@@ -71,7 +71,7 @@ class HomeCheck:
         Args:
             frame_mm: The base frame (4, 4), translation in mm.
         """
-        from compas_fab.backends import CollisionCheckError  # noqa: PLC0415  (heavy, and only needed here)
+        from compas_fab.backends import CollisionCheckError, PyBulletPlanner  # noqa: PLC0415  (heavy, only needed here)
         from husky_assembly_tamp.keyframe.dual_arm_ik import apply_base_frame_mm  # noqa: PLC0415
 
         if not self.available:
@@ -85,10 +85,12 @@ class HomeCheck:
             # ! Not CC.6 (the core mirror's check of this robot's tools against the other robots and its other tool):
             # the other robots stand still while this base moves, so a once-only answer about them would be wrong.
             # The per-base check skips CC.6 too (it goes with CC.2), so other robots are left to the keyframe IK.
+            # ? compas_fab's own method, not the mirror's: the core runs CC.6 unless `_skip_cc2` is given (it has no
+            #   `_skip_cc6`), and CC.2 is needed here.
             self._self_checked = True
             try:
-                self._planner.check_collision(self._state, options=dict(
-                    quiet, _skip_cc3=True, _skip_cc4=True, _skip_cc5=True, _skip_cc6=True))
+                PyBulletPlanner.check_collision(self._planner, self._state, options=dict(
+                    quiet, _skip_cc3=True, _skip_cc4=True, _skip_cc5=True))
             except CollisionCheckError as exc:
                 self._always_collides = True
                 self._log(f"base_search: the robot collides with itself at home, whatever the base: {exc}")

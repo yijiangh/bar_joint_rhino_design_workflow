@@ -89,10 +89,10 @@ def setup():
     tamp_config.IK_BACKEND = backend
 
 
-def test_scenes_carry_the_part_contacts():
-    """The core's scenes derive the contacts Rhino's planning needs: a tool on its whole part, mate halves on each
-    other's bar, ground halves on the ground (decision #1). ? A cradle receiver around the mating male's tool (the
-    legacy `bar_cradle` rule) is not among them."""
+def test_scenes_carry_the_allowed_contacts():
+    """The core's scenes derive the contacts Rhino's planning needs: a tool on the half it is on, that half's bar and,
+    while their mate is pending or engaged, that half's receiver; mate halves on each other's bar, ground halves on
+    the ground (decision #1, narrowed 2026-11-03). The receiver rule replaces the legacy `bar_cradle` contact."""
     from core.process_builder import build_actions
     from test_process_builder import SCHEDULE, _records
 
@@ -106,9 +106,13 @@ def test_scenes_carry_the_part_contacts():
         return set(scene.bodies[body].touches)
 
     assert "bars/B2" in touches("joints/J1-2_female")             # the incoming bar seats into it
-    assert "tools/cindy/AT3L" in touches("bars/B2")                      # the tool may touch its whole part
+    assert "tools/cindy/AT3L" in touches("bars/B2")                      # the tool may touch the bar it holds
+    assert "tools/cindy/AT3L" in touches("joints/J1-2_male")             # ... and the half it is on
+    assert "tools/cindy/AT3L" not in touches("joints/G2-T20-0_ground")   # not the other arm's half on that bar
+    assert "tools/cindy/AT3L" not in touches("joints/J2-3_female")       # nor a receiver waiting there for B3
     assert "ground/WG0" in touches("joints/G2-T20-0_ground")
-    assert "tools/cindy/AT3L" not in touches("joints/J1-2_female")       # a receiver never gets the tool
+    assert "tools/cindy/AT3L" in touches("joints/J1-2_female")           # the receiver its male seats into
+    assert "tools/cindy/AT3R" not in touches("joints/J1-2_female")       # but not the other arm's tool
 
 
 def test_keyframe_chain_solves_on_the_mirror(setup):

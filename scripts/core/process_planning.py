@@ -6,7 +6,7 @@ The Rhino commands get their movements, planner and cell from here: `keyframe_mo
 `release_check` for a hold's release, `scene_collisions` for the viewers' collision check, `state_scene` to draw a
 solver's state. Rhino-free; needs the core's `[mirrors]` stack (compas_fab, PyBullet).
 
-Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_at` derives the allowed part contacts,
+Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_at` derives the allowed contacts,
 `scenes.seeded` fills in the robot being planned for, the mirror parks other robots whose base or joints are unknown
 (`mirror.parked`), and `hold.hold_scenes` gives a hold's two scenes.
 

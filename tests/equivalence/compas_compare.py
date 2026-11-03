@@ -899,8 +899,8 @@ def mirror_collisions(process, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]
         keys: (action id, movement id) of the movements to check.
 
     Returns:
-        tuple[dict, dict]: Pairs per movement, as sorted process ids (GROUND for a floor), and the pairs the mirror's
-            `static_contacts` allowed in that movement.
+        tuple[dict, dict]: Pairs per movement, as sorted process ids (GROUND for a floor), and the pairs the mirror
+            allowed at sync in that movement: none since the core dropped `static_contacts` (7509cc0).
     """
     movements = {(action.id, movement.id): (action.robot, movement) for action, movement in process.movements()}
     found, allowed, mirrors = {}, {}, {}
@@ -910,7 +910,7 @@ def mirror_collisions(process, keys: List[Tuple[str, str]]) -> Tuple[dict, dict]
             mirror = mirrors.get(robot) or mirrors.setdefault(robot, CompasFabMirror(robot))
             mirror.sync(process.scene_at(movement))
             found[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.collisions(full_report=True)}
-            allowed[key] = {tuple(sorted(map(_floor, pair))) for pair in mirror.static_contacts}
+            allowed[key] = set()
     finally:
         for mirror in mirrors.values():
             mirror.close()

@@ -142,8 +142,10 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
   hold. Offenders are looked up by part id (`ik_viz.objects_of`). The solvers' compas_fab states are drawn as their
   scene posed by them (`process_planning.state_scene`).
 - No workarounds left in `process_planning.py`: the decisions of 2026-10-09 are in the core.
-  - **#1 contacts**: `scene_at` derives them (`relations.allowed_contacts`): a tool on its whole part, mated halves on
-    each other and each other's bar, a ground-mated half on every ground body.
+  - **#1 contacts**: `scene_at` derives them (`relations.allowed_contacts`): a tool on the body it is on, that
+    body's bar and, while their mate is pending or engaged, that half's receiver (changed 2026-11-03: no longer every
+    half on the bar; the receiver rule brings back the cradle contact), mated halves on each other and each other's
+    bar, a ground-mated half on every ground body.
   - **#3 unknown robots**: `scenes.seeded` fills in the robot being planned for; the mirror parks the others whose
     base or joints are unknown (`mirror.parked`, logged as `core planning: … parked`).
   - **#4 hold scenes**: `hold.hold_scenes`: solved at the start of the closing movement (Cindy still holds the bar
@@ -199,10 +201,11 @@ Rhino doc ──RhinoProcessSource(cache=sc.sticky)──► Process (same Geome
   robot's joints are known (the process's start, else the previous result's end): Cindy's `place_bar` and `grasp` follow
   the unplanned `load` (target null) and stay `not_planned`; the bar transfer failed on the constructed process
   (`rrt_failed`).
-- **The cradle contact is gone.** The legacy touch policy (and the removed `allow_part_contacts`) let a tool on a male
-  touch the cradle receiver it seats into (`bar_cradle`: the subfloor `T20Sub*` females). The core's part rules do not
-  (a tool touches only its own part), so subfloor bars may now fail IK on a tool/cradle collision. Fix in the core
-  (a contact rule) or in the cradle meshes.
+- **The cradle contact is wider than the legacy one.** The legacy touch policy let a tool on a male touch the receiver
+  it seats into only for cradles (`bar_cradle`: the subfloor `T20Sub*` females). The core's receiver rule (2026-11-03)
+  holds for every receiver, because the process does not say which ones are cradles: a gripper hitting a clamp-style
+  receiver it seats into is not reported either. A cradle on the gripper's own bar, waiting for a later bar, is still
+  checked (B26 of `261008_2ModulesDemo_YH`: the left tool cuts into `J26-27_female`).
 - Hold releases have a `leave` movement with no target: nothing plans it yet.
 - Drawn parts have no colours of their own: every preview mesh takes its layer's colour (`Geometry` carries none, and
   the URDFs' materials are not read). A part is baked the first time it is shown, so the first frame a robot appears

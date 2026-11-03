@@ -8,7 +8,7 @@ Run with `python -m pytest tests/ -q` (`--viz` adds matplotlib visualisations). 
   - `test_process_builder.py`, `test_process_source.py`: the Rhino document (a fake Rhino API in `fake_rhino.py`, or a
     real `.3dm` read with rhino3dm) becomes a process that passes the core's file and plan checks;
   - `test_process_planning.py`: planning on the core's `CompasFabMirror` (tamp keyframe chain, support IK, the allowed
-    part contacts, `scripts/plan_process.py` writing `solutions/`);
+    contacts, `scripts/plan_process.py` writing `solutions/`);
   - `test_process_display.py`, `test_ik_viz.py`, `test_plan_steps.py`: the parts drawn of a core scene and their
     placement, the viewers' steps, solutions read back;
   - `test_ik_status.py`: stale IK, decided by the core's plan check B15.

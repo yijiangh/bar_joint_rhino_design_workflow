@@ -305,7 +305,7 @@ authors). **RSDefineJointHalf** on `T20_MoCap`: `CopyFromFemale` (its frames
 are the Female's), then pick each sphere and type its label, `M1`, `M2`; the
 sphere diameter is measured from the picks. Already done for T20:
 `scripts/core/joint_pairs.json` › `T20_MoCap` › `marker_points_mm`,
-`marker_diameter_mm` (19 mm).
+`marker_diameter_mm` (20 mm).
 
 **1. Place MoCap joints: at least three per bar you want to track, not all
 facing the same way, not mirror-symmetric about the bar's middle.** Two joints
@@ -359,7 +359,7 @@ bar (the two `assembly_pose`s) places them on the bar
 | What kind of half is it? | the half's `part` | `T20/MoCap` |
 | Where is the marker on its half? | `bodies.<half>.markers.<label>` (half body frame, metres) | — |
 | Where is it in the world? | not stored: the half's `assembly_pose` @ the marker | — |
-| How big is the sphere? | not stored: `joint_pairs.json` › `T20_MoCap` › `marker_diameter_mm` | `19.0` |
+| How big is the sphere? | not stored: `joint_pairs.json` › `T20_MoCap` › `marker_diameter_mm` | `20.0` |
 
 The bar body's frame in `process.json` is at the bar **midpoint**, z along the
 bar (not the bar start, as in the prefab export;

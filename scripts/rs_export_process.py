@@ -7,9 +7,13 @@ and the actions built from each bar's keyframes) and is written by the core's `w
 with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Needs no PyBullet,
 compas_fab or tamp. It is the only export command.
 
-First it asks which bars to export (`core.rhino_export_range`): Enter exports every bar; FromBar / UntilBar pick a
-range. A range export holds the bars up to Until and the actions of From..Until, the earlier bars built in its first
-state (`process_builder.cut_to_range`); the range goes into `producer.command` and the default folder name.
+First it asks which bars to export (`core.rhino_export_range`): Enter or All exports every bar; FromBar / UntilBar pick
+a range. A range export holds the bars up to Until and the actions of From..Until, the earlier bars built in its first
+state (`process_builder.cut_to_range`); the range goes into `producer.command`.
+
+Then a folder dialog asks for the process folder itself: pick one, or make a new folder; the files go into it. If it
+already holds any of process.json, actions/, meshes/, robots/, runs/, source/, a window offers Overwrite, Pick another
+folder or Cancel export. Other files in it (desktop.ini, ...) are never looked at.
 
 The MoCap markers travel in `process.json` on their halves. Before anything is written, `core.process_markers` checks
 them: a MoCap half without markers, or a bar the monitor could not fit uniquely (fewer than 3 markers, or a layout that
@@ -53,40 +57,113 @@ from scaffolding_assembly_core.process.plan_check import check_plan  # noqa: E40
 from rs_check_process import PROCESS_FOLDER_STICKY_KEY, report_lines  # noqa: E402
 
 
-def _pick_folder(command: str, export_range=None):
-    """Ask for the parent folder and the process folder's name; None if cancelled or refused.
+# What an export puts in the process folder (`doc/process_format.md` §2): the core's `write` makes process.json,
+# actions/, meshes/ and robots/ (emptying actions/*.json and meshes/ first), `_copy_sources` makes source/, and the
+# export adds an empty runs/ (the monitor's). Anything else in the folder (desktop.ini, notes, ...) is never looked at.
+PROCESS_ENTRIES = ("process.json", "actions", "meshes", "robots", "runs", "source")
+
+
+def _entry_label(name: str) -> str:
+    """`actions` -> `actions/`; `process.json` stays."""
+    return name if "." in name else f"{name}/"
+
+
+def _ask_existing(folder: str, found: list, command: str):
+    """Ask what to do with a folder that already holds process entries: "overwrite", "repick", or None (give up).
 
     Args:
-        command: The command name, for the dialog titles.
-        export_range: (From, Until) bar ids of a range export, named in the default folder name; None: every bar.
+        folder: The picked folder.
+        found: The `PROCESS_ENTRIES` already in it.
+        command: The command name, for the window title.
+    """
+    import Eto.Drawing as drawing
+    import Eto.Forms as forms
+    import Rhino
+
+    # Eto constructors take no keyword arguments under Rhino's CPython: construct, then assign.
+    def label(text):
+        control = forms.Label()
+        control.Text = text
+        return control
+
+    def button(text, choice):
+        control = forms.Button()
+        control.Text = text
+
+        def on_click(_sender, _args):
+            chosen[0] = choice
+            dialog.Close(True)
+
+        control.Click += on_click
+        return control
+
+    chosen = [None]  # * closing the window or Esc: give up
+    dialog = forms.Dialog[bool]()
+    dialog.Title = command
+    dialog.Padding = drawing.Padding(12)
+    text = (f"{folder}\n\nalready holds: {', '.join(_entry_label(n) for n in found)}\n\n"
+            "Overwrite: this export replaces process.json, actions/, meshes/, robots/ and source/\n"
+            "    (runs/ and solutions/ keep what is in them).\n"
+            "Pick another folder: back to the folder dialog.\n"
+            "Cancel export: nothing is written.")
+    overwrite, repick, give_up = (button("Overwrite", "overwrite"), button("Pick another folder", "repick"),
+                                  button("Cancel export", None))
+    buttons = forms.DynamicLayout()
+    buttons.Spacing = drawing.Size(8, 0)
+    buttons.AddRow(None, overwrite, repick, give_up)
+    layout = forms.DynamicLayout()
+    layout.Spacing = drawing.Size(0, 12)
+    layout.AddRow(label(text))
+    layout.AddRow(buttons)
+    dialog.Content = layout
+    dialog.DefaultButton = repick  # ? Enter never overwrites
+    dialog.AbortButton = give_up
+    try:
+        parent = Rhino.UI.RhinoEtoApp.MainWindow
+    except Exception:  # noqa: BLE001
+        parent = None
+    dialog.ShowModal(parent) if parent is not None else dialog.ShowModal()
+    return chosen[0]
+
+
+def _pick_folder(command: str):
+    """Ask for the process folder itself (pick one, or make a new folder); None if cancelled.
+
+    The files go straight into the picked folder. When it already holds any of `PROCESS_ENTRIES`, a window offers
+    Overwrite, Pick another folder (the folder dialog again) or Cancel export; other files never count.
+
+    Args:
+        command: The command name, for the dialog title.
     """
     last = sc.sticky.get(PROCESS_FOLDER_STICKY_KEY)
-    parent = rs.BrowseForFolder(folder=os.path.dirname(last) if last else None,
-                                message="Select the folder to write the process folder into", title=command)
-    if not parent:
-        return None
-    doc_name = os.path.splitext(sc.doc.Name or "process")[0]
-    if export_range:
-        default = f"{doc_name}_{export_range[0]}-{export_range[1]}_process"
-    else:
-        default = os.path.basename(last) if last else f"{doc_name}_process"
-    name = rs.StringBox("Process folder name", default, command)
-    if not name:
-        return None
-    folder = os.path.join(parent, name)
-    if os.path.isdir(folder) and os.listdir(folder):
-        if not os.path.isfile(os.path.join(folder, "process.json")):
-            rs.MessageBox(f"{folder} is not empty and holds no process.json; pick another name.", 0, command)
+    # ? Starting at the last process folder: Windows opens its parent with it selected, so Select Folder re-exports
+    # ? there and New folder makes a sibling. Without one (or once it is gone), start at the .3dm's folder.
+    start = last if last and os.path.isdir(os.path.dirname(last)) else (
+        os.path.dirname(sc.doc.Path) if sc.doc.Path else None)
+    # ? BrowseForFolder titles the dialog "<title>: <message>", so the message leaves out the command name.
+    message = "select the process folder, or make a new folder"
+    print(f"{command}: {message}")
+    while True:
+        folder = rs.BrowseForFolder(folder=start, message=message, title=command)
+        if not folder:
             return None
-        if rs.MessageBox(f"Replace the process in\n{folder}?\n(solutions/ and runs/ stay)", 4 | 32, command) != 6:
-            return None
-    sc.sticky[PROCESS_FOLDER_STICKY_KEY] = folder
-    return folder
+        start = folder
+        found = [name for name in PROCESS_ENTRIES if os.path.exists(os.path.join(folder, name))]
+        if found:
+            choice = _ask_existing(folder, found, command)
+            if choice is None:
+                return None
+            if choice == "repick":
+                continue
+        sc.sticky[PROCESS_FOLDER_STICKY_KEY] = folder
+        return folder
 
 
 def _copy_sources(folder: str, config) -> None:
-    """Copy the .3dm as last saved and the joint and tool registries into `source/` (never read back)."""
+    """Copy the .3dm as last saved and the joint and tool registries into a fresh `source/` (never read back)."""
     source = os.path.join(folder, "source")
+    # * Emptied first: an overwrite from a renamed .3dm would otherwise keep the old copy next to the new one.
+    shutil.rmtree(source, ignore_errors=True)
     os.makedirs(source, exist_ok=True)
     paths = [os.path.join(config.SCRIPTS_DIR, "core", "joint_pairs.json"),
              os.path.join(config.SCRIPTS_DIR, "core", "robotic_tools.json")]
@@ -107,7 +184,6 @@ def export(command: str = "RSExportProcess") -> None:
     repair_on_entry(float(config.BAR_RADIUS), command)
     importlib.reload(_walkable_module).ensure_ground_and_base(command)
 
-    # ? The range is asked before the folder, so the default folder name can carry it.
     seq_map = get_real_bar_seq_map()
     export_range = None
     if seq_map:
@@ -117,7 +193,7 @@ def export(command: str = "RSExportProcess") -> None:
             return
         ordered = sorted(seq_map, key=lambda bar: seq_map[bar][1])
         export_range = None if picked == (ordered[0], ordered[-1]) else picked  # * every bar: no range
-    folder = _pick_folder(command, export_range)
+    folder = _pick_folder(command)
     if not folder:
         print(f"{command}: cancelled.")
         return
@@ -154,6 +230,8 @@ def export(command: str = "RSExportProcess") -> None:
         return
     with session_log.step("copy sources"):
         _copy_sources(folder, config)
+    # ? Empty until the monitor records a run there; made here so every process folder has the full layout.
+    os.makedirs(os.path.join(folder, "runs"), exist_ok=True)
     with session_log.step("label MoCap markers"):
         n_markers = rhino_mocap_markers.label_markers_in_rhino(written)
     with session_log.step("check plan (B)"):

@@ -1,7 +1,7 @@
 """Command-line prompt for the bar range of a partial export (From .. Until).
 
-RSExportProcess asks it first (``rs_export_process.py``). Pressing Enter right away
-exports every bar. The ``FromBar`` / ``UntilBar`` options let you pick the first
+RSExportProcess asks it first (``rs_export_process.py``). Pressing Enter right away,
+or the ``All`` option at any time, exports every bar. The ``FromBar`` / ``UntilBar`` options let you pick the first
 and the last bar to export, in two steps each:
 
 1. click a bar in the viewport, or type its id (``B5``) or its step number
@@ -196,7 +196,7 @@ def pick_range_bar(label: str, seq_map: dict):
 
 
 def prompt_export_range(seq_map: dict, caller: str):
-    """Ask which bars to export. Enter right away = every bar.
+    """Ask which bars to export. Enter right away, or All at any time = every bar.
 
     Args:
         seq_map (dict): ``{bar_id: (oid, seq)}`` of the real bars
@@ -259,4 +259,5 @@ def prompt_export_range(seq_map: dict, caller: str):
             if picked is not None:
                 until_bar_id = picked
         elif chosen == idx_all:
-            from_bar_id, until_bar_id = ordered[0], ordered[-1]
+            # * All exports every bar at once; no second Enter.
+            return ordered[0], ordered[-1]

@@ -29,6 +29,9 @@ from core import dynamic_preview
 from core.rhino_block_import import has_block_definition
 from core.rhino_helpers import doc_unit_scale_to_mm, np_mm_to_xform, xform_to_np_mm
 
+#: Colour of the grasp pick's "mid" marker (orange: apart from the grey ghost gripper).
+MIDPOINT_MARKER_RGB = (255, 140, 0)
+
 
 # ---------------------------------------------------------------------------
 # * Rhino <-> numpy helpers (doc units -> mm)
@@ -318,8 +321,10 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
     """Pick grasp center + pointing direction on the bar, with a ghost gripper
     tracking the cursor.
 
-    Phase A constrains the cursor to the bar centerline (the grasp center);
-    phase B constrains it to the plane perpendicular to the bar axis through
+    Phase A constrains the cursor to the bar centerline (the grasp center).
+    An orange "mid" marker shows the bar's midpoint through both phases, and
+    the pick prints how far the grasp is from it. Phase B constrains the cursor to the plane
+    perpendicular to the bar axis through
     that center, like Rhino's _Rotate. The rubber-band line drawn from the
     grasp center IS the gripper's local Z direction (its pointing axis),
     projected onto that plane.
@@ -350,7 +355,13 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
         rs.MessageBox(str(exc), 0, command_label)
         return None, None
 
-    with dynamic_preview.mesh_preview(gripper_meshes, alpha=0.5) as conduit:
+    # * The bar's midpoint, marked while picking: a grasp near it is usually the better one.
+    mid_doc = bar_curve.PointAtNormalizedLength(0.5)
+
+    with dynamic_preview.mesh_preview(gripper_meshes, alpha=0.5) as conduit, \
+            dynamic_preview.marker_viz() as marks:
+        marks.set_markers([(mid_doc, "mid", MIDPOINT_MARKER_RGB)])
+
         # Phase A: grasp center on bar centerline.
         def _xform_phase_a(cursor_doc):
             ok, t = bar_curve.ClosestPoint(cursor_doc)
@@ -368,6 +379,11 @@ def pick_grasp_frame_on_bar(bar_curve, gripper_kind: str = "Robotiq",
         ok, t = bar_curve.ClosestPoint(grasp_center_doc)
         if not ok:
             return None, None
+        offset_mm = float(np.linalg.norm(point_to_mm(grasp_center_doc) - point_to_mm(mid_doc)))
+        if offset_mm < 0.5:
+            print(f"{command_label}(support): grasp at the bar's midpoint.")
+        else:
+            print(f"{command_label}(support): grasp {offset_mm:.0f} mm from the bar's midpoint.")
 
         # Phase B: pointing direction (the gripper's rotation about the bar).
         # Constrain the cursor to the plane perpendicular to the bar tangent

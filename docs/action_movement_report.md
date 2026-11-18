@@ -402,8 +402,9 @@ the builder must be callable both before and after IK exists.
 4. **Grasp pick**, by hand, with a ghost gripper on the cursor
    (`support_grasp_pick.pick_grasp_frame_on_bar`): first the grasp center on
    the bar centerline, then the gripper's pointing direction in the plane
-   perpendicular to the bar. Written to the bar immediately
-   (`support_grasp_frame_world_mm`). Grasps are never generated automatically.
+   perpendicular to the bar. An orange `mid` marker shows the bar's midpoint
+   throughout, and the pick prints how far the grasp is from it. Written to the bar immediately (`support_grasp_frame_world_mm`).
+   Grasps are never generated automatically.
 5. **Base pick** on a `WalkableGround` brep with X's ghost robot; written
    immediately (`support_robot_base_frame_world_mm`).
 6. **Solve held then approach** with `_solve_support_pair_with_sampling`:

@@ -148,3 +148,49 @@ def test_recover_side_rejects_unknown(jp):
         jp.compute_variant_with_recovery(
             None, None, None, None, False, False, pair=None, recover_side="ground"
         )
+
+
+def _fake_solves(jp, monkeypatch, origin_error_by_flags):
+    """Make ``compute_variant`` return a stub whose origin error depends on the flags."""
+    calls = []
+
+    def fake(_les, _lee, _lns, _lne, le_rev, ln_rev, *, pair):
+        calls.append((le_rev, ln_rev))
+        return {
+            "variant_index": jp.variant_index(le_rev, ln_rev),
+            "origin_error_mm": origin_error_by_flags[(le_rev, ln_rev)],
+            "z_axis_error_rad": 0.0,
+        }
+
+    monkeypatch.setattr(jp, "compute_variant", fake)
+    return calls
+
+
+def _recover(jp, recover_side="receiver"):
+    return jp.compute_variant_with_recovery(
+        None, None, None, None, False, False, pair=None, recover_side=recover_side
+    )
+
+
+def test_a_mating_variant_is_never_flipped(jp, monkeypatch):
+    calls = _fake_solves(jp, monkeypatch, {(False, False): 0.01})
+    variant, recovered, le_rev, ln_rev = _recover(jp)
+    assert (variant["variant_index"], recovered, le_rev, ln_rev) == (0, False, False, False)
+    assert calls == [(False, False)]
+
+
+def test_a_flip_that_does_not_help_keeps_the_variant_asked_for(jp, monkeypatch):
+    # RSJointEdit MoveJoint, 2026-11-16: B170 landed 0.0527 mm off and the flipped
+    # receiver failed by exactly as much, yet was placed -- J21-170_female turned round.
+    _fake_solves(jp, monkeypatch, {(False, False): 0.0527, (True, False): 0.0527})
+    variant, recovered, le_rev, ln_rev = _recover(jp)
+    assert (variant["variant_index"], recovered, le_rev, ln_rev) == (0, False, False, False)
+
+
+@pytest.mark.parametrize("flipped_error", [0.04, 0.9])
+def test_a_flip_that_passes_or_clearly_helps_is_used(jp, monkeypatch, flipped_error):
+    # 0.04 passes the 0.05 mm mark; 0.9 still fails but is far better than 5.0 --
+    # the degenerate minimum the recovery is there for.
+    _fake_solves(jp, monkeypatch, {(False, False): 5.0, (False, True): flipped_error})
+    variant, recovered, le_rev, ln_rev = _recover(jp, recover_side="male")
+    assert (variant["variant_index"], recovered, le_rev, ln_rev) == (2, True, False, True)

@@ -182,8 +182,28 @@ def is_variant_acceptable(variant) -> bool:
     return interface_ok(*interface_metrics(variant))
 
 
+def interface_score(result) -> float:
+    """How far a variant is from mating, in multiples of the pass mark.
+
+    The worse of the origin and z-axis errors, each divided by its tolerance,
+    so ``<= 1`` is exactly :func:`interface_ok`.
+    """
+    origin_err, z_err = interface_metrics(result)
+    return max(
+        origin_err / VARIANT_OK_ORIGIN_TOL_MM,
+        abs(z_err) / VARIANT_OK_Z_AXIS_TOL_RAD,
+    )
+
+
 #: The two sides ``compute_variant_with_recovery`` can flip.
 RECOVER_SIDES = ("receiver", "male")
+
+#: A flipped variant that still fails the pass mark replaces the one asked for
+#: only when its :func:`interface_score` is below this share of the asked-for
+#: one's.  A flip that is no better only turns the joint round: two bars a few
+#: hundredths of a mm off their contact distance fail by the same amount
+#: either way round.
+RECOVERY_MIN_GAIN = 0.9
 
 
 def compute_variant_with_recovery(
@@ -202,8 +222,10 @@ def compute_variant_with_recovery(
     tolerance (a sign that this orientation lands on a degenerate local
     minimum), flip ``recover_side`` once and use that variant instead.
 
-    Recovery never propagates more than once -- if the recovered variant
-    is still bad, it is placed as-is with a warning.
+    Recovery never propagates more than once.  A flipped variant that still
+    fails is used only when it is clearly better (``RECOVERY_MIN_GAIN``);
+    otherwise the requested variant is kept, with a warning, so a joint is
+    never turned round for nothing.
 
     Returns ``(variant, recovered_bool, new_le_rev, new_ln_rev)``.
     """
@@ -237,13 +259,20 @@ def compute_variant_with_recovery(
             f"  recovery succeeded -> variant {recovered['variant_index'] + 1} "
             f"(origin={rec_o:.4f} mm, z={np.degrees(rec_z):.4f}deg)."
         )
-    else:
+        return recovered, True, new_le, new_ln
+    if interface_score(recovered) < RECOVERY_MIN_GAIN * interface_score(variant):
         print(
-            f"  WARNING: recovery did not improve interface error "
+            f"  WARNING: recovery improved but did not fix the interface error "
             f"(origin={rec_o:.4f} mm, z={np.degrees(rec_z):.4f}deg); "
-            f"placing the recovered variant as-is."
+            f"placing variant {recovered['variant_index'] + 1} as-is."
         )
-    return recovered, True, new_le, new_ln
+        return recovered, True, new_le, new_ln
+    print(
+        f"  WARNING: flipping the {recover_side} side did not help "
+        f"(origin={rec_o:.4f} mm, z={np.degrees(rec_z):.4f}deg); keeping "
+        f"variant {variant['variant_index'] + 1} as asked."
+    )
+    return variant, False, le_rev, ln_rev
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +478,7 @@ def remove_joint_blocks(joint_id, subtypes=jnc.SUBTYPES) -> int:
 # Re-export what callers most commonly need.
 __all__ = [
     "RECOVER_SIDES",
+    "RECOVERY_MIN_GAIN",
     "VARIANT_OK_ORIGIN_TOL_MM",
     "VARIANT_OK_Z_AXIS_TOL_RAD",
     "variant_index",
@@ -459,6 +489,7 @@ __all__ = [
     "compute_variant",
     "interface_metrics",
     "interface_ok",
+    "interface_score",
     "is_variant_acceptable",
     "find_joint_blocks",
     "remove_joint_blocks",

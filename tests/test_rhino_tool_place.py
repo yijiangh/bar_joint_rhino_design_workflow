@@ -164,6 +164,77 @@ def test_enforce_bar_tool_sides_leaves_a_correct_bar_alone(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# tool_for_missing_side -- a new joint takes the side its bar still lacks
+# ---------------------------------------------------------------------------
+
+
+def test_new_joint_takes_the_side_its_bar_lacks(monkeypatch):
+    """RSBarBrace's second joint: the first holds the left tool, so this one gets the right."""
+    placed = _side_fixture(monkeypatch, {"G1-0": "AT4L"})
+
+    rhino_tool_place.auto_place_tool_at_ground_block("j-far", "G1-1")
+
+    assert placed == [("G1-1", "AT4R")]
+
+
+def test_first_joint_on_a_bar_takes_the_default(monkeypatch):
+    """Nothing on the bar yet: the document default (left here)."""
+    placed = _side_fixture(monkeypatch, {})
+
+    rhino_tool_place.auto_place_tool_at_ground_block("j-near", "G1-0")
+
+    assert placed == [("G1-0", "AT4L")]
+
+
+def test_missing_side_wins_over_the_pair_preference(monkeypatch):
+    """T20_Male prefers the left tool; a bar's second male joint still gets the right one."""
+    _side_fixture(monkeypatch, {"G1-0": "AT4L"})
+    placed = []
+    monkeypatch.setattr(
+        rhino_tool_place, "place_tool_at_male_joint",
+        lambda _block, joint_id, _pair, tool: placed.append((joint_id, tool.name)),
+    )
+    pair = SimpleNamespace(male=SimpleNamespace(preferred_robotic_tool_name="AT4L"))
+
+    rhino_tool_place.auto_place_tool_at_male_joint("j-far", "G1-1", pair)
+
+    assert placed == [("G1-1", "AT4R")]
+
+
+def test_restored_tool_takes_the_side_its_bar_lacks(monkeypatch):
+    """RSUpdatePreview restoring a lost tool uses the same rule."""
+    placed = _side_fixture(monkeypatch, {"G1-1": "AT4L"})
+
+    counts = rhino_tool_place.restore_missing_tools_at_joints()
+
+    assert counts["restored"] == 1
+    assert placed == [("G1-0", "AT4R")]
+
+
+# ---------------------------------------------------------------------------
+# tools_cross_at_base -- RSIKKeyframe's hint, never a re-placement
+# ---------------------------------------------------------------------------
+
+
+def test_tools_cross_at_base(monkeypatch):
+    """Left tool on the -Y joint: fits a base facing -X from +X; crosses once that base is turned around."""
+    import numpy as np
+
+    _side_fixture(monkeypatch, {"G1-0": "AT4L", "G1-1": "AT4R"})
+    monkeypatch.setattr(rhino_tool_place, "_bar_anchor_joints", lambda _bar_id: [
+        ("G1-0", "j-near", np.array([0.0, -500.0, 0.0])),
+        ("G1-1", "j-far", np.array([0.0, 500.0, 0.0])),
+    ])
+    facing = np.eye(4)
+    facing[:3, 0] = [-1.0, 0.0, 0.0]  # robot at +X looking at the bar: its left is -Y
+    facing[:3, 1] = [0.0, -1.0, 0.0]
+    turned = np.eye(4)  # the same spot looking away: its left is +Y
+
+    assert rhino_tool_place.tools_cross_at_base("B1", facing) is False
+    assert rhino_tool_place.tools_cross_at_base("B1", turned) is True
+
+
+# ---------------------------------------------------------------------------
 # is_tool_on_joint / find_detached_tools
 # ---------------------------------------------------------------------------
 

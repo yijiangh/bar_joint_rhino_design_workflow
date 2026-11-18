@@ -98,6 +98,7 @@ from core import robotic_tool as _robotic_tool
 from core.rhino_tool_place import (
     get_tool_name_for_joint,
     place_tool_at_block_instance,
+    tool_for_missing_side,
 )
 
 
@@ -369,10 +370,14 @@ def _run_tool_only():
         print(f"RSJointPlace: no active tool pair, cannot place a tool: {exc}")
         return
 
-    # Start on the side the joint already had, so re-tooling a joint whose tool
-    # was deleted restores the bar's original L/R layout without a Flip.
+    # Start on the side the joint already had; a joint with no tool starts on the
+    # side its bar still lacks (`tool_for_missing_side`), so the bar keeps one L
+    # and one R without a Flip.
     previous = get_tool_name_for_joint(joint_id)
-    side = _robotic_tool.arm_side_from_tool_name(previous or "") or "left"
+    side = _robotic_tool.arm_side_from_tool_name(previous or "")
+    if side is None:
+        missing = tool_for_missing_side(block_id, joint_id, active)
+        side = _robotic_tool.arm_side_from_tool_name(missing.name) if missing is not None else "left"
 
     while True:
         tool = active[side]

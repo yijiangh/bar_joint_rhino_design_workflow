@@ -428,15 +428,89 @@ def _resolve_default_active_tool(active: dict) -> _robotic_tool.RoboticToolDef:
     return active["left"]
 
 
+def tool_for_missing_side(block_id, joint_id: str, active):
+    """The active-pair tool for the side a joint's bar still lacks, or None when its other joint says nothing.
+
+    A bar carries one ``*L`` and one ``*R`` tool (RSIKKeyframe needs both arms). So when a joint gets a tool
+    it did not have -- a new joint (RSBarSnap, RSBarBrace, RSBarSubfloor, RSJointPlace) or one whose tool
+    went missing (RSUpdatePreview) -- and the bar's OTHER tool-bearing joint already holds a tool of one
+    side, this joint takes the other side. Without this, both joints of a new bar took the same default and
+    came out left.
+
+    Which END holds the left tool is not decided here: RSUpdatePreview sets that from the robot's approach
+    (:func:`enforce_bar_tool_sides`), RSJointEdit by hand.
+
+    Example: B12's joint J5-12 holds ``AT3L``; RSBarBrace places J6-12 on B12 -> ``AT3R``.
+
+    Args:
+        block_id: the joint's male or ground block (its ``parent_bar_id`` names the bar).
+        joint_id (str): the joint getting the tool; its own (old) tool, if any, is not counted.
+        active (dict): the active pair, ``{"left": tool, "right": tool}``.
+
+    Returns:
+        The opposite-side tool, or None when the bar is unknown, its other joints hold no tool with an L/R
+        suffix, or they hold both sides (three or more joints) -- the caller then uses its default.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
+
+    bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
+    if not bar_id:
+        return None
+
+    sibling_sides: set = set()
+    for layer in jnc.TOOL_BEARING_LAYERS:
+        for other_id in objects_on_layers(layer):
+            other_jid = rs.GetUserText(other_id, jnc.UT_JOINT_ID)
+            if not other_jid or other_jid == joint_id:
+                continue
+            if rs.GetUserText(other_id, jnc.UT_PARENT_BAR) != bar_id:
+                continue
+            other_toid = find_tool_for_joint(other_jid)
+            if other_toid is None:
+                continue
+            side = _robotic_tool.arm_side_from_tool_name(
+                rs.GetUserText(other_toid, jnc.UT_TOOL_NAME) or ""
+            )
+            if side is not None:
+                sibling_sides.add(side)
+
+    if len(sibling_sides) != 1:
+        return None
+    return active["right" if next(iter(sibling_sides)) == "left" else "left"]
+
+
+def _preferred_or_default_tool(active: dict, pair) -> _robotic_tool.RoboticToolDef:
+    """The tool for a new male joint when the bar's other joint says nothing (:func:`tool_for_missing_side`).
+
+    ``pair.male.preferred_robotic_tool_name`` when it is in the active pair (T20_Male prefers ``AT3L``),
+    else :func:`_resolve_default_active_tool`.
+    """
+    active_by_name = {active["left"].name: active["left"], active["right"].name: active["right"]}
+    preferred = getattr(pair.male, "preferred_robotic_tool_name", "") or ""
+    if preferred in active_by_name:
+        print(f"  [tool] using pair-preferred tool '{preferred}'.")
+        return active_by_name[preferred]
+    if preferred:
+        print(
+            f"  [tool] pair-preferred tool '{preferred}' is not in the active "
+            f"pair ({sorted(active_by_name)}); ignoring it "
+            "(run RSSwapRoboticTool to change pairs)."
+        )
+    return _resolve_default_active_tool(active)
+
+
 def auto_place_tool_at_male_joint(male_id, joint_id: str, pair):
     """Place the appropriate tool at a newly-created male joint.
 
     Resolution order (active pair only -- no silent fallback outside it):
-      1. ``pair.male.preferred_robotic_tool_name`` if it is one of the
+      1. The side the bar still lacks (:func:`tool_for_missing_side`), so a
+         bar's second joint never repeats its first joint's side.
+      2. ``pair.male.preferred_robotic_tool_name`` if it is one of the
          ACTIVE pair's tools.
-      2. The doc-stored default ``scaffolding.last_robotic_tool`` if it is
+      3. The doc-stored default ``scaffolding.last_robotic_tool`` if it is
          one of the active pair's tools.
-      3. The active LEFT tool.
+      4. The active LEFT tool.
 
     Designers don't have to configure anything.  The only no-op case (with
     a console message) is when the active pair cannot be resolved.
@@ -444,25 +518,9 @@ def auto_place_tool_at_male_joint(male_id, joint_id: str, pair):
     active = _get_active_pair_or_none()
     if active is None:
         return None
-
-    active_by_name = {active["left"].name: active["left"], active["right"].name: active["right"]}
-    preferred = getattr(pair.male, "preferred_robotic_tool_name", "") or ""
-    if preferred:
-        if preferred in active_by_name:
-            print(
-                f"  [tool] using pair-preferred tool '{preferred}' "
-                f"for joint {joint_id}."
-            )
-            return place_tool_at_male_joint(
-                male_id, joint_id, pair, active_by_name[preferred]
-            )
-        print(
-            f"  [tool] pair-preferred tool '{preferred}' is not in the active "
-            f"pair ({sorted(active_by_name)}); ignoring it "
-            "(run RSSwapRoboticTool to change pairs)."
-        )
-
-    tool = _resolve_default_active_tool(active)
+    tool = tool_for_missing_side(male_id, joint_id, active)
+    if tool is None:
+        tool = _preferred_or_default_tool(active, pair)
     return place_tool_at_male_joint(male_id, joint_id, pair, tool)
 
 
@@ -475,7 +533,9 @@ def auto_place_tool_at_ground_block(ground_id, joint_id: str):
     active = _get_active_pair_or_none()
     if active is None:
         return None
-    tool = _resolve_default_active_tool(active)
+    tool = tool_for_missing_side(ground_id, joint_id, active)
+    if tool is None:
+        tool = _resolve_default_active_tool(active)
     return place_tool_at_block_instance(ground_id, joint_id, tool)
 
 
@@ -763,47 +823,6 @@ def resync_tools_to_joints(verbose: bool = False) -> int:
     return n_moved
 
 
-def _restore_side_tool(block_id, joint_id, active, default_tool):
-    """Pick the correct-side tool for a joint whose tool went missing.
-
-    A bar carries two tool-bearing joints, one LEFT-suffix tool and one
-    RIGHT-suffix tool (this is the L/R layout RSIKKeyframe requires).  So if the
-    SIBLING joint on the same bar (matched by ``parent_bar_id``) still holds a
-    tool with a resolvable side, the missing joint must be the OPPOSITE side --
-    restore that so the bar's L/R layout is preserved.  When the side cannot be
-    inferred (no ``parent_bar_id``, no sibling tool, or an ambiguous layout)
-    fall back to *default_tool* (the doc default active tool).
-    """
-    import rhinoscriptsyntax as rs  # noqa: PLC0415
-    from core.rhino_helpers import objects_on_layers  # noqa: PLC0415
-
-    bar_id = rs.GetUserText(block_id, jnc.UT_PARENT_BAR)
-    if not bar_id:
-        return default_tool
-
-    sibling_sides: set = set()
-    for layer in jnc.TOOL_BEARING_LAYERS:
-        for other_id in objects_on_layers(layer):
-            other_jid = rs.GetUserText(other_id, jnc.UT_JOINT_ID)
-            if not other_jid or other_jid == joint_id:
-                continue
-            if rs.GetUserText(other_id, jnc.UT_PARENT_BAR) != bar_id:
-                continue
-            other_toid = find_tool_for_joint(other_jid)
-            if other_toid is None:
-                continue
-            side = _robotic_tool.arm_side_from_tool_name(
-                rs.GetUserText(other_toid, jnc.UT_TOOL_NAME) or ""
-            )
-            if side is not None:
-                sibling_sides.add(side)
-
-    if len(sibling_sides) == 1:
-        opposite = "right" if next(iter(sibling_sides)) == "left" else "left"
-        return active[opposite]
-    return default_tool
-
-
 @session_log.timed()
 def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
     """Re-place the active-pair tool on any joint block that lost its tool.
@@ -821,7 +840,7 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
 
     For every joint block that currently has NO tool instance tagged to its
     ``joint_id``, this re-places the correct-side active-pair tool (inferred from
-    the bar's surviving sibling tool by :func:`_restore_side_tool`, falling back
+    the bar's surviving sibling tool by :func:`tool_for_missing_side`, falling back
     to the doc default) via :func:`place_tool_at_block_instance`, so the tool
     re-appears on the joint's current frame with the L/R layout preserved.
     Joints that already carry a tool are left untouched.
@@ -880,7 +899,7 @@ def restore_missing_tools_at_joints(verbose: bool = False) -> dict:
             if find_tool_for_joint(joint_id) is not None:
                 n["already_tooled"] += 1
                 continue
-            tool = _restore_side_tool(block_id, joint_id, active, default_tool)
+            tool = tool_for_missing_side(block_id, joint_id, active) or default_tool
             if place_tool_at_block_instance(block_id, joint_id, tool) is None:
                 n["place_failed"] += 1  # place_tool_at_block_instance printed why
                 continue
@@ -1031,6 +1050,39 @@ def assign_tool_sides_from_heading(bar_id, heading_mm, ground_normal,
                 print(f"  [tool] {bar_id}/{joint_id}: side corrected "
                       f"'{current_name}' -> '{tool.name}' ({side}, from base heading).")
     return n_fixed
+
+
+def tools_cross_at_base(bar_id, base_frame_mm) -> bool:
+    """Would a robot standing at ``base_frame_mm`` hold this bar's tools with crossed arms?
+
+    True when BOTH tools sit on the wrong end for that base: the joint holding the left tool is on the
+    robot's right and the other way round (:func:`core.base_guide_geom.arm_side_for_joint`, with the base's
+    own +X and +Z). A check only -- RSIKKeyframe reports it and never re-places a tool.
+
+    Example: B12's left tool is on its -Y joint; a base facing the bar from +X has its left towards -Y
+    (False); the same base turned to face away has its left towards +Y (True).
+
+    Returns:
+        bool: False also when the bar has no two-anchor layout, a joint has no L/R tool, or a joint sits on
+        the base's fore-aft axis.
+    """
+    import rhinoscriptsyntax as rs  # noqa: PLC0415
+
+    from core import base_guide_geom  # noqa: PLC0415  (pure numpy, no Rhino)
+
+    anchors = _bar_anchor_joints(bar_id)
+    if len(anchors) != 2:
+        return False
+    base = np.asarray(base_frame_mm, dtype=float)
+    bar_center = 0.5 * (anchors[0][2] + anchors[1][2])
+    for joint_id, _block_id, center in anchors:
+        tool_oid = find_tool_for_joint(joint_id)
+        held = (_robotic_tool.arm_side_from_tool_name(rs.GetUserText(tool_oid, jnc.UT_TOOL_NAME) or "")
+                if tool_oid is not None else None)
+        wanted = base_guide_geom.arm_side_for_joint(center, bar_center, base[:3, 0], base[:3, 2])
+        if held is None or wanted is None or held == wanted:
+            return False
+    return True
 
 
 def hand_picked_side_verdict(bar_id, heading_mm, ground_normal) -> str | None:

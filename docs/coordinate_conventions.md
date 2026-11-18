@@ -285,10 +285,12 @@ heading, so the end on its left is the one its left arm reaches:
 
 `core.base_guide_geom.arm_side_for_joint` dots each joint's offset from the bar centre
 against that left direction; `core.rhino_tool_place.assign_tool_sides_from_heading`
-re-places any tool that disagrees. Flip the base to the other side and the heading
+re-places any tool that disagrees. It runs in RSUpdatePreview and in RSIKKeyframeAll;
+RSIKKeyframe never re-places a tool, however the base stands or turns (it only warns when
+the arms would cross). Flip a base to the other side in RSIKKeyframeAll and the heading
 negates, so both ends swap.
 
 **A hand-picked side wins.** Cycling a tool in RSJointEdit stamps
 `config.KEY_TOOL_SIDE_MANUAL` on the joint block, and the automatic rule skips joints
 carrying it — so a deliberate manual edit is never silently undone. An explicit base Flip
-clears the mark, because that is the user re-deciding the side.
+in RSIKKeyframeAll clears the mark, because that is the user re-deciding the side.

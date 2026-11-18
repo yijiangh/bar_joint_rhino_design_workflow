@@ -31,7 +31,10 @@ across-bar part is reported, not silently dropped.
 
 The two joints on the moving bar keep their current separation, so moving one
 forces the other to slide along its own bar; both joints' angles change, and
-both pairs are rebuilt with their original ids so their tools survive.
+both pairs are rebuilt with their original ids so their tools survive.  The bar
+then gets a nudge of at most a tenth of a mm or so onto each pair's exact mating
+gap (``core.geometry.settle_bar_at_gaps``): without it the pairs miss mating by
+a few hundredths of a mm, enough to fail the 0.05 mm mate check.
 
 The move is measured from each joint's half on its STATIONARY bar, whose block
 origin already lies on that bar's centre-line -- see :func:`_anchor_point` for
@@ -101,7 +104,7 @@ from core import geometry as _geometry_module
 importlib.reload(_geometry_module)
 importlib.reload(dynamic_preview)
 
-from core.geometry import points_on_line_at_distance  # noqa: E402 -- after reload
+from core.geometry import points_on_line_at_distance, settle_bar_at_gaps  # noqa: E402 -- after reload
 from core.single_sided_placement import is_single_sided_block, place_single_sided_block
 from core.joint_pair import get_joint_pair, load_joint_registry, swapped_receiver
 from core.joint_pick_helpers import screw_frame_world
@@ -508,6 +511,9 @@ def _run_move_joint():
         far_joint_id: (far_le, far_ln),
     }
     joint_pairs = {near_joint_id: pair, far_joint_id: far_pair}
+    # The axis-to-axis gap at which each pair's halves mate, in document units.
+    near_gap = float(pair.contact_distance_mm) / doc_unit_scale_to_mm()
+    far_gap = float(far_pair.contact_distance_mm) / doc_unit_scale_to_mm()
 
     def _replace_both():
         """Re-solve and re-place both pairs off the bars' current positions."""
@@ -684,12 +690,34 @@ def _run_move_joint():
                 # Both ends of this transform run stationary-bar-point ->
                 # stationary-bar-point, so the moving bar slides along its hosts
                 # instead of being dragged onto their centre-lines.
+                carry = _rigid_move_matrix(near_anchor, far_anchor, target_pt, landing)
+                cur_start, cur_end = curve_endpoints(moving_curve)
+                carried_ends = [
+                    (carry @ np.append(p, 1.0))[:3] for p in (cur_start, cur_end)
+                ]
+                # That carry leaves the bar a few hundredths of a mm off each
+                # pair's mating gap -- enough to fail the 0.05 mm mate check.
+                # Nudge it onto both gaps exactly, moving the joints least.
+                landed = settle_bar_at_gaps(
+                    carried_ends[0],
+                    carried_ends[1],
+                    [
+                        (slide_start, slide_end, near_gap),
+                        (far_host_start, far_host_end, far_gap),
+                    ],
+                    [target_pt, landing],
+                )
+                if landed is None:
+                    print(
+                        f"RSJointEdit: no position keeps {moving_bar_id} at the "
+                        f"mating gap from both {sliding_bar_id} and "
+                        f"{far_host_bar_id} there.  Nothing changed; pick again."
+                    )
+                    continue
                 rs.TransformObject(
                     moving_curve,
                     numpy_to_xform(
-                        _rigid_move_matrix(
-                            near_anchor, far_anchor, target_pt, landing
-                        )
+                        _rigid_move_matrix(cur_start, cur_end, landed[0], landed[1])
                     ),
                 )
                 ensure_bar_preview(moving_curve, float(config.BAR_RADIUS))

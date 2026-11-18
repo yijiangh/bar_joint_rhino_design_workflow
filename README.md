@@ -331,11 +331,12 @@ group and run it again.
 **2. Check that every pair mates.** A T20 pair only nests when its two bar
 axes are exactly **36 mm** apart. If they are not, the placement prints
 `interface error too large … auto-flipping receiver side` and an
-`Interface origin err` above 0.05 mm, and it turns the receiver 180° even when
-that does not help: the pair looks loose, and **FlipJoint cannot fix it**. This
-is not MoCap-specific; a Female behaves the same. Fix the bar (move it, or
-**RSBarSnap** it onto its partner), then FlipJoint / MoveJoint once.
-**RSUpdatePreview** lists every pair that does not mate.
+`Interface origin err` above 0.05 mm: the pair looks loose. Turning the
+receiver round does not help then, so the joint keeps the way you asked for
+(`flipping the receiver side did not help … keeping variant N as asked`). This
+is not MoCap-specific; a Female behaves the same. Fix the bar: **MoveJoint**
+lands the bar it moves exactly 36 mm from both its bars, or **RSBarSnap** it
+onto its partner. **RSUpdatePreview** lists every pair that does not mate.
 
 **3. Export for the jig: RSExportPrefab** → `<doc>_prefab.json`. A MoCap joint
 goes out as `subtype: "MoCap"` with the usual `position_mm` / `rotation_deg` /

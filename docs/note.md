@@ -28,6 +28,7 @@ topic, ordered basic → advanced inside each group.
 | 17 | why everything is a 4×4 matrix (and what `@` does) |
 | 11 | the `M_<target>_from_<source>` naming system *(convention, not Python)* |
 | 14 | "triangle soup" — Rhino-free floor geometry |
+| 35 | "smallest change that makes it exact" — `minimize(..., method="SLSQP")` |
 
 **Robot IK & assembly domain**
 | § | topic |
@@ -2731,3 +2732,49 @@ objects that did not change), so a joint moved along its bar changes the targets
 are checked against. The planning worlds (one PyBullet world per robot, kept between commands) are
 synced from the process's scenes before each check, so they see the change too; nothing has to be
 rebuilt by hand, and there is no RSPBStart any more.
+
+---
+
+## 35. "Smallest change that makes it exact" — `minimize(..., method="SLSQP")` in MoveJoint
+
+> ✅ **Real Python** (SciPy's optimizer). Using it to nudge a bar onto its mating gaps is this
+> repo's.
+
+### What it is
+
+Two kinds of optimizer call in this repo:
+
+| call | asks for | where |
+|---|---|---|
+| `minimize(cost, x0)` | make one number (`cost`) as small as possible | the joint solve, `core/joint_pair_solver.py` |
+| `minimize(cost, x0, method="SLSQP", constraints=[{"type": "eq", "fun": f}])` | make `cost` as small as possible **while** every number `f` returns is exactly 0 | `settle_bar_at_gaps`, `core/geometry.py` |
+
+`"eq"` means "must equal zero". SLSQP is the method in `minimize` that accepts such conditions.
+
+### Where it lives
+
+`scripts/core/geometry.py` → `settle_bar_at_gaps`. RSJointEdit › MoveJoint calls it after carrying the
+bar to its new place (`scripts/rs_joint_edit.py`, the `landed = settle_bar_at_gaps(...)` line).
+
+### The real example — B170 after J21-170 slid 28.3 mm up B21
+
+The carry leaves B170 at 35.93 mm from B21 and 36.08 mm from B37. A T20 pair mates only at
+exactly 36 mm, and the mate check allows 0.05 mm, so both pairs fail.
+
+```python
+fit = minimize(
+    _displacement,       # cost: how far J21-170's and J37-170's points move (squared, added)
+    np.zeros(6),         # unknowns: a small turn (3 numbers) and a small shift (3); start at "none"
+    method="SLSQP",
+    constraints=[{"type": "eq", "fun": _gap_errors}],  # (gap to B21 - 36, gap to B37 - 36) must be 0
+)
+```
+
+Result: both gaps are 36.000000 mm, and the joints move by 0.001 mm (a 28 mm slide) up to 0.08 mm
+(a 100 mm slide).
+
+### Why not a plain shift
+
+The first try was a shift only. It also reached 36 mm on both bars, but it needed 1–3 mm of
+sideways movement, and J21-170 then moved 30.4 mm instead of 28.3. With a small turn allowed as
+well, the nudge needs only hundredths of a mm.

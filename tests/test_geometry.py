@@ -7,6 +7,7 @@ from core.geometry import (
     closest_params_infinite_lines,
     distance_infinite_lines,
     points_on_line_at_distance,
+    settle_bar_at_gaps,
     snap_translation,
 )
 
@@ -335,6 +336,63 @@ class TestPointsOnLineAtDistance:
             )
             == []
         )
+
+
+class TestSettleBarAtGaps:
+    """The last step of RSJointEdit -> MoveJoint: put the moved bar exactly at
+    each pair's mating gap, nudging it as little as possible.
+
+    The bars are 261116_2ModulesDemo's B170 (a brace, the bar being moved) on
+    B21 (vertical) and B37 (sloped), as they were after the 2026-11-16 MoveJoint
+    that left J21-170 0.0527 mm from mating.
+    """
+
+    B21 = (np.array([1511.453, -926.85, 65.55]), np.array([1511.453, -926.85, 2065.55]))
+    B37 = (np.array([1475.453, -851.025, 1524.531]), np.array([1475.453, -1945.281, 1170.832]))
+    B170 = (np.array([1483.368, -814.664, 890.832]), np.array([1431.744, -1548.145, 1409.812]))
+    #: J21-170's and J37-170's receiver origins, the points MoveJoint carries.
+    JOINTS = (np.array([1511.453, -926.85, 931.656]), np.array([1475.453, -1403.409, 1345.982]))
+    GAP = 36.0
+
+    @staticmethod
+    def _gap(bar, host):
+        return distance_infinite_lines(bar[0], bar[1] - bar[0], host[0], host[1] - host[0])
+
+    def _settle(self, bar, joints=None):
+        return settle_bar_at_gaps(
+            bar[0], bar[1], [(*self.B21, self.GAP), (*self.B37, self.GAP)],
+            self.JOINTS if joints is None else joints,
+        )
+
+    def test_the_bar_lands_exactly_at_both_gaps(self):
+        assert abs(abs(self._gap(self.B170, self.B21)) - self.GAP) > 0.05  # off to start with
+        landed = self._settle(self.B170)
+        assert landed is not None
+        for host in (self.B21, self.B37):
+            assert abs(abs(self._gap(landed, host)) - self.GAP) < 1e-6
+
+    def test_the_nudge_is_rigid_and_small(self):
+        landed = self._settle(self.B170)
+        length = np.linalg.norm(self.B170[1] - self.B170[0])
+        assert abs(np.linalg.norm(landed[1] - landed[0]) - length) < 1e-9
+        # ~0.1 mm of gap error fixed -> the bar's ends move a fraction of a mm.
+        for before, after in zip(self.B170, landed):
+            assert np.linalg.norm(after - before) < 0.5
+
+    def test_the_bar_stays_on_the_side_of_each_host_it_is_on(self):
+        landed = self._settle(self.B170)
+        for host in (self.B21, self.B37):
+            assert np.sign(self._gap(landed, host)) == np.sign(self._gap(self.B170, host))
+
+    def test_a_bar_already_at_its_gaps_does_not_move(self):
+        settled = self._settle(self.B170)
+        again = self._settle(settled)
+        for before, after in zip(settled, again):
+            assert np.linalg.norm(after - before) < 1e-6
+
+    def test_a_degenerate_bar_gives_none(self):
+        point = np.array([1.0, 2.0, 3.0])
+        assert self._settle((point, point)) is None
 
 
 class TestSnapTranslation:

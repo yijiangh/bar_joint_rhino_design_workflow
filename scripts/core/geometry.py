@@ -6,7 +6,9 @@ import math
 from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
+
+from core.transforms import rotation_matrix
 
 
 _S2_T1_LSQ_XTOL = None
@@ -318,6 +320,85 @@ def points_on_line_at_distance(
     else:
         distances_along = [(-b + root) / 2.0, (-b - root) / 2.0]
     return [line_start + t * unit_dir for t in distances_along]
+
+
+def settle_bar_at_gaps(
+    bar_start: Iterable[float],
+    bar_end: Iterable[float],
+    hosts: Sequence[Tuple[Iterable[float], Iterable[float], float]],
+    carried: Sequence[Iterable[float]],
+    *,
+    tol: float = 1e-6,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """The smallest rigid nudge that puts a bar at an exact gap from its hosts.
+
+    RSJointEdit's MoveJoint is the caller.  Its move carries the bar rigidly
+    from one pair of stationary-bar points to another, which keeps each joint
+    where the user put it but leaves the bar a few hundredths of a mm off the
+    axis-to-axis gap at which each pair's halves mate -- enough to fail the
+    0.05 mm mate check.  This moves the bar once more, as little as possible:
+
+    * *hosts* is ``(start, end, gap)`` per stationary bar; afterwards the bar's
+      axis is exactly *gap* from each host's axis, on the side it is on now;
+    * *carried* are points that ride with the bar (MoveJoint's joint points);
+      the nudge is the rigid motion that moves them least, so the joints stay
+      where the user put them to within the size of the error fixed.
+
+    All lengths are in one unit (the caller's document unit).  Returns the new
+    ``(start, end)``, or ``None`` when the gaps are not met within *tol* (a
+    zero-length bar or host, or no nudge found).
+    """
+    start = _as_vector(bar_start)
+    end = _as_vector(bar_end)
+    if float(np.linalg.norm(end - start)) <= 1e-12 or not carried:
+        return None
+    points = [_as_vector(p) for p in carried]
+    centre = np.mean(points, axis=0)
+
+    # Each host's line and the signed gap to reach; the sign keeps the bar on
+    # the side of the host it is on now.
+    targets = []
+    for host_start, host_end, gap in hosts:
+        origin = _as_vector(host_start)
+        host_dir = _as_vector(host_end) - origin
+        if float(np.linalg.norm(host_dir)) <= 1e-12:
+            return None
+        side = 1.0 if distance_infinite_lines(start, end - start, origin, host_dir) >= 0.0 else -1.0
+        targets.append((origin, host_dir, side * float(gap)))
+
+    # The nudge: a rotation vector (about the carried points' centre) and a shift.
+    def _move(x, point):
+        angle = float(np.linalg.norm(x[:3]))
+        if angle <= 1e-15:
+            return point + x[3:]
+        return centre + rotation_matrix(x[:3] / angle, angle) @ (point - centre) + x[3:]
+
+    def _gap_errors(x):
+        new_start, new_end = _move(x, start), _move(x, end)
+        return np.array(
+            [
+                distance_infinite_lines(new_start, new_end - new_start, origin, host_dir) - gap
+                for origin, host_dir, gap in targets
+            ],
+            dtype=float,
+        )
+
+    def _displacement(x):
+        return sum(float(np.sum((_move(x, p) - p) ** 2)) for p in points)
+
+    try:
+        fit = minimize(
+            _displacement,
+            np.zeros(6),
+            method="SLSQP",
+            constraints=[{"type": "eq", "fun": _gap_errors}],
+            options={"ftol": 1e-16, "maxiter": 200},
+        )
+    except ValueError:  # a zero-length direction met mid-solve
+        return None
+    if not np.all(np.isfinite(fit.x)) or not np.all(np.abs(_gap_errors(fit.x)) <= tol):
+        return None
+    return _move(fit.x, start), _move(fit.x, end)
 
 
 def _wrap_angle(angle: float) -> float:

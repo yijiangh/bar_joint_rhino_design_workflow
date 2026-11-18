@@ -133,6 +133,66 @@ def test_unsolved_process_passes_file_and_plan_checks(tmp_path):
     assert read(tmp_path / "process").schedule == written.schedule
 
 
+def _hand_over_records(process: Process):
+    """`_records` plus a hold of B3 by Alice (nothing after it in the fixture, so it is never let go), with the two
+    holds at different bases."""
+    bars, holds = _records(process)
+    b3_pose = process.bodies["bars/B3"].assembly_pose
+    tool0 = compose(b3_pose, Pose((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)))
+    holds["bars/B2"] = replace(holds["bars/B2"], base=Pose((0.5, 1.0, 0.0)))
+    holds["bars/B3"] = replace(holds["bars/B2"], bar="bars/B3", tool0=tool0, grasp=grasp_of(tool0, b3_pose),
+                               base=Pose((0.5, 2.0, 0.0)), supports_until=())
+    return bars, holds
+
+
+def _attached_to(movement, bar):
+    """Where a bar is attached at a movement's start: the flanges holding it."""
+    return [h.to for h in movement.start.attached.get(bar, ())]
+
+
+def test_same_robot_lets_go_and_holds_the_last_bar_after_its_insert(tmp_path):
+    """AfterInsert hand-over: Cindy inserts B3, Alice lets go of B2, Alice holds B3 while Cindy still grips it, Cindy
+    releases B3 (`hold_schedule.AFTER_INSERT`, as Alice with B21 and B25 in 261019_2ModulesDemo)."""
+    from scaffolding_assembly_core.process.hold import closing_movement
+
+    process = _process()
+    bars, holds = _hand_over_records(process)
+    schedule = SCHEDULE[:6] + (("HR", "bars/B2"), ("H", "bars/B3"), ("R", "bars/B3"))
+    written = write(build_actions(process, schedule, bars, holds).process, tmp_path / "process", package_dirs=[PKG])
+    assert written.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B3_J", "B2_HR", "B3_H", "B3_R")
+    report = check_plan(written)
+    assert report.ok, report.errors
+
+    # * Alice lets go of B2 with B3 built and Cindy still gripping it.
+    let_go = written.actions["B2_HR"].movements[0]
+    assert let_go.start.robots.get(CINDY) is not None and "bars/B3" in let_go.start.built
+    assert _attached_to(let_go, "bars/B3") == [L, R] and _attached_to(let_go, "bars/B2") == [ALICE_FLANGE]
+    # * Then she closes on B3 from its own base, B2 attached to no one.
+    close = closing_movement(written, "B3_H")
+    assert _attached_to(close, "bars/B2") == []
+    assert close.start.robots[ALICE].base.position == pytest.approx((0.5, 2.0, 0.0))
+    # * Cindy lets go of B3 only once Alice holds it too.
+    ungrasp = next(m for m in written.actions["B3_R"].movements if m.id == "B3_R_ungrasp")
+    assert _attached_to(ungrasp, "bars/B3") == [L, R, ALICE_FLANGE]
+
+
+def test_same_robot_lets_go_before_the_last_bar_and_holds_it(tmp_path):
+    """BeforeInsert: Alice lets go of B2 after Cindy's release of B2, Cindy inserts B3, Alice holds B3. Cindy's insert
+    lies between Alice's two actions; B3 is not in B2's `supports_until` (the export leaves it out), so B12 passes."""
+    process = _process()
+    bars, holds = _hand_over_records(process)
+    holds["bars/B2"] = replace(holds["bars/B2"], supports_until=())
+    schedule = SCHEDULE[:5] + (("HR", "bars/B2"), ("J", "bars/B3"), ("H", "bars/B3"), ("R", "bars/B3"))
+    written = write(build_actions(process, schedule, bars, holds).process, tmp_path / "process", package_dirs=[PKG])
+    assert written.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B2_HR", "B3_J", "B3_H", "B3_R")
+    report = check_plan(written)
+    assert report.ok, report.errors
+    let_go = written.actions["B2_HR"].movements[0]
+    assert let_go.start.robots.get(CINDY) is None and "bars/B3" not in let_go.start.built
+    insert = next(m for m in written.actions["B3_J"].movements if m.id == "B3_J_insert")
+    assert insert.start.robots.get(ALICE) is None  # * Alice is away while Cindy inserts B3
+
+
 def test_keyframe_joints_chain(tmp_path):
     """Solved keyframes become targets and the next starts (B11 holds without geometry checks)."""
     process = _process()

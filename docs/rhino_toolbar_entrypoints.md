@@ -80,6 +80,21 @@ Rhino closed after adding a button (see `docs/note.md` §8).
 ### RSSequenceEdit (`rs_sequence_edit.py`)
 
 - Views and edits assembly sequence indices interactively.
+- **EditSupports**: pick the bars that keep the active bar unstable until they are built (saved as
+  `supported_until` on the bar). After Enter, the command names the **last bar** in the list (the highest
+  step) and asks when the support robot lets go of the active bar, relative to that bar:
+  - **BeforeInsert**: before Cindy inserts it.
+  - **AfterInsert**: after the insert, before Cindy releases it. The robot that lets go can hold the last
+    bar next. Example: Cindy inserts B25, Alice lets go of B21, Alice holds B25, Cindy releases B25.
+  - **AfterRelease**: after Cindy releases it. This is the default.
+
+  Enter or Esc keeps the saved choice (`supported_release` user text). The command then prints which
+  robot holds the bar, and names every held bar whose saved support keyframe is for the other robot
+  now: re-solve those.
+- A **`last support / B25 / step 11`** label dot sits on the last bar of the active bar's support list,
+  next to the active bar's own `B21 / step 3` dot. It shows in the normal view and while picking. While
+  picking, it moves on every click and the prompt reads `(3 selected, last: B25 step 11)`. There is no
+  dot when every listed bar comes before the active bar (no hold needed).
 
 ### RSJointPlace (`rs_joint_place.py`)
 
@@ -467,7 +482,7 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 
 ### RSShowBarActionPlan (`rs_show_bar_action_plan.py`) / …Motion (`rs_show_bar_action_plan_motion.py`)
 
-- **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles that bar's timeline — approach → assembled → *hold* (held bars only) → retreat → home, plus a *release* pose per hold whose LAST stabilizing bar is this one — each the document's process at that moment (`core.plan_steps`; keyframes from the `KEY_ASSEMBLY_*` / `KEY_SUPPORT_*` user-text); draws the active bar's **base frame** (axis triad + footprint). Support robots appear exactly where the process's schedule has them. **CheckCollision** checks every placed robot on its planning mirror and paints the offenders red; **InteractiveCollisionCheck** jogs the assembly robot's arms. Right after `RSLoadSolvedBarAction` it starts on the loaded bar(s), draws every base frame, and offers **NextBar/PrevBar**.
+- **Left-click** — the IK KEYFRAME viewer. Pick a bar; Enter cycles that bar's timeline — approach → assembled → *hold* (held bars only) → retreat → home, plus a *release* pose per hold whose LAST stabilizing bar is this one, where the schedule has it (after *assembled* for AfterInsert, after *home* for AfterRelease; a BeforeInsert release shows on the bar before) — each the document's process at that moment (`core.plan_steps`; keyframes from the `KEY_ASSEMBLY_*` / `KEY_SUPPORT_*` user-text); draws the active bar's **base frame** (axis triad + footprint). Support robots appear exactly where the process's schedule has them. **CheckCollision** checks every placed robot on its planning mirror and paints the offenders red; **InteractiveCollisionCheck** jogs the assembly robot's arms. Right after `RSLoadSolvedBarAction` it starts on the loaded bar(s), draws every base frame, and offers **NextBar/PrevBar**.
 - **Right-click** — the MOTION viewer. Pick a process folder (RSExportProcess's; the last one is offered) and a bar, then **step through its planned trajectories** from `solutions/` (`scripts/plan_process.py`) **from the command line** (Enter/Next/Prev/Jump — a prompt, not a modal dialog, so the viewport stays free to zoom/orbit). FK-only, so the held bar follows the arm.
 - **Both clicks** draw the walkable grounds from the core's scene, the active bar's light grey and the others dark grey, and print each ground's id + Rhino object id to the command line, so you can see which ground surface the robot base is allowed to stand on.
 - **While a viewer is open** the document layers it stands in for (tube previews, joint and tool blocks, ground, obstacles) are hidden and restored on exit, so nothing is drawn twice. Bars and joints are coloured by sequence. Bars with stale IK are listed on open; at their steps the robot is yellow and the step line says `STALE IK`.

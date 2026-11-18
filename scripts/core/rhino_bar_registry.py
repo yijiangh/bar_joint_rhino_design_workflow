@@ -19,6 +19,7 @@ import scriptcontext as sc
 import session_log
 
 from core import config
+from core import hold_schedule
 from core import joint_name_conventions as jnc
 from core.build_stage import (
     BUILD_STAGE_KEY,
@@ -54,6 +55,11 @@ BAR_ID_KEY = "bar_id"
 BAR_GUID_KEY = "bar_guid"
 BAR_SEQ_KEY = "bar_seq"
 BAR_SUPPORTED_UNTIL_KEY = "supported_until"
+# When the support robot lets go of a held bar, relative to the last bar in its
+# ``supported_until`` list: one of ``hold_schedule.RELEASE_TIMINGS``
+# ("before_insert", "after_insert", "after_release"). Picked in RSSequenceEdit >
+# EditSupports; absent means ``hold_schedule.DEFAULT_RELEASE_TIMING``.
+BAR_SUPPORTED_RELEASE_KEY = "supported_release"
 BAR_TYPE_VALUE = "scaffolding_bar"
 
 # A "fake" bar is a MODELING ARTIFACT that will not be fabricated and is not
@@ -582,6 +588,22 @@ def set_supported_until(curve_id, bar_ids):
         rs.SetUserText(curve_id, BAR_SUPPORTED_UNTIL_KEY, "")
 
 
+def get_supported_release(curve_id):
+    """When the support robot lets go of *curve_id*'s bar: one of
+    ``hold_schedule.RELEASE_TIMINGS``. A missing or unknown value reads as
+    ``hold_schedule.DEFAULT_RELEASE_TIMING`` ("after_release")."""
+    value = (rs.GetUserText(curve_id, BAR_SUPPORTED_RELEASE_KEY) or "").strip()
+    return value if value in hold_schedule.RELEASE_TIMINGS else hold_schedule.DEFAULT_RELEASE_TIMING
+
+
+def set_supported_release(curve_id, timing):
+    """Persist the release timing on *curve_id*; ``None`` or "" removes the key
+    (the bar then reads as the default)."""
+    if timing and timing not in hold_schedule.RELEASE_TIMINGS:
+        raise ValueError(f"unknown release timing {timing!r}")
+    rs.SetUserText(curve_id, BAR_SUPPORTED_RELEASE_KEY, timing or "")
+
+
 def is_fake_bar(curve_id):
     """True when *curve_id* is staging that will not be fabricated.
 
@@ -705,7 +727,7 @@ def get_unstable_bars(active_bar_id, bar_map=None):
 
 
 def collect_hold_inputs(bar_map=None):
-    """Read the two inputs ``core.hold_schedule.derive_hold_plan`` needs.
+    """Read the three inputs ``core.hold_schedule.derive_hold_plan`` needs.
 
     The one Rhino-side gateway into the (Rhino-free) hold derivation, so
     every consumer — the IK button, the exporters, the schedule builder —
@@ -718,18 +740,23 @@ def collect_hold_inputs(bar_map=None):
             fake bars); fetched when omitted.
 
     Returns:
-        tuple: ``(bar_seq, supported_until)`` where ``bar_seq`` is
-        ``{bar_id: step int}`` and ``supported_until`` is
-        ``{bar_id: [stabilizing bar ids]}`` (only bars with a non-empty list).
+        tuple: ``(bar_seq, supported_until, release_timing)`` where
+        ``bar_seq`` is ``{bar_id: step int}``, ``supported_until`` is
+        ``{bar_id: [stabilizing bar ids]}`` and ``release_timing`` is
+        ``{bar_id: timing}`` (both only for bars with a non-empty list).
+        Pass all three to ``derive_hold_plan``: the timing decides whether a
+        robot that lets go at a step can take that step's new hold, so
+        leaving it out can give a bar to a different robot.
     """
     bar_map = get_real_bar_seq_map(bar_map)
     bar_seq = {bar_id: seq for bar_id, (_oid, seq) in bar_map.items()}
-    supported_until = {}
+    supported_until, release_timing = {}, {}
     for bar_id, (oid, _seq) in bar_map.items():
         deps = get_supported_until(oid)
         if deps:
             supported_until[bar_id] = deps
-    return bar_seq, supported_until
+            release_timing[bar_id] = get_supported_release(oid)
+    return bar_seq, supported_until, release_timing
 
 
 # ---------------------------------------------------------------------------

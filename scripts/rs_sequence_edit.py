@@ -18,7 +18,15 @@ Displays all registered bars colour-coded by assembly step and lets the user:
     and clicking a bar toggles its membership in the support set.  Press
     Enter to save, Esc to cancel; the previous unbuilt-visibility setting is
     restored on exit.  Built bars whose supports are still unbuilt are
-    recoloured **teal** to flag them as unstable.
+    recoloured **teal** to flag them as unstable.  After a save, the command
+    names the **last bar** in the list (the highest step) and asks when the
+    support robot lets go: **BeforeInsert** (before Cindy inserts the last
+    bar), **AfterInsert** (after the insert, before Cindy releases it) or
+    **AfterRelease** (after Cindy releases it; the default).  Then it prints
+    which robot holds the bar, and names any held bar whose saved support
+    keyframe is now for the other robot.  A ``last support / B25 / step 11``
+    label dot marks the last bar, both while picking (it follows every click,
+    and the prompt shows ``last: B25 step 11``) and in the normal view.
   - **ShowUnbuilt / HideUnbuilt** to toggle the visibility of bars (and their
     child joints) that come later than the current step, giving an instant
     "assembly stage" preview.  The active step's robotic tool is always shown;
@@ -58,14 +66,19 @@ rhino_env.activate()
 import session_log  # noqa: E402
 
 from core import config
+from core import hold_schedule
 from core.rhino_bar_registry import (
     BAR_ID_KEY,
     SEQ_COLOR_SUPPORT_PICK,
     clear_build_stage,
+    collect_hold_inputs,
     get_bar_seq_map,
     get_build_stage,
+    get_real_bar_seq_map,
     set_build_stage,
+    get_supported_release,
     get_supported_until,
+    set_supported_release,
     set_supported_until,
     move_bar_earlier,
     move_bar_later,
@@ -84,6 +97,14 @@ from core.rhino_bar_pick import (
     bar_or_tube_filter as _bar_or_tube_filter,
     make_bar_or_tube_filter as _make_bar_or_tube_filter,
     resolve_picked_to_bar_curve as _resolve_picked_to_bar_curve,
+)
+
+
+#: EditSupports' release prompt: option name -> release timing (``hold_schedule``).
+_RELEASE_CHOICES = (
+    ("BeforeInsert", hold_schedule.BEFORE_INSERT),
+    ("AfterInsert", hold_schedule.AFTER_INSERT),
+    ("AfterRelease", hold_schedule.AFTER_RELEASE),
 )
 
 
@@ -121,6 +142,39 @@ def _sweep_sequence_dots():
     return len(strays)
 
 
+def _add_label_dot(bar_oid, label, tag):
+    """Bake a label text-dot at a bar's end-point, tagged and parked for :func:`_sweep_sequence_dots`.
+
+    Returns:
+        The dot's id, or None when the bar has no end-points or no dot was made.
+    """
+    try:
+        _start, end = curve_endpoints(bar_oid)
+    except Exception:
+        return None
+    dot_id = rs.AddTextDot(label, (float(end[0]), float(end[1]), float(end[2])))
+    if not dot_id:
+        return None
+    # Tag + park before handing the id back: if anything below throws, the
+    # sweep can still find this dot.  A dot born on the current layer with no
+    # tag is the leak this exists to prevent.
+    ensure_layer(config.LAYER_DIAGNOSTIC_MARKS)
+    rs.ObjectLayer(dot_id, config.LAYER_DIAGNOSTIC_MARKS)
+    rs.SetUserText(dot_id, _SEQ_DOT_KEY, tag)
+    return dot_id
+
+
+def _last_support(held_id, selected, bar_map):
+    """The last bar of a support list: ``(bar id, step)`` of the listed bar with the highest step after the held bar.
+
+    None when every listed bar comes before the held bar (it never needs a hold). E.g. B21 (step 3) with
+    B22 (4), B37 (9), B25 (11) -> ("B25", 11).
+    """
+    held_seq = bar_map[held_id][1]
+    later = [(b, bar_map[b][1]) for b in selected if b in bar_map and bar_map[b][1] > held_seq]
+    return max(later, key=lambda bs: bs[1]) if later else None
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -147,6 +201,10 @@ class _SequenceSession:
         # GUID of the temporary text-dot label drawn at the active bar's
         # end-point.  Recreated on every set_active(), cleaned up on exit.
         self._active_dot_id = None
+        # GUID of the "last support" dot on the last bar of the active bar's
+        # support list.  Recreated with the active dot and on every toggle in
+        # EditSupports, cleaned up on exit.
+        self._support_dot_id = None
 
     # ------------------------------------------------------------------
     # Active-bar end-point label
@@ -155,11 +213,13 @@ class _SequenceSession:
         if self._active_dot_id is not None and rs.IsObject(self._active_dot_id):
             rs.DeleteObject(self._active_dot_id)
         self._active_dot_id = None
+        self._clear_support_dot()
 
     def _refresh_active_dot(self, bar_map=None):
         """Place a text-dot at the active bar's end-point showing
         ``bar_id`` and assembly sequence number.  This is the same end of
-        the bar where the physical label will be applied."""
+        the bar where the physical label will be applied.  Also refreshes
+        the "last support" dot (:meth:`_refresh_support_dot`)."""
         self._clear_active_dot()
         if self.active_bar_id is None:
             return
@@ -169,22 +229,43 @@ class _SequenceSession:
         if entry is None:
             return
         oid, seq = entry
-        try:
-            _start, end = curve_endpoints(oid)
-        except Exception:
+        self._active_dot_id = _add_label_dot(oid, f"{self.active_bar_id}\nstep {seq}", self.active_bar_id)
+        self._refresh_support_dot(bar_map)
+
+    def _clear_support_dot(self):
+        if self._support_dot_id is not None and rs.IsObject(self._support_dot_id):
+            rs.DeleteObject(self._support_dot_id)
+        self._support_dot_id = None
+
+    def _refresh_support_dot(self, bar_map=None, selected=None):
+        """Place a text-dot on the last bar of the active bar's support list:
+        ``last support / B25 / step 11``.
+
+        The last bar is the listed bar with the highest step after the active
+        bar: the one the support robot holds the active bar until.  No dot
+        when no listed bar comes after the active bar (no hold needed).
+
+        Args:
+            bar_map (dict): a ``get_bar_seq_map`` result; fetched when omitted.
+            selected (list): the list being edited in EditSupports; ``None``
+                reads the saved ``supported_until``.
+        """
+        self._clear_support_dot()
+        if self.active_bar_id is None:
             return
-        label = f"{self.active_bar_id}\nstep {seq}"
-        dot_id = rs.AddTextDot(
-            label, (float(end[0]), float(end[1]), float(end[2]))
-        )
-        if dot_id:
-            # Tag + park before storing the id: if anything below throws, the
-            # sweep can still find this dot.  A dot born on the current layer
-            # with no tag is the leak this exists to prevent.
-            ensure_layer(config.LAYER_DIAGNOSTIC_MARKS)
-            rs.ObjectLayer(dot_id, config.LAYER_DIAGNOSTIC_MARKS)
-            rs.SetUserText(dot_id, _SEQ_DOT_KEY, self.active_bar_id)
-            self._active_dot_id = dot_id
+        if bar_map is None:
+            bar_map = get_bar_seq_map()
+        entry = bar_map.get(self.active_bar_id)
+        if entry is None:
+            return
+        if selected is None:
+            selected = get_supported_until(entry[0])
+        last = _last_support(self.active_bar_id, selected, bar_map)
+        if last is not None:
+            bar_id, seq = last
+            self._support_dot_id = _add_label_dot(
+                bar_map[bar_id][0], f"last support\n{bar_id}\nstep {seq}", self.active_bar_id
+            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -388,6 +469,15 @@ class _SequenceSession:
                 entry = bar_map.get(bid)
                 if entry:
                     paint_bar(entry[0], SEQ_COLOR_SUPPORT_PICK)
+            # * The "last support" dot follows the list being edited, not the saved one.
+            self._refresh_support_dot(bar_map, selected)
+
+        def _last_text():
+            """The prompt's note on the last bar: "last: B25 step 11", or why there is none."""
+            if not selected:
+                return ""
+            last = _last_support(self.active_bar_id, selected, bar_map)
+            return f", last: {last[0]} step {last[1]}" if last else ", no hold needed"
 
         _repaint()
         print(
@@ -400,7 +490,7 @@ class _SequenceSession:
             go = Rhino.Input.Custom.GetObject()
             go.SetCommandPrompt(
                 f"Toggle supports for {self.active_bar_id} "
-                f"({len(selected)} selected)  [Enter = save, Esc = cancel]"
+                f"({len(selected)} selected{_last_text()})  [Enter = save, Esc = cancel]"
             )
             go.EnablePreSelect(False, False)
             go.AcceptNothing(True)
@@ -421,7 +511,9 @@ class _SequenceSession:
                         f"RSSequenceEdit: {self.active_bar_id} supported until: "
                         f"{', '.join(selected)}."
                     )
+                    self._ask_release_timing(active_oid, selected, bar_map)
                 else:
+                    set_supported_release(active_oid, None)
                     print(
                         f"RSSequenceEdit: cleared supports for {self.active_bar_id}."
                     )
@@ -450,8 +542,68 @@ class _SequenceSession:
         # the standard sequence display so unstable bars repaint correctly.
         self.show_unbuilt = original_show_unbuilt
         show_sequence_colors(self.active_bar_id, self.show_unbuilt)
+        self._refresh_support_dot()  # * back to the saved list (unchanged on Esc)
         if committed:
             self._print_status()
+
+    def _ask_release_timing(self, active_oid, selected, bar_map):
+        """After a support list is saved: name its last bar, ask when the support robot lets go, report the hold.
+
+        Enter or Esc keeps the timing already saved (``after_release`` when none is). Never undoes the saved list.
+
+        Args:
+            active_oid: the active (held) bar's centerline id.
+            selected (list): the saved support bar ids.
+            bar_map (dict): a ``get_bar_seq_map`` result.
+        """
+        held = self.active_bar_id
+        held_seq = bar_map[held][1]
+        found = _last_support(held, selected, bar_map)
+        if found is None:
+            print(f"RSSequenceEdit: every selected bar is built before {held}: no hold needed.")
+            return
+        last, last_seq = found
+        print(f"RSSequenceEdit: {last} (step {last_seq}) is the last bar in {held}'s list: "
+              f"the support robot holds {held} until {last}.")
+
+        names = {timing: name for name, timing in _RELEASE_CHOICES}
+        current = get_supported_release(active_oid)
+        go = Rhino.Input.Custom.GetOption()
+        go.SetCommandPrompt(
+            f"When does {held}'s support robot let go, relative to {last}? "
+            f"(now {names[current]}; Enter = keep)"
+        )
+        for name, _timing in _RELEASE_CHOICES:
+            go.AddOption(name)
+        go.AcceptNothing(True)
+        chosen = current
+        if session_log.ask(go) == Rhino.Input.GetResult.Option:
+            chosen = dict(_RELEASE_CHOICES)[go.Option().EnglishName]
+            set_supported_release(active_oid, chosen)
+        print(f"RSSequenceEdit: {held}'s support robot lets go: {names[chosen]}.")
+
+        if chosen == hold_schedule.BEFORE_INSERT:
+            between = [b for b, (_oid, s) in get_real_bar_seq_map(bar_map).items() if held_seq < s < last_seq]
+            if not between:
+                print(f"RSSequenceEdit: ! no bar is built between {held} and {last}: with BeforeInsert, "
+                      f"{held} is let go before any other bar is built.")
+
+        # * Which robot holds it now, and whose saved support keyframe no longer matches its robot.
+        try:
+            bar_seq, supported, timing = collect_hold_inputs(bar_map)
+            plan = hold_schedule.derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES, timing)
+        except RuntimeError as exc:
+            print(f"RSSequenceEdit: hold plan: {exc}")
+            return
+        entry = plan.get(held)
+        if entry is not None:
+            print(f"RSSequenceEdit: {entry['robot_name']} holds {held} from step {entry['hold_start_seq']} "
+                  f"and lets go {hold_schedule.describe_release(entry)}.")
+        for bar_id in sorted(plan, key=lambda b: plan[b]["hold_start_seq"]):
+            solved_for = rs.GetUserText(bar_map[bar_id][0], config.KEY_SUPPORT_ROBOT)
+            if solved_for and solved_for != plan[bar_id]["robot_name"]:
+                print(f"RSSequenceEdit: ! {bar_id}'s support keyframe was solved for {solved_for}, but "
+                      f"{plan[bar_id]['robot_name']} holds it now: re-solve its support keyframe (RSIKKeyframe).")
 
     def toggle_unbuilt(self):
         """Toggle unbuilt visibility AND the persistent build-stage latch.

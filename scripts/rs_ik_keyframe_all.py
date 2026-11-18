@@ -409,8 +409,8 @@ def _support_resolve_pass(include_self, include_env):
     config, store, support_ik = ikf.config, ikf.keyframe_store, ikf.support_ik
     bar_map = get_bar_seq_map()
     try:
-        bar_seq, supported = collect_hold_inputs(bar_map)
-        hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+        bar_seq, supported, timing = collect_hold_inputs(bar_map)
+        hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES, timing)
     except RuntimeError as exc:
         print(f"RSIKKeyframeAll: hold plan derivation failed ({exc}); support pass skipped.")
         return [], [], [("<hold plan>", str(exc))]

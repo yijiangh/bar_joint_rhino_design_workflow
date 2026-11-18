@@ -25,13 +25,17 @@ def _xform(rotation, position) -> np.ndarray:
 
 
 @pytest.fixture
-def source():
-    """A fake document installed as the Rhino API; yields the `core.process_source` module over it."""
+def source(request):
+    """A fake document installed as the Rhino API; yields the `core.process_source` module over it.
+
+    Parametrized indirectly, the parameter is extra user text on B2, e.g. `{"supported_release": "after_insert"}`.
+    """
     from core import config, joint_name_conventions as jnc
     from core.robotic_tool import get_active_pair
 
+    b2_text = {"supported_until": "B3", **getattr(request, "param", {})}
     doc = Doc()
-    for bar, y, z, seq, extra in (("B1", 0, 50, 1, {}), ("B2", 300, 50, 2, {"supported_until": "B3"}),
+    for bar, y, z, seq, extra in (("B1", 0, 50, 1, {}), ("B2", 300, 50, 2, b2_text),
                                   ("B3", 150, 100, 3, {}), ("B4", 600, 50, 4, {"scaffolding.fake_bar": "1"})):
         doc.add(Obj(config.LAYER_BAR_CENTERLINES, {"bar_type": "scaffolding_bar", "bar_id": bar, "bar_seq": str(seq),
                                                    config.KEY_BAR_WALKABLE_GROUND_IDS: "WG0", **extra},
@@ -119,6 +123,37 @@ def test_export_range_never_reads_the_later_bars(source, tmp_path):
     # * B2's hold began before From: its release has no bar_holding in the folder, a warning only.
     assert [w for w in report.warnings if w.startswith("B12")] == [
         "B12: B2_HR: no earlier bar_holding of bars/B2 by robots/alice"]
+
+
+@pytest.mark.parametrize("source", [{"supported_release": "after_insert"}], indirect=True)
+def test_hold_lets_go_after_the_insert(source, tmp_path):
+    """B2 held until B3, AfterInsert: Alice lets go of B2 between B3's insert and Cindy's release of B3."""
+    from scaffolding_assembly_core.process import write
+    from scaffolding_assembly_core.process.plan_check import check_plan
+
+    result = source.RhinoProcessSource("RSExportProcess").build()
+    process = write(result.process, tmp_path / "process", package_dirs=[PKG])
+    assert process.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B3_J", "B2_HR", "B3_R")
+    assert process.actions["B2_H"].supports_until == ("bars/B3",)
+    # * Cindy still grips B3 while Alice lets go.
+    assert process.actions["B2_HR"].movements[0].start.robots.get("robots/cindy") is not None
+    report = check_plan(process)
+    assert report.ok, report.errors
+
+
+@pytest.mark.parametrize("source", [{"supported_release": "before_insert"}], indirect=True)
+def test_hold_lets_go_before_the_insert(source, tmp_path):
+    """B2 held until B3, BeforeInsert: Alice lets go before B3's insert, so B3 is left out of `supports_until` and
+    the plan check B12 still passes."""
+    from scaffolding_assembly_core.process import write
+    from scaffolding_assembly_core.process.plan_check import check_plan
+
+    result = source.RhinoProcessSource("RSExportProcess").build()
+    process = write(result.process, tmp_path / "process", package_dirs=[PKG])
+    assert process.schedule == ("B1_J", "B1_R", "B2_J", "B2_H", "B2_R", "B2_HR", "B3_J", "B3_R")
+    assert process.actions["B2_H"].supports_until == ()
+    report = check_plan(process)
+    assert report.ok, report.errors
 
 
 def test_keyframe_groups_merge():

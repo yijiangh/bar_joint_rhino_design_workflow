@@ -280,24 +280,43 @@ The two holding builders read the five `KEY_SUPPORT_*` user-text keys off the
 
 ### 3.3 Who holds what, and the global order: `core/hold_schedule.py`
 
-This module is Rhino-free and re-derives everything from two dictionaries
-(`bar_seq`, `supported_until`) on every call, so nothing about occupancy is
-ever stored:
+This module is Rhino-free and re-derives everything from three dictionaries
+(`bar_seq`, `supported_until`, and the release timing per held bar) on every
+call, so nothing about occupancy is ever stored:
 
 - A bar needs a hold if at least one bar in its `supported_until` list is
-  assembled **later**; its hold releases right after the **last** such bar's
-  assembly release. Listed bars that come earlier contribute nothing.
-- A support robot is busy from its hold's start step through the release step
-  **inclusive**, so it cannot take a new hold at the release step itself.
+  assembled **later**. Listed bars that come earlier contribute nothing. The
+  latest listed bar is the hold's **last bar**.
+- When the robot lets go, relative to the last bar, is the held bar's
+  `supported_release` user text, picked in `RSSequenceEdit > EditSupports`:
+  - `before_insert`: before Cindy inserts the last bar. The export then
+    leaves the last bar out of the hold's `supports_until`, because the plan
+    check B12 wants every listed bar built at the release.
+  - `after_insert`: after the insert, while Cindy still grips the last bar,
+    and before that bar's own hold.
+  - `after_release`: after Cindy releases it. This is the default when
+    nothing is saved, and was the only behaviour before 2026-11.
+- A support robot is busy from its hold's start step until it lets go. With
+  `before_insert` or `after_insert` it is free for the last bar's own hold at
+  that same step. In `261019_2ModulesDemo`, with B25 added to B21's list and
+  `after_insert`: Cindy inserts B25, Alice lets go of B21, Alice holds B25,
+  Cindy releases B25. With `after_release` the robot is still busy at that
+  step.
 - When more than one robot is free, the first in `config.SUPPORT_ROBOT_NAMES`
   (`("Alice", "Belle")`) is chosen. If none is free, `derive_hold_plan`
   raises and names who holds what, so the sequence can be revisited in
   `RSSequenceEdit`.
-- `build_action_schedule` turns that into the interleaved order the flowchart
-  shows: per bar, Jointing; Holding (if needed); Release; then every
-  HoldingRelease whose last stabilizer is this bar, in hold-start order. For
-  the spec's demo this gives exactly the eight step lists in
-  `support_ik_spec.md` section 4.
+- `build_action_schedule` turns that into the interleaved order. Per bar L:
+  1. HoldingReleases ending at L with `before_insert`;
+  2. Jointing of L;
+  3. HoldingReleases ending at L with `after_insert`;
+  4. Holding of L (if needed);
+  5. Release of L;
+  6. HoldingReleases ending at L with `after_release`.
+
+  Within a group, the first hold to start is the first to let go. With no
+  timing saved, this is the flowchart's order. For the spec's demo it gives
+  exactly the eight step lists in `support_ik_spec.md` section 4.
 
 ---
 
@@ -485,7 +504,7 @@ source of truth only until you edit by hand.
 | --- | --- |
 | 1. When is the release retreat keyframe solved? | Never separately: HR_M1's goal is the hold's approach configuration. Instead the held and approach configurations are validated in the release scene at checkpoint 1 (partial, after the hold solve) and checkpoint 2 (full, when the last stabilizer's assembly keyframe is accepted). |
 | 2. `RSIKKeyframeAll` behaviour | One assembly pass over the selected bars, then one support pass over every hold with stored picks, in hold-start order. |
-| 3. What "available" means | Derived on every call by `derive_hold_plan`: busy from hold start through the release step inclusive; first free name in `SUPPORT_ROBOT_NAMES`. No user override exists. |
+| 3. What "available" means | Derived on every call by `derive_hold_plan`: busy from hold start until it lets go. A robot that lets go before or after its last bar's insert is free for that bar's own hold; one that lets go after Cindy's release is busy through that step (release timing, §3.3). First free name in `SUPPORT_ROBOT_NAMES`. No user override of the robot exists. |
 | 6. Home pose for the assembly release | `config.HUSKY_DUAL_ARM_HOME_CONF_12`, global, stamped into the home move's (R_M2) `target_configuration`. |
 | 7. Encoding overlapping movements | The `overlaps_next` flag on `ToolMovement`, set on a normal bar's tighten step only. |
 | 8. Where released support robots go | Nowhere modeled: after HR_M1 the robot is simply absent from every later scene. |

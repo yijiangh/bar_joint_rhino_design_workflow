@@ -14,7 +14,11 @@ from test_process_builder import ALICE, ALICE_SRDF, ALICE_URDF, CINDY, CINDY_SRD
 pytestmark = pytest.mark.skipif(not CINDY_URDF.is_file(), reason="asset/husky_urdf submodule not checked out")
 
 
-def _solved(unsolved=()):
+#: SCHEDULE with Alice letting go of B2 after B3's insert, before Cindy releases B3 (`hold_schedule.AFTER_INSERT`).
+AFTER_INSERT_SCHEDULE = SCHEDULE[:6] + (("HR", "bars/B2"), ("R", "bars/B3"))
+
+
+def _solved(unsolved=(), schedule=SCHEDULE):
     """The process with every bar's keyframe solved except `unsolved`, and Alice's hold of B2 solved."""
     from scaffolding_assembly_core.geometry import Pose
     from scaffolding_assembly_core.urdf import movable_joints
@@ -33,7 +37,20 @@ def _solved(unsolved=()):
                                 assembled=joints(cindy, 0.2), retreat=joints(cindy, 0.3), home=joints(cindy, 0.4))
     holds["bars/B2"] = replace(holds["bars/B2"], base=Pose((0.0, 1.0, 0.0)), approach=joints(alice, 0.5),
                                held=joints(alice, 0.6))
-    return build_actions(process, SCHEDULE, bars, holds).process
+    return build_actions(process, schedule, bars, holds).process
+
+
+def test_release_after_the_insert_shows_before_the_retreat():
+    """Alice lets go of B2 after B3's insert: B3's release step sits between "assembled" and "retreat"."""
+    from core.plan_steps import bar_steps, releases_after
+
+    assert SCHEDULE[5:] == (("J", "bars/B3"), ("R", "bars/B3"), ("HR", "bars/B2"))  # the slice above relies on it
+    process = _solved(schedule=AFTER_INSERT_SCHEDULE)
+    assert releases_after(process, "bars/B3") == ["bars/B2"]
+    assert releases_after(process, "bars/B2") == []
+    b3 = bar_steps(process, "bars/B3")
+    assert [s.pose for s in b3] == ["approach", "assembled", ("release", "bars/B2"), "retreat", "home"]
+    assert b3[1].movement.id == "B2_HR_open"  # * assembled: Cindy at the insert's end, Alice still holding
 
 
 def test_bar_steps_follow_the_schedule():

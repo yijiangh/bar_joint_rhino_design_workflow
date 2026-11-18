@@ -2622,9 +2622,9 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
         after (list): callables run once the command's planners are returned (release check).
     """
     # * ---- 1. Hold plan: which robot takes this bar, and until when.
-    bar_seq, supported = collect_hold_inputs()
+    bar_seq, supported, timing = collect_hold_inputs()
     try:
-        hold_plan = hold_schedule.derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+        hold_plan = hold_schedule.derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES, timing)
     except RuntimeError as exc:
         rs.MessageBox(str(exc), 0, "RSIKKeyframe")
         return
@@ -2641,8 +2641,7 @@ def _run_support_flow(bar_id: str, bar_oid, stack, after):
     robot_id = process_source.robot_id(robot_name)
     print(
         f"RSIKKeyframe(support): {robot_name} holds {bar_id} from step "
-        f"{entry['hold_start_seq']} until after {entry['release_after_bar_id']} "
-        f"(step {entry['release_after_seq']})."
+        f"{entry['hold_start_seq']} and lets go {hold_schedule.describe_release(entry)}."
     )
 
     # * ---- 2. The hold is anchored to Cindy's assembled keyframe: it must be solved.

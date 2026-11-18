@@ -312,7 +312,8 @@ class Builder:
         self.emit(f"{p}_R_home", "Home", arms=arms, path="free", controller="position",
                   target=Target.of(joints={r.robot: r.home} if r.home else {}))
         # * Cindy drives away to load her next bar: absent until her next jointing arrives. Left standing here, she
-        #   would be an obstacle in the support robots' hold releases, where she no longer is.
+        #   would be an obstacle in the hold releases after her release, where she no longer is. A hold that lets go
+        #   after the insert (`hold_schedule.AFTER_INSERT`) comes before this release and sees her gripping the bar.
         robots = dict(self.state.robots)
         robots[r.robot] = None
         self.set(robots=robots)

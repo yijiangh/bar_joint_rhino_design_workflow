@@ -11,7 +11,9 @@ Poses of one bar (the viewers' vocabulary, kept from the legacy viewer):
 - `hold` (held bars): the support robot grips too: the start of `<bar>_R_ungrasp`, after the hold;
 - `retreat`: arms pulled back, bar released: the start of `<bar>_R_home`;
 - `home`: the arms home: the end of `<bar>_R_home`;
-- `("release", <held bar>)`: a hold whose release follows this bar lets go: the end of `<held>_HR_retreat`.
+- `("release", <held bar>)`: a hold this bar ends lets go: the end of `<held>_HR_retreat`. It sits where the schedule
+  has it: after `assembled` for a hold that lets go after the insert, after `home` for one that lets go after
+  Cindy's release (`core.hold_schedule` release timings).
 
 A bar whose keyframe is unsolved (Cindy's joints unknown at the insert) has only its release steps.
 """
@@ -83,16 +85,27 @@ def movement_after(process: Process, movement: Movement) -> Optional[Movement]:
     return None
 
 
+#: The action types that start a bar's actions in the schedule.
+_BAR_START = ("bar_jointing", "bar_placing")
+
+
 def releases_after(process: Process, bar: str) -> List[str]:
-    """The held bars whose release follows this bar's actions in the schedule (in release order)."""
+    """The held bars let go during this bar's actions or right after them (in release order).
+
+    Every hold release from the bar's jointing (or placing by hand) up to the next bar's: an `after_insert` one sits
+    between the insert and Cindy's release (B25_J, B21_HR, B25_H, B25_R), an `after_release` one after Cindy's
+    release. A `before_insert` one comes before its last bar's jointing, so it counts as a release after the bar
+    before (`core.hold_schedule`).
+    """
     order = list(process.schedule)
-    after = [i for i, a in enumerate(order) if process.actions[a].bar == bar and process.actions[a].type == "bar_release"]
+    start = [i for i, a in enumerate(order) if process.actions[a].bar == bar and process.actions[a].type in _BAR_START]
     out = []
-    for action_id in order[after[0] + 1:] if after else []:
+    for action_id in order[start[0] + 1:] if start else []:
         action = process.actions[action_id]
-        if action.type != "bar_holding_release":
+        if action.type in _BAR_START:
             break
-        out.append(action.bar)
+        if action.type == "bar_holding_release":
+            out.append(action.bar)
     return out
 
 
@@ -129,12 +142,18 @@ def bar_steps(process: Process, bar: str) -> List[Step]:
         if home is not None:
             steps.append(Step(bar, "retreat", home))
             steps.append(Step(bar, "home", home, True))
+    releases = []
     for held in releases_after(process, bar):
         h = short(held)
         retreat = find_movement(process, f"{h}_HR", f"{h}_HR_retreat")
         if retreat is not None:
-            steps.append(Step(bar, (RELEASE, held), retreat, True))
-    return steps
+            releases.append(Step(bar, (RELEASE, held), retreat, True))
+    if not releases:
+        return steps
+    # * In schedule order: an `after_insert` release shows between "assembled" and "hold", an `after_release` one
+    #   after "home". Sorting is stable, so a movement's start comes before its end.
+    position = {id(m): i for i, (_action, m) in enumerate(process.movements())}
+    return sorted(steps + releases, key=lambda s: (position.get(id(s.movement), len(position)), s.at_end))
 
 
 def timeline(process: Process) -> Tuple[List[Step], List[Tuple[str, str]]]:

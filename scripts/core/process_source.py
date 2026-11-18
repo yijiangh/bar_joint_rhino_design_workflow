@@ -30,6 +30,7 @@ import session_log
 from core import config
 from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
 from core import joint_name_conventions as jnc
+from core.hold_schedule import BEFORE_INSERT
 from core.process_builder import (BarRecord, BuildResult, HoldRecord, build_actions, cut_to_range, grasp_of,
                                   poses_in_tcp)
 from scaffolding_assembly_core.process import BodySpec, Process, ProcessError, Producer, RobotSpec
@@ -258,9 +259,10 @@ class RhinoProcessSource:
         mates = self._mates(halves, grounds)
 
         with session_log.step("hold plan"):
-            bar_seq, supported = collect_hold_inputs(bars)  # ? always the whole sequence, also for a range
+            # ? always the whole sequence, also for a range
+            bar_seq, supported, timing = collect_hold_inputs(bars)
             try:
-                hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES)
+                hold_plan = derive_hold_plan(bar_seq, supported, config.SUPPORT_ROBOT_NAMES, timing)
             except RuntimeError as exc:
                 self.problems.append(f"hold plan: {exc}; no holds exported")
                 hold_plan = {}
@@ -714,7 +716,10 @@ class RhinoProcessSource:
             grasp = grasp_of(link_pose(robots[rid].urdf, base, held, flange_link), bar_pose_)
         else:
             grasp = grasp_of(tool0, bar_pose_)
-        until = tuple(f"bars/{b}" for b in supported.get(bar, ()) if f"bars/{b}" in self.bodies)
+        # * A hold that lets go before its last bar's insert cannot wait for that bar: it is left out, so the plan
+        #   check B12 (every `supports_until` bar built at the release) holds.
+        dropped = entry["release_after_bar_id"] if entry.get("release_timing") == BEFORE_INSERT else None
+        until = tuple(f"bars/{b}" for b in supported.get(bar, ()) if f"bars/{b}" in self.bodies and b != dropped)
         grounds = tuple(f"ground/{g.strip()}" for g in (rs.GetUserText(oid, config.KEY_BAR_WALKABLE_GROUND_IDS) or
                                                          "").split(",") if f"ground/{g.strip()}" in self.bodies)
         return HoldRecord(bar=f"bars/{bar}", robot=rid, flange=f"{rid}/{flange_link}",

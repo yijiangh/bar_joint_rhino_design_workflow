@@ -25,7 +25,7 @@ Rhino closed after adding a button (see `docs/note.md` §8).
 | RSDesign | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews | Workshop participants |
 | RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the bars to export, Enter or All = every bar, or a From..Until range, then the process folder itself: pick one or make one with New folder), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
-| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
+| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). Bars with no IK yet (no assembly keyframe, or held with no support keyframe) are painted the IK-failed pink and selected too. The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
 | RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
 | RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
 | RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
@@ -575,10 +575,14 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   4. **Ground and grasp**: the saved base more than 10 mm / 3° off the walkable ground under it; a
      support keyframe whose robot is not the one today's hold plan gives the bar to, or whose grasp
      is more than 1 mm / 0.5° off the bar's centre line.
+  5. **Missing**: a bar with no assembly keyframe, or one today's hold plan holds with no support
+     keyframe, is listed as "no IK yet" and painted the IK-failed pink
+     (`rhino_bar_registry.COLOR_FAILED`, `230, 115, 150`). The bars that need recalculation are
+     painted amber (amber wins on a bar that is both). Both sets are selected.
   6. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber ones),
-     then the usual three erase toggles.
-- Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`. The amber stays until the next
-  CheckIK (which puts back what it painted over), RSUpdatePreview or RSClearColorPreview.
+     then the usual three erase toggles. Pink-only bars are not offered: there is nothing to clean.
+- Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`. The amber and pink stay until the
+  next CheckIK (which puts back what it painted over), RSUpdatePreview or RSClearColorPreview.
 
 ### RSClearIKKeyframe (`rs_clear_ik_keyframe.py`) / RSClearIKKeyframeAll (`rs_clear_ik_keyframe_all.py`)
 

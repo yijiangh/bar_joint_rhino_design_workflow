@@ -113,6 +113,7 @@ unless something else repainted the object in between. RSClearColorPreview clear
 | pink **(transient)** | `230, 115, 150` | RSIKKeyframe **rejected the bar you picked** — painted on its tool-bearing joint blocks (or on the bar, if it has none), cleared on the next pick and on exit | `COLOR_FAILED` |
 | red | `255, 40, 40` | collision highlight (RSIKKeyframe, RSShowBarActionPlan) | `config.COLLISION_COLOR`; RSShowBarActionPlan keeps its own `COLLISION_COLOR`, same value |
 | amber | `230, 160, 30` | RSIKMaintenance › CheckIK: the bar's saved IK no longer fits the model and must be recalculated. Undone by the next CheckIK, like the MoCap look-alike colours | `config.IK_STALE_COLOR` |
+| pink **(CheckIK)** | `230, 115, 150` | RSIKMaintenance › CheckIK: the bar has no IK yet (no assembly keyframe, or held in today's hold plan with no support keyframe). The IK-failed pink again, read the same way; amber wins on a bar that also needs recalculation. Undone by the next CheckIK | `COLOR_FAILED` |
 
 Amber sits near the MoCap look-alike gold (`240, 190, 0`). Both stay on screen until cleared, so
 after running both checks the two can show at once; the command-line report of each says which
@@ -245,6 +246,10 @@ cleared: it snapshots each block's colour first and puts it back
 (`rhino_bar_registry.snapshot_object_colors` / `restore_object_colors`), because the blocks it
 marks may already carry a sequence colour or a broken-link mark that a reset-to-ByLayer would eat.
 RSBarSelect's length preview restores colours the same way.
+
+RSIKMaintenance › CheckIK is a fourth user: pink on a bar that has no IK yet, again "the robot is not
+building this one (yet)". It cannot meet the fake pink either, since CheckIK skips fake bars. Its
+pink is undone too, by the next CheckIK (`core.rhino_helpers.paint_remembered` / `restore_painted`).
 
 ### 4. Teal is overloaded
 

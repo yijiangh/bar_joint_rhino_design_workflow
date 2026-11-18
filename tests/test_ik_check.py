@@ -129,3 +129,40 @@ def test_a_report_is_stale_only_with_problems():
     assert not report.stale
     report.support.append("support (Alice): grasp 35.0 mm / 0.0 deg off the bar")
     assert report.stale
+
+
+def test_a_missing_keyframe_marks_the_bar_unsolved_not_stale():
+    report = ik_check.BarIKReport("B170", 10)
+    assert not report.unsolved
+    report.missing.append("assembly: no IK yet -- solve it with RSIKKeyframe")
+    assert report.unsolved
+    assert not report.stale  # nothing to recalculate (or clean): it was never solved
+
+
+# ---------------------------------------------------------------------------
+# missing_keyframes (B170 / B171 in 261116_2ModulesDemo: new braces, never solved)
+# ---------------------------------------------------------------------------
+
+
+def test_nothing_missing_for_a_solved_unheld_bar():
+    assert ik_check.missing_keyframes(True, False, None) == []
+
+
+def test_nothing_missing_for_a_solved_held_bar():
+    assert ik_check.missing_keyframes(True, True, "alice") == []
+
+
+def test_an_unsolved_unheld_bar_misses_only_its_assembly_ik():
+    (line,) = ik_check.missing_keyframes(False, False, None)
+    assert line.startswith("assembly: no IK yet")
+
+
+def test_an_unsolved_held_bar_misses_both():
+    assembly, support = ik_check.missing_keyframes(False, False, "belle")
+    assert assembly.startswith("assembly: no IK yet")
+    assert support.startswith("support (belle): no IK yet")
+
+
+def test_a_held_bar_solved_for_assembly_only_misses_its_support_ik():
+    (line,) = ik_check.missing_keyframes(True, False, "alice")
+    assert line.startswith("support (alice): no IK yet")

@@ -21,7 +21,9 @@ when it accepted each pose -- no re-solve:
 * **ground**: the saved base still standing on a walkable ground, not floating,
   sunk or tilted against it;
 * **support keyframe** (the robot holding the bar): its assignment in today's
-  hold plan, and its grasp still on the bar.
+  hold plan, and its grasp still on the bar;
+* **missing**: a bar with no assembly keyframe, or one today's hold plan holds
+  with no support keyframe, is reported as unsolved (nothing to replay).
 
 The tolerances are ``config.IK_CHECK_*``.  The small numpy helpers at the top
 are Rhino-free and unit-tested; everything below them needs Rhino and the core
@@ -123,12 +125,18 @@ class BarIKReport:
     seq: int = None
     assembly: list = field(default_factory=list)   # problems with the assembly keyframe
     support: list = field(default_factory=list)    # problems with the support keyframe
+    missing: list = field(default_factory=list)    # keyframes the bar needs but has never been given
     notes: list = field(default_factory=list)      # hints that do not flag the bar by themselves
 
     @property
     def stale(self) -> bool:
         """True when the bar's saved IK must be recalculated."""
         return bool(self.assembly or self.support)
+
+    @property
+    def unsolved(self) -> bool:
+        """True when the bar lacks a keyframe it needs: no assembly IK, or no support IK for a held bar."""
+        return bool(self.missing)
 
 
 # * ---------------------------------------------------------------------------
@@ -247,8 +255,31 @@ def check_support_keyframe(process, bar_id: str, bar_oid, payload: dict, soups: 
     return problems
 
 
+def missing_keyframes(has_assembly: bool, has_support: bool, hold_robot: str = None) -> list:
+    """The keyframes a bar needs but does not have, as sentences; ``[]`` when none is missing.
+
+    Args:
+        has_assembly (bool): the bar carries an assembly keyframe.
+        has_support (bool): the bar carries a support keyframe (a broken one counts as there:
+            it is reported as a support problem instead).
+        hold_robot (str): the support robot today's hold plan gives the bar to ("alice"), or
+            ``None`` when the bar is not held.
+    """
+    out = []
+    if not has_assembly:
+        out.append("assembly: no IK yet -- solve it with RSIKKeyframe")
+    if hold_robot is not None and not has_support:
+        out.append(f"support ({hold_robot}): no IK yet -- today's hold plan has {hold_robot} hold this bar; "
+                   "solve it with RSIKKeyframe once the assembly IK is solved")
+    return out
+
+
 def check_all(process, store: dict, bar_map: dict, progress=print) -> list:
-    """Check every bar that carries a saved assembly or support keyframe.
+    """Check every real bar: its saved assembly and support keyframes, and the ones it lacks.
+
+    A bar without an assembly keyframe, or held in today's hold plan without a support keyframe,
+    gets the missing ones in ``BarIKReport.missing`` (``unsolved``). A bar with no keyframe at all
+    is reported that way and nothing else is checked for it.
 
     Args:
         process: the document as a process (``process_source.RhinoProcessSource(...).build().process``),
@@ -283,11 +314,17 @@ def check_all(process, store: dict, bar_map: dict, progress=print) -> list:
             support = keyframe_store.read_bar_support_keyframe(bar_oid)
         except RuntimeError as exc:
             support_error = str(exc)
+        hold = process.actions.get(f"{bar_id}_H")
+        missing = missing_keyframes(keyframe is not None, support is not None or support_error is not None,
+                                    _short(hold.robot) if hold is not None else None)
         if keyframe is None and support is None and support_error is None:
+            # Nothing saved: say what it needs; there is no pose of its own to check.
+            report_of(bar_id).missing += missing
             continue
 
         progress(f"  checking {bar_id} (step {seq}) ...")
         report = report_of(bar_id)
+        report.missing += missing
         # * Reach: the core compared every saved pose with the targets the tools give today.
         if bar_id in reach_assembly:
             report.assembly.append(reach_assembly[bar_id])
@@ -339,6 +376,7 @@ __all__ = [
     "frame_error",
     "ground_problem",
     "ground_soups",
+    "missing_keyframes",
     "point_to_segment_mm",
     "reach_problem",
     "reach_problems",

@@ -24,12 +24,18 @@ One button, three jobs, asked first (Enter = CheckIK):
   toggles as below). The planning worlds are built on first use (PyBullet,
   nothing to start by hand).
 
+  A bar with no IK yet -- no assembly keyframe, or held in today's hold plan
+  with no support keyframe -- turns pink (the IK-failed pink,
+  ``rhino_bar_registry.COLOR_FAILED``) and is selected too; it is not offered
+  for cleaning (there is nothing to clean). Amber wins over pink on a bar that
+  is both.
+
 * **ClearOneBar** / **ClearAllBars** -- the old RSClearIKKeyframe /
   RSClearIKKeyframeAll, unchanged (pick a bar or take them all, then choose what
   to erase). Those two can still be typed. No planning world needed.
 
-The amber stays until the next CheckIK (which puts back what it painted over),
-RSUpdatePreview or RSClearColorPreview.
+The amber and pink stay until the next CheckIK (which puts back what it painted
+over), RSUpdatePreview or RSClearColorPreview.
 """
 
 from __future__ import annotations
@@ -94,20 +100,33 @@ def _ask_mode():
 # ---------------------------------------------------------------------------
 
 
-def _print_report(reports, stale, elapsed_s) -> None:
-    print(f"{CMD}: checked the saved IK of {len(reports)} bar(s) in {elapsed_s:.0f} s.")
+def _print_report(reports, stale, unsolved, elapsed_s) -> None:
+    print(f"{CMD}: checked the IK of {len(reports)} bar(s) in {elapsed_s:.0f} s.")
     for report in stale:
         print(f"  {report.bar_id} (step {report.seq}) -- needs recalculation:")
         for line in report.assembly:
             print(f"    assembly: {line}")
         for line in report.support:
             print(f"    {line}")
+        for line in report.missing:
+            print(f"    {line}")
         for line in report.notes:
             print(f"    note: {line}")
+    for report in unsolved:
+        if report.stale:
+            continue  # listed above with its problems
+        print(f"  {report.bar_id} (step {report.seq}) -- no IK yet:")
+        for line in report.missing:
+            print(f"    {line}")
     for report in reports:
         if not report.stale and report.notes:
             for line in report.notes:
                 print(f"  {report.bar_id}: note: {line}")
+    if unsolved:
+        print(
+            f"{CMD}: {len(unsolved)} bar(s) lack a keyframe they need (pink, selected; amber when they "
+            f"also need recalculation): {', '.join(r.bar_id for r in unsolved)}."
+        )
     if not stale:
         print(f"{CMD}: every saved IK still fits the model.")
         return
@@ -182,19 +201,23 @@ def _check_ik() -> None:
     bar_map = registry.get_bar_seq_map()
     reports = ik_check.check_all(result.process, sc.sticky, registry.get_real_bar_seq_map(bar_map), progress=print)
     stale = [report for report in reports if report.stale]
+    unsolved = [report for report in reports if report.unsolved]
 
     with suspend_redraw():
         restore_painted(_STICKY_PAINTED)
         rs.UnselectAllObjects()
         color_by_oid = {}
-        for report in stale:
-            for oid in registry._bar_curve_and_tube(bar_map[report.bar_id][0]):
-                color_by_oid[oid] = config.IK_STALE_COLOR
+        # * Pink first, amber over it: a bar that lacks one keyframe and needs another
+        #   recalculated shows amber, the colour the Clean prompt acts on.
+        for colour, flagged in ((registry.COLOR_FAILED, unsolved), (config.IK_STALE_COLOR, stale)):
+            for report in flagged:
+                for oid in registry._bar_curve_and_tube(bar_map[report.bar_id][0]):
+                    color_by_oid[oid] = colour
         paint_remembered(color_by_oid, _STICKY_PAINTED)
         if color_by_oid:
             rs.SelectObjects(list(color_by_oid))
 
-    _print_report(reports, stale, time.perf_counter() - started)
+    _print_report(reports, stale, unsolved, time.perf_counter() - started)
     if stale:
         _offer_clean(stale, bar_map)
 

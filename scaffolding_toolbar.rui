@@ -584,7 +584,7 @@
         <locale_1033>RSIKMaintenance</locale_1033>
       </text>
       <tooltip>
-        <locale_1033>Check or clear the saved IK. CheckIK (Enter): reads the document as a process and replays every saved assembly + support keyframe against it -- arms still reach the tools (plan check B15), no collision at any of the bar's poses on the robots' planning worlds, base on the walkable ground, support grasp on its bar -- paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). ClearOneBar / ClearAllBars: the old RSClearIKKeyframe / RSClearIKKeyframeAll (no planning world needed).</locale_1033>
+        <locale_1033>Check or clear the saved IK. CheckIK (Enter): reads the document as a process and replays every saved assembly + support keyframe against it -- arms still reach the tools (plan check B15), no collision at any of the bar's poses on the robots' planning worlds, base on the walkable ground, support grasp on its bar -- paints the bars that need recalculation amber and the bars with no IK yet pink, selects them, says why, then offers to clean the amber ones' IK (all, or the ones you pick). ClearOneBar / ClearAllBars: the old RSClearIKKeyframe / RSClearIKKeyframeAll (no planning world needed).</locale_1033>
       </tooltip>
       <script>! _-ScriptEditor _R "rs_ik_maintenance.py"</script>
     </macro_item>

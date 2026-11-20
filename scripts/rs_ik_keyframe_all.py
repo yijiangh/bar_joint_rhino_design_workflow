@@ -476,15 +476,9 @@ def _support_resolve_pass(include_self, include_env):
 def _escape_pressed():
     """True once the user pressed Esc since the last call: the way to stop the batch between two bars.
 
-    Never raises: where the key cannot be read, the batch simply cannot be stopped.
+    RSIKKeyframe's (one copy, shared with ResolveCollision).
     """
-    try:
-        Rhino.RhinoApp.Wait()  # let Rhino see the key press; a running script does not pump messages
-        # ! Not `Rhino.RhinoApp.EscapeKeyPressed`: that is an event, and an event object is always true.
-        return bool(sc.escape_test(False, True))  # no exception; True = forget the press once read
-    except Exception as exc:  # noqa: BLE001
-        session_log.caught(exc)
-        return False
+    return ikf.escape_pressed()
 
 
 def _side_undecided(diag) -> bool:

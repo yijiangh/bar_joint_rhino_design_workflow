@@ -476,6 +476,37 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   may find contact there (B35, 19 Nov 2026: 0.36 mm at the design base, 0.09 mm live). Try another base, or roll the
   tool on the bar. RSIKKeyframeAll prints the same lines per bar and lists those bars in its summary; CheckIK paints
   them red; RSExportProcess lists them.
+- **When the chain fails: InspectCandidates.** (ssik only.) After the base search gives up, the prompt offers
+  `InspectCandidates / RetrySameBase / RetryNewBase / GiveUp`. InspectCandidates finds the first movement that fails
+  at your base and steps through its 64 IK branch pairs (8 ssik solutions per arm), in collision meshes, the
+  colliding parts red: Enter / `Next`, `Prev`, `Done` (or Esc).
+  - With collisions checked, the candidates are first **ranked along the chain** (`core.base_nudge.chain_table`, a few
+    seconds, kept for this base): each candidate gets the chain the solver would form through it (an approach pair,
+    then the nearest branch at each next pose), least overlap first. The line under a candidate reads
+    `candidate 1/64 -- approach 3.1 mm deep: left_ur_arm_forearm_link <-> bars/B12; assembled clear; retreat clear`,
+    and `TogglePose` steps through that chain's approach, assembled and retreat, each with its overlaps red. A
+    candidate no approach branch leads to comes last.
+  - If a tool at its target already overlaps something (no IK branch or base can change that), one message box says
+    so when the list opens, and ResolveCollision is not offered: move the tool or the bar.
+- **ResolveCollision** (in that list) moves the base a little for the candidate on screen until its whole chain is
+  clear (`core.base_nudge`): x, y and a turn about the ground normal, up to `config.BASE_NUDGE_MAX_MM` (150 mm) and
+  `BASE_NUDGE_MAX_DEG` (10°) from your base, until every pair the base can change is at least
+  `config.BASE_NUDGE_CLEARANCE_M` apart (1.0 mm as PyBullet measures it, about 3 mm true; so the wrist 1 flag above
+  passes too). The robot body counts as well, and the robot must stay on the walkable ground with its arms at home
+  clear of the scene. Each step (about 0.5–1 s) prints
+  `step 3/25: 0.4 mm deep (left_ur_arm_forearm_link <-> bars/B12, approach (M1)); base 12 mm, 0.6 deg from yours` and
+  redraws the pose that holds the smallest distance. Esc stops it after the step in progress.
+  - Cleared: tamp's normal chain solver runs at the new base, trying the resolved branch first
+    (`base_nudge.final_chain`). If it solves, the usual preview opens, with the prompt `IK preview at the resolved base
+    (moved 15 mm (14 mm left, 6 mm forward), turned 0.9 deg left from yours). Accept saves this base and the
+    keyframes`, a light green marker at the new base, and `BackToCandidates` in place of RetrySameBase (Esc does the
+    same). If the chain was already clear at your base (the solver commits to one approach branch and never goes
+    back), it solves there on that branch without moving.
+  - Not cleared: one message box says why (no further gain, the bound, off the ground, the arms at home would hit
+    the scene, the branch would flip or reach a singular pose, the step limit `BASE_NUDGE_MAX_STEPS`, or the chain
+    still failing at a pose), with what is left, and you are back on the same candidate at your base.
+  - Nothing is written before Accept. After GiveUp your own base is still the one saved on the bar.
+  - The math (raising the smallest distance by linear programs, following an IK branch): `docs/note.md` §37.
 - **A rejected pick points at the joints, not the bar.** The bar must carry exactly two tool-bearing joints (male or ground) and be in the bar registry. If it does not, the offending **joint blocks** are painted `COLOR_FAILED` pink and named on the command line — you already know which bar you just clicked; what you cannot see is which of its joint blocks the count is complaining about. A bar with no tool-bearing joint at all is marked itself, there being nothing else to point at. The count is of *blocks*, so a duplicated block instance makes a visibly-two-joint bar report three; that case is called out by name, since it is otherwise baffling. The mark clears on the next pick and on exit, and restores whatever colour the block carried before — it never eats a sequence colour or a broken-link mark.
 - **Base guide lines.** Right after the bar pick, five lines are drawn on the bar's walkable ground and stay up through the whole base pick: the line joining the two grabbed-joint centres **projected onto the ground** (teal), three copies offset *against* the assembly direction by 375 / 500 / 625 mm (`config.BASE_GUIDE_OFFSETS_MM`, light teal, each labelled with a text dot), and the **extension line** through their midpoints (yellow) — the line an auto-placed base sits on. So you can read a standoff straight off the canvas before committing. See `docs/coordinate_conventions.md` §7. The guides are real document objects on purpose — object snaps only see document objects, and the point of the guides is to snap the base pick onto them; they are baked in one pass through RhinoCommon with the redraw suspended (`rhino_helpers.preview_attributes`), so they appear at once instead of after a redraw per object. A post whose two joint centres project to one ground point gets a point instead of a zero-length line.
 - **Arm reach ghost.** The translucent robot that tracks the cursor now carries two translucent spheres of `config.ARM_REACH_RADIUS_MM` (850 mm, the UR5e's nominal reach) centred on each arm's mount link, so you can see what the arms can actually touch from a candidate base. Approximate — the real reachability test is still the IK solve. Display-conduit only; nothing is baked.

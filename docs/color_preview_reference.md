@@ -151,7 +151,7 @@ object colours, so they vanish when the conduit closes:
 | sky blue | `120, 200, 255` | arm reach volumes shown with the ghost (alpha 0.20) | **(inline)** in `MeshPreviewConduit` |
 | cyan | `80, 200, 255` | IK sample seed | `IKSampleVizConduit._color_seed` |
 | salmon | `255, 100, 100` | IK sample failed | `IKSampleVizConduit._color_failed` |
-| light green | `100, 220, 100` | IK sample succeeded | `IKSampleVizConduit._color_success` |
+| light green | `100, 220, 100` | IK sample succeeded; also the base RSIKKeyframe > InspectCandidates > ResolveCollision moved to, once the chain solves there | `IKSampleVizConduit._color_success` |
 
 ## Ground and environment
 

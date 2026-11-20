@@ -39,6 +39,7 @@ topic, ordered basic → advanced inside each group.
 | 15 | base placement: heading, guide lines, arm L/R |
 | 21 | reading the IK failure log |
 | 36 | "1.0 mm as PyBullet measures it" — wrist 1 against its own tool *(convention on real PyBullet)* |
+| 37 | ResolveCollision: signed distance, raising the smallest one by linear programs, following an IK branch *(real SciPy / PyBullet, repo rules)* |
 | ⚠ | LM distance naming (merge leftover) |
 
 **Rhino & Grasshopper**
@@ -2838,3 +2839,69 @@ those three:
 | retreat | retreat target, home start |
 
 Home itself is the fixed `config.HUSKY_DUAL_ARM_HOME_CONF_12`, never solved.
+
+---
+
+## 37. ResolveCollision — signed distance, raising the smallest one, following an IK branch
+
+> ⚠️ **Repo convention** on **real libraries**: `scipy.optimize.linprog` (a linear-program solver) and PyBullet's
+> `getClosestPoints` / `calculateJacobian` are real APIs. The goal (every pair the base can change at least
+> `config.BASE_NUDGE_CLEARANCE_M` apart), the step rules and the branch tests are this repo's
+> (`scripts/core/base_nudge.py`).
+
+### What it is
+
+RSIKKeyframe > InspectCandidates > ResolveCollision (`docs/rhino_toolbar_entrypoints.md`): one IK branch of a bar's
+keyframe chain collides at your base; the base is moved a little (x, y and a turn: three numbers, `u`) until that
+branch is clear on all three keyframes. tamp's chain solver then has the last word at the new base.
+
+### Signed distance
+
+A collision check says "touching or not". To know which way is out, the nudge needs *how deep*. The core's
+`SearchCheck.distances(values, signed=True)` gives PyBullet's distance between two shapes, and below 0 when they
+overlap: minus the penetration depth (PyBullet: GJK when apart, EPA when overlapping).
+
+| two parts | `distances()` | `distances(signed=True)` |
+|---|---|---|
+| 5 mm apart | 0.003 (PyBullet pads each hull ~1 mm) | 0.003 |
+| touching | 0.0 | −0.002 |
+| 5 mm into each other | 0.0 | −0.007 |
+
+The padding shifts every value by the same 2 mm, so the signed distance runs through contact without a jump: what a
+gradient needs.
+
+### Raising the smallest distance (a linear program per step)
+
+The goal is a smallest distance D(u) ≥ 1 mm over every pair. Summing squared shortfalls from an aim above it (least
+squares, the first plan) is the wrong tool here: with three pairs pushing from the left of a corridor and one from the
+right, it settles where the lone pair is short, though the middle is clear for all (`tests/test_base_nudge.py`, the
+corridor test: 10.25 mm, leaving the lone pair 5.75 of the 10 mm it needs). So each step
+asks instead: *which small move raises the smallest distance most?*
+
+1. Each pair's distance and its slope in x, y and turn (finite differences: three extra trial bases, 2 mm away).
+2. The linear program, with `scipy.optimize.linprog`:
+   ```python
+   # maximise t  subject to  d_i + g_i . delta >= t  for every pair i,  |delta| <= radius
+   linprog(c=[cost] * 6 + [-1.0], A_ub=rows, b_ub=d, bounds=..., method="highs")
+   ```
+   `t` is the smallest distance the linear model predicts after the move `delta`.
+3. Try the move. Keep it if the smallest distance really rose by at least 10 % of the prediction; grow the trust
+   radius after a good step, halve it after a poor one (`base_nudge.raise_clearance`).
+4. Stop as soon as every pair has 1 mm; or when no move raises the minimum (a local optimum); or at a bound, off the
+   ground, with the arms at home hitting the scene, or when the branch would change.
+
+### Following the IK branch
+
+As the base moves, each arm must still reach its fixed target, on the same branch (the candidate you picked). The
+joints come from Newton's method on PyBullet's forward kinematics and Jacobian, started from the candidate's joints
+(`base_nudge.follow_arm`): 3–4 iterations, about 1 ms per arm. (compas_fab's iterative IK needed ~1000 iterations for
+the same precision.) A move is refused when the elbow (q3) or wrist (q5) would flip or straighten into a singular
+pose, the shoulder would flip (the sign of the arm Jacobian's determinant), or a joint would get 45° from the
+candidate's (`base_nudge.branch_change`).
+
+### One example
+
+`tests/test_base_nudge.py::test_resolve_moves_the_base_off_a_crate_and_the_solver_takes_the_branch_there`: a crate
+3 mm into Cindy's left forearm at the assembled pose (46 mm at the retreat, where the arms pull back). The nudge
+moves the base until every pair keeps 1 mm, with the real home check, and tamp's chain solver (ssik) then solves at
+the new base on the same branch.

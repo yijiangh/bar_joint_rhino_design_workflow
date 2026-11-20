@@ -360,19 +360,23 @@ def _solve_one(process, ctx, include_self, include_env, base_search="single", so
         soups (list | None): the bar's ground triangle soups, which the optimised search stands the bases on.
         moved (list | None): gets ``(bar_id, mm moved, degrees turned)`` when a base other than the placed one
             solved, so the summary can say the saved base is not the one that was reviewed.
-        tight (list | None): gets the bar id when a solved pose brings wrist 1 too close to its own tool
-            (``ikf._own_tool_report``); the solve is saved all the same.
+        tight (list | None): gets the bar id when it failed although its chain solved at some base, because wrist 1
+            came too close to its own tool there (``ikf._own_tool_check``): such a chain is not saved.
     """
     bar_id, curve, base_frame = ctx[0], ctx[1], ctx[2]
+    too_close_at = []
     try:
         mirror, movements = ikf.process_planning.keyframe_movements(process, sc.sticky, f"bars/{bar_id}")
+        scene = process.scene_at(ikf.process_planning.movement(process, f"bars/{bar_id}", "J", "J_transfer"))
+        robot_id = process.actions[f"{bar_id}_J"].robot
         with mirror.lend() as planner:
             solved, used_base = ikf._solve_chain_with_sampling(
                 planner, movements, base_frame,
                 brep_id=None, heading_mm=None,
                 include_self=include_self, include_env=include_env,
-                viz=None, urdf=process.robots[process.actions[f"{bar_id}_J"].robot].urdf,
-                base_search=base_search, soups=soups, command="RSIKKeyframeAll",
+                viz=None, urdf=process.robots[robot_id].urdf,
+                base_search=base_search, soups=soups, command=f"RSIKKeyframeAll: {bar_id}",
+                scene=scene, robot_id=robot_id, tight_out=too_close_at,
             )
         if solved is not None and moved is not None:
             placed_at = np.asarray(base_frame, dtype=float)
@@ -385,18 +389,11 @@ def _solve_one(process, ctx, include_self, include_env, base_search="single", so
         print(f"RSIKKeyframeAll: {bar_id}: could not solve ({type(exc).__name__}: {exc}).")
         return False
     if solved is None:
+        if too_close_at and tight is not None:
+            tight.append(bar_id)
         return False
     ikf._write_assembly_base_frame(curve, used_base)
     ikf._write_assembly_keyframes(curve, solved["M1"], solved["M2"], solved["M3"], mirror.cell)
-    try:
-        scene = process.scene_at(ikf.process_planning.movement(process, f"bars/{bar_id}", "J", "J_transfer"))
-        robot_id = process.actions[f"{bar_id}_J"].robot
-    except Exception as exc:  # noqa: BLE001 -- report-only: the solve is saved
-        session_log.caught(exc)
-        print(f"RSIKKeyframeAll: {bar_id}: wrist 1 not checked against its tool ({exc}).")
-        return True
-    if ikf._own_tool_report(f"RSIKKeyframeAll: {bar_id}", scene, robot_id, solved) and tight is not None:
-        tight.append(bar_id)
     return True
 
 
@@ -752,15 +749,15 @@ def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_
                      + (f"  {', '.join(solved_ids)}" if solved_ids else ""))
         lines.append(f"Failed: {len(failed_ids)}"
                      + (f"  {', '.join(failed_ids)}" if failed_ids else ""))
+        if tight_ids:
+            gap_mm = 1000.0 * float(ikf.config.OWN_TOOL_MIN_GAP_M)
+            lines.append(f"  of which the chain solved, but wrist 1 came within {gap_mm:.1f} mm of its tool: "
+                         f"{len(tight_ids)}  {', '.join(tight_ids)}")
+            lines.append("  (the command history names the poses; RSIKKeyframe > InspectCandidates > "
+                         "ResolveCollision moves the base until wrist 1 keeps the gap, or roll the tool on the bar.)")
         if failed_ids:
             lines.append("  (re-run failed bars with the single-bar RSIKKeyframe "
                          "to place a new base.)")
-        if tight_ids:
-            gap_mm = 1000.0 * float(ikf.config.OWN_TOOL_MIN_GAP_M)
-            lines.append(f"Saved, but wrist 1 closer than {gap_mm:.1f} mm to its tool: {len(tight_ids)}"
-                         f"  {', '.join(tight_ids)}")
-            lines.append("  (the lab monitor may find contact there; the command history names the poses, "
-                         "CheckIK paints them red. Re-solve with RSIKKeyframe, or roll the tool on the bar.)")
     else:
         lines.append(f"Bases placed & saved (not solved): {len(placed)}"
                      + (f"  {', '.join(c[0] for c in placed)}" if placed else ""))

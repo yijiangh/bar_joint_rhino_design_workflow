@@ -2810,8 +2810,10 @@ two collision shapes. PyBullet pads each convex shape by about 1 mm, so the true
   check.distances(values)   # {pair: metres} for each pair closer than its margin; {} when both keep 1.0 mm
   ```
   Every other pair keeps margin 0, so it is still contact only.
-- Who asks: RSIKKeyframe before you accept (label + red), RSIKKeyframeAll (printed, summary), CheckIK (red bar),
-  RSExportProcess (listed). None of them refuses the pose.
+- Who asks, and what they do with a pose under it (an error, as a collision; since 20 Nov 2026, first only a flag):
+  RSIKKeyframe and RSIKKeyframeAll do not accept the chain at that base (the base search goes on; the accept
+  preview hides Accept), CheckIK marks the bar as needing recalculation (red, offered for cleaning), RSExportProcess
+  stops before writing and names each pose. With both collision options off, RSIKKeyframe only shows it.
 
 ### What sets it — the real example, B35 on 19 Nov 2026
 

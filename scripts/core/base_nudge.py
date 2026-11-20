@@ -10,6 +10,9 @@ The goal is the smallest distance D(u) over those pairs. `raise_clearance` raise
 linear program: forward-difference gradients of every pair near the minimum, one `scipy.optimize.linprog` per step
 for the step that raises the linearised minimum most, and a ratio test on the gain it really made (docs/note.md §37).
 
+Once clear, a second run of the same search makes room (`config.BASE_NUDGE_BODY_ROOM_M`): it raises the smallest
+distance of Cindy's body (`BaseGroups.body_world`) towards that room, every pair keeping the clearance as a floor.
+
 - `frame_at`, `turn_centre`, `raise_clearance`, `Trial`, `Outcome`, `branch_change`, `MESSAGES`: numpy and scipy.
 - `base_groups`, `chain_table`, `ChainProbe`, `final_chain`: the lent planner (compas_fab, PyBullet) and tamp.
 """
@@ -35,6 +38,9 @@ SLOPE_TOL = 0.01
 NOISE_OVERLAP_M, NOISE_APART_M = 3.0e-4, 5.0e-5
 #: A step is kept if it makes at least this share of the gain it predicted.
 ACCEPT_RATIO = 0.1
+#: With a floor (the room pass), a step's LP keeps every pair this far above it, so that a step lands inside, not on
+#: the edge where the distances' curvature would take it under (as `aim` above `need`), metres.
+FLOOR_MARGIN_M = 5.0e-4
 #: What a metre of move costs in the step's LP, in metres of clearance: a direction that raises the minimum by less
 #: than this per metre (below SLOPE_TOL, so never worth a step) stays put instead of moving at random.
 MOVE_COST = 1.0e-3
@@ -83,6 +89,9 @@ MESSAGES = {
     "unreachable": "No approach branch leads to candidate {index}/{count} (the solver would switch arm "
                    "configuration on the way); try another candidate.",
     "chain": "The branch is clear here, but the IK chain still fails at {pose}; the pairs are on the command line.",
+    "floor": "Moving further would bring another pair under BASE_NUDGE_CLEARANCE_M.",
+    "room_optimum": "Moving the base further adds no room.",
+    "room_steps": "Stopped after {steps} steps (BASE_NUDGE_MAX_STEPS); the room was still growing.",
 }
 
 
@@ -171,9 +180,9 @@ class Outcome:
 
     Attributes:
         status: "clear" (every pair has the clearance), "optimum" (no move within reach raises the minimum),
-            "stalled" (the model promised more than the distances gave), "refused" (refused bases in the way; see
-            `why`), "steps" (step limit), "evaluations" (MAX_EVALUATIONS), "stopped" (Esc), "start" (the seed
-            itself is not allowed; see `why`).
+            "stalled" (the model promised more than the distances gave), "refused" (refused bases in the way, or
+            "floor": a pair would come under the floor; see `why`), "steps" (step limit), "evaluations"
+            (MAX_EVALUATIONS), "stopped" (Esc), "start" (the start itself is not allowed; see `why`).
         u: The nudge reached, (3,) metres: the best allowed one.
         trial: The evaluation at `u`.
         steps: Accepted steps.
@@ -203,35 +212,48 @@ def overlap_parts(distances: Mapping, role: str) -> List[str]:
     return [part for key, distance in distances.items() if key[0] == role and distance < 0.0 for part in key[1:]]
 
 
-def _best_step(d, slopes, free, radius: float, aim: float, low: float) -> Tuple[np.ndarray, float]:
+def _best_step(d, slopes, free, radius: float, aim: float, low: float, counted=None,
+               floor: Optional[float] = None) -> Tuple[np.ndarray, float]:
     """The LP of one step: the move within `radius` (per unknown) that raises the linearised minimum most.
 
     Over x = (delta+, delta-, t), delta = delta+ - delta-: minimise -t + MOVE_COST |delta|_1 subject to the rows
-    t - g_i . delta <= d_i and t <= aim. The small cost of moving keeps a direction no pair cares about at 0.
+    t - g_i . delta <= d_i of the counted pairs and t <= aim. The small cost of moving keeps a direction no pair cares
+    about at 0. With `floor`, every pair also keeps d_k + g_k . delta >= min(d_k, floor + FLOOR_MARGIN_M): one at or
+    under that may not come closer.
+
+    Args:
+        counted: (N,) bool, the pairs the minimum is over; None: all.
 
     Returns:
         tuple: (delta (3,), the predicted gain t - low); (0, 0) if the LP fails.
     """
+    counted = np.ones(len(d), dtype=bool) if counted is None else np.asarray(counted, dtype=bool)
     reach = [(0.0, radius if open_ else 0.0) for open_ in free]
-    rows = np.hstack([-slopes, slopes, np.ones((len(d), 1))])
-    solved = linprog(c=[MOVE_COST] * 6 + [-1.0], A_ub=rows, b_ub=d, bounds=reach + reach + [(None, aim)],
-                     method="highs")
+    rows, limits = [np.hstack([-slopes[counted], slopes[counted], np.ones((int(counted.sum()), 1))])], [d[counted]]
+    if floor is not None:
+        rows.append(np.hstack([-slopes, slopes, np.zeros((len(d), 1))]))
+        limits.append(d - np.minimum(d, floor + FLOOR_MARGIN_M))
+    solved = linprog(c=[MOVE_COST] * 6 + [-1.0], A_ub=np.vstack(rows), b_ub=np.concatenate(limits),
+                     bounds=reach + reach + [(None, aim)], method="highs")
     if not solved.success:
         return np.zeros(3), 0.0
     delta, top = np.asarray(solved.x[:3]) - np.asarray(solved.x[3:6]), float(solved.x[6])
     if top >= aim - 1e-12:
         # ? Capped: any step reaching `aim` is optimal; keep the shortest one along it. Rows that the step brings
-        #   closer reach `aim` anyway (t <= d_i + c_i at s = 1); each other row needs s >= its share.
+        #   closer reach `aim` anyway (t <= d_i + c_i at s = 1); each other row needs s >= its share. The floor rows
+        #   hold at s = 0 and s = 1, so at every s between.
         change = slopes @ delta
-        shares = [(aim - di) / ci for di, ci in zip(d, change) if ci > 0.0]
+        shares = [(aim - di) / ci for di, ci in zip(d[counted], change[counted]) if ci > 0.0]
         delta = delta * min(1.0, max([0.0, *shares]))
     return delta, top - low
 
 
 def raise_clearance(evaluate: Callable[[np.ndarray], Trial], *, need: float, aim: float, band: float,
                     max_steps: int = 25, stop: Callable[[], bool] = lambda: False,
-                    on_step: Optional[Callable[[int, np.ndarray, Trial], None]] = None) -> Outcome:
-    """Move `u` from 0 until every pair is at least `need` apart, by raising the smallest distance.
+                    on_step: Optional[Callable[[int, np.ndarray, Trial], None]] = None,
+                    counts: Optional[Callable[[Tuple[str, str, str]], bool]] = None, floor: Optional[float] = None,
+                    start=None) -> Outcome:
+    """Move `u` until every pair is at least `need` apart, by raising the smallest distance.
 
     One iteration: the gradient of every pair listed at `u` or at a probe, by forward differences of `STEP_M`
     (backward where the forward probe is refused; a direction refused both ways stays fixed), kept while `u` does
@@ -244,6 +266,11 @@ def raise_clearance(evaluate: Callable[[np.ndarray], Trial], *, need: float, aim
     The radius (from `RADIUS_M`, at most `RADIUS_MAX_M`) doubles after a good step (ratio above 0.75) and halves after
     a poor or refused one. Any evaluated point that is allowed and clear ends the search at once, a probe included.
     The bounds on the base are `evaluate`'s: a trial beyond them is refused ("bound") like any other.
+
+    The room pass (ResolveCollision, after a clear) asks two things more. `counts` keeps the pairs the minimum is
+    over (Cindy's body against the world), and every listed pair must stay at least `floor` apart: rows of the LP
+    (`_best_step`), and a trial under it is refused ("floor"). A probe under it still gives slopes, but never ends
+    the search. Each kept step raises the counted minimum and keeps the floor, so the end is never worse than `start`.
 
     It stops without clearing when the predicted gain is below max(`SLOPE_TOL` * radius, the noise floor), or when
     the radius shrinks below `RADIUS_MIN_M`. Then: "refused" if a direction or the last trial was refused (with that
@@ -261,6 +288,9 @@ def raise_clearance(evaluate: Callable[[np.ndarray], Trial], *, need: float, aim
         max_steps: Accepted steps before "steps".
         stop: Asked before each iteration; True ends with "stopped" (Esc).
         on_step: Called after each accepted step with (steps, u, trial).
+        counts: (role, part, part) -> True for a pair the minimum is over; None: every pair.
+        floor: Every listed pair keeps at least this, metres; None: no floor.
+        start: Where `u` starts, (3,) metres; None: 0, the seed.
 
     Returns:
         Outcome: How it ended, at the best allowed `u` (each accepted step raises the minimum).
@@ -272,22 +302,30 @@ def raise_clearance(evaluate: Callable[[np.ndarray], Trial], *, need: float, aim
         calls[0] += 1
         return evaluate(at)
 
-    u = np.zeros(3)
+    def value(trial) -> float:
+        """The minimum the search raises: over the counted pairs; `band` when none is listed."""
+        return min((d for key, d in trial.distances.items() if counts is None or counts(key)), default=band)
+
+    def kept(trial) -> bool:
+        """Every listed pair at least `floor` apart."""
+        return floor is None or trial.lowest(band) >= floor
+
+    u = np.zeros(3) if start is None else np.asarray(start, dtype=float).copy()
     here = counted(u)
-    if not here.allowed:
-        return Outcome("start", u, here, 0, here.why, here.detail)
-    low = here.lowest(band)
+    if not here.allowed or not kept(here):
+        return Outcome("start", u, here, 0, here.why or "floor", here.detail)
+    low = value(here)
     if low >= need:
         return Outcome("clear", u, here, 0)
     steps, model, refusal = 0, None, ("", "")
 
     def ended():
         """A stop without a clear point (see the docstring)."""
-        d, slopes, free, probe_refusal = model
+        d, slopes, free, mask, probe_refusal = model
         why, detail = probe_refusal if probe_refusal[0] else refusal
         if why:
             return Outcome("refused", u, here, steps, why, detail)
-        _delta, widest = _best_step(d, slopes, free, RADIUS_MAX_M, aim, low)
+        _delta, widest = _best_step(d, slopes, free, RADIUS_MAX_M, aim, low, mask, floor)
         noise = NOISE_OVERLAP_M if low < -0.002 else NOISE_APART_M
         return Outcome("optimum" if widest < max(SLOPE_TOL * RADIUS_MAX_M, noise) else "stalled", u, here, steps)
 
@@ -305,7 +343,7 @@ def raise_clearance(evaluate: Callable[[np.ndarray], Trial], *, need: float, aim
                     at[j] += sign * step
                     probe = counted(at)
                     if probe.allowed:
-                        if probe.lowest(band) >= need:
+                        if value(probe) >= need and kept(probe):
                             return Outcome("clear", at, probe, steps + 1)
                         probes.append((j, sign, probe))
                         break
@@ -319,21 +357,22 @@ def raise_clearance(evaluate: Callable[[np.ndarray], Trial], *, need: float, aim
             for j, sign, probe in probes:
                 slopes[:, j] = [sign * (probe.distances.get(key, band) - here.distances.get(key, band)) / step
                                 for key in keys]
-            model = (d, slopes, free, probe_refusal)
-        d, slopes, free, _probe_refusal = model
-        delta, gain = _best_step(d, slopes, free, radius, aim, low)
+            mask = np.array([counts is None or bool(counts(key)) for key in keys], dtype=bool)
+            model = (d, slopes, free, mask, probe_refusal)
+        d, slopes, free, mask, _probe_refusal = model
+        delta, gain = _best_step(d, slopes, free, radius, aim, low, mask, floor)
         noise = NOISE_OVERLAP_M if low < -0.002 else NOISE_APART_M  # ? EPA only once the hulls' cores overlap
         if gain < max(SLOPE_TOL * radius, noise):
             return ended()
         trial = counted(u + delta)
-        if trial.allowed:
-            if trial.lowest(band) >= need:
+        if trial.allowed and kept(trial):
+            if value(trial) >= need:
                 return Outcome("clear", u + delta, trial, steps + 1)
-            ratio = (trial.lowest(band) - low) / gain
+            ratio = (value(trial) - low) / gain
         else:
-            ratio, refusal = -np.inf, (trial.why, trial.detail)
+            ratio, refusal = -np.inf, (trial.why, trial.detail) if not trial.allowed else ("floor", "")
         if ratio > ACCEPT_RATIO:
-            u, here, low = u + delta, trial, trial.lowest(band)
+            u, here, low = u + delta, trial, value(trial)
             steps, model, refusal = steps + 1, None, ("", "")
             if on_step is not None:
                 on_step(steps, u, here)
@@ -476,23 +515,47 @@ def follow_arm(client, joint_names: Sequence[str], end_link: str, seed: Sequence
     return None
 
 
-def base_groups(robot_id: str, model, arms: Sequence[Sequence[str]], state) -> Callable[[str, str], bool]:
-    """A test of whether a pair's distance changes when the base moves, the arms following their targets.
+@dataclass(frozen=True)
+class BaseGroups:
+    """How each part moves when the base moves, the arms following their targets (`base_groups`).
 
-    The tools sit at their flange targets in the world, and with them the links after each arm's last joint (wrist
-    3, flange, tool0) and the carried bar. So a pair whose two parts are both in this world group (with the scene and
-    other robots) does not change, up to the IK tolerance; nor does one whose parts both move rigidly with the base
-    (the links no arm joint moves, and what hangs on them). Every pair with a moving arm link (shoulder to wrist 2),
-    and every pair of a body part with a world part, does.
+    "arm": the moving arm links (shoulder to wrist 2) and what hangs on them. "body": the links no arm joint moves
+    (base link, bulkhead, wheels, the arm mounts) and what hangs on them: they move rigidly with the base. "world":
+    the rest -- the scene, other robots, and the links after each arm's last joint (wrist 3, flange, tool0) with the
+    tools and the carried bar, which sit at their flange targets.
+
+    Attributes:
+        arm, body: The part names of those two groups, e.g. "robots/cindy/left_ur_arm_forearm_link".
+    """
+
+    arm: frozenset
+    body: frozenset
+
+    def group(self, part: str) -> str:
+        """ "arm", "body" or "world"."""
+        return "arm" if part in self.arm else "body" if part in self.body else "world"
+
+    def depends(self, a: str, b: str) -> bool:
+        """True when the pair's distance changes with the base: any pair with an arm part, and body against world.
+
+        Two world parts stay where they are, up to the IK tolerance; two body parts move together.
+        """
+        ga, gb = self.group(a), self.group(b)
+        return "arm" in (ga, gb) or ga != gb
+
+    def body_world(self, a: str, b: str) -> bool:
+        """True for the body against the world: the pairs the room pass pushes apart (BASE_NUDGE_BODY_ROOM_M)."""
+        return {self.group(a), self.group(b)} == {"body", "world"}
+
+
+def base_groups(robot_id: str, model, arms: Sequence[Sequence[str]], state) -> BaseGroups:
+    """Each part's `BaseGroups` group: the test of whether a pair's distance changes when the base moves.
 
     Args:
         robot_id: E.g. "robots/cindy"; links are named "<robot_id>/<link>".
         model: The robot's compas_robots model.
         arms: Each arm's six joints, base to flange.
         state: A compas_fab state of the mirror: which bodies hang on which links.
-
-    Returns:
-        callable: (part a, part b) -> True when the distance depends on the base.
     """
     from scaffolding_assembly_core.mirrors.compas import subtree  # noqa: PLC0415
 
@@ -507,15 +570,7 @@ def base_groups(robot_id: str, model, arms: Sequence[Sequence[str]], state) -> C
             if item.attached_to_link}
     arm |= {name for name, link in hung.items() if link in arm}
     body |= {name for name, link in hung.items() if link in body}
-
-    def group(part: str) -> str:
-        return "arm" if part in arm else "body" if part in body else "world"
-
-    def depends(a: str, b: str) -> bool:
-        ga, gb = group(a), group(b)
-        return "arm" in (ga, gb) or ga != gb
-
-    return depends
+    return BaseGroups(frozenset(arm), frozenset(body))
 
 
 # --- --- --- --- --- THE CHAINS AT THE SEED BASE --- --- --- --- ---
@@ -599,7 +654,7 @@ def chain_table(planner, store: dict, robot_id: str, movements: Mapping[str, obj
         failing: The failing movement's role, e.g. "M2".
         enumerated: Role -> `enumerate_ssik_candidate_pairs` result at the seed, for the roles already enumerated;
             the others are enumerated here.
-        depends: `base_groups`' test.
+        depends: `BaseGroups.depends`.
         band: Distances are listed up to this, metres.
         groups: The (left, right) planning groups.
     """
@@ -706,7 +761,7 @@ class ChainProbe:
             seed_mm: The seed base frame (4, 4), mm.
             snap: point_mm -> (ground point mm, normal), or (None, None) off the ground.
             home_check: `base_search.HomeCheck`: None where the robot, arms at home, collides.
-            depends: `base_groups`' test.
+            depends: `BaseGroups.depends`.
             groups: The (left, right) planning groups.
             band: Distances are listed up to this, metres.
             max_mm, max_deg: How far the base may move and turn from the seed.

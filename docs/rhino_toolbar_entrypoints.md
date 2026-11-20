@@ -496,11 +496,20 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   clear of the scene. Each step (about 0.5–1 s) prints
   `step 3/25: 0.4 mm deep (left_ur_arm_forearm_link <-> bars/B12, approach (M1)); base 12 mm, 0.6 deg from yours` and
   redraws the pose that holds the smallest distance. Esc stops it after the step in progress.
+  - Room for the body: once clear, it moves on to give Cindy's body (base link, bulkhead, wheels, the arm mounts)
+    `config.BASE_NUDGE_BODY_ROOM_M` (50 mm) from everything around it: bars, joints, obstacles, other robots, her
+    tools and the carried bar. A preference, not a rule: every pair still keeps its 1 mm, the limits above hold, and
+    where 50 mm cannot be had it keeps the most it found and says what held it back, e.g. `room after 4 steps: the
+    body's nearest gap is 31 mm (base_link <-> bars/B9, assembled (M2)), short of 50: left_ur_arm_forearm_link <->
+    bars/B12 (approach (M1)) is down to 1.4 mm apart, near the 1.0 mm every pair keeps.` Each step prints
+    `room step 2/25: body 38 mm (wants 50; base_link <-> bars/B9, assembled (M2)); base 42 mm, 1.2 deg from yours`.
+    Esc keeps the base reached so far and goes on to the chain check. It does not run when the branch is already
+    clear at your base (your base stays); 0 turns it off.
   - Cleared: tamp's normal chain solver runs at the new base, trying the resolved branch first
-    (`base_nudge.final_chain`). If it solves, the usual preview opens, with the prompt `IK preview at the resolved base
-    (moved 15 mm (14 mm left, 6 mm forward), turned 0.9 deg left from yours). Accept saves this base and the
-    keyframes`, a light green marker at the new base, and `BackToCandidates` in place of RetrySameBase (Esc does the
-    same). If the chain was already clear at your base (the solver commits to one approach branch and never goes
+    (`base_nudge.final_chain`). If it solves, the usual preview opens, with the prompt `IK preview at the resolved
+    base: moved 42 mm (40 left, 12 forward), turned 0.9 deg left from yours; body 50+ mm from everything. Accept saves
+    this base and the keyframes`, a light green marker at the new base, and `BackToCandidates` in place of
+    RetrySameBase (Esc does the same). If the chain was already clear at your base (the solver commits to one approach branch and never goes
     back), it solves there on that branch without moving.
   - Not cleared: one message box says why (no further gain, the bound, off the ground, the arms at home would hit
     the scene, the branch would flip or reach a singular pose, the step limit `BASE_NUDGE_MAX_STEPS`, or the chain

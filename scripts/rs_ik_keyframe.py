@@ -2457,9 +2457,9 @@ def _nudge_parts(planner, ctx, movements):
         arms = [list(rcell.get_configurable_joint_names(group)) for group in groups]
         scenes = {role: ctx.process.scene_at(process_planning.movement(
             ctx.process, ctx.bar, *process_planning.KEYFRAME_MOVEMENTS[role])) for role in base_nudge.ROLES}
+        moving = base_nudge.base_groups(ctx.robot_id, rcell.robot_model, arms, movements["M2"].start_state)
         ctx.parts = SimpleNamespace(
-            groups=groups, scenes=scenes,
-            depends=base_nudge.base_groups(ctx.robot_id, rcell.robot_model, arms, movements["M2"].start_state),
+            groups=groups, scenes=scenes, depends=moving.depends, body_world=moving.body_world,
             band=base_nudge.band_for(2.0 * float(config.BASE_NUDGE_CLEARANCE_M)))
     return ctx.parts
 
@@ -2475,20 +2475,28 @@ def _move_words(seed_mm, frame_mm, turned_deg):
     return f"moved {float(np.hypot(forward, left)):.0f} mm ({', '.join(parts)}), {turn}"
 
 
-def _report_stop(outcome, label):
-    """Say why ResolveCollision stopped without clearing: a line for Esc, else one message box (`base_nudge.MESSAGES`)."""
+def _stop_text(outcome, room=False):
+    """How a nudge ended short of its goal, in `base_nudge.MESSAGES`' words; `room`: the room pass's."""
     words = dict(steps=outcome.steps, evaluations=base_nudge.MAX_EVALUATIONS, max_mm=float(config.BASE_NUDGE_MAX_MM),
                  max_deg=float(config.BASE_NUDGE_MAX_DEG), detail=outcome.detail or "the arms' configuration")
-    if outcome.status == "stopped":
-        print("RSIKKeyframe: ResolveCollision: " + base_nudge.MESSAGES["stopped"].format(**words))
-        return
-    key, at_start = outcome.status, outcome.status == "start"
-    if at_start:
+    key = outcome.status
+    if key == "start":
         # ? The same at your base for every candidate: no point trying another one.
         key = {"home": "start_home", "ground": "start_ground"}.get(outcome.why, "start_branch")
     elif key == "refused":
         key = outcome.why or "optimum"
-    text = base_nudge.MESSAGES.get(key, base_nudge.MESSAGES["optimum"]).format(**words)
+    if room:
+        key = {"optimum": "room_optimum", "steps": "room_steps"}.get(key, key)
+    return base_nudge.MESSAGES.get(key, base_nudge.MESSAGES["optimum"]).format(**words)
+
+
+def _report_stop(outcome, label):
+    """Say why ResolveCollision stopped without clearing: a line for Esc, else one message box (`base_nudge.MESSAGES`)."""
+    if outcome.status == "stopped":
+        print("RSIKKeyframe: ResolveCollision: " + _stop_text(outcome))
+        return
+    at_start = outcome.status == "start"
+    text = _stop_text(outcome)
     nearest = outcome.trial.nearest()
     if nearest is not None:
         role, a, b = nearest
@@ -2500,10 +2508,84 @@ def _report_stop(outcome, label):
     rs.MessageBox(text, 0, "RSIKKeyframe")
 
 
+def _room_gap(trial, body_world, band):
+    """The nearest gap of Cindy's body at a trial: (metres, (role, part, part)); (`band`, None) when none is listed."""
+    body = {key: d for key, d in trial.distances.items() if body_world(key[1], key[2])}
+    key = base_nudge.nearest_key(body)
+    return (body[key], key) if key else (band, None)
+
+
+def _room_words(outcome, room, need, band, body_world):
+    """How the room pass ended, e.g. "the body's nearest gap is 31 mm (base_link <-> bars/B9, assembled (M2)), short
+    of 50: left_ur_arm_forearm_link <-> bars/B12 (approach (M1)) is down to 1.4 mm apart, near the 1.0 mm every pair
+    keeps."."""
+    low, key = _room_gap(outcome.trial, body_world, band)
+    if key is None or low >= room:
+        return f"Cindy's body keeps {1000.0 * room:.0f} mm from everything around it."
+    text = (f"the body's nearest gap is {1000.0 * low:.0f} mm ({_short(key[1])} <-> {_short(key[2])}, "
+            f"{base_nudge.POSES[key[0]]}), short of {1000.0 * room:.0f}: ")
+    held = outcome.trial.nearest()
+    if held is not None and held != key and outcome.trial.distances[held] < need + 2.0 * base_nudge.FLOOR_MARGIN_M:
+        # ? A pair at the floor (the LP keeps them FLOOR_MARGIN_M above it) is what holds the base back.
+        return text + (f"{_short(held[1])} <-> {_short(held[2])} ({base_nudge.POSES[held[0]]}) is down to "
+                       f"{_gap_words(outcome.trial.distances[held])}, near the {1000.0 * need:.1f} mm every pair keeps.")
+    return text + _stop_text(outcome, room=True)
+
+
+def _make_room(probe, cleared, parts, need, steps_max, mesh_mode, label):
+    """ResolveCollision's room pass: from the cleared base, give Cindy's body ``config.BASE_NUDGE_BODY_ROOM_M``.
+
+    The same search again (`base_nudge.raise_clearance`), started where the first pass cleared: the minimum it raises
+    is over the body against the world (`BaseGroups.body_world`), up to the room, and every pair keeps `need` as a
+    floor. A preference: however it ends, Esc included, it hands back the roomiest base it kept, which is clear.
+
+    Args:
+        probe: The first pass's `base_nudge.ChainProbe`; its band is widened here to see the body's pairs.
+        cleared: The first pass's "clear" `Outcome`.
+
+    Returns:
+        tuple: (the `Outcome` whose `u` and `trial` the chain check takes, its band in metres).
+    """
+    room = float(config.BASE_NUDGE_BODY_ROOM_M)
+    aim = room + need
+    band = base_nudge.band_for(aim)
+    probe.band = band  # ? the body's pairs out to the room, and as far again as one step can bring a pair in
+    print(f"RSIKKeyframe: ResolveCollision: making room: moving on until Cindy's body is {1000.0 * room:.0f} mm from "
+          f"everything, every pair keeping {1000.0 * need:.1f} mm. Esc keeps the base reached so far.")
+    painted = []
+
+    def on_step(steps, u, trial):
+        """One line per accepted step; draw the pose that holds the body's nearest gap."""
+        low, key = _room_gap(trial, parts.body_world, band)
+        role = key[0] if key else "M2"
+        pair = f"{_short(key[1])} <-> {_short(key[2])}, {base_nudge.POSES[role]}" if key else "nothing near"
+        moved_mm, turned = probe.moved(u)
+        print(f"RSIKKeyframe: ResolveCollision: room step {steps}/{steps_max}: body {1000.0 * low:.0f} mm (wants "
+              f"{1000.0 * room:.0f}; {pair}); base {moved_mm:.0f} mm, {turned:.1f} deg from yours")
+        _draw_with_red(trial.data.states[role], [], mesh_mode, painted)
+
+    escape_pressed()  # forget an Esc pressed before
+    try:
+        with session_log.step("ResolveCollision room", label):
+            outcome = base_nudge.raise_clearance(
+                probe, need=room, aim=aim, band=band, max_steps=steps_max, stop=escape_pressed, on_step=on_step,
+                counts=lambda key: parts.body_world(key[1], key[2]), floor=need, start=cleared.u)
+    finally:
+        _revert_red_highlight(painted)
+    if outcome.status == "start":
+        # ? The cleared base itself, measured farther out: refused only if the IK went another way this time.
+        print("RSIKKeyframe: ResolveCollision: room: could not start from the cleared base; keeping it.")
+        return cleared, band
+    print(f"RSIKKeyframe: ResolveCollision: room after {outcome.steps} steps: "
+          f"{_room_words(outcome, room, need, band, parts.body_world)}")
+    return outcome, band
+
+
 def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
     """ResolveCollision on one candidate: nudge the base until its chain is clear, check it, open the preview.
 
-    The nudge is `base_nudge.raise_clearance` on a `base_nudge.ChainProbe`; the check is `base_nudge.final_chain`
+    The nudge is `base_nudge.raise_clearance` on a `base_nudge.ChainProbe`; then, with ``config.BASE_NUDGE_BODY_ROOM_M``,
+    the room pass (`_make_room`) moves on to give Cindy's body room. The check is `base_nudge.final_chain`
     (tamp's chain solver, the resolved approach branch first). Nothing is written here: the preview's Accept, back in
     `_main`, writes the base and the keyframes.
 
@@ -2517,6 +2599,7 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
     back = f"RSIKKeyframe: ResolveCollision: back to {label} at your base."
     mesh_mode = ik_viz.MESH_MODE_COLLISION
     moved_from_seed = chain.lowest(band) < need
+    room_note = ""  # the room pass's result, for the preview prompt
     if not moved_from_seed:
         print("RSIKKeyframe: ResolveCollision: this branch is already clear at your base; solving with it first ...")
         frame, turned_deg = np.asarray(seed_mm, dtype=float), 0.0
@@ -2563,10 +2646,19 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
             _report_stop(outcome, label)
             print(back)
             return None
-        frame, followed = probe.frame(outcome.u), outcome.trial.data.states
         moved_mm, turned_deg = probe.moved(outcome.u)
         print(f"RSIKKeyframe: ResolveCollision: clear after {outcome.steps} steps: base moved {moved_mm:.0f} mm, "
-              f"turned {turned_deg:.1f} deg. Checking the chain there ...")
+              f"turned {turned_deg:.1f} deg.")
+        room = float(config.BASE_NUDGE_BODY_ROOM_M)
+        if room > 0.0:
+            outcome, room_band = _make_room(probe, outcome, parts, need, steps_max, mesh_mode, label)
+            low, _key = _room_gap(outcome.trial, parts.body_world, room_band)
+            room_note = (f"; body {1000.0 * room:.0f}+ mm from everything" if low >= room else
+                         f"; body {1000.0 * low:.0f} mm from the nearest (wants {1000.0 * room:.0f})")
+        frame, followed = probe.frame(outcome.u), outcome.trial.data.states
+        moved_mm, turned_deg = probe.moved(outcome.u)
+        print(f"RSIKKeyframe: ResolveCollision: checking the chain at the base {moved_mm:.0f} mm, "
+              f"{turned_deg:.1f} deg from yours ...")
     ordered = [(role, movements[role]) for role in base_nudge.ROLES]
     with session_log.step("ResolveCollision chain check", label):
         solved, failed, elsewhere = base_nudge.final_chain(planner, ordered, frame, followed,
@@ -2587,8 +2679,8 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
         ctx.viz.add_tried(origin_doc, x_doc, success=True)
     escape_pressed()  # an Esc pressed during the check must not answer the preview
     if moved_from_seed:
-        prompt = (f"IK preview at the resolved base: {_move_words(seed_mm, frame, turned_deg)} from yours. "
-                  "Accept saves this base and the keyframes")
+        prompt = (f"IK preview at the resolved base: {_move_words(seed_mm, frame, turned_deg)} from yours"
+                  f"{room_note}. Accept saves this base and the keyframes")
     else:
         prompt = f"IK preview at your base, on the branch of {label}. Accept saves the keyframes"
     action = ctx.preview(solved, prompt)

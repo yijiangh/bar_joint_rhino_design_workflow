@@ -268,6 +268,12 @@ BASE_NUDGE_MAX_DEG = 10.0
 BASE_NUDGE_MAX_STEPS = 25
 #: How far any arm joint may get from the candidate's own, degrees, before it counts as another IK branch.
 BASE_NUDGE_MAX_BRANCH_DEG = 45.0
+#: Once ResolveCollision has cleared the chain, it goes on moving the base to give Cindy's body (base link, bulkhead,
+#: wheels, the arm mounts) this much room from everything around it -- bars, joints, obstacles, other robots, her
+#: tools and the carried bar -- in metres as PyBullet measures it. A preference: every pair keeps
+#: BASE_NUDGE_CLEARANCE_M, the limits above still hold, and where the room cannot be reached it keeps the most it
+#: found. 0 = off (the base stops as soon as the chain is clear).
+BASE_NUDGE_BODY_ROOM_M = 0.05
 
 # ---------------------------------------------------------------------------
 # Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)

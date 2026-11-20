@@ -167,6 +167,21 @@ def test_keyframe_groups_merge():
     assert joints_from_groups(None) is None
 
 
+def test_keyframe_lifts_move_into_the_window():
+    """A shoulder lift a whole turn outside -270° to +90° is read as the same pose inside it; other joints stay."""
+    from core.process_source import joints_from_groups
+
+    pan, lift = "ur_arm_shoulder_pan_joint", "ur_arm_shoulder_lift_joint"
+    joints = joints_from_groups({"joint_names": [pan, lift], "joint_values": list(np.radians([400.0, 328.3]))})
+    assert np.degrees([joints[pan], joints[lift]]) == pytest.approx([400.0, -31.7])
+    inside = float(np.radians(-90.0))
+    groups = {"left": {"joint_names": ["left_ur_arm_shoulder_lift_joint"], "joint_values": [inside]},
+              "right": {"joint_names": ["right_ur_arm_shoulder_lift_joint"], "joint_values": [np.radians(252.6)]}}
+    joints = joints_from_groups(groups)
+    assert joints["left_ur_arm_shoulder_lift_joint"] == inside
+    assert np.degrees(joints["right_ur_arm_shoulder_lift_joint"]) == pytest.approx(-107.4)
+
+
 @pytest.mark.parametrize("name, actions", [("YH_ik_test.3dm", 5), ("examples/Example4_two_box.3dm", 45)])
 def test_real_documents_write(name, actions, tmp_path):
     """Real documents (read with rhino3dm) become processes that pass the file checks; bars without tools are named."""

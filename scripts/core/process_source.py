@@ -38,7 +38,7 @@ from scaffolding_assembly_core.process.version import writer_info
 from scaffolding_assembly_core.geometry import CylinderShape, Geometry, Pose, TriMesh
 from scaffolding_assembly_core.kinematics import link_pose
 from scaffolding_assembly_core.robot import Tool
-from scaffolding_assembly_core.urdf import UR_JOINT_NAMES, copy_robot, urdf_links
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES, copy_robot, shoulder_lift_in_range, urdf_links
 
 REPO = "bar_joint_rhino_design_workflow"
 #: Robot name -> hardware serial. ? Rhino has no source for these; same values as the monitor's config.
@@ -83,11 +83,20 @@ def rotation_problem(matrix) -> Optional[str]:
 
 
 def joints_from_groups(groups) -> Optional[Dict[str, float]]:
-    """One joint map from Rhino's keyframe record: `{"left": {joint_names, joint_values}, ...}` or one such group."""
+    """One joint map from Rhino's keyframe record: `{"left": {joint_names, joint_values}, ...}` or one such group.
+
+    Each shoulder lift is moved by whole turns into the core's window, -270° to +90° (`urdf.shoulder_lift_in_range`):
+    the same pose, but the one the robots can reach, so an export writes no lift outside it (plan check B16).
+
+    - ! Moved only here, on the way into the process: the keyframes in user text keep the values IK gave them, and
+      every build moves them alike, so an action's hash stays the one its solution was planned against.
+    """
     if not groups:
         return None
     parts = [groups] if "joint_names" in groups else [groups[side] for side in sorted(groups)]
-    return {str(n): float(v) for part in parts for n, v in zip(part["joint_names"], part["joint_values"])}
+    pairs = [(str(n), float(v)) for part in parts for n, v in zip(part["joint_names"], part["joint_values"])]
+    names = [name for name, _ in pairs]
+    return dict(zip(names, shoulder_lift_in_range(names, [value for _, value in pairs])))
 
 
 def bar_pose(frame_mm, length_mm: float) -> Pose:

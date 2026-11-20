@@ -22,8 +22,8 @@ when it accepted each pose -- no re-solve:
   poses, each arm's wrist 1 at least ``config.OWN_TOOL_MIN_GAP_M`` from the tool
   on that arm (``process_planning.bar_own_tool_gaps``). Free of contact is not
   enough there: the lab monitor solves the pose again at the robot's live base.
-  A pose under it goes into ``BarIKReport.tight``, not into the problems that
-  make a bar stale;
+  A pose under it is an error, as a collision: it goes into ``BarIKReport.tight``,
+  which makes the bar stale (CheckIK paints it red rather than amber);
 * **ground**: the saved base still standing on a walkable ground, not floating,
   sunk or tilted against it;
 * **support keyframe** (the robot holding the bar): its assignment in today's
@@ -133,14 +133,15 @@ class BarIKReport:
     support: list = field(default_factory=list)    # problems with the support keyframe
     missing: list = field(default_factory=list)    # keyframes the bar needs but has never been given
     notes: list = field(default_factory=list)      # hints that do not flag the bar by themselves
-    #: Assembly poses whose wrist 1 is closer to its own tool than ``config.OWN_TOOL_MIN_GAP_M``: they fit the
-    #: model and are free of contact, so the bar is not stale, but the lab monitor may find contact at the live base.
+    #: Assembly poses whose wrist 1 is closer to its own tool than ``config.OWN_TOOL_MIN_GAP_M``, e.g.
+    #: "assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)". Free of contact here, but the lab monitor
+    #: solves them again at the live base and found contact (B35, 19 Nov 2026): an error, so the bar is stale.
     tight: list = field(default_factory=list)
 
     @property
     def stale(self) -> bool:
-        """True when the bar's saved IK must be recalculated."""
-        return bool(self.assembly or self.support)
+        """True when the bar's saved IK must be recalculated: a problem with a keyframe, or wrist 1 too close."""
+        return bool(self.assembly or self.support or self.tight)
 
     @property
     def unsolved(self) -> bool:
@@ -151,8 +152,8 @@ class BarIKReport:
 def flag_colours(reports, missing_colour, tight_colour, stale_colour) -> dict:
     """Bar id -> the colour CheckIK paints it; a bar with none of the three flags is left out.
 
-    The last flag that applies wins: missing a keyframe (pink), then wrist 1 too close to its tool (red), then
-    needs recalculation (amber). Amber wins because the Clean prompt acts on the amber bars.
+    The last flag that applies wins: missing a keyframe (pink), then needs recalculation (amber), then wrist 1 too
+    close to its tool (red). A red bar needs recalculation too (`BarIKReport.stale`), and the Clean prompt offers it.
 
     Args:
         reports: ``BarIKReport`` per bar.
@@ -160,8 +161,8 @@ def flag_colours(reports, missing_colour, tight_colour, stale_colour) -> dict:
     """
     out = {}
     for report in reports:
-        for colour, flagged in ((missing_colour, report.unsolved), (tight_colour, bool(report.tight)),
-                                (stale_colour, report.stale)):
+        for colour, flagged in ((missing_colour, report.unsolved), (stale_colour, report.stale),
+                                (tight_colour, bool(report.tight))):
             if flagged:
                 out[report.bar_id] = colour
     return out
@@ -393,7 +394,7 @@ def check_all(process, store: dict, bar_map: dict, progress=print) -> list:
                 report.support += check_support_keyframe(process, bar_id, bar_oid, support, soups, to_mm)
             except Exception as exc:  # noqa: BLE001 -- reported, never passed
                 report.support.append(f"support: could not be checked: {exc}")
-        if report.assembly and support is not None and not report.support:
+        if (report.assembly or report.tight) and support is not None and not report.support:
             report.notes.append(
                 "its support keyframe passed, but re-check it after re-solving the assembly: "
                 "the hold scene stands the assembly robot at this bar's assembled pose"

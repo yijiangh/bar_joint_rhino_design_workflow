@@ -2810,8 +2810,10 @@ two collision shapes. PyBullet pads each convex shape by about 1 mm, so the true
   check.distances(values)   # {pair: metres} for each pair closer than its margin; {} when both keep 1.0 mm
   ```
   Every other pair keeps margin 0, so it is still contact only.
-- Who asks: RSIKKeyframe before you accept (label + red), RSIKKeyframeAll (printed, summary), CheckIK (red bar),
-  RSExportProcess (listed). None of them refuses the pose.
+- Who asks, and what they do with a pose under it (an error, as a collision; since 20 Nov 2026, first only a flag):
+  RSIKKeyframe and RSIKKeyframeAll do not accept the chain at that base (the base search goes on; the accept
+  preview hides Accept), CheckIK marks the bar as needing recalculation (red, offered for cleaning), RSExportProcess
+  stops before writing and names each pose. With both collision options off, RSIKKeyframe only shows it.
 
 ### What sets it — the real example, B35 on 19 Nov 2026
 
@@ -2890,6 +2892,29 @@ asks instead: *which small move raises the smallest distance most?*
 4. Stop as soon as every pair has 1 mm; or when no move raises the minimum (a local optimum); or at a bound, off the
    ground, with the arms at home hitting the scene, or when the branch would change.
 
+### Room for the body (the same search with a floor)
+
+Once clear, the base moves on so that Cindy's body (the links no arm joint moves: base link, bulkhead, wheels, the
+arm mounts) gets `config.BASE_NUDGE_BODY_ROOM_M` (50 mm) from the world around it (`BaseGroups.body_world`). It is
+the same `raise_clearance`, started where the first pass cleared, with two changes to the linear program:
+
+```python
+# maximise t  subject to  d_i + g_i . delta >= t            for the body's pairs i only,   t <= 51 mm
+#                         d_k + g_k . delta >= min(d_k, 1.5 mm)  for every pair k   (the floor, 1 mm, plus 0.5)
+```
+
+- The minimum is over the body's pairs only (`counts`): an arm pair stuck at 3 mm next to the bar it holds would
+  otherwise stop the body from getting any room.
+- Every pair keeps the 1 mm floor (`floor`). The program keeps it 0.5 mm above (`FLOOR_MARGIN_M`), so a step lands
+  inside and not on the edge, where the distances' curvature would take it under; a pair already under 1.5 mm may
+  not come closer. A trial under 1 mm is refused like a base off the ground.
+
+Every kept step raises the body's minimum and keeps the floor, so the result is never worse than the cleared base,
+however the pass ends (room reached, an optimum where an arm pair holds it back, a bound, Esc). Example:
+`tests/test_base_nudge.py::test_the_room_pass_stops_where_an_arm_pair_reaches_the_floor`, where each millimetre of
+room costs the forearm half a millimetre: the body gets 13 of its 50 mm and the forearm stops at 1.5 mm. Without the
+floor the body would get all 50 and the forearm would go into the bar.
+
 ### Following the IK branch
 
 As the base moves, each arm must still reach its fixed target, on the same branch (the candidate you picked). The
@@ -2904,4 +2929,6 @@ candidate's (`base_nudge.branch_change`).
 `tests/test_base_nudge.py::test_resolve_moves_the_base_off_a_crate_and_the_solver_takes_the_branch_there`: a crate
 3 mm into Cindy's left forearm at the assembled pose (46 mm at the retreat, where the arms pull back). The nudge
 moves the base until every pair keeps 1 mm, with the real home check, and tamp's chain solver (ssik) then solves at
-the new base on the same branch.
+the new base on the same branch. Its room twin, `test_the_room_pass_moves_the_body_off_a_box_and_keeps_every_pair`:
+a box 20 mm behind the chassis, nothing overlapping; the room pass moves the base until the body keeps 50 mm, each
+step adding room and every pair keeping 1 mm, and the chain solver again solves there on the branch.

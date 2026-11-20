@@ -254,8 +254,9 @@ IK_STALE_COLOR = (230, 160, 30)  # amber
 #: wrist 2, wrist 3, flange and tool0, but wrist 1 only gets a contact check, and contact-only was not enough in the
 #: lab: the monitor solves every pose again at the robot's live base, and on 19 Nov 2026 B35 lost 0.27 to 0.38 mm
 #: to that drift and up to 0.2 mm on its straight retreat (report "Monitor limits a Rhino design must meet").
-#: 1.0 mm leaves about 0.4 mm. RSIKKeyframe, CheckIK (red, ``COLLISION_COLOR``) and RSExportProcess flag a pose
-#: under it (``core.process_planning.own_tool_gaps``); none of them refuses it.
+#: 1.0 mm leaves about 0.4 mm. A pose under it (``core.process_planning.own_tool_gaps``) is an error, as a collision:
+#: RSIKKeyframe and RSIKKeyframeAll do not accept the chain at that base, CheckIK marks the bar as needing
+#: recalculation (red, ``COLLISION_COLOR``), and RSExportProcess stops before writing, naming each pose.
 OWN_TOOL_MIN_GAP_M = 0.001
 #: RSIKKeyframe > InspectCandidates > ResolveCollision (`core.base_nudge`): it moves the base until every pair the
 #: base can change keeps this gap, in metres as PyBullet measures it (about 3 mm true), on all three keyframes of the
@@ -268,6 +269,12 @@ BASE_NUDGE_MAX_DEG = 10.0
 BASE_NUDGE_MAX_STEPS = 25
 #: How far any arm joint may get from the candidate's own, degrees, before it counts as another IK branch.
 BASE_NUDGE_MAX_BRANCH_DEG = 45.0
+#: Once ResolveCollision has cleared the chain, it goes on moving the base to give Cindy's body (base link, bulkhead,
+#: wheels, the arm mounts) this much room from everything around it -- bars, joints, obstacles, other robots, her
+#: tools and the carried bar -- in metres as PyBullet measures it. A preference: every pair keeps
+#: BASE_NUDGE_CLEARANCE_M, the limits above still hold, and where the room cannot be reached it keeps the most it
+#: found. 0 = off (the base stops as soon as the chain is clear).
+BASE_NUDGE_BODY_ROOM_M = 0.05
 
 # ---------------------------------------------------------------------------
 # Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)

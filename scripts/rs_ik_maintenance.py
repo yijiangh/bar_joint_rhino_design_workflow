@@ -32,12 +32,14 @@ One button, three jobs, asked first (Enter = CheckIK):
 
   A bar whose assembly pose (approach, assembled or retreat) brings an arm's
   wrist 1 closer than ``config.OWN_TOOL_MIN_GAP_M`` (1.0 mm) to the tool on
-  that arm turns red (``config.COLLISION_COLOR``, the red RSIKKeyframe paints
-  colliding parts with) and is selected. The pose is free of contact and still
-  fits the model, so it is not offered for cleaning; the lab monitor, which
-  solves it again at the robot's live base, may find contact there. Re-solve it
-  or roll the tool on the bar. Order on a bar with several flags: pink, then
-  red, then amber on top.
+  that arm needs recalculation too: an error, as a collision, because the lab
+  monitor solves the pose again at the robot's live base and found contact there
+  (B35, 19 Nov 2026). It turns red (``config.COLLISION_COLOR``, the red
+  RSIKKeyframe paints colliding parts with) instead of amber, is selected, and
+  is offered for cleaning with the amber ones. Re-solve it (RSIKKeyframe >
+  InspectCandidates > ResolveCollision moves the base until wrist 1 keeps the
+  gap) or roll the tool on the bar. Order on a bar with several flags: pink,
+  then amber, then red on top.
 
 * **ClearOneBar** / **ClearAllBars** -- the old RSClearIKKeyframe /
   RSClearIKKeyframeAll, unchanged (pick a bar or take them all, then choose what
@@ -114,14 +116,12 @@ def _ask_mode():
 
 def _print_report(reports, stale, unsolved, tight, elapsed_s) -> None:
     print(f"{CMD}: checked the IK of {len(reports)} bar(s) in {elapsed_s:.0f} s.")
-    for report in tight:
-        print(f"  {report.bar_id} (step {report.seq}) -- wrist 1 too close to its tool:")
-        for line in report.tight:
-            print(f"    {line}")
     for report in stale:
         print(f"  {report.bar_id} (step {report.seq}) -- needs recalculation:")
         for line in report.assembly:
             print(f"    assembly: {line}")
+        for line in report.tight:
+            print(f"    assembly: wrist 1 too close to its tool at {line}")
         for line in report.support:
             print(f"    {line}")
         for line in report.missing:
@@ -143,21 +143,23 @@ def _print_report(reports, stale, unsolved, tight, elapsed_s) -> None:
             f"{CMD}: {len(unsolved)} bar(s) lack a keyframe they need (pink, selected; amber when they "
             f"also need recalculation): {', '.join(r.bar_id for r in unsolved)}."
         )
-    if tight:
-        gap_mm = 1000.0 * float(config.OWN_TOOL_MIN_GAP_M)
-        print(
-            f"{CMD}: {len(tight)} bar(s) bring wrist 1 closer than {gap_mm:.1f} mm to its own tool (red, selected; "
-            f"amber when they also need recalculation): {', '.join(r.bar_id for r in tight)}. Free of contact "
-            "here, but the lab monitor may find contact at the live base: re-solve them, or roll the tool on the bar."
-        )
     if not stale:
         print(f"{CMD}: every saved IK still fits the model.")
         return
     print(
-        f"{CMD}: {len(stale)} of {len(reports)} bar(s) need recalculation (amber, selected): "
+        f"{CMD}: {len(stale)} of {len(reports)} bar(s) need recalculation ({'amber or red' if tight else 'amber'}, "
+        "selected): "
         f"{', '.join(r.bar_id for r in stale)}. Re-solve them in assembly order -- "
         "re-solving one bar changes the scene for the bars after it."
     )
+    if tight:
+        gap_mm = 1000.0 * float(config.OWN_TOOL_MIN_GAP_M)
+        print(
+            f"{CMD}: of those, {len(tight)} bring wrist 1 closer than {gap_mm:.1f} mm to its own tool (red): "
+            f"{', '.join(r.bar_id for r in tight)}. Free of contact here, but the lab monitor found contact at such "
+            "a pose. RSIKKeyframe > InspectCandidates > ResolveCollision moves the base until wrist 1 keeps the gap, "
+            "or roll the tool on the bar."
+        )
 
 
 def _chosen_bar_ids(bar_map) -> list:
@@ -169,7 +171,7 @@ def _chosen_bar_ids(bar_map) -> list:
     """
     rs.UnselectAllObjects()
     picked = rs.GetObjects(
-        "Pick the bars to clean (amber = needs recalculation), Enter when done",
+        "Pick the bars to clean (amber or red = needs recalculation), Enter when done",
         preselect=False, select=True, custom_filter=bar_or_tube_filter,
     )
     out = []
@@ -231,7 +233,7 @@ def _check_ik() -> None:
         restore_painted(_STICKY_PAINTED)
         rs.UnselectAllObjects()
         color_by_oid = {}
-        # * Pink, then red, then amber over both: amber is the colour the Clean prompt acts on.
+        # * Pink, then amber, then red over both: a red bar needs recalculation too, and Clean offers it.
         colours = ik_check.flag_colours(reports, registry.COLOR_FAILED, config.COLLISION_COLOR, config.IK_STALE_COLOR)
         for bar_id, colour in colours.items():
             for oid in registry._bar_curve_and_tube(bar_map[bar_id][0]):

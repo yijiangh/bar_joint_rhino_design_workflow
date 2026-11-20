@@ -5,11 +5,12 @@
 The process comes from `core.process_source.RhinoProcessSource` (bars, halves, ground, obstacles, robots, tools, mates,
 and the actions built from each bar's keyframes) and is written by the core's `write`. Bars without IK are exported
 with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Writing needs no
-PyBullet, compas_fab or tamp. It is the only export command.
+compas_fab or tamp. It is the only export command.
 
-After the write it lists Cindy's saved poses whose wrist 1 comes closer than `config.OWN_TOOL_MIN_GAP_M` to the tool on
-that arm (`core.process_planning.bar_own_tool_gaps`, as CheckIK paints them red). That check runs on Cindy's planning
-world (PyBullet); when the world cannot be built it says so, and the export stands either way.
+Before anything is written it checks Cindy's saved poses for wrist 1 closer than `config.OWN_TOOL_MIN_GAP_M` to the tool
+on that arm (`core.process_planning.bar_own_tool_gaps`, the bars CheckIK paints red). That is an error, as a collision:
+the export stops and names each pose, e.g. "B35 assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)". The
+check runs on Cindy's planning world (PyBullet); when it cannot run, the export stops too and says why.
 
 First it asks which bars to export (`core.rhino_export_range`): Enter or All exports every bar; FromBar / UntilBar pick
 a range. A range export holds the bars up to Until and the actions of From..Until, the earlier bars built in its first
@@ -177,30 +178,57 @@ def _copy_sources(folder: str, config) -> None:
         shutil.copy2(path, source)
 
 
-def _own_tool_lines(process) -> tuple:
-    """Cindy's saved poses whose wrist 1 is too close to its own tool: ``(lines, how many poses)``. Report-only.
+#: The most wrong poses the stop message box lists; the command history has them all.
+_OWN_TOOL_BOX_LINES = 12
 
-    In schedule order, one line per pose, e.g. "  B35 assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)".
+
+def _own_tool_errors(process) -> tuple:
+    """Cindy's saved poses whose wrist 1 is too close to its own tool: ``(lines, why not checked)``.
+
+    An error, as a collision: any line, or a check that cannot run, stops the export. In schedule order, one line per
+    pose, e.g. "B35 assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)".
+
+    Returns:
+        tuple: ``(lines, None)`` once checked (no lines: every pose keeps the gap), ``([], reason)`` when the check
+        could not run, e.g. "RuntimeError: ...".
     """
-    found = []
+    lines = []
     try:
-        from core import process_planning  # ? PyBullet: imported here, so writing never depends on it
+        from core import process_planning  # ? PyBullet: imported only for this check
         for action_id in process.schedule:
             action = process.actions[action_id]
             if action.type == "bar_jointing":
-                found += [(action.bar, pose, gaps)
+                lines += [f"{action.bar.split('/', 1)[-1]} {pose}: {process_planning.own_tool_gap_line(gaps)}"
                           for pose, gaps in process_planning.bar_own_tool_gaps(process, sc.sticky, action.bar)]
-    except Exception as exc:  # noqa: BLE001 -- report-only: the export stands
+    except Exception as exc:  # noqa: BLE001 -- the export stops, saying why
         session_log.caught(exc)
-        return [f"Wrist 1 against its tool: not checked ({type(exc).__name__}: {exc})"], 0
-    gap_mm = 1000.0 * float(_config_module.OWN_TOOL_MIN_GAP_M)
-    if not found:
-        return [f"Wrist 1 against its tool: every saved pose keeps {gap_mm:.1f} mm"], 0
-    lines = [f"Wrist 1 closer than {gap_mm:.1f} mm to its tool on {len(found)} pose(s) (CheckIK paints the bars red; "
-             "the lab monitor may find contact there):"]
-    lines += [f"  {bar.split('/', 1)[-1]} {pose}: {process_planning.own_tool_gap_line(gaps)}"
-              for bar, pose, gaps in found]
-    return lines, len(found)
+        return [], f"{type(exc).__name__}: {exc}"
+    return lines, None
+
+
+def _stop_on_own_tool(process, command, config) -> bool:
+    """Check wrist 1 against its tool before anything is written; True (and say which poses) when the export stops."""
+    with session_log.step("check wrist 1 against its tool"):
+        wrong, not_checked = _own_tool_errors(process)
+    gap_mm = 1000.0 * float(config.OWN_TOOL_MIN_GAP_M)
+    if not_checked is not None:
+        text = (f"Export stopped, nothing was written: wrist 1 could not be checked against its tool "
+                f"({not_checked}). The check runs on Cindy's planning world (PyBullet).")
+        print(f"{command}: {text}")
+        rs.MessageBox(text, 0, command)
+        return True
+    if not wrong:
+        return False
+    fix = ("Re-solve these bars with RSIKKeyframe (InspectCandidates > ResolveCollision moves the base until wrist 1 "
+           "keeps the gap), or roll the tool on the bar. CheckIK paints them red.")
+    head = (f"Export stopped, nothing was written: wrist 1 comes closer than {gap_mm:.1f} mm to the tool on its arm "
+            f"at {len(wrong)} saved pose(s). The lab monitor solves each pose again at the robot's live base, and "
+            "found contact at such a pose (B35, 19 Nov 2026).")
+    print(f"{command}: {head}\n  " + "\n  ".join(wrong) + f"\n  {fix}")
+    shown = wrong[:_OWN_TOOL_BOX_LINES]
+    more = (f"\n... and {len(wrong) - len(shown)} more in the command history" if len(wrong) > len(shown) else "")
+    rs.MessageBox(f"{head}\n\n" + "\n".join(shown) + more + f"\n\n{fix}", 0, command)
+    return True
 
 
 def export(command: str = "RSExportProcess") -> None:
@@ -244,6 +272,10 @@ def export(command: str = "RSExportProcess") -> None:
         rs.MessageBox("Export stopped, nothing was written:\n\n" + "\n\n".join(mocap_problems)
                       + f"\n\n{process_markers.LAYOUT_HINT}", 0, command)
         return
+    # ! So does wrist 1 too close to its own tool. On the document's process: its models are the ones Cindy's
+    # ! planning world was built on.
+    if _stop_on_own_tool(result.process, command, config):
+        return
     built = time.perf_counter()
     lines = [f"{command}: built in {built - started:.1f} s"]
     if result.problems:
@@ -266,9 +298,6 @@ def export(command: str = "RSExportProcess") -> None:
         n_markers = rhino_mocap_markers.label_markers_in_rhino(written)
     with session_log.step("check plan (B)"):
         report = check_plan(written)
-    # ? On the document's process, not the one read back: its models are the ones Cindy's planning world was built on.
-    with session_log.step("check wrist 1 against its tool"):
-        own_tool_lines, n_tight = _own_tool_lines(result.process)
     # The core's verdict on the saved IK (B15), by bar: these bars export as solved, with poses that miss.
     stale = stale_from(report.unreached)
     n = sum(len(a.movements) for a in written.actions.values())
@@ -282,15 +311,13 @@ def export(command: str = "RSExportProcess") -> None:
     if n_markers:
         lines.append(f"MoCap: {n_markers} markers labelled on layer '{config.LAYER_MOCAP_MARKER_LABELS}'")
     lines += stale_ik_lines(stale)
-    lines += own_tool_lines
+    lines.append(f"Wrist 1 against its tool: every saved pose keeps {1000.0 * float(config.OWN_TOOL_MIN_GAP_M):.1f} mm")
     print("\n".join(lines))
     stale_note = (f"\n\nSTALE IK on {len(stale)} bar(s) (plan check B15): their saved robot poses no longer reach "
                   "the bars' tools. Re-run RSIKKeyframe on them, then export again." if stale else "")
-    tight_note = (f"\n\nWrist 1 too close to its tool on {n_tight} pose(s): exported, but the lab monitor may find "
-                  "contact there." if n_tight else "")
     rs.MessageBox(f"Wrote {folder}\n\n{len(written.actions)} actions ({solved}/{jointing} bars with IK), "
                   f"{len(result.problems)} note(s)\nA passed; B {len(report.errors)} error(s), "
-                  f"{len(report.warnings)} warning(s){stale_note}{tight_note}\n\nDetails in the command history.",
+                  f"{len(report.warnings)} warning(s){stale_note}\n\nDetails in the command history.",
                   0, command)
 
 

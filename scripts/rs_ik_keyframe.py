@@ -1246,6 +1246,7 @@ def _ask_accept_with_pose_preview(
     initial_index: int = 0,
     prompt: str = "Accept this IK keyframe and save it on the bar",
     back_label: str = None,
+    allow_accept: bool = True,
 ):
     """Accept/retry prompt that also cycles through the solved keyframes.
 
@@ -1266,6 +1267,7 @@ def _ask_accept_with_pose_preview(
         back_label (str | None): when given (e.g. ``"BackToCandidates"``), this option
             replaces RetrySameBase and returns ``"back"``, and Esc returns ``"back"`` too:
             a preview opened from inside another prompt goes one level up.
+        allow_accept (bool): False hides ``Accept``: the chain is shown, but cannot be saved.
 
     Returns:
         str: one of ``"accept"`` / ``"retry_same_base"`` / ``"retry_new_base"`` /
@@ -1285,7 +1287,7 @@ def _ask_accept_with_pose_preview(
         label = display_frames[idx][0]
         go = Rhino.Input.Custom.GetOption()
         go.SetCommandPrompt(f"{prompt} [now: {label}; Enter/TogglePose to cycle keyframes]")
-        accept_idx = go.AddOption("Accept")
+        accept_idx = go.AddOption("Accept") if allow_accept else None
         toggle_idx = go.AddOption("TogglePose")
         retry_same_idx = go.AddOption(back_label or "RetrySameBase")
         retry_new_idx = go.AddOption("RetryNewBase")
@@ -1299,7 +1301,7 @@ def _ask_accept_with_pose_preview(
             continue
         if result == Rhino.Input.GetResult.Option:
             chosen = go.OptionIndex()
-            if chosen == accept_idx:
+            if allow_accept and chosen == accept_idx:
                 return "accept"
             if chosen == toggle_idx:
                 _advance()
@@ -1646,7 +1648,8 @@ def warn_slow_ik_backend(command):
 @session_log.timed()
 def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                                brep_id, heading_mm, include_self, include_env,
-                               viz=None, urdf=None, base_search="single", soups=None, command="RSIKKeyframe"):
+                               viz=None, urdf=None, base_search="single", soups=None, command="RSIKKeyframe",
+                               *, scene, robot_id, tight_out=None):
     """Solve the M1->M2->M3 IK chain at the seed base and, per ``base_search``, at other bases on failure.
 
     The ONE base search of both RSIKKeyframe and RSIKKeyframeAll (``BaseSearch`` in
@@ -1656,7 +1659,9 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     is the yes / no on each.
 
     A base frame is accepted only when the WHOLE chain solves (approach ->
-    assembled -> retreat). The chain itself is solved by
+    assembled -> retreat) and, with collisions checked, every pose of it keeps wrist 1
+    ``config.OWN_TOOL_MIN_GAP_M`` from the tool on that arm (`_own_tool_check`): a chain
+    that solves with wrist 1 too close fails at that base, as one that collides. The chain itself is solved by
     ``husky_assembly_tamp.keyframe.ik_keyframe.solve_keyframe_chain`` -- one place, shared with the
     headless test. This wrapper only adds the Rhino-specific base search: try the
     seed base, then sample offsets on the WalkableGround brep and re-snap each.
@@ -1690,6 +1695,10 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
             optimised search (RSIKKeyframeAll). Without ``brep_id`` the random samples stand on
             the WalkableGround nearest the seed.
         command (str): the command name the search's progress lines start with.
+        scene: the bar's J_transfer scene, which the wrist 1 check is synced with.
+        robot_id (str): the solved robot, e.g. "robots/cindy".
+        tight_out (list | None): gets the label of each base ("seed", "optimised 2") whose chain solved but
+            brought wrist 1 too close to its tool, so the caller can say why the search failed.
 
     Returns:
         tuple: ``(solved_states, used_base_frame_mm)`` on success where
@@ -1697,6 +1706,7 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
         ``(None, None)`` if no sampled base solves the whole chain.
     """
     check_collision = bool(include_self or include_env)
+    rejected = []  # the bases whose chain solved with wrist 1 too close
     ordered = [("M1", movements["M1"]), ("M2", movements["M2"]), ("M3", movements["M3"])]
     reach, flange_targets = _reach_inputs(urdf, ordered)
 
@@ -1781,9 +1791,19 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
                     # home; the solver takes it as an explicit argument now.
                     home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12,
                 )
+            # * Wrist 1 against its own tool: an error, as a collision (config.OWN_TOOL_MIN_GAP_M).
+            too_close = False
+            if solved is not None and check_collision:
+                tight = _own_tool_check(command, scene, robot_id, solved)
+                too_close = tight is None or bool(tight)
             if viz is not None and idx > 0:
                 sample_origin_doc, sample_x_doc, _z = _frame_mm_to_doc_marker(base_frame)
-                viz.add_tried(sample_origin_doc, sample_x_doc, success=solved is not None)
+                viz.add_tried(sample_origin_doc, sample_x_doc, success=solved is not None and not too_close)
+            if too_close:
+                print(f"{command}: [x] chain solved on attempt {idx + 1} ({label}), but wrist 1 is too close to its "
+                      "tool: not accepted.")
+                rejected.append(label)
+                continue
             if solved is not None:
                 print(
                     f"RSIKKeyframe: [OK] M1->M2->M3 IK chain solved on attempt {idx + 1} ({label})."
@@ -1793,6 +1813,12 @@ def _solve_chain_with_sampling(planner, movements, seed_base_frame_mm,
     finally:
         if prev_redraw is not None:
             rs.EnableRedraw(prev_redraw)
+    if tight_out is not None:
+        tight_out.extend(rejected)
+    if rejected:
+        print(f"{command}: [X] at {len(rejected)} base(s) ({', '.join(rejected)}) the chain solved, but wrist 1 came "
+              f"within {1000.0 * float(config.OWN_TOOL_MIN_GAP_M):.1f} mm of its tool. RSIKKeyframe's "
+              "InspectCandidates > ResolveCollision moves the base until wrist 1 keeps the gap.")
     if skipped == total:
         print(
             f"RSIKKeyframe: [X] all {total} base frame(s) are out of the arms' reach: "
@@ -2164,29 +2190,30 @@ def _revert_red_highlight(oids):
                 continue
 
 
-def _own_tool_report(command, scene, robot_id, solved):
-    """Print the solved poses whose wrist 1 is too close to its own tool; ``{pose name: gaps}``. Report-only.
+def _own_tool_check(command, scene, robot_id, solved):
+    """Print the solved poses whose wrist 1 is too close to its own tool; ``{pose name: gaps}``, or None.
 
-    The rule is ``process_planning.own_tool_gaps`` (``config.OWN_TOOL_MIN_GAP_M``); CheckIK and RSExportProcess ask
-    the same question of the saved poses.
+    An error, as a collision: a chain with such a pose is not accepted (the base search goes on, the preview hides
+    Accept), and neither is one the check could not run on (None). The rule is ``process_planning.own_tool_gaps``
+    (``config.OWN_TOOL_MIN_GAP_M``); CheckIK and RSExportProcess ask the same question of the saved poses.
 
     Args:
         command (str): the command name for the printed lines.
         scene: a scene the chain's mirror was synced with (the bar's J_transfer scene).
         robot_id (str): the solved robot.
         solved (dict): ``{"M1": approach, "M2": assembled, "M3": retreat}`` solved states.
+
+    Returns:
+        dict | None: ``{pose name: gaps}``, empty when every pose keeps the gap; None when it could not be checked.
     """
     try:
         found = process_planning.keyframe_own_tool_gaps(sc.sticky, scene, robot_id, solved)
-    except Exception as exc:  # noqa: BLE001 -- report-only: a failed check never loses a solve
+    except Exception as exc:  # noqa: BLE001 -- printed, and the chain is not accepted
         session_log.caught(exc)
-        print(f"{command}: [!] wrist 1 could not be checked against its tool ({type(exc).__name__}: {exc}).")
-        return {}
+        print(f"{command}: [x] wrist 1 could not be checked against its tool ({type(exc).__name__}: {exc}).")
+        return None
     for pose, gaps in found:
-        print(f"{command}: [!] {pose}: {process_planning.own_tool_gap_line(gaps)}.")
-    if found:
-        print(f"{command}:     free of contact, but the lab monitor solves the pose again at the robot's live base "
-              "and may find contact there. Try another base, or roll the tool on the bar.")
+        print(f"{command}: [x] {pose}: {process_planning.own_tool_gap_line(gaps)}.")
     return dict(found)
 
 
@@ -2197,7 +2224,7 @@ def _own_tool_renderer(display_frames, tight, mesh_mode):
 
     Args:
         display_frames (list): ``[(pose name, state), ...]`` as built, before any label is changed.
-        tight (dict): ``{pose name: gaps}`` from :func:`_own_tool_report`.
+        tight (dict): ``{pose name: gaps}`` from :func:`_own_tool_check`.
         mesh_mode (str): the preview's mesh mode.
 
     Returns:
@@ -2226,11 +2253,13 @@ def _own_tool_renderer(display_frames, tight, mesh_mode):
     return render, clear
 
 
-def _preview_solved(solved, movements, scene, robot_id, mesh_mode, prompt, back_label=None):
-    """The IK preview after a solve: the three keyframes and home, the wrist 1 flag, and the Accept prompt.
+def _preview_solved(solved, movements, scene, robot_id, mesh_mode, prompt, back_label=None, check_collision=True):
+    """The IK preview after a solve: the three keyframes and home, the wrist 1 check, and the Accept prompt.
 
     The one preview of every solved chain: after a normal solve (`_main`) and after ResolveCollision, which passes
     ``back_label="BackToCandidates"``. Starts on the assembled pose; Enter / TogglePose steps through the rest.
+    A pose with wrist 1 too close to its tool (`_own_tool_check`) is red, and Accept is not offered: the base search
+    never returns such a chain, but ResolveCollision's last solve can choose a slightly different arm pose.
 
     Args:
         solved (dict): ``{"M1": approach, "M2": assembled, "M3": retreat}`` solved states.
@@ -2240,6 +2269,8 @@ def _preview_solved(solved, movements, scene, robot_id, mesh_mode, prompt, back_
         mesh_mode (str): the preview's mesh mode.
         prompt (str): the prompt; the pose on screen is appended.
         back_label (str | None): see `_ask_accept_with_pose_preview`.
+        check_collision (bool): the solve's collision toggles (their OR). Off, as for a collision, a pose too close
+            is still shown red, but Accept stays.
 
     Returns:
         str: the action `_ask_accept_with_pose_preview` returned.
@@ -2255,20 +2286,28 @@ def _preview_solved(solved, movements, scene, robot_id, mesh_mode, prompt, back_
         display_frames.append(("home", home_state))
     # * Wrist 1 against its own tool, before the user decides: printed, in the
     #   label of the pose on screen, and red on the preview (wrist 1 and the tool).
-    tight = _own_tool_report("RSIKKeyframe", scene, robot_id, solved)
+    tight = _own_tool_check("RSIKKeyframe", scene, robot_id, solved)
+    refused = check_collision and (tight is None or bool(tight))
+    tight = tight or {}
     render_pose, clear_own_tool_red = _own_tool_renderer(display_frames, tight, mesh_mode)
     display_frames = [
         (f"{label} ({process_planning.own_tool_gap_line(tight[label], brief=True)})" if label in tight else label,
          state)
         for label, state in display_frames
     ]
+    if refused:
+        gap_mm = 1000.0 * float(config.OWN_TOOL_MIN_GAP_M)
+        why = (f"wrist 1 closer than {gap_mm:.1f} mm to its tool at {', '.join(tight)}" if tight
+               else "wrist 1 could not be checked against its tool")
+        print(f"RSIKKeyframe: [x] not accepted: {why}.")
+        prompt = f"NOT ACCEPTED ({why}). Look at the poses, then go back or retry"
     try:
         # Preview the assembled (mated) pose first -- the representative keyframe.
         render_pose(solved["M2"])
         print("RSIKKeyframe: full M1->M2->M3 chain reachable. Previewing "
               "assembled pose (Enter / TogglePose to step through keyframes)...")
         return _ask_accept_with_pose_preview(display_frames, render_pose, initial_index=1, prompt=prompt,
-                                             back_label=back_label)
+                                             back_label=back_label, allow_accept=not refused)
     finally:
         clear_own_tool_red()
 
@@ -2457,9 +2496,9 @@ def _nudge_parts(planner, ctx, movements):
         arms = [list(rcell.get_configurable_joint_names(group)) for group in groups]
         scenes = {role: ctx.process.scene_at(process_planning.movement(
             ctx.process, ctx.bar, *process_planning.KEYFRAME_MOVEMENTS[role])) for role in base_nudge.ROLES}
+        moving = base_nudge.base_groups(ctx.robot_id, rcell.robot_model, arms, movements["M2"].start_state)
         ctx.parts = SimpleNamespace(
-            groups=groups, scenes=scenes,
-            depends=base_nudge.base_groups(ctx.robot_id, rcell.robot_model, arms, movements["M2"].start_state),
+            groups=groups, scenes=scenes, depends=moving.depends, body_world=moving.body_world,
             band=base_nudge.band_for(2.0 * float(config.BASE_NUDGE_CLEARANCE_M)))
     return ctx.parts
 
@@ -2475,20 +2514,28 @@ def _move_words(seed_mm, frame_mm, turned_deg):
     return f"moved {float(np.hypot(forward, left)):.0f} mm ({', '.join(parts)}), {turn}"
 
 
-def _report_stop(outcome, label):
-    """Say why ResolveCollision stopped without clearing: a line for Esc, else one message box (`base_nudge.MESSAGES`)."""
+def _stop_text(outcome, room=False):
+    """How a nudge ended short of its goal, in `base_nudge.MESSAGES`' words; `room`: the room pass's."""
     words = dict(steps=outcome.steps, evaluations=base_nudge.MAX_EVALUATIONS, max_mm=float(config.BASE_NUDGE_MAX_MM),
                  max_deg=float(config.BASE_NUDGE_MAX_DEG), detail=outcome.detail or "the arms' configuration")
-    if outcome.status == "stopped":
-        print("RSIKKeyframe: ResolveCollision: " + base_nudge.MESSAGES["stopped"].format(**words))
-        return
-    key, at_start = outcome.status, outcome.status == "start"
-    if at_start:
+    key = outcome.status
+    if key == "start":
         # ? The same at your base for every candidate: no point trying another one.
         key = {"home": "start_home", "ground": "start_ground"}.get(outcome.why, "start_branch")
     elif key == "refused":
         key = outcome.why or "optimum"
-    text = base_nudge.MESSAGES.get(key, base_nudge.MESSAGES["optimum"]).format(**words)
+    if room:
+        key = {"optimum": "room_optimum", "steps": "room_steps"}.get(key, key)
+    return base_nudge.MESSAGES.get(key, base_nudge.MESSAGES["optimum"]).format(**words)
+
+
+def _report_stop(outcome, label):
+    """Say why ResolveCollision stopped without clearing: a line for Esc, else one message box (`base_nudge.MESSAGES`)."""
+    if outcome.status == "stopped":
+        print("RSIKKeyframe: ResolveCollision: " + _stop_text(outcome))
+        return
+    at_start = outcome.status == "start"
+    text = _stop_text(outcome)
     nearest = outcome.trial.nearest()
     if nearest is not None:
         role, a, b = nearest
@@ -2500,10 +2547,84 @@ def _report_stop(outcome, label):
     rs.MessageBox(text, 0, "RSIKKeyframe")
 
 
+def _room_gap(trial, body_world, band):
+    """The nearest gap of Cindy's body at a trial: (metres, (role, part, part)); (`band`, None) when none is listed."""
+    body = {key: d for key, d in trial.distances.items() if body_world(key[1], key[2])}
+    key = base_nudge.nearest_key(body)
+    return (body[key], key) if key else (band, None)
+
+
+def _room_words(outcome, room, need, band, body_world):
+    """How the room pass ended, e.g. "the body's nearest gap is 31 mm (base_link <-> bars/B9, assembled (M2)), short
+    of 50: left_ur_arm_forearm_link <-> bars/B12 (approach (M1)) is down to 1.4 mm apart, near the 1.0 mm every pair
+    keeps."."""
+    low, key = _room_gap(outcome.trial, body_world, band)
+    if key is None or low >= room:
+        return f"Cindy's body keeps {1000.0 * room:.0f} mm from everything around it."
+    text = (f"the body's nearest gap is {1000.0 * low:.0f} mm ({_short(key[1])} <-> {_short(key[2])}, "
+            f"{base_nudge.POSES[key[0]]}), short of {1000.0 * room:.0f}: ")
+    held = outcome.trial.nearest()
+    if held is not None and held != key and outcome.trial.distances[held] < need + 2.0 * base_nudge.FLOOR_MARGIN_M:
+        # ? A pair at the floor (the LP keeps them FLOOR_MARGIN_M above it) is what holds the base back.
+        return text + (f"{_short(held[1])} <-> {_short(held[2])} ({base_nudge.POSES[held[0]]}) is down to "
+                       f"{_gap_words(outcome.trial.distances[held])}, near the {1000.0 * need:.1f} mm every pair keeps.")
+    return text + _stop_text(outcome, room=True)
+
+
+def _make_room(probe, cleared, parts, need, steps_max, mesh_mode, label):
+    """ResolveCollision's room pass: from the cleared base, give Cindy's body ``config.BASE_NUDGE_BODY_ROOM_M``.
+
+    The same search again (`base_nudge.raise_clearance`), started where the first pass cleared: the minimum it raises
+    is over the body against the world (`BaseGroups.body_world`), up to the room, and every pair keeps `need` as a
+    floor. A preference: however it ends, Esc included, it hands back the roomiest base it kept, which is clear.
+
+    Args:
+        probe: The first pass's `base_nudge.ChainProbe`; its band is widened here to see the body's pairs.
+        cleared: The first pass's "clear" `Outcome`.
+
+    Returns:
+        tuple: (the `Outcome` whose `u` and `trial` the chain check takes, its band in metres).
+    """
+    room = float(config.BASE_NUDGE_BODY_ROOM_M)
+    aim = room + need
+    band = base_nudge.band_for(aim)
+    probe.band = band  # ? the body's pairs out to the room, and as far again as one step can bring a pair in
+    print(f"RSIKKeyframe: ResolveCollision: making room: moving on until Cindy's body is {1000.0 * room:.0f} mm from "
+          f"everything, every pair keeping {1000.0 * need:.1f} mm. Esc keeps the base reached so far.")
+    painted = []
+
+    def on_step(steps, u, trial):
+        """One line per accepted step; draw the pose that holds the body's nearest gap."""
+        low, key = _room_gap(trial, parts.body_world, band)
+        role = key[0] if key else "M2"
+        pair = f"{_short(key[1])} <-> {_short(key[2])}, {base_nudge.POSES[role]}" if key else "nothing near"
+        moved_mm, turned = probe.moved(u)
+        print(f"RSIKKeyframe: ResolveCollision: room step {steps}/{steps_max}: body {1000.0 * low:.0f} mm (wants "
+              f"{1000.0 * room:.0f}; {pair}); base {moved_mm:.0f} mm, {turned:.1f} deg from yours")
+        _draw_with_red(trial.data.states[role], [], mesh_mode, painted)
+
+    escape_pressed()  # forget an Esc pressed before
+    try:
+        with session_log.step("ResolveCollision room", label):
+            outcome = base_nudge.raise_clearance(
+                probe, need=room, aim=aim, band=band, max_steps=steps_max, stop=escape_pressed, on_step=on_step,
+                counts=lambda key: parts.body_world(key[1], key[2]), floor=need, start=cleared.u)
+    finally:
+        _revert_red_highlight(painted)
+    if outcome.status == "start":
+        # ? The cleared base itself, measured farther out: refused only if the IK went another way this time.
+        print("RSIKKeyframe: ResolveCollision: room: could not start from the cleared base; keeping it.")
+        return cleared, band
+    print(f"RSIKKeyframe: ResolveCollision: room after {outcome.steps} steps: "
+          f"{_room_words(outcome, room, need, band, parts.body_world)}")
+    return outcome, band
+
+
 def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
     """ResolveCollision on one candidate: nudge the base until its chain is clear, check it, open the preview.
 
-    The nudge is `base_nudge.raise_clearance` on a `base_nudge.ChainProbe`; the check is `base_nudge.final_chain`
+    The nudge is `base_nudge.raise_clearance` on a `base_nudge.ChainProbe`; then, with ``config.BASE_NUDGE_BODY_ROOM_M``,
+    the room pass (`_make_room`) moves on to give Cindy's body room. The check is `base_nudge.final_chain`
     (tamp's chain solver, the resolved approach branch first). Nothing is written here: the preview's Accept, back in
     `_main`, writes the base and the keyframes.
 
@@ -2517,6 +2638,7 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
     back = f"RSIKKeyframe: ResolveCollision: back to {label} at your base."
     mesh_mode = ik_viz.MESH_MODE_COLLISION
     moved_from_seed = chain.lowest(band) < need
+    room_note = ""  # the room pass's result, for the preview prompt
     if not moved_from_seed:
         print("RSIKKeyframe: ResolveCollision: this branch is already clear at your base; solving with it first ...")
         frame, turned_deg = np.asarray(seed_mm, dtype=float), 0.0
@@ -2563,10 +2685,19 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
             _report_stop(outcome, label)
             print(back)
             return None
-        frame, followed = probe.frame(outcome.u), outcome.trial.data.states
         moved_mm, turned_deg = probe.moved(outcome.u)
         print(f"RSIKKeyframe: ResolveCollision: clear after {outcome.steps} steps: base moved {moved_mm:.0f} mm, "
-              f"turned {turned_deg:.1f} deg. Checking the chain there ...")
+              f"turned {turned_deg:.1f} deg.")
+        room = float(config.BASE_NUDGE_BODY_ROOM_M)
+        if room > 0.0:
+            outcome, room_band = _make_room(probe, outcome, parts, need, steps_max, mesh_mode, label)
+            low, _key = _room_gap(outcome.trial, parts.body_world, room_band)
+            room_note = (f"; body {1000.0 * room:.0f}+ mm from everything" if low >= room else
+                         f"; body {1000.0 * low:.0f} mm from the nearest (wants {1000.0 * room:.0f})")
+        frame, followed = probe.frame(outcome.u), outcome.trial.data.states
+        moved_mm, turned_deg = probe.moved(outcome.u)
+        print(f"RSIKKeyframe: ResolveCollision: checking the chain at the base {moved_mm:.0f} mm, "
+              f"{turned_deg:.1f} deg from yours ...")
     ordered = [(role, movements[role]) for role in base_nudge.ROLES]
     with session_log.step("ResolveCollision chain check", label):
         solved, failed, elsewhere = base_nudge.final_chain(planner, ordered, frame, followed,
@@ -2587,8 +2718,8 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
         ctx.viz.add_tried(origin_doc, x_doc, success=True)
     escape_pressed()  # an Esc pressed during the check must not answer the preview
     if moved_from_seed:
-        prompt = (f"IK preview at the resolved base: {_move_words(seed_mm, frame, turned_deg)} from yours. "
-                  "Accept saves this base and the keyframes")
+        prompt = (f"IK preview at the resolved base: {_move_words(seed_mm, frame, turned_deg)} from yours"
+                  f"{room_note}. Accept saves this base and the keyframes")
     else:
         prompt = f"IK preview at your base, on the branch of {label}. Accept saves the keyframes"
     action = ctx.preview(solved, prompt)
@@ -2598,17 +2729,44 @@ def _resolve_collision(planner, movements, seed_mm, chain, index, count, ctx):
     return action, solved, frame
 
 
+def _first_tight_movement(planner, ordered, base_frame_mm, ctx):
+    """The first keyframe movement whose solved pose brings wrist 1 too close to its tool: (role, movement), or None.
+
+    For InspectCandidates when every movement solves free of contact at this base, so the chain failed on the wrist 1
+    check (`_own_tool_check`) alone. None when the chain does not solve, or every pose keeps the gap, or the check
+    cannot run.
+
+    Args:
+        ordered (list): ``[("M1", movement), ("M2", ..), ("M3", ..)]``.
+        ctx (SimpleNamespace): `_main`'s context: ``scene`` (the J_transfer scene), ``robot_id``, ``check_collision``.
+    """
+    print("RSIKKeyframe: every movement solves free of contact here; looking for the pose with wrist 1 too close "
+          "to its tool ...")
+    solved = ik_keyframe.solve_keyframe_chain(planner, ordered, base_frame_mm, check_collision=ctx.check_collision,
+                                              home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12)
+    if solved is None:
+        return None
+    tight = _own_tool_check("RSIKKeyframe", ctx.scene, ctx.robot_id, solved)
+    for role, movement in ordered:
+        if tight and process_planning.ROLE_POSES.get(role) in tight:
+            return role, movement
+    return None
+
+
 def _inspect_ssik_candidates(planner, movements, base_frame_mm, mesh_mode, ctx):
     """Diagnose an ssik chain failure by cycling the first failing movement's IK pairs, and resolve one.
 
-    Finds the first movement (M1->M2->M3) that can't solve at ``base_frame_mm``, enumerates ALL of its ssik branch
-    pairs (colliding ones included), and lets the user step through them with the offenders highlighted -- so they
-    can see why no pair is collision-free (often a modeling problem). The mesh display mode is restored to
-    ``mesh_mode`` on exit.
+    Finds the first movement (M1->M2->M3) that can't solve at ``base_frame_mm`` -- or, when all of them solve free of
+    contact, the first whose pose brings wrist 1 too close to its tool (`_first_tight_movement`) -- enumerates ALL of
+    its ssik branch pairs (colliding ones included), and lets the user step through them with the offenders
+    highlighted -- so they can see why no pair is collision-free (often a modeling problem). The mesh display mode
+    is restored to ``mesh_mode`` on exit.
 
     With collisions checked, the candidates are ranked along the chain (`base_nudge.chain_table`: per
     candidate the best chain through it, least overlap first), and ResolveCollision moves the base for one of them
-    (`_resolve_collision`). The ranking is kept in ``ctx.cache`` for this base, so reopening is quick.
+    (`_resolve_collision`). The ranking is kept in ``ctx.cache`` for this base, so reopening is quick. It asks every
+    pair the base can change for ``config.BASE_NUDGE_CLEARANCE_M``, wrist 1 against its tool among them, so a
+    candidate too close there is not "clear", and ResolveCollision moves the base until wrist 1 keeps the gap.
 
     Args:
         planner: the dual-arm planner.
@@ -2631,6 +2789,9 @@ def _inspect_ssik_candidates(planner, movements, base_frame_mm, mesh_mode, ctx):
             planner, ordered, base_frame_mm, check_collision=check_collision,
             home_conf_12=config.HUSKY_DUAL_ARM_HOME_CONF_12,
         )
+        if failing is None and check_collision:
+            # ? Free of contact all along: the chain may have failed on wrist 1 against its tool instead.
+            failing = _first_tight_movement(planner, ordered, base_frame_mm, ctx)
         if failing is None:
             rs.MessageBox(
                 "The chain solved on this re-run, so there are no failing candidates to "
@@ -3496,10 +3657,12 @@ def _main(stack, after):
             try:
                 # * S
                 print("RSIKKeyframe: solving M1->M2->M3 IK chain ...")
+                too_close_at = []
                 solved, used_base = _solve_chain_with_sampling(
                     planner, movements, seed_base_frame,
                     brep_id, heading_mm, include_self, include_env,
                     viz=viz, urdf=process.robots[robot_id].urdf, base_search=base_search_mode,
+                    scene=scene, robot_id=robot_id, tight_out=too_close_at,
                 )
                 # Drop the moving ghost robot but keep the circle + tried markers +
                 # seed arrow, so the "what was tried" history stays on screen without
@@ -3514,15 +3677,19 @@ def _main(stack, after):
                     allow_inspect = config.IK_BACKEND == "ssik"
                     hint = ("\n\nInspectCandidates shows the IK branches; ResolveCollision there moves the "
                             "base to clear one." if allow_inspect and (include_self or include_env) else "")
-                    rs.MessageBox("IK failed for the assembly chain (all samples exhausted)." + hint, 0,
+                    wrist = (f"\n\nAt {len(too_close_at)} base(s) ({', '.join(too_close_at)}) the chain solved, but "
+                             f"wrist 1 came within {1000.0 * float(config.OWN_TOOL_MIN_GAP_M):.1f} mm of its tool "
+                             "(the poses are in the command history)." if too_close_at else "")
+                    rs.MessageBox("IK failed for the assembly chain (all samples exhausted)." + wrist + hint, 0,
                                   "RSIKKeyframe")
                     # * What ResolveCollision needs; its preview is the one below (BackToCandidates
                     #   instead of RetrySameBase), and what the user decides there comes back here.
                     resolve_ctx = SimpleNamespace(
-                        cache=inspect_cache, parts=None, process=process, bar=bar, robot_id=robot_id,
+                        cache=inspect_cache, parts=None, process=process, bar=bar, robot_id=robot_id, scene=scene,
                         brep_id=brep_id, viz=viz, check_collision=bool(include_self or include_env),
                         preview=lambda done, prompt: _preview_solved(
-                            done, movements, scene, robot_id, mesh_mode, prompt, back_label="BackToCandidates"))
+                            done, movements, scene, robot_id, mesh_mode, prompt, back_label="BackToCandidates",
+                            check_collision=bool(include_self or include_env)))
                     decided = None
                     while True:
                         action = _ask_chain_failure(allow_inspect)
@@ -3566,6 +3733,7 @@ def _main(stack, after):
                     action = _preview_solved(
                         solved, movements, scene, robot_id, mesh_mode,
                         "IK preview ready. Accept, retry the same base, retry a new base, or give up",
+                        check_collision=bool(include_self or include_env),
                     )
             finally:
                 rs.EnableRedraw(True)

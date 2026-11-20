@@ -25,7 +25,7 @@ Rhino closed after adding a button (see `docs/note.md` §8).
 | RSDesign | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews | Workshop participants |
 | RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the bars to export, Enter or All = every bar, or a From..Until range, then the process folder itself: pick one or make one with New folder), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
-| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). Bars with no IK yet (no assembly keyframe, or held with no support keyframe) are painted the IK-failed pink and selected too; bars whose assembly pose brings wrist 1 closer than 1.0 mm to its own tool are painted red. The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
+| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). Bars with no IK yet (no assembly keyframe, or held with no support keyframe) are painted the IK-failed pink and selected too; bars whose assembly pose brings wrist 1 closer than 1.0 mm to its own tool need recalculation too and are painted red. The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
 | RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
 | RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
 | RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
@@ -464,18 +464,23 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   debug views `DEBUG_BASE_SEARCH_TRACE` (what the search did) and `DEBUG_BASE_REGION` (dense reach map) are in config.
 - Green = the bars in the planning scene (what the solve collides with), bars placed by hand included.
 - Saves the split `KEY_ASSEMBLY_*` keys on the shared Ln bar.
-- **Wrist 1 against its own tool, before you accept.** Once the chain solves, each solved pose (approach, assembled,
-  retreat) is measured: each arm's wrist 1 should stay `config.OWN_TOOL_MIN_GAP_M` (1.0 mm as PyBullet measures it,
-  about 3 mm true) from the tool on that arm (`process_planning.own_tool_gaps`). A pose under it:
-  - is printed: `RSIKKeyframe: [!] assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm).`;
-  - carries the gap in the accept prompt's label: `[now: assembled (right wrist 1 0.36 mm); ...]`;
-  - shows that wrist 1 and its tool red (`config.COLLISION_COLOR`) while it is on screen; the red goes when you toggle
-    to another pose and when the prompt ends.
+- **Wrist 1 against its own tool: an error, as a collision.** Once the chain solves at a base, each solved pose
+  (approach, assembled, retreat) is measured: each arm's wrist 1 must stay `config.OWN_TOOL_MIN_GAP_M` (1.0 mm as
+  PyBullet measures it, about 3 mm true) from the tool on that arm (`process_planning.own_tool_gaps`). The pose is free
+  of contact, but the lab monitor solves it again at the robot's live base and found contact there (B35, 19 Nov 2026:
+  0.36 mm at the design base, 0.09 mm live). So a pose under it fails the chain at that base:
+  - it is printed: `RSIKKeyframe: [x] assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm).`, then
+    `[x] chain solved on attempt 1 (seed), but wrist 1 is too close to its tool: not accepted.`;
+  - the base search goes on to its next base (BaseSearch Random / Optimised), as after a collision; when no base
+    passes, the failure box says at which bases only wrist 1 failed, and InspectCandidates opens on the first pose
+    too close (below), where ResolveCollision moves the base until wrist 1 keeps the gap;
+  - on the accept preview (after ResolveCollision, whose last solve may pick a slightly different arm pose), a pose
+    too close carries its gap in the label (`[now: assembled (right wrist 1 0.36 mm); ...]`), shows that wrist 1 and
+    its tool red (`config.COLLISION_COLOR`) while it is on screen, and **Accept is not offered** (`NOT ACCEPTED (...)`).
 
-  Accept still works: the pose is free of contact. But the lab monitor solves it again at the robot's live base and
-  may find contact there (B35, 19 Nov 2026: 0.36 mm at the design base, 0.09 mm live). Try another base, or roll the
-  tool on the bar. RSIKKeyframeAll prints the same lines per bar and lists those bars in its summary; CheckIK paints
-  them red; RSExportProcess lists them.
+  With both collision options off (IncludeSelf and IncludeEnv No) nothing is refused, as for collisions: the gap is
+  only shown. RSIKKeyframeAll does not save such a bar (listed under Failed); CheckIK paints saved ones red and offers
+  them for cleaning; RSExportProcess stops before writing and names them.
 - **When the chain fails: InspectCandidates.** (ssik only.) After the base search gives up, the prompt offers
   `InspectCandidates / RetrySameBase / RetryNewBase / GiveUp`. InspectCandidates finds the first movement that fails
   at your base and steps through its 64 IK branch pairs (8 ssik solutions per arm), in collision meshes, the
@@ -491,16 +496,25 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
 - **ResolveCollision** (in that list) moves the base a little for the candidate on screen until its whole chain is
   clear (`core.base_nudge`): x, y and a turn about the ground normal, up to `config.BASE_NUDGE_MAX_MM` (150 mm) and
   `BASE_NUDGE_MAX_DEG` (10°) from your base, until every pair the base can change is at least
-  `config.BASE_NUDGE_CLEARANCE_M` apart (1.0 mm as PyBullet measures it, about 3 mm true; so the wrist 1 flag above
-  passes too). The robot body counts as well, and the robot must stay on the walkable ground with its arms at home
+  `config.BASE_NUDGE_CLEARANCE_M` apart (1.0 mm as PyBullet measures it, about 3 mm true; wrist 1 against its tool is
+  one of those pairs, so the wrist 1 check above passes too). The robot body counts as well, and the robot must stay on the walkable ground with its arms at home
   clear of the scene. Each step (about 0.5–1 s) prints
   `step 3/25: 0.4 mm deep (left_ur_arm_forearm_link <-> bars/B12, approach (M1)); base 12 mm, 0.6 deg from yours` and
   redraws the pose that holds the smallest distance. Esc stops it after the step in progress.
+  - Room for the body: once clear, it moves on to give Cindy's body (base link, bulkhead, wheels, the arm mounts)
+    `config.BASE_NUDGE_BODY_ROOM_M` (50 mm) from everything around it: bars, joints, obstacles, other robots, her
+    tools and the carried bar. A preference, not a rule: every pair still keeps its 1 mm, the limits above hold, and
+    where 50 mm cannot be had it keeps the most it found and says what held it back, e.g. `room after 4 steps: the
+    body's nearest gap is 31 mm (base_link <-> bars/B9, assembled (M2)), short of 50: left_ur_arm_forearm_link <->
+    bars/B12 (approach (M1)) is down to 1.4 mm apart, near the 1.0 mm every pair keeps.` Each step prints
+    `room step 2/25: body 38 mm (wants 50; base_link <-> bars/B9, assembled (M2)); base 42 mm, 1.2 deg from yours`.
+    Esc keeps the base reached so far and goes on to the chain check. It does not run when the branch is already
+    clear at your base (your base stays); 0 turns it off.
   - Cleared: tamp's normal chain solver runs at the new base, trying the resolved branch first
-    (`base_nudge.final_chain`). If it solves, the usual preview opens, with the prompt `IK preview at the resolved base
-    (moved 15 mm (14 mm left, 6 mm forward), turned 0.9 deg left from yours). Accept saves this base and the
-    keyframes`, a light green marker at the new base, and `BackToCandidates` in place of RetrySameBase (Esc does the
-    same). If the chain was already clear at your base (the solver commits to one approach branch and never goes
+    (`base_nudge.final_chain`). If it solves, the usual preview opens, with the prompt `IK preview at the resolved
+    base: moved 42 mm (40 left, 12 forward), turned 0.9 deg left from yours; body 50+ mm from everything. Accept saves
+    this base and the keyframes`, a light green marker at the new base, and `BackToCandidates` in place of
+    RetrySameBase (Esc does the same). If the chain was already clear at your base (the solver commits to one approach branch and never goes
     back), it solves there on that branch without moving.
   - Not cleared: one message box says why (no further gain, the bound, off the ground, the arms at home would hit
     the scene, the branch would flip or reach a singular pose, the step limit `BASE_NUDGE_MAX_STEPS`, or the chain
@@ -577,11 +591,11 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   a MoCap half without markers, or a bar the monitor could not fit (under 3 markers, or an ambiguous layout), stops the
   export ("Export stopped, nothing was written"); after it, every marker gets a dot on *MoCap Marker Labels*
   (`core.process_markers`, `core.rhino_mocap_markers`).
-- **Wrist 1 against its own tool**: after the plan checks, the summary lists every saved assembly pose whose wrist 1
-  comes closer than `config.OWN_TOOL_MIN_GAP_M` (1.0 mm) to the tool on that arm, e.g.
-  `B35 assembled: right wrist 1 is 0.46 mm from its tool (needs 1.0 mm)`, as CheckIK paints those bars red. It never
-  stops the export. It runs on Cindy's planning world (built on first use); if that cannot be built, the line says
-  "not checked".
+- **Wrist 1 against its own tool**: before writing, every saved assembly pose is checked for wrist 1 closer than
+  `config.OWN_TOOL_MIN_GAP_M` (1.0 mm) to the tool on that arm (the bars CheckIK paints red). Any such pose stops the
+  export ("Export stopped, nothing was written") and the command history and the message box name each one, e.g.
+  `B35 assembled: right wrist 1 is 0.46 mm from its tool (needs 1.0 mm)` (the box shows the first 12). It runs on
+  Cindy's planning world (built on first use); if the check cannot run, the export stops too and says why.
 - **Range (From .. Until)**: the command first asks which bars to export. Enter, or `All` at any time, exports every
   bar; `FromBar` / `UntilBar` pick a range (click a bar, or type its id `B5` or step number `5`; the scene built up to
   that bar is shown for Accept / Repick; Enter then exports that range). Picker: `core/rhino_export_range.py`; the cut:
@@ -627,21 +641,22 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   4. **Wrist 1 against its own tool**: on the assembly robot's approach, assembled and retreat poses,
      each arm's wrist 1 should stay `config.OWN_TOOL_MIN_GAP_M` (1.0 mm, as PyBullet measures it)
      from the tool on that arm (`process_planning.bar_own_tool_gaps`). These three cover every pose of
-     the bar's J and R actions: each movement starts where the one before ended. A bar under it is
-     listed ("wrist 1 too close to its tool", e.g. `assembled: right wrist 1 is 0.46 mm from its
-     tool (needs 1.0 mm)`) and painted red (`config.COLLISION_COLOR`, `255, 40, 40`). The pose is free
-     of contact and still fits the model, so the bar is not "needs recalculation" and is not offered
-     for cleaning; re-solve it, or roll the tool on the bar.
+     the bar's J and R actions: each movement starts where the one before ended. A bar under it
+     needs recalculation, as a collision: the lab monitor found contact at such a pose. It is listed
+     (`assembly: wrist 1 too close to its tool at assembled: right wrist 1 is 0.46 mm from its tool
+     (needs 1.0 mm)`), painted red (`config.COLLISION_COLOR`, `255, 40, 40`) instead of amber, and
+     offered for cleaning; re-solve it (RSIKKeyframe > InspectCandidates > ResolveCollision), or roll
+     the tool on the bar.
   5. **Ground and grasp**: the saved base more than 10 mm / 3° off the walkable ground under it; a
      support keyframe whose robot is not the one today's hold plan gives the bar to, or whose grasp
      is more than 1 mm / 0.5° off the bar's centre line.
   6. **Missing**: a bar with no assembly keyframe, or one today's hold plan holds with no support
      keyframe, is listed as "no IK yet" and painted the IK-failed pink
      (`rhino_bar_registry.COLOR_FAILED`, `230, 115, 150`). The bars that need recalculation are
-     painted amber. On a bar with several flags the order is pink, then red, then amber on top
+     painted amber. On a bar with several flags the order is pink, then amber, then red on top
      (`ik_check.flag_colours`). Every painted bar is selected.
-  7. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber ones),
-     then the usual three erase toggles. Pink-only and red-only bars are not offered.
+  7. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber and red
+     ones), then the usual three erase toggles. Pink-only bars are not offered.
 - Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`, `config.OWN_TOOL_MIN_GAP_M`. The amber, red
   and pink stay until the next CheckIK (which puts back what it painted over), RSUpdatePreview or
   RSClearColorPreview.

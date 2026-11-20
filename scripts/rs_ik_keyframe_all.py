@@ -350,7 +350,7 @@ def _place_base(rwg, curve, bar_id, grounds, standoff_mm, flip=None,
 
 
 @session_log.timed()
-def _solve_one(process, ctx, include_self, include_env, base_search="single", soups=None, moved=None):
+def _solve_one(process, ctx, include_self, include_env, base_search="single", soups=None, moved=None, tight=None):
     """Solve one bar's chain on Cindy's mirror, from the process's scenes, at its placed base. True on success.
 
     Args:
@@ -360,6 +360,8 @@ def _solve_one(process, ctx, include_self, include_env, base_search="single", so
         soups (list | None): the bar's ground triangle soups, which the optimised search stands the bases on.
         moved (list | None): gets ``(bar_id, mm moved, degrees turned)`` when a base other than the placed one
             solved, so the summary can say the saved base is not the one that was reviewed.
+        tight (list | None): gets the bar id when a solved pose brings wrist 1 too close to its own tool
+            (``ikf._own_tool_report``); the solve is saved all the same.
     """
     bar_id, curve, base_frame = ctx[0], ctx[1], ctx[2]
     try:
@@ -386,6 +388,15 @@ def _solve_one(process, ctx, include_self, include_env, base_search="single", so
         return False
     ikf._write_assembly_base_frame(curve, used_base)
     ikf._write_assembly_keyframes(curve, solved["M1"], solved["M2"], solved["M3"], mirror.cell)
+    try:
+        scene = process.scene_at(ikf.process_planning.movement(process, f"bars/{bar_id}", "J", "J_transfer"))
+        robot_id = process.actions[f"{bar_id}_J"].robot
+    except Exception as exc:  # noqa: BLE001 -- report-only: the solve is saved
+        session_log.caught(exc)
+        print(f"RSIKKeyframeAll: {bar_id}: wrist 1 not checked against its tool ({exc}).")
+        return True
+    if ikf._own_tool_report(f"RSIKKeyframeAll: {bar_id}", scene, robot_id, solved) and tight is not None:
+        tight.append(bar_id)
     return True
 
 
@@ -736,7 +747,7 @@ def _flip_bars(rwg, placed, flipped, bar_ids, standoff, grounds, soup_cache):
         print(f"RSIKKeyframeAll: {bar_id}: base flipped to the other side of the bar.")
 
 
-def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_run, stale_ids=()):
+def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_run, stale_ids=(), tight_ids=()):
     """Build the multiline popup summary string."""
     lines = [f"Multi-bar IK on {len(bars)} selected bar(s):", ""]
     stale_ids = sorted(set(stale_ids or ()) & set(bars))
@@ -750,6 +761,12 @@ def _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped, solved_
         if failed_ids:
             lines.append("  (re-run failed bars with the single-bar RSIKKeyframe "
                          "to place a new base.)")
+        if tight_ids:
+            gap_mm = 1000.0 * float(ikf.config.OWN_TOOL_MIN_GAP_M)
+            lines.append(f"Saved, but wrist 1 closer than {gap_mm:.1f} mm to its tool: {len(tight_ids)}"
+                         f"  {', '.join(tight_ids)}")
+            lines.append("  (the lab monitor may find contact there; the command history names the poses, "
+                         "CheckIK paints them red. Re-solve with RSIKKeyframe, or roll the tool on the bar.)")
     else:
         lines.append(f"Bases placed & saved (not solved): {len(placed)}"
                      + (f"  {', '.join(c[0] for c in placed)}" if placed else ""))
@@ -962,7 +979,7 @@ def main():
         # Solve each processable bar at its placed base (and, per BaseSearch, at other
         # bases after it). Esc stops the batch before the next bar: what is
         # solved stays solved, the rest is not tried.
-        solved_ids, failed_ids, not_tried, moved = [], [], [], []
+        solved_ids, failed_ids, not_tried, moved, tight = [], [], [], [], []
         total = len(placed)
         print(f"RSIKKeyframeAll: solving {total} bar(s); press Esc to stop after the bar in progress.")
         _escape_pressed()  # forget an Esc from the prompts before
@@ -976,7 +993,7 @@ def main():
             bar_soups = (rwg._bar_ground_soups(curve, grounds, soup_cache=soup_cache)
                          if base_search == "optimise" else None)
             ok = _solve_one(process, ctx, include_self, include_env,
-                            base_search=base_search, soups=bar_soups, moved=moved)
+                            base_search=base_search, soups=bar_soups, moved=moved, tight=tight)
             if ok:
                 solved_ids.append(bar_id)
                 paint_bar(curve, COLOR_HAS_IK)
@@ -999,7 +1016,7 @@ def main():
         _clear_base_preview()
 
         msg = _summary(bars, placed, solved_ids, failed_ids, already_ids, skipped,
-                       solved_run=True, stale_ids=stale)
+                       solved_run=True, stale_ids=stale, tight_ids=tight)
         support_lines = []
         if support_resolved:
             support_lines.append(f"Support holds re-solved: {len(support_resolved)}"

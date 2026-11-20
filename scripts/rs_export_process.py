@@ -4,8 +4,12 @@
 
 The process comes from `core.process_source.RhinoProcessSource` (bars, halves, ground, obstacles, robots, tools, mates,
 and the actions built from each bar's keyframes) and is written by the core's `write`. Bars without IK are exported
-with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Needs no PyBullet,
-compas_fab or tamp. It is the only export command.
+with `null` bases and joints. `source/` gets the .3dm as last saved and the two registries. Writing needs no
+PyBullet, compas_fab or tamp. It is the only export command.
+
+After the write it lists Cindy's saved poses whose wrist 1 comes closer than `config.OWN_TOOL_MIN_GAP_M` to the tool on
+that arm (`core.process_planning.bar_own_tool_gaps`, as CheckIK paints them red). That check runs on Cindy's planning
+world (PyBullet); when the world cannot be built it says so, and the export stands either way.
 
 First it asks which bars to export (`core.rhino_export_range`): Enter or All exports every bar; FromBar / UntilBar pick
 a range. A range export holds the bars up to Until and the actions of From..Until, the earlier bars built in its first
@@ -173,6 +177,32 @@ def _copy_sources(folder: str, config) -> None:
         shutil.copy2(path, source)
 
 
+def _own_tool_lines(process) -> tuple:
+    """Cindy's saved poses whose wrist 1 is too close to its own tool: ``(lines, how many poses)``. Report-only.
+
+    In schedule order, one line per pose, e.g. "  B35 assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)".
+    """
+    found = []
+    try:
+        from core import process_planning  # ? PyBullet: imported here, so writing never depends on it
+        for action_id in process.schedule:
+            action = process.actions[action_id]
+            if action.type == "bar_jointing":
+                found += [(action.bar, pose, gaps)
+                          for pose, gaps in process_planning.bar_own_tool_gaps(process, sc.sticky, action.bar)]
+    except Exception as exc:  # noqa: BLE001 -- report-only: the export stands
+        session_log.caught(exc)
+        return [f"Wrist 1 against its tool: not checked ({type(exc).__name__}: {exc})"], 0
+    gap_mm = 1000.0 * float(_config_module.OWN_TOOL_MIN_GAP_M)
+    if not found:
+        return [f"Wrist 1 against its tool: every saved pose keeps {gap_mm:.1f} mm"], 0
+    lines = [f"Wrist 1 closer than {gap_mm:.1f} mm to its tool on {len(found)} pose(s) (CheckIK paints the bars red; "
+             "the lab monitor may find contact there):"]
+    lines += [f"  {bar.split('/', 1)[-1]} {pose}: {process_planning.own_tool_gap_line(gaps)}"
+              for bar, pose, gaps in found]
+    return lines, len(found)
+
+
 def export(command: str = "RSExportProcess") -> None:
     """Build, write and check the process; print everything and show a summary."""
     config = importlib.reload(_config_module)
@@ -236,6 +266,9 @@ def export(command: str = "RSExportProcess") -> None:
         n_markers = rhino_mocap_markers.label_markers_in_rhino(written)
     with session_log.step("check plan (B)"):
         report = check_plan(written)
+    # ? On the document's process, not the one read back: its models are the ones Cindy's planning world was built on.
+    with session_log.step("check wrist 1 against its tool"):
+        own_tool_lines, n_tight = _own_tool_lines(result.process)
     # The core's verdict on the saved IK (B15), by bar: these bars export as solved, with poses that miss.
     stale = stale_from(report.unreached)
     n = sum(len(a.movements) for a in written.actions.values())
@@ -249,12 +282,16 @@ def export(command: str = "RSExportProcess") -> None:
     if n_markers:
         lines.append(f"MoCap: {n_markers} markers labelled on layer '{config.LAYER_MOCAP_MARKER_LABELS}'")
     lines += stale_ik_lines(stale)
+    lines += own_tool_lines
     print("\n".join(lines))
     stale_note = (f"\n\nSTALE IK on {len(stale)} bar(s) (plan check B15): their saved robot poses no longer reach "
                   "the bars' tools. Re-run RSIKKeyframe on them, then export again." if stale else "")
+    tight_note = (f"\n\nWrist 1 too close to its tool on {n_tight} pose(s): exported, but the lab monitor may find "
+                  "contact there." if n_tight else "")
     rs.MessageBox(f"Wrote {folder}\n\n{len(written.actions)} actions ({solved}/{jointing} bars with IK), "
                   f"{len(result.problems)} note(s)\nA passed; B {len(report.errors)} error(s), "
-                  f"{len(report.warnings)} warning(s){stale_note}\n\nDetails in the command history.", 0, command)
+                  f"{len(report.warnings)} warning(s){stale_note}{tight_note}\n\nDetails in the command history.",
+                  0, command)
 
 
 if __name__ == "__main__":

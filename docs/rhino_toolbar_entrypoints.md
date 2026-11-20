@@ -25,7 +25,7 @@ Rhino closed after adding a button (see `docs/note.md` §8).
 | RSDesign | RSCreateBar | `rs_create_bar.py` | Register selected curves as bars and create tube previews | Workshop participants |
 | RSDesign | RSExportProcess | `rs_export_process.py` | Left-click: write the document as a schema 2 process folder through `scaffolding_assembly_core` (asks for the bars to export, Enter or All = every bar, or a From..Until range, then the process folder itself: pick one or make one with New folder), then print the file checks (A) and plan checks (B). Right-click, **RSCheckProcess** (`rs_check_process.py`): read an existing process folder and print A and B. See `docs/schema2_integration.md`. | Planning/export users |
 | RSDesign | RSIKKeyframe | `rs_ik_keyframe.py` | The one IK keyframe button: assembly flow (dual-arm approach/assembled/retreat) by default; re-clicking a solved bar that needs holding runs the SUPPORT flow (gripper grasp pick, support robot base pick, held+approach IK, release validation) | Advanced IK users |
-| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). Bars with no IK yet (no assembly keyframe, or held with no support keyframe) are painted the IK-failed pink and selected too. The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
+| RSDesign | RSIKMaintenance | `rs_ik_maintenance.py` | Asks **CheckIK** (default) / **ClearOneBar** / **ClearAllBars**. CheckIK reads the document as a process and replays every saved assembly + support keyframe against it (arms still reach the tools, no collision at any of the bar's poses on the robots' planning worlds, base on the ground, grasp on the bar), paints the bars that need recalculation amber, selects them, says why, then offers to clean their IK (all, or the ones you pick). Bars with no IK yet (no assembly keyframe, or held with no support keyframe) are painted the IK-failed pink and selected too; bars whose assembly pose brings wrist 1 closer than 1.0 mm to its own tool are painted red. The planning worlds are built on first use. The two Clear modes are the old RSClearIKKeyframe / RSClearIKKeyframeAll. | Planning/export users |
 | RSDesign | ~~RSIKSupportKeyframe~~ | (deleted) | Single-arm support IK — **folded into RSIKKeyframe's support flow**; the old script is deleted (reusable pickers live in `core/support_grasp_pick.py`) | Advanced IK users |
 | RSDesign | RSJointEdit | `rs_joint_edit.py` | **FlipJoint**: flip a placed pair's halves, flip a Ground joint, rotate a standalone MoCap. **MoveJoint**: slide a joint along its bar, by a typed distance or by two points. **ReplaceJoint**: swap a pair's receiver Female <-> MoCap, keeping the joint | Workshop participants |
 | RSDesign | RSJointPlace | `rs_joint_place.py` | **JointPairAndTool**: place a joint pair (Female or MoCap receiver + Male) on two bars, with its tool. **ToolOnly**: put a tool on an existing male/ground joint. **JointOnly**: place one Ground or standalone MoCap joint on one bar, no tool | Workshop participants |
@@ -464,6 +464,18 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   debug views `DEBUG_BASE_SEARCH_TRACE` (what the search did) and `DEBUG_BASE_REGION` (dense reach map) are in config.
 - Green = the bars in the planning scene (what the solve collides with), bars placed by hand included.
 - Saves the split `KEY_ASSEMBLY_*` keys on the shared Ln bar.
+- **Wrist 1 against its own tool, before you accept.** Once the chain solves, each solved pose (approach, assembled,
+  retreat) is measured: each arm's wrist 1 should stay `config.OWN_TOOL_MIN_GAP_M` (1.0 mm as PyBullet measures it,
+  about 3 mm true) from the tool on that arm (`process_planning.own_tool_gaps`). A pose under it:
+  - is printed: `RSIKKeyframe: [!] assembled: right wrist 1 is 0.36 mm from its tool (needs 1.0 mm).`;
+  - carries the gap in the accept prompt's label: `[now: assembled (right wrist 1 0.36 mm); ...]`;
+  - shows that wrist 1 and its tool red (`config.COLLISION_COLOR`) while it is on screen; the red goes when you toggle
+    to another pose and when the prompt ends.
+
+  Accept still works: the pose is free of contact. But the lab monitor solves it again at the robot's live base and
+  may find contact there (B35, 19 Nov 2026: 0.36 mm at the design base, 0.09 mm live). Try another base, or roll the
+  tool on the bar. RSIKKeyframeAll prints the same lines per bar and lists those bars in its summary; CheckIK paints
+  them red; RSExportProcess lists them.
 - **A rejected pick points at the joints, not the bar.** The bar must carry exactly two tool-bearing joints (male or ground) and be in the bar registry. If it does not, the offending **joint blocks** are painted `COLOR_FAILED` pink and named on the command line — you already know which bar you just clicked; what you cannot see is which of its joint blocks the count is complaining about. A bar with no tool-bearing joint at all is marked itself, there being nothing else to point at. The count is of *blocks*, so a duplicated block instance makes a visibly-two-joint bar report three; that case is called out by name, since it is otherwise baffling. The mark clears on the next pick and on exit, and restores whatever colour the block carried before — it never eats a sequence colour or a broken-link mark.
 - **Base guide lines.** Right after the bar pick, five lines are drawn on the bar's walkable ground and stay up through the whole base pick: the line joining the two grabbed-joint centres **projected onto the ground** (teal), three copies offset *against* the assembly direction by 375 / 500 / 625 mm (`config.BASE_GUIDE_OFFSETS_MM`, light teal, each labelled with a text dot), and the **extension line** through their midpoints (yellow) — the line an auto-placed base sits on. So you can read a standoff straight off the canvas before committing. See `docs/coordinate_conventions.md` §7. The guides are real document objects on purpose — object snaps only see document objects, and the point of the guides is to snap the base pick onto them; they are baked in one pass through RhinoCommon with the redraw suspended (`rhino_helpers.preview_attributes`), so they appear at once instead of after a redraw per object. A post whose two joint centres project to one ground point gets a point instead of a zero-length line.
 - **Arm reach ghost.** The translucent robot that tracks the cursor now carries two translucent spheres of `config.ARM_REACH_RADIUS_MM` (850 mm, the UR5e's nominal reach) centred on each arm's mount link, so you can see what the arms can actually touch from a candidate base. Approximate — the real reachability test is still the IK solve. Display-conduit only; nothing is baked.
@@ -534,6 +546,11 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
   a MoCap half without markers, or a bar the monitor could not fit (under 3 markers, or an ambiguous layout), stops the
   export ("Export stopped, nothing was written"); after it, every marker gets a dot on *MoCap Marker Labels*
   (`core.process_markers`, `core.rhino_mocap_markers`).
+- **Wrist 1 against its own tool**: after the plan checks, the summary lists every saved assembly pose whose wrist 1
+  comes closer than `config.OWN_TOOL_MIN_GAP_M` (1.0 mm) to the tool on that arm, e.g.
+  `B35 assembled: right wrist 1 is 0.46 mm from its tool (needs 1.0 mm)`, as CheckIK paints those bars red. It never
+  stops the export. It runs on Cindy's planning world (built on first use); if that cannot be built, the line says
+  "not checked".
 - **Range (From .. Until)**: the command first asks which bars to export. Enter, or `All` at any time, exports every
   bar; `FromBar` / `UntilBar` pick a range (click a bar, or type its id `B5` or step number `5`; the scene built up to
   that bar is shown for Accept / Repick; Enter then exports that range). Picker: `core/rhino_export_range.py`; the cut:
@@ -576,17 +593,27 @@ three TCP points per side. Then run AssemblyTool mode twice, once per side.
      (`process_planning.scene_collisions`, the viewers' CheckCollision) — with the bars built so
      far and the support robots where the schedule has them, so another bar's changed hold shows
      up here. A collision at a release step is charged to the held bar's support keyframe.
-  4. **Ground and grasp**: the saved base more than 10 mm / 3° off the walkable ground under it; a
+  4. **Wrist 1 against its own tool**: on the assembly robot's approach, assembled and retreat poses,
+     each arm's wrist 1 should stay `config.OWN_TOOL_MIN_GAP_M` (1.0 mm, as PyBullet measures it)
+     from the tool on that arm (`process_planning.bar_own_tool_gaps`). These three cover every pose of
+     the bar's J and R actions: each movement starts where the one before ended. A bar under it is
+     listed ("wrist 1 too close to its tool", e.g. `assembled: right wrist 1 is 0.46 mm from its
+     tool (needs 1.0 mm)`) and painted red (`config.COLLISION_COLOR`, `255, 40, 40`). The pose is free
+     of contact and still fits the model, so the bar is not "needs recalculation" and is not offered
+     for cleaning; re-solve it, or roll the tool on the bar.
+  5. **Ground and grasp**: the saved base more than 10 mm / 3° off the walkable ground under it; a
      support keyframe whose robot is not the one today's hold plan gives the bar to, or whose grasp
      is more than 1 mm / 0.5° off the bar's centre line.
-  5. **Missing**: a bar with no assembly keyframe, or one today's hold plan holds with no support
+  6. **Missing**: a bar with no assembly keyframe, or one today's hold plan holds with no support
      keyframe, is listed as "no IK yet" and painted the IK-failed pink
      (`rhino_bar_registry.COLOR_FAILED`, `230, 115, 150`). The bars that need recalculation are
-     painted amber (amber wins on a bar that is both). Both sets are selected.
-  6. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber ones),
-     then the usual three erase toggles. Pink-only bars are not offered: there is nothing to clean.
-- Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`. The amber and pink stay until the
-  next CheckIK (which puts back what it painted over), RSUpdatePreview or RSClearColorPreview.
+     painted amber. On a bar with several flags the order is pink, then red, then amber on top
+     (`ik_check.flag_colours`). Every painted bar is selected.
+  7. Asks **Keep** (Enter) / **CleanAll** / **CleanSelected** (pick bars among the amber ones),
+     then the usual three erase toggles. Pink-only and red-only bars are not offered.
+- Rule and tolerances: `core/ik_check.py`, `config.IK_CHECK_*`, `config.OWN_TOOL_MIN_GAP_M`. The amber, red
+  and pink stay until the next CheckIK (which puts back what it painted over), RSUpdatePreview or
+  RSClearColorPreview.
 
 ### RSClearIKKeyframe (`rs_clear_ik_keyframe.py`) / RSClearIKKeyframeAll (`rs_clear_ik_keyframe_all.py`)
 

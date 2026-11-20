@@ -38,6 +38,7 @@ topic, ordered basic → advanced inside each group.
 | 27 | `jp`, `jr`, LE and LN — where a joint is measured from |
 | 15 | base placement: heading, guide lines, arm L/R |
 | 21 | reading the IK failure log |
+| 36 | "1.0 mm as PyBullet measures it" — wrist 1 against its own tool *(convention on real PyBullet)* |
 | ⚠ | LM distance naming (merge leftover) |
 
 **Rhino & Grasshopper**
@@ -2778,3 +2779,62 @@ Result: both gaps are 36.000000 mm, and the joints move by 0.001 mm (a 28 mm sli
 The first try was a shift only. It also reached 36 mm on both bars, but it needed 1–3 mm of
 sideways movement, and J21-170 then moved 30.4 mm instead of 28.3. With a small turn allowed as
 well, the nudge needs only hundredths of a mm.
+
+---
+
+## 36. "1.0 mm as PyBullet measures it" — Cindy's wrist 1 against her own tool
+
+> ⚠️ **Repo convention**: the rule (wrist 1 at least 1.0 mm from the tool on its arm), the number and the red. The
+> measuring is **real PyBullet**: `getClosestPoints(body_a, body_b, distance)` lists the closest points of two shapes
+> that are nearer than `distance`, and each point carries how far apart they are (`point[8]`, metres).
+
+### What it is
+
+A collision check only answers "touching or not". Cindy's wrist 1 (the joint housing behind the flange) and the
+gripper on the same arm pass that check with very little room: the tool is allowed to touch wrist 2, wrist 3, the
+flange and tool0, but not wrist 1. "As PyBullet measures it" means the number is PyBullet's distance between the
+two collision shapes. PyBullet pads each convex shape by about 1 mm, so the true gap is about 2 mm larger:
+1.0 mm measured is about 3 mm between the real parts.
+
+### Where it lives
+
+- The number: `config.OWN_TOOL_MIN_GAP_M = 0.001` (`scripts/core/config.py`).
+- The measuring: `own_tool_gaps` in `scripts/core/process_planning.py`. It syncs Cindy's planning world to a
+  scene and asks the core's margin check for just two pairs, one per arm:
+  ```python
+  check = mirror.search_check(names, pair_margins={
+      frozenset(("robots/cindy/left_ur_arm_wrist_1_link", "tools/cindy/AT3L")): 0.001,
+      frozenset(("robots/cindy/right_ur_arm_wrist_1_link", "tools/cindy/AT3R")): 0.001,
+  })
+  check.distances(values)   # {pair: metres} for each pair closer than its margin; {} when both keep 1.0 mm
+  ```
+  Every other pair keeps margin 0, so it is still contact only.
+- Who asks: RSIKKeyframe before you accept (label + red), RSIKKeyframeAll (printed, summary), CheckIK (red bar),
+  RSExportProcess (listed). None of them refuses the pose.
+
+### What sets it — the real example, B35 on 19 Nov 2026
+
+| B35, right arm | measured gap |
+|---|---|
+| at the design base, as exported (assembled pose) | 0.46 mm |
+| live in the lab, the base and grasp a little off | 0.08 mm |
+| 50 mm straight retreat | contact from 20 mm out |
+
+The monitor solves every pose again at the robot's measured base. That drift took 0.27 to 0.38 mm, and the straight
+retreat up to 0.2 mm more, so the servo found "all 64 solutions collide" and B35 stopped. 1.0 mm leaves about 0.4 mm
+over what B35 lost. Rolling the right tool target −2° to −5° about the bar gave 1.6 to 2.1 mm.
+
+### Why only three poses are checked
+
+The gap depends only on the arm joints (the tool is bolted to the flange). RSIKKeyframe saves three joint sets
+per bar (user text `KEY_ASSEMBLY_IK_APPROACH` / `_ASSEMBLED` / `_RETREAT`, §1). Every other pose of the bar's J
+and R actions starts where the movement before it ended (`process_builder.Builder.emit`), so it repeats one of
+those three:
+
+| Saved pose | The movements' poses with those same joints |
+|---|---|
+| approach | transfer target, insert start |
+| assembled | insert target, ungrasp, retreat start |
+| retreat | retreat target, home start |
+
+Home itself is the fixed `config.HUSKY_DUAL_ARM_HOME_CONF_12`, never solved.

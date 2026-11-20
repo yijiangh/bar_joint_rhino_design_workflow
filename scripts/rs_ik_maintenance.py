@@ -30,12 +30,21 @@ One button, three jobs, asked first (Enter = CheckIK):
   for cleaning (there is nothing to clean). Amber wins over pink on a bar that
   is both.
 
+  A bar whose assembly pose (approach, assembled or retreat) brings an arm's
+  wrist 1 closer than ``config.OWN_TOOL_MIN_GAP_M`` (1.0 mm) to the tool on
+  that arm turns red (``config.COLLISION_COLOR``, the red RSIKKeyframe paints
+  colliding parts with) and is selected. The pose is free of contact and still
+  fits the model, so it is not offered for cleaning; the lab monitor, which
+  solves it again at the robot's live base, may find contact there. Re-solve it
+  or roll the tool on the bar. Order on a bar with several flags: pink, then
+  red, then amber on top.
+
 * **ClearOneBar** / **ClearAllBars** -- the old RSClearIKKeyframe /
   RSClearIKKeyframeAll, unchanged (pick a bar or take them all, then choose what
   to erase). Those two can still be typed. No planning world needed.
 
-The amber and pink stay until the next CheckIK (which puts back what it painted
-over), RSUpdatePreview or RSClearColorPreview.
+The amber, red and pink stay until the next CheckIK (which puts back what it
+painted over), RSUpdatePreview or RSClearColorPreview.
 """
 
 from __future__ import annotations
@@ -77,6 +86,9 @@ def _reload():
     global clear_cmd, ik_check, registry, process_source, walkable
     importlib.reload(config)
     clear_cmd = importlib.reload(_clear_module)
+    # ? ik_check imports the planning module inside check_all (it loads PyBullet): reload it only once loaded.
+    if "core.process_planning" in sys.modules:
+        importlib.reload(sys.modules["core.process_planning"])
     ik_check = importlib.reload(_ik_check_module)
     registry = importlib.reload(_registry_module)
     process_source = importlib.reload(_process_source_module)
@@ -100,8 +112,12 @@ def _ask_mode():
 # ---------------------------------------------------------------------------
 
 
-def _print_report(reports, stale, unsolved, elapsed_s) -> None:
+def _print_report(reports, stale, unsolved, tight, elapsed_s) -> None:
     print(f"{CMD}: checked the IK of {len(reports)} bar(s) in {elapsed_s:.0f} s.")
+    for report in tight:
+        print(f"  {report.bar_id} (step {report.seq}) -- wrist 1 too close to its tool:")
+        for line in report.tight:
+            print(f"    {line}")
     for report in stale:
         print(f"  {report.bar_id} (step {report.seq}) -- needs recalculation:")
         for line in report.assembly:
@@ -126,6 +142,13 @@ def _print_report(reports, stale, unsolved, elapsed_s) -> None:
         print(
             f"{CMD}: {len(unsolved)} bar(s) lack a keyframe they need (pink, selected; amber when they "
             f"also need recalculation): {', '.join(r.bar_id for r in unsolved)}."
+        )
+    if tight:
+        gap_mm = 1000.0 * float(config.OWN_TOOL_MIN_GAP_M)
+        print(
+            f"{CMD}: {len(tight)} bar(s) bring wrist 1 closer than {gap_mm:.1f} mm to its own tool (red, selected; "
+            f"amber when they also need recalculation): {', '.join(r.bar_id for r in tight)}. Free of contact "
+            "here, but the lab monitor may find contact at the live base: re-solve them, or roll the tool on the bar."
         )
     if not stale:
         print(f"{CMD}: every saved IK still fits the model.")
@@ -202,22 +225,22 @@ def _check_ik() -> None:
     reports = ik_check.check_all(result.process, sc.sticky, registry.get_real_bar_seq_map(bar_map), progress=print)
     stale = [report for report in reports if report.stale]
     unsolved = [report for report in reports if report.unsolved]
+    tight = [report for report in reports if report.tight]
 
     with suspend_redraw():
         restore_painted(_STICKY_PAINTED)
         rs.UnselectAllObjects()
         color_by_oid = {}
-        # * Pink first, amber over it: a bar that lacks one keyframe and needs another
-        #   recalculated shows amber, the colour the Clean prompt acts on.
-        for colour, flagged in ((registry.COLOR_FAILED, unsolved), (config.IK_STALE_COLOR, stale)):
-            for report in flagged:
-                for oid in registry._bar_curve_and_tube(bar_map[report.bar_id][0]):
-                    color_by_oid[oid] = colour
+        # * Pink, then red, then amber over both: amber is the colour the Clean prompt acts on.
+        colours = ik_check.flag_colours(reports, registry.COLOR_FAILED, config.COLLISION_COLOR, config.IK_STALE_COLOR)
+        for bar_id, colour in colours.items():
+            for oid in registry._bar_curve_and_tube(bar_map[bar_id][0]):
+                color_by_oid[oid] = colour
         paint_remembered(color_by_oid, _STICKY_PAINTED)
         if color_by_oid:
             rs.SelectObjects(list(color_by_oid))
 
-    _print_report(reports, stale, unsolved, time.perf_counter() - started)
+    _print_report(reports, stale, unsolved, tight, time.perf_counter() - started)
     if stale:
         _offer_clean(stale, bar_map)
 

@@ -3,8 +3,9 @@ Plan on the shared core: process -> `scene_at` -> `CompasFabMirror` -> the exist
 
 The Rhino commands get their movements, planner and cell from here: `keyframe_movements` for Cindy's chain
 (RSIKKeyframe, RSIKKeyframeAll), `hold_solve_state` and `hold_release_collisions` for a support robot's hold,
-`release_check` for a hold's release, `scene_collisions` for the viewers' collision check, `state_scene` to draw a
-solver's state. Rhino-free; needs the core's `[mirrors]` stack (compas_fab, PyBullet).
+`release_check` for a hold's release, `scene_collisions` for the viewers' collision check, `own_tool_gaps` for
+Cindy's wrist 1 coming too close to its own tool, `state_scene` to draw a solver's state. Rhino-free; needs the
+core's `[mirrors]` stack (compas_fab, PyBullet).
 
 Everything a scene needs comes from the core (decisions of 2026-10-09): `scene_at` derives the allowed contacts,
 `scenes.seeded` fills in the robot being planned for, the mirror parks other robots whose base or joints are unknown
@@ -24,6 +25,7 @@ from types import SimpleNamespace
 from typing import Dict, List, Mapping, Optional, Tuple
 
 import session_log
+from core import config
 from core import core_lib  # noqa: F401  (puts scaffolding_assembly_core on sys.path)
 from scaffolding_assembly_core.process import Process
 from scaffolding_assembly_core.process.hold import hold_scenes
@@ -31,7 +33,9 @@ from scaffolding_assembly_core.process.scenes import seeded
 from scaffolding_assembly_core.geometry import Pose
 from scaffolding_assembly_core.mirrors.compas import frame_from_pose
 from scaffolding_assembly_core.mirrors.compas_fab import CompasFabMirror
+from scaffolding_assembly_core.robot import FLANGE_SUFFIX, RobotModel
 from scaffolding_assembly_core.scene import Scene
+from scaffolding_assembly_core.urdf import UR_JOINT_NAMES
 from core.plan_steps import releases_after  # noqa: F401  (the release check's callers ask here)
 
 #: `sc.sticky` key of the mirrors, robot id -> CompasFabMirror.
@@ -260,6 +264,143 @@ def scene_collisions(process: Process, store: dict, scene: Scene, log=print) -> 
         mirror = sync_seeded(store, scene.copy(), robot_id, log=log)
         pairs |= {tuple(sorted(pair)) for pair in mirror.collisions(full_report=True)}
     return sorted(pairs)
+
+
+# --- --- --- --- --- CINDY: WRIST 1 AGAINST ITS OWN TOOL --- --- --- --- ---
+
+#: The arm link that the tool on that arm's flange may come too close to. `urdf.TOOL_TOUCHES_ARM_LINKS` lets the
+#: tool touch the links after it; wrist 1 gets a contact check only, which the lab found is not enough (19 Nov 2026,
+#: B35: 0.36 mm at the design base, 0.09 mm live).
+OWN_TOOL_LINK = "wrist_1_link"
+#: Cindy's saved poses (`plan_steps` names) whose wrist 1 is checked. The gap depends on her arm joints only, and
+#: every other pose of her J and R actions repeats one of these: each movement starts where the one before ended,
+#: so the transfer target is the approach, the ungrasp and the retreat start are the assembled pose, and the home
+#: start is the retreat. Home itself is the fixed `config.HUSKY_DUAL_ARM_HOME_CONF_12`.
+OWN_TOOL_POSES = ("approach", "assembled", "retreat")
+#: Rhino's keyframe roles (`KEYFRAME_MOVEMENTS`) -> the pose each one solves.
+ROLE_POSES = {"M1": "approach", "M2": "assembled", "M3": "retreat"}
+
+
+def own_tool_pairs(robot_id: str, model: RobotModel) -> Dict[Tuple[str, str], str]:
+    """The pairs `own_tool_gaps` measures: (wrist 1 id, tool id) -> the arm's prefix, per arm with a tool mounted.
+
+    Example: {("robots/cindy/left_ur_arm_wrist_1_link", "tools/cindy/AT3L"): "left_ur_arm", ...}.
+    """
+    out = {}
+    for flange, tool in sorted(model.tools.items()):
+        if not flange.endswith(FLANGE_SUFFIX):
+            continue
+        arm = flange[:-len(FLANGE_SUFFIX)]
+        if f"{arm}_{OWN_TOOL_LINK}" in model.links:
+            out[(f"{robot_id}/{arm}_{OWN_TOOL_LINK}", tool.id)] = arm
+    return out
+
+
+@session_log.timed()
+def own_tool_gaps(store: dict, scene: Scene, robot_id: str, min_gap: Optional[float] = None,
+                  log=print) -> Dict[Tuple[str, str], float]:
+    """Each arm's wrist 1 that is closer than `min_gap` to the tool on that same arm, with the gap.
+
+    Measured on the robot's mirror, synced to `scene`, with the core's margin check (`search_check` with
+    `pair_margins`, `SearchCheck.distances`). Only the wrist 1 / own tool pairs get the margin.
+
+    Args:
+        store: Where the mirrors are kept (Rhino's `sc.sticky`).
+        scene: The world to measure in, e.g. a `plan_steps.step_scene` or a solver's `state_scene`; not changed.
+        robot_id: The robot whose arms are measured, e.g. "robots/cindy".
+        min_gap: Metres, as PyBullet measures it (each shape padded by about 1 mm); None: `config.OWN_TOOL_MIN_GAP_M`.
+
+    Returns:
+        dict: (wrist 1 id, tool id) -> metres, 0 for contact, sorted, e.g.
+        {("robots/cindy/right_ur_arm_wrist_1_link", "tools/cindy/AT3R"): 0.00036}. Empty when every arm keeps the
+        gap, or the robot is absent or not placed (base or joints unknown).
+    """
+    robot = scene.robots.get(robot_id)
+    if robot is None or not robot.enabled or not robot.base_tracked or robot.unmeasured:
+        return {}
+    pairs = own_tool_pairs(robot_id, robot.model)
+    if not pairs:
+        return {}
+    gap = float(config.OWN_TOOL_MIN_GAP_M if min_gap is None else min_gap)
+    mirror = sync_seeded(store, scene.copy(), robot_id, log=log, report_parked=False)
+    configuration = mirror.state.robot_configuration
+    values = dict(zip(configuration.joint_names, configuration.joint_values))
+    names = [f"{arm}_{joint}" for arm in sorted(set(pairs.values())) for joint in UR_JOINT_NAMES]
+    check = mirror.search_check(names, pair_margins={frozenset(pair): gap for pair in pairs})
+    out = {}
+    for (a, b), distance in check.distances([values[name] for name in names]).items():
+        key = (a, b) if (a, b) in pairs else (b, a)
+        if key in pairs:
+            out[key] = float(distance)
+    return dict(sorted(out.items()))
+
+
+def keyframe_own_tool_gaps(store: dict, scene: Scene, robot_id: str, solved: Mapping[str, object],
+                           log=print) -> List[Tuple[str, Dict[Tuple[str, str], float]]]:
+    """`own_tool_gaps` of a solved keyframe chain: (pose name, gaps) for each pose that is too close, in chain order.
+
+    Args:
+        store: Where the mirrors are kept.
+        scene: A scene the chain's mirror was synced with, e.g. the bar's J_transfer scene; not changed.
+        robot_id: The solved robot.
+        solved: Keyframe roles -> solved compas_fab states, {"M1": approach, "M2": assembled, "M3": retreat}.
+    """
+    out = []
+    for role, pose in ROLE_POSES.items():
+        state = solved.get(role)
+        if state is None:
+            continue
+        gaps = own_tool_gaps(store, state_scene(scene, robot_id, state), robot_id, log=log)
+        if gaps:
+            out.append((pose, gaps))
+    return out
+
+
+def bar_own_tool_gaps(process: Process, store: dict, bar: str,
+                      log=print) -> List[Tuple[str, Dict[Tuple[str, str], float]]]:
+    """`own_tool_gaps` of one bar's saved assembly poses in the process: (pose name, gaps) per pose too close.
+
+    Args:
+        bar: E.g. "bars/B35". A bar without IK, or without a J action, has none.
+    """
+    from core import plan_steps
+
+    action = process.actions.get(f"{short(bar)}_J")
+    if action is None:
+        return []
+    out = []
+    for step in plan_steps.bar_steps(process, bar):
+        if step.pose not in OWN_TOOL_POSES:
+            continue
+        gaps = own_tool_gaps(store, plan_steps.step_scene(process, step), action.robot, log=log)
+        if gaps:
+            out.append((step.pose, gaps))
+    return out
+
+
+def own_tool_gap_line(gaps: Mapping[Tuple[str, str], float], min_gap: Optional[float] = None,
+                      brief: bool = False) -> str:
+    """The one wording of `own_tool_gaps`' result, for every command that prints it.
+
+    Args:
+        gaps: (wrist 1 id, tool id) -> metres.
+        min_gap: The gap asked for, metres; None: `config.OWN_TOOL_MIN_GAP_M`.
+        brief: The short form for a prompt.
+
+    Returns:
+        str: "right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)", "left wrist 1 is 0.80 mm and right wrist 1
+        is 0.36 mm from its tool (needs 1.0 mm)"; brief: "right wrist 1 0.36 mm". Empty for no gaps.
+    """
+    if not gaps:
+        return ""
+    gap_mm = 1000.0 * float(config.OWN_TOOL_MIN_GAP_M if min_gap is None else min_gap)
+    # ? "robots/cindy/right_ur_arm_wrist_1_link" -> "right": the arm's prefix up to its first "_".
+    parts = [(link.rsplit("/", 1)[-1].split("_", 1)[0], 1000.0 * distance)
+             for (link, _tool), distance in sorted(gaps.items())]
+    if brief:
+        return ", ".join(f"{side} wrist 1 {mm:.2f} mm" for side, mm in parts)
+    return " and ".join(f"{side} wrist 1 is {mm:.2f} mm" for side, mm in parts) + \
+        f" from its tool (needs {gap_mm:.1f} mm)"
 
 
 def state_scene(scene: Scene, robot_id: str, state) -> Scene:

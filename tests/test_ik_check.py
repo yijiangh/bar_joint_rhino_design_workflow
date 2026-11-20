@@ -139,6 +139,42 @@ def test_a_missing_keyframe_marks_the_bar_unsolved_not_stale():
     assert not report.stale  # nothing to recalculate (or clean): it was never solved
 
 
+def test_wrist_1_too_close_is_not_stale():
+    """B35 on 19 Nov: free of contact and fitting the model, so nothing to recalculate or clean."""
+    report = ik_check.BarIKReport("B35", 12)
+    report.tight.append("assembled: right wrist 1 is 0.46 mm from its tool (needs 1.0 mm)")
+    assert not report.stale and not report.unsolved
+
+
+# ---------------------------------------------------------------------------
+# flag_colours: pink (missing), then red (wrist 1 too close), then amber (stale) on top
+# ---------------------------------------------------------------------------
+
+PINK, RED, AMBER = "pink", "red", "amber"
+
+
+def _report(bar_id, missing=False, tight=False, stale=False):
+    report = ik_check.BarIKReport(bar_id)
+    if missing:
+        report.missing.append("support (alice): no IK yet")
+    if tight:
+        report.tight.append("approach: left wrist 1 is 0.80 mm from its tool (needs 1.0 mm)")
+    if stale:
+        report.assembly.append("approach: collides -- a x b")
+    return report
+
+
+def test_each_flag_alone_has_its_colour_and_a_clean_bar_none():
+    reports = [_report("B1"), _report("B2", missing=True), _report("B3", tight=True), _report("B4", stale=True)]
+    assert ik_check.flag_colours(reports, PINK, RED, AMBER) == {"B2": PINK, "B3": RED, "B4": AMBER}
+
+
+def test_red_over_pink_and_amber_over_both():
+    reports = [_report("B5", missing=True, tight=True), _report("B6", tight=True, stale=True),
+               _report("B7", missing=True, tight=True, stale=True)]
+    assert ik_check.flag_colours(reports, PINK, RED, AMBER) == {"B5": RED, "B6": AMBER, "B7": AMBER}
+
+
 # ---------------------------------------------------------------------------
 # missing_keyframes (B170 / B171 in 261116_2ModulesDemo: new braces, never solved)
 # ---------------------------------------------------------------------------

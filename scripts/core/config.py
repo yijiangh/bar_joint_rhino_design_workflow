@@ -249,6 +249,14 @@ IK_CHECK_GRASP_TOL_MM = 1.0
 IK_CHECK_GRASP_TOL_DEG = 0.5
 #: Bars whose saved IK must be recalculated.
 IK_STALE_COLOR = (230, 160, 30)  # amber
+#: Cindy's wrist 1 against the tool on that same arm: the gap each of her saved poses should keep, in metres, as
+#: PyBullet measures it (each convex shape padded by about 1 mm, so 1.0 mm is about 3 mm true). The tool may touch
+#: wrist 2, wrist 3, flange and tool0, but wrist 1 only gets a contact check, and contact-only was not enough in the
+#: lab: the monitor solves every pose again at the robot's live base, and on 19 Nov 2026 B35 lost 0.27 to 0.38 mm
+#: to that drift and up to 0.2 mm on its straight retreat (report "Monitor limits a Rhino design must meet").
+#: 1.0 mm leaves about 0.4 mm. RSIKKeyframe, CheckIK (red, ``COLLISION_COLOR``) and RSExportProcess flag a pose
+#: under it (``core.process_planning.own_tool_gaps``); none of them refuses it.
+OWN_TOOL_MIN_GAP_M = 0.001
 
 # ---------------------------------------------------------------------------
 # Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)

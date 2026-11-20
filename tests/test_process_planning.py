@@ -166,6 +166,87 @@ def test_state_scene_draws_a_solver_state(setup):
     assert held.bodies["bars/B1"].placement.link == "left_ur_arm_tool0"
 
 
+#: Cindy's wrist 1 / own tool pairs in the fixture's process.
+OWN_TOOL_PAIRS = {("robots/cindy/left_ur_arm_wrist_1_link", "tools/cindy/AT3L"): "left_ur_arm",
+                  ("robots/cindy/right_ur_arm_wrist_1_link", "tools/cindy/AT3R"): "right_ur_arm"}
+
+
+def test_own_tool_pairs_are_each_arms_wrist_1_and_the_tool_on_it(setup):
+    from core.process_planning import own_tool_pairs
+
+    process, *_ = setup
+    scene = process.scene_at(process.actions["B1_J"].movements[0])
+    assert own_tool_pairs("robots/cindy", scene.robots["robots/cindy"].model) == OWN_TOOL_PAIRS
+
+
+def test_own_tool_gaps_reports_only_wrist_1_against_its_own_tool(setup):
+    """With a margin far beyond the arm, both pairs are within it, and no other pair is reported; with a margin far
+    below the real gap, nothing is."""
+    from core.plan_steps import bar_steps, step_scene
+    from core.process_planning import own_tool_gaps
+
+    _process_, store, reach, _, rebuild = setup
+    process = rebuild(approach=reach, assembled=reach, retreat=reach)
+    approach = next(s for s in bar_steps(process, "bars/B1") if s.pose == "approach")
+    scene = step_scene(process, approach)
+    far = own_tool_gaps(store, scene, "robots/cindy", min_gap=1.0)
+    assert set(far) == set(OWN_TOOL_PAIRS)
+    assert all(0.0 <= gap < 1.0 for gap in far.values())
+    assert own_tool_gaps(store, scene, "robots/cindy", min_gap=1e-6) == {}
+    # * Asked again with the margin just above a measured gap, that pair comes back with the same gap.
+    pair, gap = min(far.items(), key=lambda item: item[1])
+    again = own_tool_gaps(store, scene, "robots/cindy", min_gap=gap + 1e-4)
+    assert again[pair] == pytest.approx(gap, abs=1e-6)
+
+
+def test_own_tool_gaps_needs_the_robot_placed(setup):
+    """Before IK (Cindy's joints unknown at the insert) there is nothing to measure."""
+    from core.process_planning import own_tool_gaps
+
+    process, store, *_ = setup
+    insert = next(m for m in process.actions["B1_J"].movements if m.id == "B1_J_insert")
+    assert own_tool_gaps(store, process.scene_at(insert), "robots/cindy", min_gap=1.0) == {}
+
+
+def test_bar_and_keyframe_gaps_cover_the_three_saved_poses(setup, monkeypatch):
+    """The saved poses (approach, assembled, retreat) of the process, and a solved chain's states, in that order."""
+    from core import config
+    from core.process_planning import (bar_own_tool_gaps, keyframe_movements, keyframe_own_tool_gaps, movement,
+                                       OWN_TOOL_POSES)
+
+    _process_, store, reach, _, rebuild = setup
+    process = rebuild(approach=reach, assembled=reach, retreat=reach)
+    monkeypatch.setattr(config, "OWN_TOOL_MIN_GAP_M", 1.0)
+    saved = bar_own_tool_gaps(process, store, "bars/B1")
+    assert tuple(pose for pose, _gaps in saved) == OWN_TOOL_POSES
+    assert all(set(gaps) == set(OWN_TOOL_PAIRS) for _pose, gaps in saved)
+    _mirror, movements = keyframe_movements(process, store, "bars/B1")
+    solved = {}
+    for role in ("M1", "M2", "M3"):
+        state = movements[role].start_state.copy()
+        names = state.robot_configuration.joint_names
+        state.robot_configuration.joint_values = [reach.get(name, 0.0) for name in names]
+        solved[role] = state
+    transfer = process.scene_at(movement(process, "bars/B1", "J", "J_transfer"))
+    chain = keyframe_own_tool_gaps(store, transfer, "robots/cindy", solved)
+    assert tuple(pose for pose, _gaps in chain) == OWN_TOOL_POSES
+    # * The same arm joints give the same gaps, measured from the process or from the solver's states.
+    assert chain[0][1] == pytest.approx(saved[0][1], abs=1e-6)
+    monkeypatch.setattr(config, "OWN_TOOL_MIN_GAP_M", 1e-6)
+    assert bar_own_tool_gaps(process, store, "bars/B1") == []
+
+
+def test_own_tool_gap_line_wording():
+    from core.process_planning import own_tool_gap_line
+
+    left, right = list(OWN_TOOL_PAIRS)
+    assert own_tool_gap_line({}) == ""
+    assert own_tool_gap_line({right: 0.00036}, min_gap=0.001) == "right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)"
+    assert own_tool_gap_line({right: 0.00036, left: 0.0008}, min_gap=0.001) == \
+        "left wrist 1 is 0.80 mm and right wrist 1 is 0.36 mm from its tool (needs 1.0 mm)"
+    assert own_tool_gap_line({right: 0.00036}, brief=True) == "right wrist 1 0.36 mm"
+
+
 def test_geometry_unchanged_keeps_the_cell(setup):
     """A second sync of the same process reuses the mirror's cell (no rebuild)."""
     from core.process_planning import keyframe_movements

@@ -18,6 +18,12 @@ when it accepted each pose -- no re-solve:
   what the viewers' CheckCollision runs) -- with the bars built so far and the
   support robots where the schedule has them, so another bar's changed hold
   shows up here;
+* **wrist 1 clearance**: on the assembly robot's approach, assembled and retreat
+  poses, each arm's wrist 1 at least ``config.OWN_TOOL_MIN_GAP_M`` from the tool
+  on that arm (``process_planning.bar_own_tool_gaps``). Free of contact is not
+  enough there: the lab monitor solves the pose again at the robot's live base.
+  A pose under it goes into ``BarIKReport.tight``, not into the problems that
+  make a bar stale;
 * **ground**: the saved base still standing on a walkable ground, not floating,
   sunk or tilted against it;
 * **support keyframe** (the robot holding the bar): its assignment in today's
@@ -127,6 +133,9 @@ class BarIKReport:
     support: list = field(default_factory=list)    # problems with the support keyframe
     missing: list = field(default_factory=list)    # keyframes the bar needs but has never been given
     notes: list = field(default_factory=list)      # hints that do not flag the bar by themselves
+    #: Assembly poses whose wrist 1 is closer to its own tool than ``config.OWN_TOOL_MIN_GAP_M``: they fit the
+    #: model and are free of contact, so the bar is not stale, but the lab monitor may find contact at the live base.
+    tight: list = field(default_factory=list)
 
     @property
     def stale(self) -> bool:
@@ -137,6 +146,25 @@ class BarIKReport:
     def unsolved(self) -> bool:
         """True when the bar lacks a keyframe it needs: no assembly IK, or no support IK for a held bar."""
         return bool(self.missing)
+
+
+def flag_colours(reports, missing_colour, tight_colour, stale_colour) -> dict:
+    """Bar id -> the colour CheckIK paints it; a bar with none of the three flags is left out.
+
+    The last flag that applies wins: missing a keyframe (pink), then wrist 1 too close to its tool (red), then
+    needs recalculation (amber). Amber wins because the Clean prompt acts on the amber bars.
+
+    Args:
+        reports: ``BarIKReport`` per bar.
+        missing_colour, tight_colour, stale_colour: The three colours, e.g. as (r, g, b).
+    """
+    out = {}
+    for report in reports:
+        for colour, flagged in ((missing_colour, report.unsolved), (tight_colour, bool(report.tight)),
+                                (stale_colour, report.stale)):
+            if flagged:
+                out[report.bar_id] = colour
+    return out
 
 
 # * ---------------------------------------------------------------------------
@@ -292,7 +320,7 @@ def check_all(process, store: dict, bar_map: dict, progress=print) -> list:
         list[BarIKReport]: one per checked bar, in assembly order.  A bar whose
         check raised is reported as "could not be checked", never passed.
     """
-    from core import keyframe_store, plan_steps
+    from core import keyframe_store, plan_steps, process_planning
     from core.rhino_helpers import doc_unit_scale_to_mm
     from core.rhino_walkable_ground import get_all_walkable_grounds
 
@@ -346,6 +374,12 @@ def check_all(process, store: dict, bar_map: dict, progress=print) -> list:
                     report.assembly.append(line)
         except Exception as exc:  # noqa: BLE001 -- reported, never passed
             report.assembly.append(f"could not be checked for collisions: {exc}")
+        # * Wrist 1 against its own tool: free of contact is not enough (config.OWN_TOOL_MIN_GAP_M).
+        try:
+            for pose, gaps in process_planning.bar_own_tool_gaps(process, store, f"bars/{bar_id}", log=progress):
+                report.tight.append(f"{pose}: {process_planning.own_tool_gap_line(gaps)}")
+        except Exception as exc:  # noqa: BLE001 -- reported, never passed
+            report.assembly.append(f"wrist 1 could not be checked against its tool: {exc}")
         # * Ground: the assembly robot's saved base.
         if keyframe is not None:
             ground = _base_on_ground("base", keyframe["base_frame_world_mm"], soups)
@@ -373,6 +407,7 @@ __all__ = [
     "base_ground_error",
     "check_all",
     "check_support_keyframe",
+    "flag_colours",
     "frame_error",
     "ground_problem",
     "ground_soups",

@@ -2154,6 +2154,68 @@ def _revert_red_highlight(oids):
                 continue
 
 
+def _own_tool_report(command, scene, robot_id, solved):
+    """Print the solved poses whose wrist 1 is too close to its own tool; ``{pose name: gaps}``. Report-only.
+
+    The rule is ``process_planning.own_tool_gaps`` (``config.OWN_TOOL_MIN_GAP_M``); CheckIK and RSExportProcess ask
+    the same question of the saved poses.
+
+    Args:
+        command (str): the command name for the printed lines.
+        scene: a scene the chain's mirror was synced with (the bar's J_transfer scene).
+        robot_id (str): the solved robot.
+        solved (dict): ``{"M1": approach, "M2": assembled, "M3": retreat}`` solved states.
+    """
+    try:
+        found = process_planning.keyframe_own_tool_gaps(sc.sticky, scene, robot_id, solved)
+    except Exception as exc:  # noqa: BLE001 -- report-only: a failed check never loses a solve
+        session_log.caught(exc)
+        print(f"{command}: [!] wrist 1 could not be checked against its tool ({type(exc).__name__}: {exc}).")
+        return {}
+    for pose, gaps in found:
+        print(f"{command}: [!] {pose}: {process_planning.own_tool_gap_line(gaps)}.")
+    if found:
+        print(f"{command}:     free of contact, but the lab monitor solves the pose again at the robot's live base "
+              "and may find contact there. Try another base, or roll the tool on the bar.")
+    return dict(found)
+
+
+def _own_tool_renderer(display_frames, tight, mesh_mode):
+    """The accept prompt's ``render_fn``: draw a pose, and paint red the wrist 1 and tool of an arm too close.
+
+    Red is ``config.COLLISION_COLOR``, as the inspect cycle paints colliding parts.
+
+    Args:
+        display_frames (list): ``[(pose name, state), ...]`` as built, before any label is changed.
+        tight (dict): ``{pose name: gaps}`` from :func:`_own_tool_report`.
+        mesh_mode (str): the preview's mesh mode.
+
+    Returns:
+        tuple: ``(render, clear)``: ``render(state)`` draws a pose; ``clear()`` takes the red off (call it once the
+        prompt is done).
+    """
+    gaps_of = {id(state): tight.get(label) for label, state in display_frames}
+    painted = []
+
+    def clear():
+        if painted:
+            _revert_red_highlight(painted)
+            ik_viz.restore_colors(_PREVIEW["layer"])
+            del painted[:]
+            sc.doc.Views.Redraw()
+
+    def render(state):
+        clear()
+        _render_preview_pose(state, mesh_mode)
+        gaps = gaps_of.get(id(state))
+        if gaps:
+            parts = [part for pair in gaps for part in pair]
+            painted.extend(_apply_red_highlight(ik_viz.objects_of(parts, _PREVIEW["layer"], mesh_mode)))
+            sc.doc.Views.Redraw()
+
+    return render, clear
+
+
 def _cycle_ssik_candidates(role, candidates):
     """Step through `candidates` in the viewport, red-highlighting each pose's offenders.
 
@@ -3071,6 +3133,7 @@ def _main(stack, after):
             viz = _open_ik_sample_viz(
                 seed_base_frame, config.IK_BASE_SAMPLE_RADIUS, _solve_clip
             )
+            clear_own_tool_red = None
             try:
                 # * S
                 print("RSIKKeyframe: solving M1->M2->M3 IK chain ...")
@@ -3143,9 +3206,19 @@ def _main(stack, after):
                     display_frames.append(("home", home_state))
                 assembled_index = 1  # start the cycle on the assembled pose
 
+                # * Wrist 1 against its own tool, before the user decides: printed, in the
+                #   label of the pose on screen, and red on the preview (wrist 1 and the tool).
+                tight = _own_tool_report("RSIKKeyframe", scene, robot_id, solved)
+                render_pose, clear_own_tool_red = _own_tool_renderer(display_frames, tight, mesh_mode)
+                display_frames = [
+                    (f"{label} ({process_planning.own_tool_gap_line(tight[label], brief=True)})"
+                     if label in tight else label, state)
+                    for label, state in display_frames
+                ]
+
                 # Preview the assembled (mated) pose first -- the representative
                 # keyframe. Enter / TogglePose then steps through the rest.
-                _render_preview_pose(assembled_state, mesh_mode)
+                render_pose(assembled_state)
                 print(
                     "RSIKKeyframe: full M1->M2->M3 chain reachable. Previewing "
                     "assembled pose (Enter / TogglePose to step through keyframes)..."
@@ -3158,11 +3231,13 @@ def _main(stack, after):
                 stored_base = used_base
                 action = _ask_accept_with_pose_preview(
                     display_frames,
-                    lambda st: _render_preview_pose(st, mesh_mode),
+                    render_pose,
                     initial_index=assembled_index,
                     prompt="IK preview ready. Accept, retry the same base, retry a new base, or give up",
                 )
             finally:
+                if clear_own_tool_red is not None:
+                    clear_own_tool_red()
                 rs.EnableRedraw(True)
                 # Tear down this attempt's sampling viz now that the user has seen it
                 # and decided; a fresh viz is opened on the next loop turn (retry).

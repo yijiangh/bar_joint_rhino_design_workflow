@@ -322,17 +322,48 @@ def own_tool_gaps(store: dict, scene: Scene, robot_id: str, min_gap: Optional[fl
     if not pairs:
         return {}
     gap = float(config.OWN_TOOL_MIN_GAP_M if min_gap is None else min_gap)
-    mirror = sync_seeded(store, scene.copy(), robot_id, log=log, report_parked=False)
-    configuration = mirror.state.robot_configuration
-    values = dict(zip(configuration.joint_names, configuration.joint_values))
-    names = [f"{arm}_{joint}" for arm in sorted(set(pairs.values())) for joint in UR_JOINT_NAMES]
-    check = mirror.search_check(names, pair_margins={frozenset(pair): gap for pair in pairs})
+    check, names, values = arm_check(store, scene, robot_id, arms=sorted(set(pairs.values())), log=log,
+                                     pair_margins={frozenset(pair): gap for pair in pairs})
     out = {}
-    for (a, b), distance in check.distances([values[name] for name in names]).items():
+    for (a, b), distance in check.distances(values).items():
         key = (a, b) if (a, b) in pairs else (b, a)
         if key in pairs:
             out[key] = float(distance)
     return dict(sorted(out.items()))
+
+
+def arm_check(store: dict, scene: Scene, robot_id: str, margin: float = 0.0, arms: Optional[List[str]] = None,
+              log=print, **options):
+    """Sync `scene` into the robot's mirror and build the core's fast check over its arms' joints, from that pose.
+
+    The one place "sync, then build the check" is written: a check is valid until the next sync (the core's rule).
+
+    Args:
+        store: Where the mirrors are kept.
+        scene: The world to check in; not changed.
+        robot_id: The robot, e.g. "robots/cindy".
+        margin: The check's margin, metres (see `CompasFabMirror.search_check`).
+        arms: The arm prefixes, e.g. ["left_ur_arm"]; None: both of Cindy's.
+        **options: The check's other options: `self_margin`, `pair_margins`, `base_moves`.
+
+    Returns:
+        tuple: (the `SearchCheck`, the joint names it moves, their values in the scene, in that order).
+    """
+    mirror = sync_seeded(store, scene.copy(), robot_id, log=log, report_parked=False)
+    configuration = mirror.state.robot_configuration
+    by_name = dict(zip(configuration.joint_names, configuration.joint_values))
+    names = [f"{arm}_{joint}" for arm in (arms or ("left_ur_arm", "right_ur_arm")) for joint in UR_JOINT_NAMES]
+    return mirror.search_check(names, margin, **options), names, [by_name[name] for name in names]
+
+
+def pose_distances(store: dict, scene: Scene, robot_id: str, margin: float, log=print) -> Dict[Tuple[str, str], float]:
+    """Every pair within `margin` at the scene's pose of the robot, signed (below 0: overlap), metres.
+
+    All the pairs `CompasFabMirror.collisions` checks that involve the robot or what it carries, its body included
+    (`base_moves`): e.g. {("robots/cindy/left_ur_arm_forearm_link", "bars/B12"): -0.0031}.
+    """
+    check, _names, values = arm_check(store, scene, robot_id, margin, log=log, base_moves=True)
+    return check.distances(values, signed=True)
 
 
 def keyframe_own_tool_gaps(store: dict, scene: Scene, robot_id: str, solved: Mapping[str, object],

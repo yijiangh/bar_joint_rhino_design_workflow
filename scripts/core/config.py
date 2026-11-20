@@ -257,6 +257,17 @@ IK_STALE_COLOR = (230, 160, 30)  # amber
 #: 1.0 mm leaves about 0.4 mm. RSIKKeyframe, CheckIK (red, ``COLLISION_COLOR``) and RSExportProcess flag a pose
 #: under it (``core.process_planning.own_tool_gaps``); none of them refuses it.
 OWN_TOOL_MIN_GAP_M = 0.001
+#: RSIKKeyframe > InspectCandidates > ResolveCollision (`core.base_nudge`): it moves the base until every pair the
+#: base can change keeps this gap, in metres as PyBullet measures it (about 3 mm true), on all three keyframes of the
+#: candidate's chain. The same scale as OWN_TOOL_MIN_GAP_M, so a resolved chain also passes the wrist 1 flag.
+BASE_NUDGE_CLEARANCE_M = 0.001
+#: How far ResolveCollision may move the base origin (mm) and turn it (degrees) from the base the user picked.
+BASE_NUDGE_MAX_MM = 150.0
+BASE_NUDGE_MAX_DEG = 10.0
+#: Accepted steps before ResolveCollision stops (each step takes about 0.5-1 s).
+BASE_NUDGE_MAX_STEPS = 25
+#: How far any arm joint may get from the candidate's own, degrees, before it counts as another IK branch.
+BASE_NUDGE_MAX_BRANCH_DEG = 45.0
 
 # ---------------------------------------------------------------------------
 # Base-placement guide lines (core.base_guide_geom / core.base_guide_viz)

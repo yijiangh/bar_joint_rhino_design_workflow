@@ -32,7 +32,7 @@ from core import base_region
 #: What a base that cannot be used costs in the descent (finite: Nelder-Mead compares values).
 _RULED_OUT = 1.0e3
 #: A descent step is ruled out when the ground is farther than this from where it asked to stand, in mm.
-_OFF_GROUND_MM = 1.0
+OFF_GROUND_MM = 1.0
 
 
 class HomeCheck:
@@ -220,7 +220,7 @@ def _descend(point_mm, yaw: float, start_cost: float, start_frame, limits, check
         if facing is not None and float(_turned(yaw + u[2] * yaw_step, facing)) > facing_range:
             return _RULED_OUT
         on_ground, normal = snap(asked)
-        if on_ground is None or float(np.hypot(*(np.asarray(on_ground)[:2] - asked[:2]))) > _OFF_GROUND_MM:
+        if on_ground is None or float(np.hypot(*(np.asarray(on_ground)[:2] - asked[:2]))) > OFF_GROUND_MM:
             return _RULED_OUT
         at, up, heading = np.asarray(on_ground, dtype=float)[None, :], np.asarray(normal, dtype=float)[None, :], \
             [yaw + u[2] * yaw_step]

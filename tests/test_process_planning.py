@@ -81,8 +81,11 @@ def setup():
     schedule = (("J", "bars/B1"), ("H", "bars/B1"), ("R", "bars/B1"), ("HR", "bars/B1"))
     built = build_actions(process, schedule, {"bars/B1": record}, {"bars/B1": hold}).process
     store = {}
-    rebuild = lambda **keyframes: build_actions(process, schedule, {"bars/B1": replace(record, **keyframes)},  # noqa
-                                                {"bars/B1": hold}).process
+
+    def rebuild(bodies=None, **keyframes):
+        """The process again with these keyframes, and these extra bodies (e.g. an obstacle) if given."""
+        base = replace(process, bodies={**process.bodies, **bodies}) if bodies else process
+        return build_actions(base, schedule, {"bars/B1": replace(record, **keyframes)}, {"bars/B1": hold}).process
     yield built, store, reach, alice_tool0, rebuild
     from core.process_planning import close_mirrors
     close_mirrors(store)
